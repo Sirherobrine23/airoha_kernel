@@ -724,7 +724,7 @@ static void gpiod_attr_init(struct device_attribute *dev_attr, const char *name,
  * Returns:
  * 0 on success, or negative errno on failure.
  */
-int gpiod_export(struct gpio_desc *desc, bool direction_may_change)
+int __gpiod_export(struct gpio_desc *desc, bool direction_may_change, const char *name)
 {
 	char *path __free(kfree) = NULL;
 	struct gpiodev_data *gdev_data;
@@ -801,7 +801,7 @@ int gpiod_export(struct gpio_desc *desc, bool direction_may_change)
 	desc_data->dev = device_create_with_groups(&gpio_class, &gdev->dev,
 						   MKDEV(0, 0), desc_data,
 						   desc_data->class_attr_groups,
-						   "gpio%u",
+						   name ? name : "gpio%u",
 						   desc_to_gpio(desc));
 	if (IS_ERR(desc_data->dev)) {
 		status = PTR_ERR(desc_data->dev);
@@ -870,7 +870,20 @@ err_clear_bit:
 	gpiod_dbg(desc, "%s: status %d\n", __func__, status);
 	return status;
 }
+EXPORT_SYMBOL_GPL(__gpiod_export);
+
+int gpiod_export(struct gpio_desc *desc, bool direction_may_change)
+{
+	return __gpiod_export(desc, direction_may_change, NULL);
+}
 EXPORT_SYMBOL_GPL(gpiod_export);
+
+int gpio_export_with_name(struct gpio_desc *desc, bool direction_may_change,
+			  const char *name)
+{
+	return __gpiod_export(desc, direction_may_change, name);
+}
+EXPORT_SYMBOL_GPL(gpio_export_with_name);
 
 #if IS_ENABLED(CONFIG_GPIO_SYSFS_LEGACY)
 static int match_export(struct device *dev, const void *desc)
