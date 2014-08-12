@@ -21,6 +21,8 @@
 
 #include <linux/gpio/consumer.h>
 #include <linux/gpio/machine.h>
+#include <linux/init.h>
+#include <linux/platform_device.h>
 
 #include "gpiolib.h"
 #include "gpiolib-of.h"
@@ -1302,3 +1304,61 @@ bool of_gpiochip_instance_match(struct gpio_chip *gc, unsigned int index)
 
 	return false;
 }
+
+#ifdef CONFIG_GPIO_SYSFS
+
+static const struct of_device_id gpio_export_ids[] = {
+	{ .compatible = "gpio-export" },
+	{ /* sentinel */ }
+};
+
+static int of_gpio_export_probe(struct platform_device *pdev)
+{
+	struct device *dev = &pdev->dev;
+	u32 val;
+	int nb = 0;
+
+	device_for_each_child_node_scoped(dev, child) {
+		struct gpio_desc *desc;
+		const char *name = NULL;
+		bool dmc;
+		enum gpiod_flags dflags;
+		int i = 0;
+
+		if (!fwnode_property_read_u32(child, "gpio-export,output", &val))
+			dflags = val ? GPIOD_OUT_HIGH : GPIOD_OUT_LOW;
+		else
+			dflags = GPIOD_IN;
+
+		fwnode_property_read_string(child, "gpio-export,name", &name);
+		while (true) {
+			desc = devm_fwnode_gpiod_get_index(dev, child, NULL, i, dflags,
+					name ? name : fwnode_get_name(child));
+			if (PTR_ERR(desc) == -ENOENT)
+				break;
+			if (IS_ERR(desc))
+				return PTR_ERR(desc);
+
+			dmc = fwnode_property_present(child, "gpio-export,direction_may_change");
+			gpio_export_with_name(desc, dmc, name);
+			nb++;
+			i++;
+		}
+	}
+
+	dev_info(dev, "%d gpio(s) exported\n", nb);
+
+	return 0;
+}
+
+static struct platform_driver gpio_export_driver = {
+	.driver		= {
+		.name		= "gpio-export",
+		.of_match_table	= of_match_ptr(gpio_export_ids),
+	},
+	.probe		= of_gpio_export_probe,
+};
+
+module_platform_driver(gpio_export_driver);
+
+#endif
