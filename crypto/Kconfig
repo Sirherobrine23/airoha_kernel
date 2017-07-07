@@ -55,7 +55,7 @@ config CRYPTO_FIPS_VERSION
 	  By default the KERNELRELEASE value is used.
 
 config CRYPTO_ALGAPI
-	tristate
+	tristate "ALGAPI"
 	select CRYPTO_ALGAPI2
 	help
 	  This option provides the API for cryptographic algorithms.
@@ -64,7 +64,7 @@ config CRYPTO_ALGAPI2
 	tristate
 
 config CRYPTO_AEAD
-	tristate
+	tristate "AEAD"
 	select CRYPTO_AEAD2
 	select CRYPTO_ALGAPI
 
@@ -82,7 +82,7 @@ config CRYPTO_SIG2
 	select CRYPTO_ALGAPI2
 
 config CRYPTO_SKCIPHER
-	tristate
+	tristate "SKCIPHER"
 	select CRYPTO_SKCIPHER2
 	select CRYPTO_ALGAPI
 	select CRYPTO_ECB
@@ -92,7 +92,7 @@ config CRYPTO_SKCIPHER2
 	select CRYPTO_ALGAPI2
 
 config CRYPTO_HASH
-	tristate
+	tristate "HASH"
 	select CRYPTO_HASH2
 	select CRYPTO_ALGAPI
 
@@ -101,7 +101,7 @@ config CRYPTO_HASH2
 	select CRYPTO_ALGAPI2
 
 config CRYPTO_RNG
-	tristate
+	tristate "RNG"
 	select CRYPTO_RNG2
 	select CRYPTO_ALGAPI
 
