@@ -1745,6 +1745,7 @@ enum netdev_priv_flags {
 	IFF_L3MDEV_RX_HANDLER		= 1<<29,
 	IFF_NO_ADDRCONF			= BIT_ULL(30),
 	IFF_TX_SKB_NO_LINEAR		= BIT_ULL(31),
+	IFF_NO_IP_ALIGN			= BIT_ULL(32),
 };
 
 /* Specifies the type of the struct net_device::ml_priv pointer */
@@ -2246,6 +2247,11 @@ struct net_device {
 	const struct tlsdev_ops *tlsdev_ops;
 #endif
 
+#ifdef CONFIG_ETHERNET_PACKET_MANGLE
+	void (*eth_mangle_rx)(struct net_device *dev, struct sk_buff *skb);
+	struct sk_buff *(*eth_mangle_tx)(struct net_device *dev, struct sk_buff *skb);
+#endif
+
 	unsigned int		operstate;
 	unsigned char		link_mode;
 
@@ -2320,6 +2326,10 @@ struct net_device {
 #endif
 #if IS_ENABLED(CONFIG_INET_PSP)
 	struct psp_dev __rcu	*psp_dev;
+#endif
+
+#ifdef CONFIG_ETHERNET_PACKET_MANGLE
+	void			*phy_ptr; /* PHY device specific data */
 #endif
 
 /*
