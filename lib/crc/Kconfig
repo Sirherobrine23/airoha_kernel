@@ -3,43 +3,43 @@
 # Kconfig for the kernel's cyclic redundancy check (CRC) library code
 
 config CRC4
-	tristate
+	tristate "CRC4 functions"
 	help
 	  The CRC4 library functions.  Select this if your module uses any of
 	  the functions from <linux/crc4.h>.
 
 config CRC7
-	tristate
+	tristate "CRC7 functions"
 	help
 	  The CRC7 library functions.  Select this if your module uses any of
 	  the functions from <linux/crc7.h>.
 
 config CRC8
-	tristate
+	tristate "CRC8 functions"
 	help
 	  The CRC8 library functions.  Select this if your module uses any of
 	  the functions from <linux/crc8.h>.
 
 config CRC16
-	tristate
+	tristate "CRC16 functions"
 	help
 	  The CRC16 library functions.  Select this if your module uses any of
 	  the functions from <linux/crc16.h>.
 
 config CRC_CCITT
-	tristate
+	tristate "CRC-CCITT functions"
 	help
 	  The CRC-CCITT library functions.  Select this if your module uses any
 	  of the functions from <linux/crc-ccitt.h>.
 
 config CRC_ITU_T
-	tristate
+	tristate "CRC ITU-T V.41 functions"
 	help
 	  The CRC-ITU-T library functions.  Select this if your module uses
 	  any of the functions from <linux/crc-itu-t.h>.
 
 config CRC_T10DIF
-	tristate
+	tristate "CRC calculation for the T10 Data Integrity Field"
 	help
 	  The CRC-T10DIF library functions.  Select this if your module uses
 	  any of the functions from <linux/crc-t10dif.h>.
@@ -54,7 +54,7 @@ config CRC_T10DIF_ARCH
 	default y if X86
 
 config CRC32
-	tristate
+	tristate "CRC32/CRC32c functions"
 	select BITREVERSE
 	help
 	  The CRC32 library functions.  Select this if your module uses any of
@@ -74,7 +74,7 @@ config CRC32_ARCH
 	default y if X86
 
 config CRC64
-	tristate
+	tristate "CRC64 functions"
 	help
 	  The CRC64 library functions.  Select this if your module uses any of
 	  the functions from <linux/crc64.h>.
