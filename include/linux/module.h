@@ -239,10 +239,10 @@ struct module_kobject *lookup_or_create_module_kobject(const char *name);
  * Author(s), use "Name <email>" or just "Name", for multiple
  * authors use multiple MODULE_AUTHOR() statements/lines.
  */
-#define MODULE_AUTHOR(_author) MODULE_INFO(author, _author)
+#define MODULE_AUTHOR(_author) MODULE_INFO_STRIP(author, _author)
 
 /* What your module does. */
-#define MODULE_DESCRIPTION(_description) MODULE_INFO(description, _description)
+#define MODULE_DESCRIPTION(_description) MODULE_INFO_STRIP(description, _description)
 
 /*
  * Format: __mod_device_table__kmod_<modname>__<type>__<name>
@@ -279,7 +279,9 @@ static typeof(name) __mod_device_table(type, name)			\
  */
 
 #if defined(MODULE) || !defined(CONFIG_SYSFS)
-#define MODULE_VERSION(_version) MODULE_INFO(version, _version)
+#define MODULE_VERSION(_version) MODULE_INFO_STRIP(version, _version)
+#elif defined(CONFIG_MODULE_STRIPPED)
+#define MODULE_VERSION(_version) __MODULE_INFO_DISABLED(version)
 #else
 #define MODULE_VERSION(_version)					\
 	MODULE_INFO(version, _version);					\
@@ -302,7 +304,7 @@ static typeof(name) __mod_device_table(type, name)			\
 /* Optional firmware file (or files) needed by the module
  * format is simply firmware file name.  Multiple firmware
  * files require multiple MODULE_FIRMWARE() specifiers */
-#define MODULE_FIRMWARE(_firmware) MODULE_INFO(firmware, _firmware)
+#define MODULE_FIRMWARE(_firmware) MODULE_INFO_STRIP(firmware, _firmware)
 
 #define MODULE_IMPORT_NS(ns)	MODULE_INFO(import_ns, ns)
 
