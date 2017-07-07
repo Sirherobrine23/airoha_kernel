@@ -24,6 +24,16 @@
 #define __MODULE_INFO_PREFIX KBUILD_MODNAME "."
 #endif
 
+/* This struct is here for syntactic coherency, it is not used */
+#define __MODULE_INFO_DISABLED(name)					  \
+  struct __UNIQUE_ID(name) {}
+
+#ifdef CONFIG_MODULE_STRIPPED
+#define MODULE_INFO_STRIP(tag, info) __MODULE_INFO_DISABLED(tag)
+#else
+#define MODULE_INFO_STRIP(tag, info) MODULE_INFO(tag, info)
+#endif
+
 /* Generic info of form tag = "info" */
 #define MODULE_INFO(tag, info)					  \
 	static const char __UNIQUE_ID(modinfo)[]			  \
@@ -36,7 +46,7 @@
 /* One for each parameter, describing how to use it.  Some files do
    multiple of these per line, so can't just use MODULE_INFO. */
 #define MODULE_PARM_DESC(_parm, desc) \
-	MODULE_INFO(parm, #_parm ":" desc)
+	MODULE_INFO_STRIP(parm, #_parm ":" desc)
 
 struct kernel_param;
 
