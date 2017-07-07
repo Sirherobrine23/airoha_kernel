@@ -492,7 +492,7 @@ config NET_DEVLINK
 	default n
 
 config PAGE_POOL
-	bool
+	bool "Page pool support"
 
 config PAGE_POOL_STATS
 	default n
