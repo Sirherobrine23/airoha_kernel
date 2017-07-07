@@ -1001,6 +1001,7 @@ size_t modinfo_attrs_count = ARRAY_SIZE(modinfo_attrs);
 
 static const char vermagic[] = VERMAGIC_STRING;
 
+#if defined(CONFIG_MODVERSIONS) || !defined(CONFIG_MODULE_STRIPPED)
 int try_to_force_load(struct module *mod, const char *reason)
 {
 #ifdef CONFIG_MODULE_FORCE_LOAD
@@ -1012,6 +1013,7 @@ int try_to_force_load(struct module *mod, const char *reason)
 	return -ENOEXEC;
 #endif
 }
+#endif
 
 /* Parse tag=value strings from .modinfo section */
 char *module_next_tag_pair(char *string, unsigned long *secsize)
@@ -2102,8 +2104,10 @@ static void module_augment_kernel_taints(struct module *mod, struct load_info *i
 
 static int check_modinfo(struct module *mod, struct load_info *info, int flags)
 {
-	const char *modmagic = get_modinfo(info, "vermagic");
 	int err;
+
+#ifndef CONFIG_MODULE_STRIPPED
+	const char *modmagic = get_modinfo(info, "vermagic");
 
 	if (flags & MODULE_INIT_IGNORE_VERMAGIC)
 		modmagic = NULL;
@@ -2118,6 +2122,7 @@ static int check_modinfo(struct module *mod, struct load_info *info, int flags)
 		       info->name, modmagic, vermagic);
 		return -ENOEXEC;
 	}
+#endif
 
 	err = check_modinfo_livepatch(mod, info);
 	if (err)
