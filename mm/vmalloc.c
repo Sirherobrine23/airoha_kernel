@@ -5079,6 +5079,9 @@ static int vmalloc_info_show(struct seq_file *m, void *p)
 
 static int __init proc_vmalloc_init(void)
 {
+	if (IS_ENABLED(CONFIG_PROC_STRIPPED))
+		return 0;
+
 	proc_create_single("vmallocinfo", 0400, NULL, vmalloc_info_show);
 	return 0;
 }
