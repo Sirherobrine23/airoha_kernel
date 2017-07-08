@@ -118,6 +118,7 @@
 #include <linux/mroute.h>
 #include <linux/mroute6.h>
 #include <linux/icmpv6.h>
+#include <linux/cookie.h>
 
 #include <linux/uaccess.h>
 
@@ -152,6 +153,7 @@
 
 static DEFINE_MUTEX(proto_list_mutex);
 static LIST_HEAD(proto_list);
+DEFINE_COOKIE(sock_cookie);
 
 static void sock_def_write_space_wfree(struct sock *sk);
 static void sock_def_write_space(struct sock *sk);
@@ -586,6 +588,21 @@ discard_and_relse:
 	goto out;
 }
 EXPORT_SYMBOL(__sk_receive_skb);
+
+u64 __sock_gen_cookie(struct sock *sk)
+{
+	u64 res = atomic64_read(&sk->sk_cookie);
+
+	if (!res) {
+		u64 new = gen_cookie_next(&sock_cookie);
+
+		atomic64_cmpxchg(&sk->sk_cookie, res, new);
+
+		/* Another thread might have changed sk_cookie before us. */
+		res = atomic64_read(&sk->sk_cookie);
+	}
+	return res;
+}
 
 INDIRECT_CALLABLE_DECLARE(struct dst_entry *ip6_dst_check(struct dst_entry *,
 							  u32));
@@ -2342,9 +2359,11 @@ static void __sk_free(struct sock *sk)
 	if (likely(sk->sk_net_refcnt))
 		sock_inuse_add(sock_net(sk), -1);
 
+#ifdef CONFIG_SOCK_DIAG
 	if (unlikely(sk->sk_net_refcnt && sock_diag_has_destroy_listeners(sk)))
 		sock_diag_broadcast_destroy(sk);
 	else
+#endif
 		sk_destruct(sk);
 }
 
