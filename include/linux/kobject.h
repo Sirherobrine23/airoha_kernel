@@ -219,4 +219,6 @@ int kobject_synth_uevent(struct kobject *kobj, const char *buf, size_t count);
 __printf(2, 3)
 int add_uevent_var(struct kobj_uevent_env *env, const char *format, ...);
 
+u64 uevent_next_seqnum(void);
+
 #endif /* _KOBJECT_H_ */

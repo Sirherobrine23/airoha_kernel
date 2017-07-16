@@ -178,6 +178,12 @@ out:
 	return r;
 }
 
+u64 uevent_next_seqnum(void)
+{
+	return atomic64_inc_return(&uevent_seqnum);
+}
+EXPORT_SYMBOL_GPL(uevent_next_seqnum);
+
 /**
  * kobject_synth_uevent - send synthetic uevent with arguments
  *
