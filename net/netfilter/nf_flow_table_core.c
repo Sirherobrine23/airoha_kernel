@@ -810,6 +810,23 @@ static struct pernet_operations nf_flow_table_net_ops = {
 	.exit_batch = nf_flow_table_pernet_exit,
 };
 
+static int nf_flow_table_netdev_event(struct notifier_block *this,
+				      unsigned long event, void *ptr)
+{
+	struct net_device *dev = netdev_notifier_info_to_dev(ptr);
+
+	if (event != NETDEV_DOWN)
+		return NOTIFY_DONE;
+
+	nf_flow_table_cleanup(dev);
+
+	return NOTIFY_DONE;
+}
+
+static struct notifier_block flow_offload_netdev_notifier = {
+	.notifier_call	= nf_flow_table_netdev_event,
+};
+
 static int __init nf_flow_table_module_init(void)
 {
 	int ret;
@@ -826,6 +843,10 @@ static int __init nf_flow_table_module_init(void)
 	if (ret)
 		goto out_bpf;
 
+	ret = register_netdevice_notifier(&flow_offload_netdev_notifier);
+	if (ret)
+		goto out_bpf;
+
 	return 0;
 
 out_bpf:
@@ -837,6 +858,7 @@ out_offload:
 
 static void __exit nf_flow_table_module_exit(void)
 {
+	unregister_netdevice_notifier(&flow_offload_netdev_notifier);
 	nf_flow_table_offload_exit();
 	unregister_pernet_subsys(&nf_flow_table_net_ops);
 }
