@@ -231,3 +231,12 @@ config MTD_SERCOMM_PARTS
 	  partition map. This partition table contains real partition
 	  offsets, which may differ from device to device depending on the
 	  number and location of bad blocks on NAND.
+
+config MTD_ROUTERBOOT_PARTS
+	tristate "RouterBoot flash partition parser"
+	depends on MTD && OF
+	help
+	 MikroTik RouterBoot is implemented as a multi segment system on the
+	 flash, some of which are fixed and some of which are located at
+	 variable offsets. This parser handles both cases via properly
+	 formatted DTS.
