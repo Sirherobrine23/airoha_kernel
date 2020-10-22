@@ -246,6 +246,8 @@ void ftrace_likely_update(struct ftrace_likely_data *f, int val,
 # define TYPEOF_UNQUAL(exp) __typeof__(exp)
 #endif
 
+#include <asm/rwonce.h>
+
 #endif /* __KERNEL__ */
 
 #if defined(CONFIG_CFI) && !defined(__DISABLE_EXPORTS) && !defined(BUILD_VDSO)
@@ -378,7 +380,5 @@ static inline void *offset_to_ptr(const int *off)
  * arch/x86/kernel/smpboot.c::start_secondary() for an example.
  */
 #define prevent_tail_call_optimization()	mb()
-
-#include <asm/rwonce.h>
 
 #endif /* __LINUX_COMPILER_H */
