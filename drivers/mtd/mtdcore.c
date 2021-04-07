@@ -34,6 +34,7 @@
 
 #include <linux/mtd/mtd.h>
 #include <linux/mtd/partitions.h>
+#include <linux/mtd/blktrans.h>
 
 #include "mtdcore.h"
 
@@ -1108,6 +1109,8 @@ int mtd_device_parse_register(struct mtd_info *mtd, const char * const *types,
 		mtd->reboot_notifier.notifier_call = mtd_reboot_notifier;
 		register_reboot_notifier(&mtd->reboot_notifier);
 	}
+
+	register_mtd_blktrans_devs();
 
 out:
 	if (ret) {
