@@ -5315,6 +5315,8 @@ static int mtk_probe(struct platform_device *pdev)
 		dev_err(eth->dev, "failed to allocated dummy device\n");
 		goto err_unreg_netdev;
 	}
+	eth->dummy_dev->threaded = 1;
+	strcpy(eth->dummy_dev->name, "mtk_eth");
 	netif_napi_add(eth->dummy_dev, &eth->tx_napi, mtk_napi_tx);
 	netif_napi_add(eth->dummy_dev, &eth->rx_napi, mtk_napi_rx);
 
