@@ -18,3 +18,19 @@ config CRYPTO_DEV_EIP93
 	  CTR crypto. Also provide DES and 3DES ECB and CBC.
 
 	  Also provide AEAD authenc(hmac(x), cipher(y)) for supported algo.
+
+config CRYPTO_DEV_EIP93_GENERIC_SW_MAX_LEN
+	int "Max skcipher software fallback length"
+	depends on CRYPTO_DEV_EIP93
+	default 256
+	help
+	  Max length of crypt request which
+	  will fallback to software crypt of skcipher *except* AES-128.
+
+config CRYPTO_DEV_EIP93_AES_128_SW_MAX_LEN
+	int "Max AES-128 skcipher software fallback length"
+	depends on CRYPTO_DEV_EIP93
+	default 512
+	help
+	  Max length of crypt request which
+	  will fallback to software crypt of AES-128 skcipher.
