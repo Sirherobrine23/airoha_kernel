@@ -22,6 +22,7 @@ struct eip93_crypto_ctx {
 	unsigned int			assoclen;
 	bool				set_assoc;
 	enum eip93_alg_type		type;
+	struct crypto_skcipher		*fallback;
 };
 
 struct eip93_cipher_reqctx {
@@ -42,6 +43,7 @@ struct eip93_cipher_reqctx {
 	int				dst_nents;
 	struct sa_state			*sa_state_ctr;
 	dma_addr_t			sa_state_ctr_base;
+	struct skcipher_request		fallback_req;
 };
 
 int check_valid_request(struct eip93_cipher_reqctx *rctx);
