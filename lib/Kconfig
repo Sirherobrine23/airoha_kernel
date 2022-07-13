@@ -642,7 +642,7 @@ config LIBFDT
 	bool
 
 config OID_REGISTRY
-	tristate
+	tristate "OID"
 	help
 	  Enable fast lookup object identifier registry.
 
