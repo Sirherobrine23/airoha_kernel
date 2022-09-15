@@ -1149,8 +1149,8 @@ out:
 }
 
 int ufshcd_opp_config_clks(struct device *dev, struct opp_table *opp_table,
-			   struct dev_pm_opp *opp, void *data,
-			   bool scaling_down)
+			   struct dev_pm_opp *old_opp, struct dev_pm_opp *opp,
+			   void *data, bool scaling_down)
 {
 	struct ufs_hba *hba = dev_get_drvdata(dev);
 	struct list_head *head = &hba->clk_list_head;

@@ -21,7 +21,8 @@ static struct platform_device *cpufreq_pdev;
 /* NOP function to disable OPP from setting clock */
 static int airoha_cpufreq_config_clks_nop(struct device *dev,
 					  struct opp_table *opp_table,
-					  struct dev_pm_opp *opp,
+					  struct dev_pm_opp *old_opp,
+					  struct dev_pm_opp *new_opp,
 					  void *data, bool scaling_down)
 {
 	return 0;
