@@ -1344,6 +1344,22 @@ struct mtk_mac {
 /* the struct describing the SoC. these are declared in the soc_xyz.c files */
 extern const struct of_device_id of_mtk_match[];
 
+#ifdef CONFIG_SOC_MT7621
+static inline bool mtk_is_netsys_v1(struct mtk_eth *eth)
+{
+	return true;
+}
+
+static inline bool mtk_is_netsys_v2_or_greater(struct mtk_eth *eth)
+{
+	return false;
+}
+
+static inline bool mtk_is_netsys_v3_or_greater(struct mtk_eth *eth)
+{
+	return false;
+}
+#else
 static inline bool mtk_is_netsys_v1(struct mtk_eth *eth)
 {
 	return eth->soc->version == 1;
@@ -1358,6 +1374,7 @@ static inline bool mtk_is_netsys_v3_or_greater(struct mtk_eth *eth)
 {
 	return eth->soc->version > 2;
 }
+#endif
 
 static inline struct mtk_foe_entry *
 mtk_foe_get_entry(struct mtk_ppe *ppe, u16 hash)
