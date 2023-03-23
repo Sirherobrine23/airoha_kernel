@@ -304,6 +304,8 @@ struct mtk_flow_entry {
 	struct mtk_foe_entry data;
 	struct rhash_head node;
 	unsigned long cookie;
+	u64 prev_packets, prev_bytes;
+	u64 packets, bytes;
 };
 
 struct mtk_mib_entry {
@@ -349,6 +351,7 @@ void mtk_ppe_update_mtu(struct mtk_ppe *ppe, int mtu);
 void mtk_ppe_start(struct mtk_ppe *ppe);
 int mtk_ppe_stop(struct mtk_ppe *ppe);
 int mtk_ppe_prepare_reset(struct mtk_ppe *ppe);
+struct mtk_foe_accounting *mtk_ppe_mib_entry_read(struct mtk_ppe *ppe, u16 index);
 
 void __mtk_ppe_check_skb(struct mtk_ppe *ppe, struct sk_buff *skb, u16 hash);
 
@@ -398,9 +401,8 @@ int mtk_foe_entry_set_queue(struct mtk_eth *eth, struct mtk_foe_entry *entry,
 			    unsigned int queue);
 int mtk_foe_entry_commit(struct mtk_ppe *ppe, struct mtk_flow_entry *entry);
 void mtk_foe_entry_clear(struct mtk_ppe *ppe, struct mtk_flow_entry *entry);
-int mtk_foe_entry_idle_time(struct mtk_ppe *ppe, struct mtk_flow_entry *entry);
 int mtk_ppe_debugfs_init(struct mtk_ppe *ppe, int index);
-struct mtk_foe_accounting *mtk_foe_entry_get_mib(struct mtk_ppe *ppe, u32 index,
-						 struct mtk_foe_accounting *diff);
+void mtk_foe_entry_get_stats(struct mtk_ppe *ppe, struct mtk_flow_entry *entry,
+			     int *idle);
 
 #endif
