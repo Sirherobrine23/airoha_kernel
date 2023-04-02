@@ -2255,6 +2255,7 @@ static struct phy_driver realtek_drvs[] = {
 	}, {
 		.name		= "RTL8226 2.5Gbps PHY",
 		.match_phy_device = rtl8226_match_phy_device,
+		.soft_reset	= genphy_soft_reset,
 		.get_features	= rtl822x_get_features,
 		.config_aneg	= rtl822x_config_aneg,
 		.read_status	= rtl822x_read_status,
@@ -2267,6 +2268,7 @@ static struct phy_driver realtek_drvs[] = {
 	}, {
 		.match_phy_device = rtl8221b_match_phy_device,
 		.name		= "RTL8226B_RTL8221B 2.5Gbps PHY",
+		.soft_reset	= genphy_soft_reset,
 		.get_features	= rtl822x_get_features,
 		.config_aneg	= rtl822x_config_aneg,
 		.config_init	= rtl822xb_config_init,
@@ -2297,6 +2299,7 @@ static struct phy_driver realtek_drvs[] = {
 	}, {
 		PHY_ID_MATCH_EXACT(0x001cc848),
 		.name		= "RTL8226B-CG_RTL8221B-CG 2.5Gbps PHY",
+		.soft_reset	= genphy_soft_reset,
 		.get_features	= rtl822x_get_features,
 		.config_aneg	= rtl822x_config_aneg,
 		.config_init	= rtl822xb_config_init,
@@ -2315,6 +2318,7 @@ static struct phy_driver realtek_drvs[] = {
 		.name		= "RTL8221B-VB-CG 2.5Gbps PHY",
 		.config_intr	= rtl8221b_config_intr,
 		.handle_interrupt = rtl8221b_handle_interrupt,
+		.soft_reset	= rtl822x_c45_soft_reset,
 		.probe		= rtl822x_probe,
 		.config_init	= rtl822xb_config_init,
 		.inband_caps	= rtl822x_inband_caps,
@@ -2334,6 +2338,7 @@ static struct phy_driver realtek_drvs[] = {
 		.name		= "RTL8221B-VM-CG 2.5Gbps PHY",
 		.config_intr	= rtl8221b_config_intr,
 		.handle_interrupt = rtl8221b_handle_interrupt,
+		.soft_reset	= rtl822x_c45_soft_reset,
 		.probe		= rtl822x_probe,
 		.config_init	= rtl822xb_config_init,
 		.inband_caps	= rtl822x_inband_caps,
