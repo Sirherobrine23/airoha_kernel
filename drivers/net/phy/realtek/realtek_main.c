@@ -2066,10 +2066,32 @@ static int rtl8226_match_phy_device(struct phy_device *phydev,
 static int rtlgen_is_c45_match(struct phy_device *phydev, unsigned int id,
 			       bool is_c45)
 {
-	if (phydev->is_c45)
-		return is_c45 && (id == phydev->c45_ids.device_ids[1]);
-	else
+	if (phydev->is_c45) {
+		u32 rid;
+
+		if (!is_c45)
+			return 0;
+
+		rid = phydev->c45_ids.device_ids[1];
+		if ((rid == 0xffffffff) && phydev->mdio.bus->read_c45) {
+			int val;
+
+			val = phy_read_mmd(phydev, MDIO_MMD_PMAPMD, MDIO_PKGID1);
+			if (val < 0)
+				return 0;
+
+			rid = val << 16;
+			val = phy_read_mmd(phydev, MDIO_MMD_PMAPMD, MDIO_PKGID2);
+			if (val < 0)
+				return 0;
+
+			rid |= val;
+		}
+
+		return (id == rid);
+	} else {
 		return !is_c45 && (id == phydev->phy_id);
+	}
 }
 
 static int rtl8221b_match_phy_device(struct phy_device *phydev,
