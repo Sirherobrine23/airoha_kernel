@@ -677,6 +677,14 @@ static int __init bcma_modinit(void)
 {
 	int err;
 
+#ifdef CONFIG_BCMA_FALLBACK_SPROM
+	err = bcma_fbs_register();
+	if (err) {
+		pr_err("Fallback SPROM initialization failed\n");
+		err = 0;
+	}
+#endif /* CONFIG_BCMA_FALLBACK_SPROM */
+
 	err = bcma_init_bus_register();
 	if (err)
 		return err;
