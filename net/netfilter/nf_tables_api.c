@@ -8884,7 +8884,7 @@ static int nft_register_flowtable_ops(struct net *net,
 
 	err = flowtable->data.type->setup(&flowtable->data,
 					  ops->dev, FLOW_BLOCK_BIND);
-	if (err < 0)
+	if (err < 0 && err != -EOPNOTSUPP)
 		return err;
 
 	err = nf_register_net_hook(net, ops);
