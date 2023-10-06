@@ -2022,6 +2022,12 @@ qca8k_setup(struct dsa_switch *ds)
 			dev_err(priv->dev, "failed enabling QCA header mode on port %d", dp->index);
 			return ret;
 		}
+
+		/* Disable learning by default on all ports */
+		ret = regmap_clear_bits(priv->regmap, QCA8K_PORT_LOOKUP_CTRL(dp->index),
+								QCA8K_PORT_LOOKUP_LEARN);
+		if (ret)
+			return ret;
 	}
 
 	/* Forward all unknown frames to CPU port for Linux processing */
@@ -2048,11 +2054,6 @@ qca8k_setup(struct dsa_switch *ds)
 		ret = qca8k_rmw(priv, QCA8K_PORT_LOOKUP_CTRL(port),
 				QCA8K_PORT_LOOKUP_MEMBER,
 				BIT(cpu_port));
-		if (ret)
-			return ret;
-
-		ret = regmap_clear_bits(priv->regmap, QCA8K_PORT_LOOKUP_CTRL(port),
-					QCA8K_PORT_LOOKUP_LEARN);
 		if (ret)
 			return ret;
 
@@ -2106,6 +2107,9 @@ qca8k_setup(struct dsa_switch *ds)
 
 	/* Set max number of LAGs supported */
 	ds->num_lag_ids = QCA8K_NUM_LAGS;
+
+	/* HW learn on CPU port is limited and require manual setting */
+	ds->assisted_learning_on_cpu_port = true;
 
 	return 0;
 }
