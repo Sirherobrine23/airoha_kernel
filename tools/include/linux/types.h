@@ -58,6 +58,7 @@ typedef unsigned long long	ullong;
 #define __user
 #endif
 #define __must_check
+#undef __cold
 #define __cold
 
 typedef __u16 __bitwise __le16;
