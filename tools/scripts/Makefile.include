@@ -93,13 +93,15 @@ $(call allow-override,LLVM_STRIP,llvm-strip)
 endif
 
 CC_NO_CLANG := $(shell $(CC) -dM -E -x c /dev/null | grep -Fq "__clang__"; echo $$?)
+HOSTCC_NO_CLANG := $(shell $(HOSTCC) -dM -E -x c /dev/null | grep -Fq "__clang__"; echo $$?)
 
 # Some tools require bpftool
 SYSTEM_BPFTOOL	?= bpftool
 
 ifeq ($(CC_NO_CLANG), 1)
-EXTRA_WARNINGS += -Wstrict-aliasing=3
-
+  ifeq ($(HOSTCC_NO_CLANG), 1)
+    EXTRA_WARNINGS += -Wstrict-aliasing=3
+  endif
 else ifneq ($(CROSS_COMPILE),)
 # Allow userspace to override CLANG_CROSS_FLAGS to specify their own
 # sysroots and flags or to avoid the GCC call in pure Clang builds.
