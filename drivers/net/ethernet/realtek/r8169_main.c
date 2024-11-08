@@ -5253,6 +5253,11 @@ static int r8169_mdio_register(struct rtl8169_private *tp)
 		phy_support_eee(tp->phydev);
 	phy_support_asym_pause(tp->phydev);
 
+	/* mimic behavior of r8125/r8126 vendor drivers */
+	if (tp->mac_version == RTL_GIGA_MAC_VER_61)
+		tp->phydev->eee_broken_modes |= MDIO_EEE_2_5GT;
+	tp->phydev->eee_broken_modes |= MDIO_EEE_5GT;
+
 	/* PHY will be woken up in rtl_open() */
 	phy_suspend(tp->phydev);
 
