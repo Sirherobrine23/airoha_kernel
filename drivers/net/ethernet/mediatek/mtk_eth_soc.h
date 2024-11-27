@@ -1185,6 +1185,7 @@ struct mtk_reg_map {
 		u32	rx_ptr;		/* rx base pointer */
 		u32	rx_cnt_cfg;	/* rx max count configuration */
 		u32	qcrx_ptr;	/* rx cpu pointer */
+		u32	page;		/* page configuration */
 		u32	glo_cfg;	/* global configuration */
 		u32	rst_idx;	/* reset index */
 		u32	delay_irq;	/* delay interrupt */
