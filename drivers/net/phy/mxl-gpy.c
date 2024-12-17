@@ -1005,7 +1005,7 @@ static int gpy_led_polarity_set(struct phy_device *phydev, int index,
 	if (force_active_high)
 		return phy_clear_bits(phydev, PHY_LED, PHY_LED_POLARITY(index));
 
-	unreachable();
+	return -EINVAL;
 }
 
 static unsigned int gpy_inband_caps(struct phy_device *phydev,
