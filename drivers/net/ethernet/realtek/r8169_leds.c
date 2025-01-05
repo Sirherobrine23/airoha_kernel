@@ -129,14 +129,13 @@ static struct device *
 static void rtl8168_setup_ldev(struct r8169_led_classdev *ldev,
 			       struct net_device *ndev, int index)
 {
-	struct rtl8169_private *tp = netdev_priv(ndev);
 	struct led_classdev *led_cdev = &ldev->led;
 	char led_name[LED_MAX_NAME_SIZE];
 
 	ldev->ndev = ndev;
 	ldev->index = index;
 
-	r8169_get_led_name(tp, index, led_name, LED_MAX_NAME_SIZE);
+	snprintf(led_name, sizeof(led_name), "%s-%d::lan", ndev->name, index);
 	led_cdev->name = led_name;
 	led_cdev->hw_control_trigger = "netdev";
 	led_cdev->flags |= LED_RETAIN_AT_SHUTDOWN;
@@ -228,14 +227,13 @@ static int rtl8125_led_hw_control_get(struct led_classdev *led_cdev,
 static void rtl8125_setup_led_ldev(struct r8169_led_classdev *ldev,
 				   struct net_device *ndev, int index)
 {
-	struct rtl8169_private *tp = netdev_priv(ndev);
 	struct led_classdev *led_cdev = &ldev->led;
 	char led_name[LED_MAX_NAME_SIZE];
 
 	ldev->ndev = ndev;
 	ldev->index = index;
 
-	r8169_get_led_name(tp, index, led_name, LED_MAX_NAME_SIZE);
+	snprintf(led_name, sizeof(led_name), "%s-%d::lan", ndev->name, index);
 	led_cdev->name = led_name;
 	led_cdev->hw_control_trigger = "netdev";
 	led_cdev->flags |= LED_RETAIN_AT_SHUTDOWN;
