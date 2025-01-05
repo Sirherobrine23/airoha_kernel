@@ -980,28 +980,6 @@ int rtl8125_get_led_mode(struct rtl8169_private *tp, int index)
 	return ret;
 }
 
-void r8169_get_led_name(struct rtl8169_private *tp, int idx,
-			char *buf, int buf_len)
-{
-	struct pci_dev *pdev = tp->pci_dev;
-	char pdom[8], pfun[8];
-	int domain;
-
-	domain = pci_domain_nr(pdev->bus);
-	if (domain)
-		snprintf(pdom, sizeof(pdom), "P%d", domain);
-	else
-		pdom[0] = '\0';
-
-	if (pdev->multifunction)
-		snprintf(pfun, sizeof(pfun), "f%d", PCI_FUNC(pdev->devfn));
-	else
-		pfun[0] = '\0';
-
-	snprintf(buf, buf_len, "en%sp%ds%d%s-%d::lan", pdom, pdev->bus->number,
-		 PCI_SLOT(pdev->devfn), pfun, idx);
-}
-
 static void r8168fp_adjust_ocp_cmd(struct rtl8169_private *tp, u32 *cmd, int type)
 {
 	/* based on RTL8168FP_OOBMAC_BASE in vendor driver */
