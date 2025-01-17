@@ -1409,6 +1409,10 @@ static int airoha_hw_init(struct platform_device *pdev,
 	if (err)
 		return err;
 
+	err = reset_control_bulk_deassert(eth->soc->num_xsi_rsts, eth->xsi_rsts);
+	if (err)
+		return err;
+
 	msleep(20);
 	err = reset_control_bulk_deassert(ARRAY_SIZE(eth->rsts), eth->rsts);
 	if (err)
