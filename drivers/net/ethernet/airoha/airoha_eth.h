@@ -539,6 +539,10 @@ struct airoha_gdm_port {
 	int id;
 	int nbq;
 
+	struct phylink *phylink;
+	struct phylink_config phylink_config;
+	struct phylink_pcs *pcs;
+
 	struct airoha_hw_stats stats;
 
 	DECLARE_BITMAP(qos_sq_bmap, AIROHA_NUM_QOS_CHANNELS);
