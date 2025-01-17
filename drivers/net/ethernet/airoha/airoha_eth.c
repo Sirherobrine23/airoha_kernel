@@ -578,8 +578,11 @@ static int airoha_qdma_get_gdm_port(struct airoha_eth *eth,
 
 	sport = FIELD_GET(QDMA_ETH_RXMSG_SPORT_MASK, msg1);
 	switch (sport) {
+	case 0x18:
+		port = 3; /* GDM4 */
+		break;
 	case 0x10 ... 0x14:
-		port = 0;
+		port = 0; /* GDM1 */
 		break;
 	case 0x2 ... 0x4:
 		port = sport - 1;
