@@ -514,8 +514,10 @@ static int airoha_fe_init(struct airoha_eth *eth)
 		      FIELD_PREP(IP_ASSEMBLE_PORT_MASK, 0) |
 		      FIELD_PREP(IP_ASSEMBLE_NBQ_MASK, 22));
 
-	airoha_fe_set(eth, REG_GDM_FWD_CFG(AIROHA_GDM3_IDX), GDM_PAD_EN_MASK);
-	airoha_fe_set(eth, REG_GDM_FWD_CFG(AIROHA_GDM4_IDX), GDM_PAD_EN_MASK);
+	airoha_fe_set(eth, REG_GDM_FWD_CFG(AIROHA_GDM3_IDX),
+		      GDM_PAD_EN_MASK | GDM_STRIP_CRC_MASK);
+	airoha_fe_set(eth, REG_GDM_FWD_CFG(AIROHA_GDM4_IDX),
+		      GDM_PAD_EN_MASK | GDM_STRIP_CRC_MASK);
 
 	airoha_fe_crsn_qsel_init(eth);
 
@@ -1641,7 +1643,8 @@ static int airoha_dev_open(struct net_device *dev)
 	if (err)
 		return err;
 
-	if (netdev_uses_dsa(dev))
+	/* It seems GDM3 and GDM4 needs SPORT enabled to correctly work */
+	if (netdev_uses_dsa(dev) || port->id > 2)
 		airoha_fe_set(qdma->eth, REG_GDM_INGRESS_CFG(port->id),
 			      GDM_STAG_EN_MASK);
 	else
