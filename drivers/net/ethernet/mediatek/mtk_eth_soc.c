@@ -4830,6 +4830,7 @@ static int mtk_get_sset_count(struct net_device *dev, int sset)
 
 static void mtk_ethtool_pp_stats(struct mtk_eth *eth, u64 *data)
 {
+#ifdef CONFIG_PAGE_POOL_STATS
 	struct page_pool_stats stats = {};
 	int i;
 
@@ -4842,6 +4843,7 @@ static void mtk_ethtool_pp_stats(struct mtk_eth *eth, u64 *data)
 		page_pool_get_stats(ring->page_pool, &stats);
 	}
 	page_pool_ethtool_stats_get(data, &stats);
+#endif
 }
 
 static void mtk_get_ethtool_stats(struct net_device *dev,
