@@ -1605,6 +1605,9 @@ static int rtl822x_c45_get_features(struct phy_device *phydev)
 	linkmode_set_bit(ETHTOOL_LINK_MODE_TP_BIT,
 			 phydev->supported);
 
+	phydev->c45_ids.mmds_present |= MDIO_DEVS_PMAPMD | MDIO_DEVS_PCS |
+				        MDIO_DEVS_AN;
+
 	return genphy_c45_pma_read_abilities(phydev);
 }
 
