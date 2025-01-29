@@ -3109,7 +3109,6 @@ static void airoha_remove(struct platform_device *pdev)
 }
 
 static const char * const en7581_xsi_rsts_names[] = {
-	"xsi-mac",
 	"hsi0-mac",
 	"hsi1-mac",
 	"hsi-mac",
@@ -3141,7 +3140,6 @@ static int airoha_en7581_get_src_port_id(struct airoha_gdm_port *port, int nbq)
 }
 
 static const char * const an7583_xsi_rsts_names[] = {
-	"xsi-mac",
 	"hsi0-mac",
 	"hsi1-mac",
 	"xfp-mac",
