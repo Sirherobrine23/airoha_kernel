@@ -173,6 +173,7 @@
 #define RTL8221B_PHYCR1				0xa430
 #define RTL8221B_PHYCR1_ALDPS_EN		BIT(2)
 #define RTL8221B_PHYCR1_ALDPS_XTAL_OFF_EN	BIT(12)
+#define RTL8221B_PHYCR1_PHYAD_0_EN		BIT(13)
 
 #define RTL8366RB_POWER_SAVE			0x15
 #define RTL8366RB_POWER_SAVE_ON			BIT(12)
@@ -1358,7 +1359,8 @@ static int rtl822x_init_phycr1(struct phy_device *phydev, bool no_aldps)
 
 	return phy_modify_mmd_changed(phydev, MDIO_MMD_VEND2, RTL8221B_PHYCR1,
 				      RTL8221B_PHYCR1_ALDPS_EN |
-				      RTL8221B_PHYCR1_ALDPS_XTAL_OFF_EN, val);
+				      RTL8221B_PHYCR1_ALDPS_XTAL_OFF_EN |
+				      RTL8221B_PHYCR1_PHYAD_0_EN, val);
 }
 
 static int rtl822x_set_serdes_option_mode(struct phy_device *phydev, bool gen1)
