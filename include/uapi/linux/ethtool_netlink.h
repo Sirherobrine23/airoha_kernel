@@ -115,6 +115,7 @@ enum {
 	ETHTOOL_MSG_PHY_GET_REPLY,
 	ETHTOOL_MSG_PHY_NTF,
 
+	ETHTOOL_MSG_PSE_NTF,
 	/* add new constants above here */
 	__ETHTOOL_MSG_KERNEL_CNT,
 	ETHTOOL_MSG_KERNEL_MAX = __ETHTOOL_MSG_KERNEL_CNT - 1
@@ -970,6 +971,9 @@ enum {
 	ETHTOOL_A_C33_PSE_EXT_SUBSTATE,		/* u32 */
 	ETHTOOL_A_C33_PSE_AVAIL_PW_LIMIT,	/* u32 */
 	ETHTOOL_A_C33_PSE_PW_LIMIT_RANGES,	/* nest - _C33_PSE_PW_LIMIT_* */
+	ETHTOOL_A_PSE_PW_D_ID,			/* u32 */
+	ETHTOOL_A_PSE_PRIO_MAX,			/* u32 */
+	ETHTOOL_A_PSE_PRIO,			/* u32 */
 
 	/* add new constants above here */
 	__ETHTOOL_A_PSE_CNT,
