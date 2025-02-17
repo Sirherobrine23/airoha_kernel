@@ -782,6 +782,7 @@ static void mtk_mac_link_up(struct phylink_config *config,
 
 	mcr = mtk_r32(mac->hw, MTK_MAC_MCR(mac->id));
 	mcr &= ~(MAC_MCR_SPEED_100 | MAC_MCR_SPEED_1000 |
+		 MAC_MCR_EEE100M | MAC_MCR_EEE1G |
 		 MAC_MCR_FORCE_DPX | MAC_MCR_FORCE_TX_FC |
 		 MAC_MCR_FORCE_RX_FC);
 
@@ -806,6 +807,15 @@ static void mtk_mac_link_up(struct phylink_config *config,
 		mcr |= MAC_MCR_FORCE_TX_FC;
 	if (rx_pause)
 		mcr |= MAC_MCR_FORCE_RX_FC;
+
+	if (mode == MLO_AN_PHY && phy && mac->tx_lpi_enabled && phy_init_eee(phy, false) >= 0) {
+		mcr |= MAC_MCR_EEE100M | MAC_MCR_EEE1G;
+		mtk_w32(mac->hw,
+			FIELD_PREP(MAC_EEE_WAKEUP_TIME_1000, 17) |
+			FIELD_PREP(MAC_EEE_WAKEUP_TIME_100, 36) |
+			FIELD_PREP(MAC_EEE_LPI_TXIDLE_THD, mac->txidle_thd_ms),
+			MTK_MAC_EEECR(mac->id));
+	}
 
 	mcr |= MAC_MCR_TX_EN | MAC_MCR_RX_EN | MAC_MCR_FORCE_LINK;
 	mtk_w32(mac->hw, mcr, MTK_MAC_MCR(mac->id));
@@ -4523,6 +4533,61 @@ static int mtk_set_pauseparam(struct net_device *dev, struct ethtool_pauseparam 
 	return phylink_ethtool_set_pauseparam(mac->phylink, pause);
 }
 
+static int mtk_get_eee(struct net_device *dev, struct ethtool_keee *eee)
+{
+	struct mtk_mac *mac = netdev_priv(dev);
+	u32 reg;
+	int ret;
+
+	ret = phylink_ethtool_get_eee(mac->phylink, eee);
+	if (ret)
+		return ret;
+
+	reg = mtk_r32(mac->hw, MTK_MAC_EEECR(mac->id));
+	eee->tx_lpi_enabled = mac->tx_lpi_enabled;
+	eee->tx_lpi_timer = FIELD_GET(MAC_EEE_LPI_TXIDLE_THD, reg) * 1000;
+
+	return 0;
+}
+
+static int mtk_set_eee(struct net_device *dev, struct ethtool_keee *eee)
+{
+	struct mtk_mac *mac = netdev_priv(dev);
+	u32 txidle_thd_ms, reg;
+	int ret;
+
+	/* Tx idle timer in ms */
+	txidle_thd_ms = DIV_ROUND_UP(eee->tx_lpi_timer, 1000);
+	if (!FIELD_FIT(MAC_EEE_LPI_TXIDLE_THD, txidle_thd_ms))
+		return -EINVAL;
+
+	reg = FIELD_PREP(MAC_EEE_LPI_TXIDLE_THD, txidle_thd_ms);
+
+	/* PHY Wake-up time, this field does not have a reset value, so use the
+	 * reset value from MT7531 (36us for 100BaseT and 17us for 1000BaseT).
+	 */
+	reg |= FIELD_PREP(MAC_EEE_WAKEUP_TIME_1000, 17) |
+	       FIELD_PREP(MAC_EEE_WAKEUP_TIME_100, 36);
+
+	if (!txidle_thd_ms)
+		/* Force LPI Mode without a delay */
+		reg |= MAC_EEE_LPI_MODE;
+
+	ret = phylink_ethtool_set_eee(mac->phylink, eee);
+	if (ret)
+		return ret;
+
+	mac->tx_lpi_enabled = eee->tx_lpi_enabled;
+	mac->txidle_thd_ms = txidle_thd_ms;
+	mtk_w32(mac->hw, reg, MTK_MAC_EEECR(mac->id));
+	if (eee->eee_enabled && eee->eee_active && eee->tx_lpi_enabled)
+		mtk_m32(mac->hw, 0, MAC_MCR_EEE100M | MAC_MCR_EEE1G, MTK_MAC_MCR(mac->id));
+	else
+		mtk_m32(mac->hw, MAC_MCR_EEE100M | MAC_MCR_EEE1G, 0, MTK_MAC_MCR(mac->id));
+
+	return 0;
+}
+
 static u16 mtk_select_queue(struct net_device *dev, struct sk_buff *skb,
 			    struct net_device *sb_dev)
 {
@@ -4555,6 +4620,8 @@ static const struct ethtool_ops mtk_ethtool_ops = {
 	.set_pauseparam		= mtk_set_pauseparam,
 	.get_rxnfc		= mtk_get_rxnfc,
 	.set_rxnfc		= mtk_set_rxnfc,
+	.get_eee		= mtk_get_eee,
+	.set_eee		= mtk_set_eee,
 };
 
 static const struct net_device_ops mtk_netdev_ops = {
@@ -4615,6 +4682,8 @@ static int mtk_add_mac(struct mtk_eth *eth, struct device_node *np)
 	}
 	mac = netdev_priv(eth->netdev[id]);
 	eth->mac[id] = mac;
+	mac->tx_lpi_enabled = true;
+	mac->txidle_thd_ms = 1;
 	mac->id = id;
 	mac->hw = eth;
 	mac->of_node = np;
