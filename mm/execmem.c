@@ -458,7 +458,7 @@ static bool execmem_cache_free(void *ptr)
 }
 #endif /* CONFIG_ARCH_HAS_EXECMEM_ROX */
 
-void *execmem_alloc(enum execmem_type type, size_t size)
+void *__weak arch_execmem_alloc(enum execmem_type type, size_t size)
 {
 	struct execmem_range *range = &execmem_info->ranges[type];
 	bool use_cache = range->flags & EXECMEM_ROX_CACHE;
@@ -491,7 +491,12 @@ void *execmem_alloc_rw(enum execmem_type type, size_t size)
 	return no_free_ptr(p);
 }
 
-void execmem_free(void *ptr)
+void *execmem_alloc(enum execmem_type type, size_t size)
+{
+	return arch_execmem_alloc(type, size);
+}
+
+void __weak arch_execmem_free(void *ptr)
 {
 	/*
 	 * This memory may be RO, and freeing RO memory in an interrupt is not
@@ -506,6 +511,11 @@ void execmem_free(void *ptr)
 bool execmem_is_rox(enum execmem_type type)
 {
 	return !!(execmem_info->ranges[type].flags & EXECMEM_ROX_CACHE);
+}
+
+void execmem_free(void *ptr)
+{
+	arch_execmem_free(ptr);
 }
 
 static bool execmem_validate(struct execmem_info *info)
