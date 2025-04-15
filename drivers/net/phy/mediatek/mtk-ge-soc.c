@@ -1431,8 +1431,8 @@ static int an7581_phy_probe(struct phy_device *phydev)
 static int an7581_phy_led_polarity_set(struct phy_device *phydev, int index,
 				       unsigned long modes)
 {
+	u16 val = 0;
 	u32 mode;
-	u16 val;
 
 	if (index >= MTK_PHY_MAX_LEDS)
 		return -EINVAL;
@@ -1443,7 +1443,6 @@ static int an7581_phy_led_polarity_set(struct phy_device *phydev, int index,
 			val = MTK_PHY_LED_ON_POLARITY;
 			break;
 		case PHY_LED_ACTIVE_HIGH:
-			val = 0;
 			break;
 		default:
 			return -EINVAL;
