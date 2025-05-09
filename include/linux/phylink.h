@@ -431,6 +431,7 @@ struct phylink_pcs {
  *               (where necessary).
  * @pcs_pre_init: configure PCS components necessary for MAC hardware
  *                initialization e.g. RX clock for stmmac.
+ * @pcs_link_down: torn down link between MAC and PCS.
  */
 struct phylink_pcs_ops {
 	int (*pcs_validate)(struct phylink_pcs *pcs, unsigned long *supported,
@@ -453,6 +454,7 @@ struct phylink_pcs_ops {
 	void (*pcs_link_up)(struct phylink_pcs *pcs, unsigned int neg_mode,
 			    phy_interface_t interface, int speed, int duplex);
 	int (*pcs_pre_init)(struct phylink_pcs *pcs);
+	void (*pcs_link_down)(struct phylink_pcs *pcs);
 };
 
 #if 0 /* For kernel-doc purposes only. */
