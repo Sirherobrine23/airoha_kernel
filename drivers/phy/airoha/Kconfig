@@ -12,6 +12,16 @@ config PHY_AIROHA_PCIE
 	  This driver create the basic PHY instance and provides initialize
 	  callback for PCIe GEN3 port.
 
+config PHY_AIROHA_AN7583_PCIE
+	tristate "Airoha AN7583 PCIe-PHY Driver"
+	depends on ARCH_AIROHA || COMPILE_TEST
+	depends on OF
+	select GENERIC_PHY
+	help
+	  Say Y here to add support for Airoha AN7583 PCIe PHY driver.
+	  This driver create the basic PHY instance and provides initialize
+	  callback for PCIe GEN3 port.
+
 config PHY_AIROHA_USB
 	tristate "Airoha USB PHY Driver"
 	depends on ARCH_AIROHA || COMPILE_TEST
