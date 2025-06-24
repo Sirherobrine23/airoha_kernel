@@ -2069,7 +2069,8 @@ void phy_detach(struct phy_device *phydev)
 		device_release_driver(&phydev->mdio.dev);
 
 	/* Assert the reset signal */
-	phy_device_reset(phydev, 1);
+	if (!phydev->drv || !(phydev->drv->flags & PHY_DETACH_NO_HW_RESET))
+		phy_device_reset(phydev, 1);
 
 	/*
 	 * The phydev might go away on the put_device() below, so avoid
