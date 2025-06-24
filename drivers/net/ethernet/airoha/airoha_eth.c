@@ -599,6 +599,9 @@ static int airoha_qdma_get_gdm_port(struct airoha_eth *eth,
 	case 0x18:
 		port = 3; /* GDM4 */
 		break;
+	case 0x16:
+		port = 2; /* GDM3 */
+		break;
 	case 0x10 ... 0x14:
 		port = 0; /* GDM1 */
 		break;
