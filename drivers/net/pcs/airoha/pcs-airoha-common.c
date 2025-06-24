@@ -19,6 +19,7 @@
 static void airoha_pcs_setup_scu_eth(struct airoha_pcs_priv *priv,
 				     phy_interface_t interface)
 {
+	struct device *dev = priv->dev;
 	u32 xsi_sel;
 
 	switch (interface) {
@@ -36,6 +37,12 @@ static void airoha_pcs_setup_scu_eth(struct airoha_pcs_priv *priv,
 	regmap_update_bits(priv->scu, AIROHA_SCU_SSR3,
 			   AIROHA_SCU_ETH_XSI_SEL,
 			   xsi_sel);
+
+	/* AN7583 require additional setting */
+	if (device_is_compatible(dev, "airoha,an7583-pcs-eth"))
+		regmap_update_bits(priv->scu, AIROHA_SCU_WAN_CONF,
+				   AIROHA_SCU_ETH_MAC_SEL,
+				   AIROHA_SCU_ETH_MAC_SEL_XFI);
 }
 
 static void airoha_pcs_setup_scu_pon(struct airoha_pcs_priv *priv,
@@ -100,16 +107,24 @@ static int airoha_pcs_setup_scu(struct airoha_pcs_priv *priv,
 
 static void airoha_pcs_init_usxgmii(struct airoha_pcs_priv *priv)
 {
+	const struct airoha_pcs_match_data *data = priv->data;
+
 	regmap_set_bits(priv->multi_sgmii, AIROHA_PCS_MULTI_SGMII_MSG_RX_CTRL_0,
 			AIROHA_PCS_HSGMII_XFI_SEL);
 
 	/* Disable Hibernation */
-	regmap_clear_bits(priv->usxgmii_pcs, AIROHA_PCS_USXGMII_PCS_CTROL_1,
-			  AIROHA_PCS_USXGMII_SPEED_SEL_H);
+	if (data->hibernation_workaround)
+		regmap_clear_bits(priv->usxgmii_pcs, AIROHA_PCS_USXGMII_PCS_CTROL_1,
+				AIROHA_PCS_USXGMII_SPEED_SEL_H);
 
 	/* FIXME: wait Airoha */
 	/* Avoid PCS sending garbage to MAC in some HW revision (E0) */
-	regmap_write(priv->usxgmii_pcs, AIROHA_PCS_USGMII_VENDOR_DEFINE_116, 0);
+	if (data->usxgmii_ber_time_fixup)
+		regmap_write(priv->usxgmii_pcs, AIROHA_PCS_USGMII_VENDOR_DEFINE_116, 0);
+
+	if (data->usxgmii_rx_gb_out_vld_tweak)
+		regmap_clear_bits(priv->usxgmii_pcs, AN7583_PCS_USXGMII_RTL_MODIFIED,
+				  AIROHA_PCS_USXGMII_MODIFIED_RX_GB_OUT_VLD);
 }
 
 static void airoha_pcs_init_hsgmii(struct airoha_pcs_priv *priv)
@@ -434,6 +449,13 @@ static int airoha_pcs_config(struct phylink_pcs *pcs, unsigned int neg_mode,
 			regmap_clear_bits(priv->usxgmii_pcs,
 					  AIROHA_PCS_USXGMII_PCS_AN_CONTROL_0,
 					  AIROHA_PCS_USXGMII_AN_ENABLE);
+
+		if (data->usxgmii_xfi_mode_sel &&
+		    neg_mode == PHYLINK_PCS_NEG_INBAND_ENABLED)
+			regmap_set_bits(priv->usxgmii_pcs,
+					AIROHA_PCS_USXGMII_PCS_AN_CONTROL_7,
+					AIROHA_PCS_USXGMII_XFI_MODE_TX_SEL |
+					AIROHA_PCS_USXGMII_XFI_MODE_RX_SEL);
 	}
 
 	/* Clear any force bit that my be set by bootloader */
@@ -985,7 +1007,8 @@ static int airoha_pcs_probe(struct platform_device *pdev)
 	 * manual rx calibration is needed. This is only limited to
 	 * any SoC revision before E2.
 	 */
-	if (data->port_type == AIROHA_PCS_ETH) {
+	if (device_is_compatible(dev, "airoha,an7581-pcs-eth") &&
+	    data->port_type == AIROHA_PCS_ETH) {
 		u32 val;
 
 		ret = regmap_read(priv->scu, AIROHA_SCU_PDIDR, &val);
@@ -1003,6 +1026,8 @@ static int airoha_pcs_probe(struct platform_device *pdev)
 
 static const struct airoha_pcs_match_data an7581_pcs_eth = {
 	.port_type = AIROHA_PCS_ETH,
+	.hibernation_workaround = true,
+	.usxgmii_ber_time_fixup = true,
 	.bringup = an7581_pcs_bringup,
 	.link_up = an7581_pcs_phya_link_up,
 	.rxlock_workaround = an7581_pcs_rxlock_workaround,
@@ -1010,13 +1035,33 @@ static const struct airoha_pcs_match_data an7581_pcs_eth = {
 
 static const struct airoha_pcs_match_data an7581_pcs_pon = {
 	.port_type = AIROHA_PCS_PON,
+	.hibernation_workaround = true,
+	.usxgmii_ber_time_fixup = true,
 	.bringup = an7581_pcs_bringup,
 	.link_up = an7581_pcs_phya_link_up,
+};
+
+static const struct airoha_pcs_match_data an7583_pcs_eth = {
+	.port_type = AIROHA_PCS_ETH,
+	.usxgmii_rx_gb_out_vld_tweak = true,
+	.usxgmii_xfi_mode_sel = true,
+	.bringup = an7583_pcs_common_phya_bringup,
+	.link_up = an7583_pcs_common_phya_link_up,
+};
+
+static const struct airoha_pcs_match_data an7583_pcs_pon = {
+	.port_type = AIROHA_PCS_PON,
+	.usxgmii_rx_gb_out_vld_tweak = true,
+	.usxgmii_xfi_mode_sel = true,
+	.bringup = an7583_pcs_common_phya_bringup,
+	.link_up = an7583_pcs_common_phya_link_up,
 };
 
 static const struct of_device_id airoha_pcs_of_table[] = {
 	{ .compatible = "airoha,an7581-pcs-eth", .data = &an7581_pcs_eth },
 	{ .compatible = "airoha,an7581-pcs-pon", .data = &an7581_pcs_pon },
+	{ .compatible = "airoha,an7583-pcs-eth", .data = &an7583_pcs_eth },
+	{ .compatible = "airoha,an7583-pcs-pon", .data = &an7583_pcs_pon },
 	{ /* sentinel */ },
 };
 MODULE_DEVICE_TABLE(of, airoha_pcs_of_table);
