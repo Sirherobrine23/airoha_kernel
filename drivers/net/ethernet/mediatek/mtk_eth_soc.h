@@ -728,14 +728,6 @@ struct mtk_hw_stats {
 	struct u64_stats_sync	syncp;
 };
 
-enum mtk_tx_flags {
-	/* PDMA descriptor can point at 1-2 segments. This enum allows us to
-	 * track how memory was allocated so that it can be freed properly.
-	 */
-	MTK_TX_FLAGS_SINGLE0	= 0x01,
-	MTK_TX_FLAGS_PAGE0	= 0x02,
-};
-
 /* This enum allows us to identify how the clock is defined on the array of the
  * clock in the order
  */
@@ -908,13 +900,12 @@ enum mtk_tx_buf_type {
  */
 struct mtk_tx_buf {
 	enum mtk_tx_buf_type type;
+	u16 mac_id;
 	void *data;
 
-	u16 mac_id;
-	u16 flags;
 	DEFINE_DMA_UNMAP_ADDR(dma_addr0);
-	DEFINE_DMA_UNMAP_LEN(dma_len0);
 	DEFINE_DMA_UNMAP_ADDR(dma_addr1);
+	DEFINE_DMA_UNMAP_LEN(dma_len0);
 	DEFINE_DMA_UNMAP_LEN(dma_len1);
 };
 
