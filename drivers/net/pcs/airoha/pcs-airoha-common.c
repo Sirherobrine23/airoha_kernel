@@ -82,6 +82,10 @@ static int airoha_pcs_setup_scu(struct airoha_pcs_priv *priv,
 	const struct airoha_pcs_match_data *data = priv->data;
 	int ret;
 
+	ret = reset_control_assert(priv->xfi_rst);
+	if (ret)
+		return ret;
+
 	switch (data->port_type) {
 	case AIROHA_PCS_ETH:
 		airoha_pcs_setup_scu_eth(priv, interface);
@@ -90,6 +94,10 @@ static int airoha_pcs_setup_scu(struct airoha_pcs_priv *priv,
 		airoha_pcs_setup_scu_pon(priv, interface);
 		break;
 	}
+
+	ret = reset_control_deassert(priv->xfi_rst);
+	if (ret)
+		return ret;
 
 	/* TODO better handle reset from MAC */
 	ret = reset_control_bulk_assert(ARRAY_SIZE(priv->rsts),
@@ -1002,6 +1010,10 @@ static int airoha_pcs_probe(struct platform_device *pdev)
 						    priv->rsts);
 	if (ret)
 		return dev_err_probe(dev, ret, "failed to get bulk reset lines\n");
+
+	priv->xfi_rst = devm_reset_control_get_optional_exclusive(dev, "xfi");
+	if (IS_ERR(priv->xfi_rst))
+		return dev_err_probe(dev, PTR_ERR(priv->xfi_rst), "failed to get xfi reset lines\n");
 
 	/* For Ethernet PCS, read the AN7581 SoC revision to check if
 	 * manual rx calibration is needed. This is only limited to
