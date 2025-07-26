@@ -1654,6 +1654,7 @@ struct airoha_pcs_priv {
 	struct regmap *pcs_ana;
 	struct regmap_field **pcs_ana_fields[2];
 
+	struct reset_control *xfi_rst;
 	struct reset_control_bulk_data rsts[AIROHA_PCS_MAX_NUM_RSTS];
 
 	struct phy *phy;
