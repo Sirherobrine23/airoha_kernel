@@ -1184,6 +1184,7 @@ struct airoha_pcs_priv {
 	struct regmap *xfi_pma;
 	struct regmap *xfi_ana;
 
+	struct reset_control *xfi_rst;
 	struct reset_control_bulk_data rsts[AIROHA_PCS_MAX_NUM_RSTS];
 
 	bool manual_rx_calib;
