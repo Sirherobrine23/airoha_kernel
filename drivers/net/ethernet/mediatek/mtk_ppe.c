@@ -914,6 +914,7 @@ struct mtk_ppe *mtk_ppe_init(struct mtk_eth *eth, void __iomem *base, int index)
 	if (!foe)
 		goto err_free_l2_flows;
 
+	memset(foe, 0, MTK_PPE_ENTRIES * soc->foe_entry_size);
 	ppe->foe_table = foe;
 
 	foe_flow_size = (MTK_PPE_ENTRIES / soc->hash_offset) *
@@ -928,6 +929,7 @@ struct mtk_ppe *mtk_ppe_init(struct mtk_eth *eth, void __iomem *base, int index)
 		if (!mib)
 			return NULL;
 
+		memset(mib, 0, MTK_PPE_ENTRIES * sizeof(*mib));
 		ppe->mib_table = mib;
 
 		acct = devm_kzalloc(dev, MTK_PPE_ENTRIES * sizeof(*acct),
