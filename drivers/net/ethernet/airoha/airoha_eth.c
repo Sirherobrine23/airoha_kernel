@@ -72,10 +72,12 @@ static void airoha_qdma_irq_disable(struct airoha_irq_bank *irq_bank,
 	airoha_qdma_set_irqmask(irq_bank, index, mask, 0);
 }
 
+#if defined(CONFIG_PCS_AIROHA)
 static bool airhoa_is_phy_external(struct airoha_gdm_port *port)
 {
 	return port->id != 1;
 }
+#endif
 
 static void airoha_set_macaddr(struct airoha_gdm_port *port, const u8 *addr)
 {
@@ -1661,6 +1663,7 @@ static int airoha_dev_open(struct net_device *dev)
 	struct airoha_qdma *qdma = port->qdma;
 	u32 pse_port = FE_PSE_PORT_PPE1;
 
+#if defined(CONFIG_PCS_AIROHA)
 	if (airhoa_is_phy_external(port)) {
 		err = phylink_of_phy_connect(port->phylink, dev->dev.of_node, 0);
 		if (err) {
@@ -1671,6 +1674,7 @@ static int airoha_dev_open(struct net_device *dev)
 
 		phylink_start(port->phylink);
 	}
+#endif
 
 	netif_tx_start_all_queues(dev);
 	err = airoha_set_vip_for_gdm_port(port, true);
@@ -1736,10 +1740,12 @@ static int airoha_dev_stop(struct net_device *dev)
 		}
 	}
 
+#if defined(CONFIG_PCS_AIROHA)
 	if (airhoa_is_phy_external(port)) {
 		phylink_stop(port->phylink);
 		phylink_disconnect_phy(port->phylink);
 	}
+#endif
 
 	return 0;
 }
@@ -2871,6 +2877,7 @@ static const struct ethtool_ops airoha_ethtool_ops = {
 	.get_link		= ethtool_op_get_link,
 };
 
+#if defined(CONFIG_PCS_AIROHA)
 static struct phylink_pcs *airoha_phylink_mac_select_pcs(struct phylink_config *config,
 							 phy_interface_t interface)
 {
@@ -2884,6 +2891,7 @@ static void airoha_mac_config(struct phylink_config *config, unsigned int mode,
 			      const struct phylink_link_state *state)
 {
 }
+#endif
 
 static int airoha_metadata_dst_alloc(struct airoha_gdm_port *port)
 {
@@ -2929,6 +2937,7 @@ bool airoha_is_valid_gdm_port(struct airoha_eth *eth,
 	return false;
 }
 
+#if defined(CONFIG_PCS_AIROHA)
 static void airoha_mac_link_up(struct phylink_config *config, struct phy_device *phy,
 			       unsigned int mode, phy_interface_t interface,
 			       int speed, int duplex, bool tx_pause, bool rx_pause)
@@ -3021,6 +3030,7 @@ static int airoha_setup_phylink(struct net_device *dev)
 
 	return 0;
 }
+#endif
 
 static int airoha_alloc_gdm_port(struct airoha_eth *eth,
 				 struct device_node *np)
@@ -3095,11 +3105,13 @@ static int airoha_alloc_gdm_port(struct airoha_eth *eth,
 	port->nbq = id == AIROHA_GDM3_IDX && airoha_is_7581(eth) ? 4 : 0;
 	eth->ports[p] = port;
 
+#if defined(CONFIG_PCS_AIROHA)
 	if (airhoa_is_phy_external(port)) {
 		err = airoha_setup_phylink(dev);
 		if (err)
 			return err;
 	}
+#endif
 
 	return airoha_metadata_dst_alloc(port);
 }
@@ -3230,10 +3242,12 @@ error_napi_stop:
 
 		if (port->dev->reg_state == NETREG_REGISTERED)
 			unregister_netdev(port->dev);
+#if defined(CONFIG_PCS_AIROHA)
 		if (airhoa_is_phy_external(port)) {
 			phylink_destroy(port->phylink);
 			airoha_pcs_destroy(port->pcs);
 		}
+#endif
 		airoha_metadata_dst_free(port);
 	}
 	airoha_hw_cleanup(eth);
@@ -3260,10 +3274,12 @@ static void airoha_remove(struct platform_device *pdev)
 
 		unregister_netdev(port->dev);
 		airoha_metadata_dst_free(port);
+#if defined(CONFIG_PCS_AIROHA)
 		if (airhoa_is_phy_external(port)) {
 			phylink_destroy(port->phylink);
 			airoha_pcs_destroy(port->pcs);
 		}
+#endif
 	}
 	airoha_hw_cleanup(eth);
 

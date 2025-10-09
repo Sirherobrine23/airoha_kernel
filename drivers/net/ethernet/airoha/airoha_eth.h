@@ -539,9 +539,11 @@ struct airoha_gdm_port {
 	int id;
 	int nbq;
 
+#if defined(CONFIG_PCS_AIROHA)
 	struct phylink *phylink;
 	struct phylink_config phylink_config;
 	struct phylink_pcs *pcs;
+#endif
 
 	struct airoha_hw_stats stats;
 
