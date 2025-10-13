@@ -13,6 +13,7 @@
  */
 
 #include <linux/bitfield.h>
+#include <linux/completion.h>
 #include <linux/cleanup.h>
 #include <linux/kernel.h>
 #include <linux/sched.h>
@@ -38,6 +39,7 @@
 #endif
 
 static int sysfs_initialized;	/* = 0 */
+static DECLARE_COMPLETION(sysfs_init_completion);
 
 /* show configuration fields */
 #define pci_config_attr(field, format_string)				\
@@ -1660,12 +1662,32 @@ static const struct attribute_group pci_dev_resource_resize_group = {
 	.is_visible = resource_resize_is_visible,
 };
 
+static int __pci_create_sysfs_dev_files(struct pci_dev *pdev)
+{
+	int ret;
+
+	ret = pci_create_resource_files(pdev);
+	if (ret)
+		return ret;
+
+	/* on success set sysfs correctly created */
+	pdev->sysfs_init = true;
+	return 0;
+}
+
 int __must_check pci_create_sysfs_dev_files(struct pci_dev *pdev)
 {
 	if (!sysfs_initialized)
 		return -EACCES;
 
-	return pci_create_resource_files(pdev);
+	/* sysfs entry already created */
+	if (pdev->sysfs_init)
+		return 0;
+
+	/* wait for pci_sysfs_init */
+	wait_for_completion(&sysfs_init_completion);
+
+	return __pci_create_sysfs_dev_files(pdev);
 }
 
 /**
@@ -1686,21 +1708,23 @@ static int __init pci_sysfs_init(void)
 {
 	struct pci_dev *pdev = NULL;
 	struct pci_bus *pbus = NULL;
-	int retval;
+	int retval = 0;
 
 	sysfs_initialized = 1;
 	for_each_pci_dev(pdev) {
-		retval = pci_create_sysfs_dev_files(pdev);
+		retval = __pci_create_sysfs_dev_files(pdev);
 		if (retval) {
 			pci_dev_put(pdev);
-			return retval;
+			goto exit;
 		}
 	}
 
 	while ((pbus = pci_find_next_bus(pbus)))
 		pci_create_legacy_files(pbus);
 
-	return 0;
+exit:
+	complete_all(&sysfs_init_completion);
+	return retval;
 }
 late_initcall(pci_sysfs_init);
 
