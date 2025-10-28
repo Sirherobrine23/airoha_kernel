@@ -969,6 +969,12 @@ static int mtk_pcie_en7581_power_up(struct mtk_gen3_pcie *pcie)
 	size = lower_32_bits(resource_size(entry->res));
 	regmap_write(pbus_regmap, args[1], GENMASK(31, __fls(size)));
 
+	err = phy_set_mode(pcie->phy, PHY_MODE_PCIE);
+	if (err) {
+		dev_err(dev, "failed to set PHY mode\n");
+		return err;
+	}
+
 	/*
 	 * Unlike the other MediaTek Gen3 controllers, the Airoha EN7581
 	 * requires PHY initialization and power-on before PHY reset deassert.
