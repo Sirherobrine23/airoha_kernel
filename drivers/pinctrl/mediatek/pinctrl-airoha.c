@@ -3149,12 +3149,12 @@ static int airoha_pinctrl_probe(struct platform_device *pdev)
 
 	/* Init pinctrl desc struct */
 	pinctrl->desc.name = KBUILD_MODNAME;
-	pinctrl->desc.owner = THIS_MODULE,
-	pinctrl->desc.pctlops = &airoha_pctlops,
-	pinctrl->desc.pmxops = &airoha_pmxops,
-	pinctrl->desc.confops = &airoha_confops,
-	pinctrl->desc.pins = data->pins,
-	pinctrl->desc.npins = data->num_pins,
+	pinctrl->desc.owner = THIS_MODULE;
+	pinctrl->desc.pctlops = &airoha_pctlops;
+	pinctrl->desc.pmxops = &airoha_pmxops;
+	pinctrl->desc.confops = &airoha_confops;
+	pinctrl->desc.pins = data->pins;
+	pinctrl->desc.npins = data->num_pins;
 
 	/*
 	 * some pinctrl operations (ex: get_direction) might use gpio registers
