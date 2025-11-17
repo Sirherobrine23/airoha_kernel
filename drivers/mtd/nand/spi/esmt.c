@@ -11,6 +11,7 @@
 
 /* ESMT uses GigaDevice 0xc8 JECDEC ID on some SPI NANDs */
 #define SPINAND_MFR_ESMT_C8			0xc8
+#define SPINAND_MFR_ESMT_8C			0x8c
 
 static SPINAND_OP_VARIANTS(read_cache_variants,
 			   SPINAND_PAGE_READ_FROM_CACHE_X4_OP(0, 1, NULL, 0),
@@ -102,6 +103,19 @@ static const struct mtd_ooblayout_ops f50l1g41lb_ooblayout = {
 	.free = f50l1g41lb_ooblayout_free,
 };
 
+
+static const struct spinand_info esmt_8c_spinand_table[] = {
+	SPINAND_INFO("F50L1G41LC",
+		     SPINAND_ID(SPINAND_READID_METHOD_OPCODE_ADDR, 0x2C),
+		     NAND_MEMORG(1, 2048, 64, 64, 1024, 20, 1, 1, 1),
+		     NAND_ECCREQ(1, 512),
+		     SPINAND_INFO_OP_VARIANTS(&read_cache_variants,
+					      &write_cache_variants,
+					      &update_cache_variants),
+		     0,
+		     SPINAND_ECCINFO(&f50l1g41lb_ooblayout, NULL)),
+};
+
 static const struct spinand_info esmt_c8_spinand_table[] = {
 	SPINAND_INFO("F50L1G41LB",
 		     SPINAND_ID(SPINAND_READID_METHOD_OPCODE_ADDR, 0x01, 0x7f,
@@ -136,6 +150,14 @@ static const struct spinand_info esmt_c8_spinand_table[] = {
 };
 
 static const struct spinand_manufacturer_ops esmt_spinand_manuf_ops = {
+};
+
+const struct spinand_manufacturer esmt_8c_spinand_manufacturer = {
+	.id = SPINAND_MFR_ESMT_8C,
+	.name = "ESMT",
+	.chips = esmt_8c_spinand_table,
+	.nchips = ARRAY_SIZE(esmt_8c_spinand_table),
+	.ops = &esmt_spinand_manuf_ops,
 };
 
 const struct spinand_manufacturer esmt_c8_spinand_manufacturer = {
