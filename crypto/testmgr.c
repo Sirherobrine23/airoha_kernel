@@ -4440,6 +4440,10 @@ static const struct alg_test_desc alg_test_descs[] = {
 			.aead = __VECS(hmac_sha224_des3_ede_cbc_tv_temp)
 		}
 	}, {
+		.alg = "authenc(hmac(sha224),rfc3686(ctr(aes)))",
+		.test = alg_test_null,
+		.fips_allowed = 1,
+	}, {
 		.alg = "authenc(hmac(sha256),cbc(aes))",
 		.test = alg_test_aead,
 		.fips_allowed = 1,
