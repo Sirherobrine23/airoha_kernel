@@ -2022,6 +2022,11 @@ int genphy_c45_an_config_eee_aneg(struct phy_device *phydev);
 /* The gen10g_* functions are the old Clause 45 stub */
 int gen10g_config_aneg(struct phy_device *phydev);
 
+int mmd_phy_read(struct mii_bus *bus, int phy_addr, bool is_c45,
+		 int devad, u32 regnum);
+int mmd_phy_write(struct mii_bus *bus, int phy_addr, bool is_c45,
+		  int devad, u32 regnum, u16 val);
+
 static inline int phy_read_status(struct phy_device *phydev)
 {
 	if (!phydev->drv)
