@@ -1393,7 +1393,7 @@ static int rtl822x_set_serdes_option_mode(struct phy_device *phydev, bool gen1)
 		return 0;
 
 	/* determine SerDes option mode */
-	if (has_2500 && !has_sgmii) {
+	if (has_2500 && (!has_sgmii || !phydev->is_c45)) {
 		mode = RTL822X_VND1_SERDES_OPTION_MODE_2500BASEX;
 		phydev->rate_matching = RATE_MATCH_PAUSE;
 	} else {
