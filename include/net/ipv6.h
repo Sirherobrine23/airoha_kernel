@@ -248,6 +248,8 @@ extern int sysctl_mld_qrv;
 	struct inet6_dev *_idev = (idev);				\
 	unsigned long _field = (field);					\
 	unsigned long _val = (val);					\
+	(void)_field;							\
+	(void)_val;							\
 	if (likely(_idev != NULL))					\
 		mod##SNMP_ADD_STATS((_idev)->stats.statname, _field,  _val); \
 	mod##SNMP_ADD_STATS((net)->mib.statname##_statistics, _field, _val);\
@@ -257,6 +259,7 @@ extern int sysctl_mld_qrv;
 ({									\
 	struct inet6_dev *_idev = (idev);				\
 	unsigned long _val = (val);					\
+	(void)_val;							\
 	if (likely(_idev != NULL))					\
 		mod##SNMP_UPD_PO_STATS((_idev)->stats.statname, field, _val); \
 	mod##SNMP_UPD_PO_STATS((net)->mib.statname##_statistics, field, _val);\
