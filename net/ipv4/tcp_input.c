@@ -3969,6 +3969,12 @@ static u32 tcp_newly_delivered(struct sock *sk, u32 prior_delivered,
 	struct tcp_sock *tp = tcp_sk(sk);
 	u32 delivered;
 
+	/* ecn_count is only used when FLAG_ECE is set; in some build/config
+	 * paths it may be unused and cause a compiler warning. Silence it
+	 * explicitly here.
+	 */
+	(void)ecn_count;
+
 	delivered = tp->delivered - prior_delivered;
 	NET_ADD_STATS(net, LINUX_MIB_TCPDELIVERED, delivered);
 
