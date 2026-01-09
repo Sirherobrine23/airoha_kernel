@@ -2161,6 +2161,9 @@ attribute-sets:
       -
         name: blue-timer-us
         type: s32
+      -
+        name: active-queues
+        type: u32
   -
     name: tc-cake-tin-stats-attrs
     attributes:
