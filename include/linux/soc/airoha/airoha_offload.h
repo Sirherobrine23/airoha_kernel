@@ -65,7 +65,6 @@ static inline void airoha_ppe_dev_check_skb(struct airoha_ppe_dev *dev,
 }
 #endif
 
-#define NPU_NUM_CORES		8
 #define NPU_NUM_IRQ		6
 #define NPU_RX0_DESC_NUM	512
 #define NPU_RX1_DESC_NUM	512
@@ -112,6 +111,11 @@ struct airoha_npu_tx_dma_desc {
 	u8 txwi[NPU_TXWI_LEN];
 } __packed;
 
+enum airoha_npu_version {
+	NPU_V1,
+	NPU_V2,
+};
+
 enum airoha_npu_wlan_set_cmd {
 	WLAN_FUNC_SET_WAIT_PCIE_ADDR,
 	WLAN_FUNC_SET_WAIT_DESC,
@@ -147,6 +151,8 @@ enum airoha_npu_wlan_set_cmd {
 	WLAN_FUNC_SET_WAIT_ARHT_CHIP_INFO,
 	WLAN_FUNC_SET_WAIT_TX_BUF_CHECK_ADDR,
 	WLAN_FUNC_SET_WAIT_TOKEN_ID_SIZE,
+
+	WLAN_FUNC_SET_WAIT_MAX = 0xffff,
 };
 
 enum airoha_npu_wlan_get_cmd {
@@ -161,19 +167,37 @@ enum airoha_npu_wlan_get_cmd {
 	WLAN_FUNC_GET_WAIT_NPU_SUPPORT_MAP,
 	WLAN_FUNC_GET_WAIT_MDC_LOCK_ADDRESS,
 	WLAN_FUNC_GET_WAIT_NPU_VERSION,
+
+	WLAN_FUNC_GET_WAIT_MAX = 0xffff,
+};
+
+enum airoha_npu_v1_drive_model {
+	WLAN_MT7915A,
+	WLAN_MT7915D,
+	WLAN_MT7916_DBDC,
+};
+
+enum airoha_npu_v1_port_type {
+	WLAN_PORT0,
+	WLAN_PORT1,
+	WLAN_PORT00,
+	WLAN_PORT01,
 };
 
 struct airoha_npu {
 #if (IS_BUILTIN(CONFIG_NET_AIROHA_NPU) || IS_MODULE(CONFIG_NET_AIROHA_NPU))
 	struct device *dev;
 	struct regmap *regmap;
+	struct regmap *scu_regmap;
+
+	const struct airoha_npu_soc_data *soc_data;
 
 	struct airoha_npu_core {
 		struct airoha_npu *npu;
 		/* protect concurrent npu memory accesses */
 		spinlock_t lock;
 		struct work_struct wdt_work;
-	} cores[NPU_NUM_CORES];
+	} *cores;
 
 	int irqs[NPU_NUM_IRQ];
 
