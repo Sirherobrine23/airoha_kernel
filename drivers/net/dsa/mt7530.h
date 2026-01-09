@@ -21,6 +21,7 @@ enum mt753x_id {
 	ID_MT7988 = 3,
 	ID_EN7581 = 4,
 	ID_AN7583 = 5,
+	ID_EN7523 = 6,
 };
 
 #define	NUM_TRGMII_CTRL			5
@@ -68,32 +69,37 @@ enum mt753x_id {
 #define MT753X_MIRROR_REG(id)		((id == ID_MT7531 || \
 					  id == ID_MT7988 || \
 					  id == ID_EN7581 || \
-					  id == ID_AN7583) ? \
+					  id == ID_AN7583 || \
+					  id == ID_EN7523) ? \
 					 MT7531_CFC : MT753X_MFC)
 
 #define MT753X_MIRROR_EN(id)		((id == ID_MT7531 || \
 					  id == ID_MT7988 || \
-					  id == ID_EN7581) ? \
+					  id == ID_EN7581 || \
+					  id == ID_EN7523) ? \
 					 MT7531_MIRROR_EN : MT7530_MIRROR_EN)
 
 #define MT753X_MIRROR_PORT_MASK(id)	((id == ID_MT7531 || \
 					  id == ID_MT7988 || \
 					  id == ID_EN7581 || \
-					  id == ID_AN7583) ? \
+					  id == ID_AN7583 || \
+					  id == ID_EN7523) ? \
 					 MT7531_MIRROR_PORT_MASK : \
 					 MT7530_MIRROR_PORT_MASK)
 
 #define MT753X_MIRROR_PORT_GET(id, val)	((id == ID_MT7531 || \
 					  id == ID_MT7988 || \
 					  id == ID_EN7581 || \
-					  id == ID_AN7583) ? \
+					  id == ID_AN7583 || \
+					  id == ID_EN7523) ? \
 					 MT7531_MIRROR_PORT_GET(val) : \
 					 MT7530_MIRROR_PORT_GET(val))
 
 #define MT753X_MIRROR_PORT_SET(id, val)	((id == ID_MT7531 || \
 					  id == ID_MT7988 || \
 					  id == ID_EN7581 || \
-					  id == ID_AN7583) ? \
+					  id == ID_AN7583 || \
+					  id == ID_EN7523) ? \
 					 MT7531_MIRROR_PORT_SET(val) : \
 					 MT7530_MIRROR_PORT_SET(val))
 
@@ -335,6 +341,8 @@ enum mt7530_vlan_port_acc_frm {
 
 /* Register for port MAC control register */
 #define MT753X_PMCR_P(x)		(0x3000 + ((x) * 0x100))
+#define  MT7530_TXCRC_EN		BIT(26)
+#define  MT7530_RXCRC_EN		BIT(25)
 #define  PMCR_IFG_XMIT_MASK		GENMASK(19, 18)
 #define  PMCR_IFG_XMIT(x)		FIELD_PREP(PMCR_IFG_XMIT_MASK, x)
 #define  PMCR_EXT_PHY			BIT(17)
@@ -404,6 +412,22 @@ enum mt7530_vlan_port_acc_frm {
 /* Register for port debug count */
 #define MT7531_DBG_CNT(x)		(0x3018 + (x) * 0x100)
 #define  MT7531_DIS_CLR			BIT(31)
+
+#define MT7530_DBGGCR			0x30ec
+#define  TXFC_LPICHK			BIT(5)
+#define  LPDET_RDYFIX			BIT(4)
+#define  PSON_RDYFIX			BIT(3)
+#define  PSOFF_RDYFIX			BIT(2)
+#define  CPORT_RXG_BUSY			BIT(1)
+#define  TX_LKOFF_ENDCHK		BIT(0)
+
+#define MT7530_CKGCR			0x30f0
+#define  LPI_TXIDLE_THD_MASK		GENMASK(15, 8)
+#define  LPI_TXIDLE_THD(x)		FIELD_PREP(LPI_TXIDLE_THD_MASK, x)
+#define  CKG_TXIDLE			BIT(5)
+#define  CKG_RXLPI			BIT(4)
+#define  CKG_LNKDN_PORT			BIT(1)
+#define  CKG_LNKDN_GLB			BIT(0)
 
 #define MT7530_GMACCR			0x30e0
 #define  MAX_RX_JUMBO(x)		((x) << 2)
