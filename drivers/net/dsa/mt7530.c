@@ -1305,7 +1305,8 @@ mt753x_cpu_port_enable(struct dsa_switch *ds, int port)
 	 * is affine to the inbound user port.
 	 */
 	if (priv->id == ID_MT7531 || priv->id == ID_MT7988 ||
-	    priv->id == ID_EN7581 || priv->id == ID_AN7583)
+	    priv->id == ID_EN7581 || priv->id == ID_AN7583 ||
+			priv->id == ID_EN7523)
 		mt7530_set(priv, MT7531_CFC, MT7531_CPU_PMAP(BIT(port)));
 
 	/* CPU port gets connected to all user ports of
@@ -2625,7 +2626,7 @@ mt7531_setup_common(struct dsa_switch *ds)
 	mt7530_set(priv, MT753X_AGC, LOCAL_EN);
 
 	/* Enable Special Tag for rx frames */
-	if (priv->id == ID_EN7581 || priv->id == ID_AN7583)
+	if (priv->id == ID_EN7581 || priv->id == ID_AN7583 || priv->id == ID_EN7523)
 		mt7530_write(priv, MT753X_CPORT_SPTAG_CFG,
 			     CPORT_SW2FE_STAG_EN | CPORT_FE2SW_STAG_EN);
 
@@ -3259,6 +3260,16 @@ static int mt7988_setup(struct dsa_switch *ds)
 			   AN7583_CSR_PHY_CORE_REG_CLK_SEL |
 			   FIELD_PREP(AN7583_CSR_ETHER_AFE_PWD, 0));
 
+	if (priv->id == ID_EN7523) {
+		mt7530_set(priv, MT753X_PMCR_P(6), MT7530_RXCRC_EN |
+			   PMCR_IFG_XMIT(1) |
+			   PMCR_MAC_MODE |
+			   PMCR_BACKOFF_EN |
+			   PMCR_BACKPR_EN);
+		mt7530_set(priv, MT7530_DBGGCR, CPORT_RXG_BUSY);
+		mt7530_write(priv, MT7530_CKGCR, LPI_TXIDLE_THD(0xFF));
+	}
+
 	/* Reset the switch PHYs */
 	mt7530_write(priv, MT7530_SYS_CTRL, SYS_CTRL_PHY_RST);
 
@@ -3369,6 +3380,16 @@ const struct mt753x_info mt753x_table[] = {
 	},
 	[ID_AN7583] = {
 		.id = ID_AN7583,
+		.pcs_ops = &mt7530_pcs_ops,
+		.sw_setup = mt7988_setup,
+		.phy_read_c22 = mt7531_ind_c22_phy_read,
+		.phy_write_c22 = mt7531_ind_c22_phy_write,
+		.phy_read_c45 = mt7531_ind_c45_phy_read,
+		.phy_write_c45 = mt7531_ind_c45_phy_write,
+		.mac_port_get_caps = en7581_mac_port_get_caps,
+	},
+	[ID_EN7523] = {
+		.id = ID_EN7523,
 		.pcs_ops = &mt7530_pcs_ops,
 		.sw_setup = mt7988_setup,
 		.phy_read_c22 = mt7531_ind_c22_phy_read,
