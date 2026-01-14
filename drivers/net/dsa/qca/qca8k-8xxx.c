@@ -1743,6 +1743,18 @@ qca8k_get_tag_protocol(struct dsa_switch *ds, int port,
 	return DSA_TAG_PROTO_QCA;
 }
 
+static struct dsa_port *
+qca8k_preferred_default_local_cpu_port(struct dsa_switch *ds)
+{
+	if (dsa_is_cpu_port(ds, 0))
+		return dsa_to_port(ds, 0);
+
+	if (dsa_is_cpu_port(ds, 6))
+		return dsa_to_port(ds, 6);
+
+	return NULL;
+}
+
 static int qca8k_port_change_master(struct dsa_switch *ds, int port,
 				    struct net_device *master,
 				    struct netlink_ext_ack *extack)
@@ -2139,6 +2151,7 @@ static const struct dsa_switch_ops qca8k_switch_ops = {
 	.get_phy_flags		= qca8k_get_phy_flags,
 	.port_lag_join		= qca8xxx_port_lag_join,
 	.port_lag_leave		= qca8xxx_port_lag_leave,
+	.preferred_default_local_cpu_port = qca8k_preferred_default_local_cpu_port,
 	.port_change_conduit	= qca8k_port_change_master,
 	.conduit_state_change	= qca8k_conduit_change,
 	.connect_tag_protocol	= qca8k_connect_tag_protocol,
