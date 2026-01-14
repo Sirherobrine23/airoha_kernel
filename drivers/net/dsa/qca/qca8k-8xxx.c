@@ -1087,24 +1087,6 @@ qca8k_setup_mac_pwr_sel(struct qca8k_priv *priv)
 	return ret;
 }
 
-static int qca8k_find_cpu_port(struct dsa_switch *ds)
-{
-	int i;
-
-	if (dsa_is_cpu_port(ds, 0))
-		return 0;
-
-	if (dsa_is_cpu_port(ds, 6))
-		return 6;
-
-	/* PHY-to-PHY link */
-	for (i = 1; i <= 5; i++)
-		if (dsa_is_cpu_port(ds, i))
-			return i;
-
-	return -EINVAL;
-}
-
 static int
 qca8k_setup_of_pws_reg(struct qca8k_priv *priv)
 {
@@ -1957,14 +1939,8 @@ qca8k_setup(struct dsa_switch *ds)
 {
 	struct qca8k_priv *priv = ds->priv;
 	struct dsa_port *dp;
-	int cpu_port, ret;
+	int ret;
 	u32 mask;
-
-	cpu_port = qca8k_find_cpu_port(ds);
-	if (cpu_port < 0) {
-		dev_err(priv->dev, "No cpu port configured");
-		return cpu_port;
-	}
 
 	/* Parse CPU port config to be later used in phy_link mac_config */
 	ret = qca8k_parse_port_config(priv);
@@ -2044,17 +2020,12 @@ qca8k_setup(struct dsa_switch *ds)
 	if (ret)
 		return ret;
 
-	/* CPU port gets connected to all user ports of the switch */
-	ret = qca8k_rmw(priv, QCA8K_PORT_LOOKUP_CTRL(cpu_port),
-			QCA8K_PORT_LOOKUP_MEMBER, dsa_user_ports(ds));
-	if (ret)
-		return ret;
-
 	/* Setup connection between CPU port & user ports
 	 * Individual user ports get connected to CPU port only
 	 */
 	dsa_switch_for_each_user_port(dp, ds) {
 		u8 port = dp->index;
+		u8 cpu_port = dp->cpu_dp->index;
 
 		ret = qca8k_rmw(priv, QCA8K_PORT_LOOKUP_CTRL(port),
 				QCA8K_PORT_LOOKUP_MEMBER,
@@ -2064,6 +2035,11 @@ qca8k_setup(struct dsa_switch *ds)
 
 		ret = regmap_clear_bits(priv->regmap, QCA8K_PORT_LOOKUP_CTRL(port),
 					QCA8K_PORT_LOOKUP_LEARN);
+		if (ret)
+			return ret;
+
+		ret = qca8k_rmw(priv, QCA8K_PORT_LOOKUP_CTRL(cpu_port),
+				BIT(port), BIT(port));
 		if (ret)
 			return ret;
 
