@@ -454,6 +454,7 @@ static void set_io_from_upio(struct uart_port *p)
 		break;
 #ifdef CONFIG_HAS_IOPORT
 	case UPIO_PORT:
+	case UPIO_AU:
 		p->serial_in = io_serial_in;
 		p->serial_out = io_serial_out;
 		break;
