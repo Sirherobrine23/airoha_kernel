@@ -2519,17 +2519,9 @@ static u32 airoha_get_dsa_tag(struct sk_buff *skb, struct net_device *dev)
 int airoha_get_fe_port(struct airoha_gdm_dev *dev)
 {
 	struct airoha_gdm_port *port = dev->port;
-	struct airoha_eth *eth = dev->eth;
 
-	switch (eth->soc->version) {
-	case 0x7583:
-		return port->id == AIROHA_GDM3_IDX ? FE_PSE_PORT_GDM3
-						   : port->id;
-	case 0x7581:
-	default:
-		return port->id == AIROHA_GDM4_IDX ? FE_PSE_PORT_GDM4
-						   : port->id;
-	}
+	return port->id == AIROHA_GDM4_IDX ? FE_PSE_PORT_GDM4
+					   : port->id;
 }
 
 static netdev_features_t airoha_dev_fix_features(struct net_device *netdev,
