@@ -1287,7 +1287,8 @@ static void phylink_major_config(struct phylink *pl, bool restart,
 		if (pl->pcs)
 			pl->pcs->phylink = NULL;
 
-		pcs->phylink = pl;
+		if (pcs)
+			pcs->phylink = pl;
 
 		pl->pcs = pcs;
 	}
