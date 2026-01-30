@@ -135,23 +135,46 @@ static void airoha_trng_cleanup(struct hwrng *rng)
 	writel(SW_RST, trng->base + TRNG_HEALTH_TEST_SW_RST);
 }
 
+static int airoha_trng_wait_ready(struct airoha_trng *trng, bool wait)
+{
+	u32 status;
+	int ready;
+	int try_count = 0;
+
+	do {
+		ready = readl_poll_timeout(trng->base + TRNG_HEALTH_TEST_STATUS, status,
+					   status & RAW_DATA_VALID, 10, 1000);
+		if (ready < 0 && wait)
+			mdelay(1);
+	} while (++try_count < 30 && ready < 0 && wait);
+
+	return ready;
+}
+
 static int airoha_trng_read(struct hwrng *rng, void *buf, size_t max, bool wait)
 {
 	struct airoha_trng *trng = container_of(rng, struct airoha_trng, rng);
-	u32 *data = buf;
-	u32 status;
-	int ret;
+	int ret, size_read = 0;
 
-	ret = readl_poll_timeout(trng->base + TRNG_HEALTH_TEST_STATUS, status,
-				 status & RAW_DATA_VALID, 10, 1000);
-	if (ret < 0) {
-		dev_err(trng->dev, "Timeout waiting for TRNG RAW Data valid\n");
-		return ret;
+	while(max >= sizeof(u32))
+	{
+		ret = airoha_trng_wait_ready(trng, wait);
+		if (ret < 0) {
+			dev_err(trng->dev, "Timeout waiting for TRNG RAW Data valid %d", ret);
+			if (ret == 2)
+				ret = -EIO;
+			if (size_read == 0)
+				return ret;
+			break;
+		}
+
+		*(u32 *)buf = readl(trng->base + TRNG_RAW_DATA_OUT);
+		size_read += sizeof(u32);
+		buf += sizeof(u32);
+		max -= sizeof(u32);
 	}
 
-	*data = readl(trng->base + TRNG_RAW_DATA_OUT);
-
-	return 4;
+	return size_read;
 }
 
 static irqreturn_t airoha_trng_irq(int irq, void *priv)
