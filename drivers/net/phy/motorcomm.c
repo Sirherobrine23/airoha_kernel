@@ -214,6 +214,9 @@
 #define YT8521_RC1R_RGMII_2_100_NS		14
 #define YT8521_RC1R_RGMII_2_250_NS		15
 
+#define YTPHY_MDIO_ADDRESS_CONTROL_REG		0xA005
+#define YTPHY_MACR_EN_PHY_ADDR_0		BIT(6)
+
 #define YTPHY_MISC_CONFIG_REG			0xA006
 #define YTPHY_MCR_FIBER_SPEED_MASK		BIT(0)
 #define YTPHY_MCR_FIBER_1000BX			(0x1 << 0)
@@ -2658,6 +2661,23 @@ static int yt8821_config_init(struct phy_device *phydev)
 	u8 mode = YT8821_CHIP_MODE_AUTO_BX2500_SGMII;
 	int ret;
 	u16 set;
+
+	/* Hard-reset the PHY to clear out any register corruption
+	 * from preceding MDIO bus conflicts.
+	 */
+	phy_device_reset(phydev, 1);
+
+	/* Deassert the reset GPIO under the MDIO bus lock to make
+	 * sure that nothing will communicate on the bus until we
+	 * disable the broadcast address in the YT8821.
+	 */
+	phy_lock_mdio_bus(phydev);
+	phy_device_reset(phydev, 0);
+	ret = ytphy_modify_ext(phydev,
+			       YTPHY_MDIO_ADDRESS_CONTROL_REG,
+			       YTPHY_MACR_EN_PHY_ADDR_0,
+			       0);
+	phy_unlock_mdio_bus(phydev);
 
 	if (phydev->interface == PHY_INTERFACE_MODE_2500BASEX)
 		mode = YT8821_CHIP_MODE_FORCE_BX2500;
