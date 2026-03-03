@@ -4177,6 +4177,13 @@ static const struct alg_test_desc alg_test_descs[] = {
 			.cprng = __VECS(ansi_cprng_aes_tv_template)
 		}
 	}, {
+		.alg = "authenc(hmac(md5),cbc(aes))",
+		.generic_driver = "authenc(hmac-md5-lib,cbc(aes-generic))",
+		.test = alg_test_aead,
+		.suite = {
+			.aead = __VECS(hmac_md5_aes_cbc_tv_temp)
+		}
+	}, {
 		.alg = "authenc(hmac(md5),cbc(des))",
 		.generic_driver = "authenc(hmac-md5-lib,cbc(des-generic))",
 		.test = alg_test_aead,
