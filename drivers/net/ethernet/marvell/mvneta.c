@@ -5628,6 +5628,8 @@ static int mvneta_probe(struct platform_device *pdev)
 	}
 
 	err = of_get_ethdev_address(dn, dev);
+	if (err == -EPROBE_DEFER)
+		goto err_free_stats;
 	if (!err) {
 		mac_from = "device tree";
 	} else {
@@ -5763,6 +5765,7 @@ err_netdev:
 				       1 << pp->id);
 		mvneta_bm_put(pp->bm_priv);
 	}
+err_free_stats:
 	free_percpu(pp->stats);
 err_free_ports:
 	free_percpu(pp->ports);
