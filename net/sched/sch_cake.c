@@ -71,6 +71,7 @@
 #include <net/pkt_cls.h>
 #include <net/tcp.h>
 #include <net/flow_dissector.h>
+#include <linux/debugfs.h>
 
 #if IS_ENABLED(CONFIG_NF_CONNTRACK)
 #include <net/netfilter/nf_conntrack_core.h>
@@ -81,6 +82,8 @@
 #define CAKE_QUEUES (1024)
 #define CAKE_FLOW_MASK 63
 #define CAKE_FLOW_NAT_FLAG 64
+static u64 g_sync_time_ns = 200*NSEC_PER_USEC;
+static struct dentry *cake_mq_debugfs;
 
 /* struct cobalt_params - contains codel and blue parameters
  * @interval:	codel initial drop rate
@@ -2013,7 +2016,7 @@ static struct sk_buff *cake_dequeue(struct Qdisc *sch)
 	u32 len;
 
 	if (q->config->is_shared && q->rate_ns &&
-	    now - q->last_checked_active >= q->config->sync_time) {
+	    now - q->last_checked_active >= g_sync_time_ns) {
 		struct net_device *dev = qdisc_dev(sch);
 		struct cake_sched_data *other_priv;
 		u64 new_rate = q->config->rate_bps;
@@ -3352,8 +3355,13 @@ static int __init cake_module_init(void)
 		return ret;
 
 	ret = register_qdisc(&cake_mq_qdisc_ops);
-	if (ret)
+	if (ret) {
 		unregister_qdisc(&cake_qdisc_ops);
+	} else {
+		struct dentry *cake_mq_debugfs = debugfs_create_dir("cake_mq", NULL);
+
+		debugfs_create_u64("sync_time_ns", 0644, cake_mq_debugfs, &g_sync_time_ns);
+	}
 
 	return ret;
 }
@@ -3362,6 +3370,7 @@ static void __exit cake_module_exit(void)
 {
 	unregister_qdisc(&cake_qdisc_ops);
 	unregister_qdisc(&cake_mq_qdisc_ops);
+	debugfs_remove_recursive(cake_mq_debugfs);
 }
 
 module_init(cake_module_init)
