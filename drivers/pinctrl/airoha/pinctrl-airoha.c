@@ -2627,7 +2627,7 @@ static int airoha_pinmux_set_direction(struct pinctrl_dev *pctrl_dev,
 {
 	struct airoha_pinctrl *pinctrl = pinctrl_dev_get_drvdata(pctrl_dev);
 	u32 mask, index;
-	int err, pin;
+	int err, pin, offset;
 
 	pin = airoha_convert_pin_to_reg_offset(pctrl_dev, range, p);
 	if (pin < 0)
@@ -2642,11 +2642,12 @@ static int airoha_pinmux_set_direction(struct pinctrl_dev *pctrl_dev,
 		return err;
 
 	/* set direction */
-	mask = BIT(2 * (pin % AIROHA_REG_GPIOCTRL_NUM_PIN));
+	offset = 2 * (pin % AIROHA_REG_GPIOCTRL_NUM_PIN);
+	mask = GENMASK(offset + 1, offset); /* always clear the two bits per GPIO */
 	index = pin / AIROHA_REG_GPIOCTRL_NUM_PIN;
 	return regmap_update_bits(pinctrl->regmap,
 				  pinctrl->gpiochip.dir[index], mask,
-				  !input ? mask : 0);
+				  !input ? BIT(offset) : 0);
 }
 
 static const struct pinmux_ops airoha_pmxops = {
