@@ -164,7 +164,7 @@ static int airoha_gpio_set_direction(struct gpio_chip *chip, unsigned int gpio,
 {
 	struct airoha_pinctrl *pinctrl = gpiochip_get_data(chip);
 	u32 mask, index;
-	int err;
+	int err, offset;
 
 	/* set output enable */
 	mask = BIT(gpio % AIROHA_PIN_BANK_SIZE);
@@ -176,12 +176,13 @@ static int airoha_gpio_set_direction(struct gpio_chip *chip, unsigned int gpio,
 		return err;
 
 	/* set direction */
-	mask = BIT(2 * (gpio % AIROHA_REG_GPIOCTRL_NUM_PIN));
+	offset = 2 * (gpio % AIROHA_REG_GPIOCTRL_NUM_PIN);
+	mask = GENMASK(offset + 1, offset); /* always clear the two bits per GPIO */
 	index = gpio / AIROHA_REG_GPIOCTRL_NUM_PIN;
 
 	return regmap_update_bits(pinctrl->regmap,
 				  pinctrl->gpio_regs->dir[index], mask,
-				  !input ? mask : 0);
+				  !input ? BIT(offset) : 0);
 }
 
 static int airoha_gpio_direction_input(struct gpio_chip *chip,
