@@ -412,3 +412,100 @@ const struct phylink_mac_ops mxl862xx_phylink_mac_ops = {
 	.mac_link_up = mxl862xx_phylink_mac_link_up,
 	.mac_select_pcs = mxl862xx_phylink_mac_select_pcs,
 };
+
+/* --- SerDes ethtool statistics --- */
+
+static const char mxl862xx_serdes_stats[][ETH_GSTRING_LEN] = {
+	"serdes_tx_main",
+	"serdes_tx_pre",
+	"serdes_tx_post",
+	"serdes_tx_iboost",
+	"serdes_tx_vboost",
+	"serdes_tx_vboost_en",
+	"serdes_rx_att",
+	"serdes_rx_vga1",
+	"serdes_rx_vga2",
+	"serdes_rx_ctle_boost",
+	"serdes_rx_ctle_pole",
+	"serdes_rx_dfe_tap1",
+	"serdes_rx_dfe_bypass",
+	"serdes_rx_adapt_mode",
+	"serdes_rx_adapt_sel",
+};
+
+static bool mxl862xx_port_has_serdes_stats(struct dsa_switch *ds, int port)
+{
+	struct mxl862xx_priv *priv = ds->priv;
+
+	/* Firmware reads EQ/signal status per XPCS, not per lane.  Expose
+	 * the stats only on the slot-0 port of each XPCS (9 and 13) so
+	 * users don't see four duplicate copies labelled as if they were
+	 * independent per-port readings.
+	 */
+	return (port == 9 || port == 13) &&
+	       MXL862XX_FW_VER_MIN(priv, 1, 0, 84);
+}
+
+int mxl862xx_serdes_stats_count(struct dsa_switch *ds, int port)
+{
+	if (mxl862xx_port_has_serdes_stats(ds, port))
+		return ARRAY_SIZE(mxl862xx_serdes_stats);
+
+	return 0;
+}
+
+void mxl862xx_serdes_get_strings(struct dsa_switch *ds, int port, u8 *data)
+{
+	int i;
+
+	if (!mxl862xx_port_has_serdes_stats(ds, port))
+		return;
+
+	for (i = 0; i < ARRAY_SIZE(mxl862xx_serdes_stats); i++)
+		ethtool_puts(&data, mxl862xx_serdes_stats[i]);
+}
+
+static u64 mxl862xx_eq_effective(const struct mxl862xx_xpcs_eq_item *it)
+{
+	return it->ovrd_en ? it->ovrd : it->value;
+}
+
+void mxl862xx_serdes_get_stats(struct dsa_switch *ds, int port, u64 *data)
+{
+	struct mxl862xx_xpcs_eq_get eq = {
+		.port_id = MXL862XX_SERDES_PORT_ID(port),
+	};
+	int ret;
+
+	if (!mxl862xx_port_has_serdes_stats(ds, port))
+		return;
+
+	ret = MXL862XX_API_READ(ds->priv, MXL862XX_XPCS_EQ_GET, eq);
+	if (ret) {
+		dev_err(ds->dev,
+			"port %d: XPCS EQ_GET failed: %d\n", port, ret);
+		return;
+	}
+	if ((s16)le16_to_cpu(eq.result) < 0) {
+		dev_err(ds->dev,
+			"port %d: XPCS EQ_GET firmware result: %d\n",
+			port, (s16)le16_to_cpu(eq.result));
+		return;
+	}
+
+	*data++ = mxl862xx_eq_effective(&eq.tx.main);
+	*data++ = mxl862xx_eq_effective(&eq.tx.pre);
+	*data++ = mxl862xx_eq_effective(&eq.tx.post);
+	*data++ = mxl862xx_eq_effective(&eq.tx.iboost_lvl);
+	*data++ = mxl862xx_eq_effective(&eq.tx.vboost_lvl);
+	*data++ = mxl862xx_eq_effective(&eq.tx.vboost_en);
+	*data++ = mxl862xx_eq_effective(&eq.rx.att_lvl);
+	*data++ = mxl862xx_eq_effective(&eq.rx.vga1_gain);
+	*data++ = mxl862xx_eq_effective(&eq.rx.vga2_gain);
+	*data++ = mxl862xx_eq_effective(&eq.rx.ctle_boost);
+	*data++ = mxl862xx_eq_effective(&eq.rx.ctle_pole);
+	*data++ = mxl862xx_eq_effective(&eq.rx.dfe_tap1);
+	*data++ = mxl862xx_eq_effective(&eq.rx.dfe_bypass);
+	*data++ = mxl862xx_eq_effective(&eq.rx.adapt_mode);
+	*data++ = mxl862xx_eq_effective(&eq.rx.adapt_sel);
+}
