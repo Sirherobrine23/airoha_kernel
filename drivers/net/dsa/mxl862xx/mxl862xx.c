@@ -1960,6 +1960,8 @@ static void mxl862xx_get_strings(struct dsa_switch *ds, int port,
 
 	for (i = 0; i < ARRAY_SIZE(mxl862xx_mib); i++)
 		ethtool_puts(&data, mxl862xx_mib[i].name);
+
+	mxl862xx_serdes_get_strings(ds, port, data);
 }
 
 static int mxl862xx_get_sset_count(struct dsa_switch *ds, int port, int sset)
@@ -1967,7 +1969,7 @@ static int mxl862xx_get_sset_count(struct dsa_switch *ds, int port, int sset)
 	if (sset != ETH_SS_STATS)
 		return 0;
 
-	return ARRAY_SIZE(mxl862xx_mib);
+	return ARRAY_SIZE(mxl862xx_mib) + mxl862xx_serdes_stats_count(ds, port);
 }
 
 static int mxl862xx_read_rmon(struct dsa_switch *ds, int port,
@@ -2003,6 +2005,8 @@ static void mxl862xx_get_ethtool_stats(struct dsa_switch *ds, int port,
 		else
 			*data++ = le64_to_cpu(*(__le64 *)field);
 	}
+
+	mxl862xx_serdes_get_stats(ds, port, data);
 }
 
 static void mxl862xx_get_eth_mac_stats(struct dsa_switch *ds, int port,
