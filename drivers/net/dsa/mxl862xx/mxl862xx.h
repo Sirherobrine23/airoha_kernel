@@ -148,6 +148,47 @@ struct mxl862xx_evlan_block {
 };
 
 /**
+ * struct mxl862xx_port_stats - 64-bit accumulated hardware port statistics
+ *
+ * The firmware RMON counters are 32-bit free-running (64-bit for byte
+ * counters). This structure holds 64-bit accumulators alongside the
+ * previous raw snapshot so that deltas can be computed across polls,
+ * handling 32-bit wrap correctly via unsigned subtraction.
+ */
+struct mxl862xx_port_stats {
+	/* 64-bit accumulators */
+	u64 rx_packets;
+	u64 tx_packets;
+	u64 rx_bytes;
+	u64 tx_bytes;
+	u64 rx_errors;
+	u64 tx_errors;
+	u64 rx_dropped;
+	u64 tx_dropped;
+	u64 multicast;
+	u64 collisions;
+	u64 rx_length_errors;
+	u64 rx_crc_errors;
+	u64 rx_frame_errors;
+	/* Previous raw RMON values for delta computation */
+	u32 prev_rx_good_pkts;
+	u32 prev_tx_good_pkts;
+	u64 prev_rx_good_bytes;
+	u64 prev_tx_good_bytes;
+	u32 prev_rx_fcserror_pkts;
+	u32 prev_rx_under_size_error_pkts;
+	u32 prev_rx_oversize_error_pkts;
+	u32 prev_rx_align_error_pkts;
+	u32 prev_tx_dropped_pkts;
+	u32 prev_rx_dropped_pkts;
+	u32 prev_rx_evlan_discard_pkts;
+	u32 prev_mtu_exceed_discard_pkts;
+	u32 prev_tx_acm_dropped_pkts;
+	u32 prev_rx_multicast_pkts;
+	u32 prev_tx_coll_count;
+};
+
+/**
  * struct mxl862xx_port - per-port state tracked by the driver
  * @priv:                back-pointer to switch private data; needed by
  *                       deferred work handlers to access ds and priv
@@ -178,6 +219,10 @@ struct mxl862xx_evlan_block {
  *                       The worker acquires rtnl_lock() to serialize with
  *                       DSA callbacks and checks @setup_done to avoid
  *                       acting on torn-down ports.
+ * @stats:               64-bit accumulated hardware statistics; updated
+ *                       periodically by the stats polling work
+ * @stats_lock:          protects accumulator reads in .get_stats64 against
+ *                       concurrent updates from the polling work
  */
 struct mxl862xx_port {
 	struct mxl862xx_priv *priv;
@@ -195,7 +240,14 @@ struct mxl862xx_port {
 	bool host_flood_uc;
 	bool host_flood_mc;
 	struct work_struct host_flood_work;
+	/* Hardware stats accumulation */
+	struct mxl862xx_port_stats stats;
+	spinlock_t stats_lock;
 };
+
+/* Bit indices for struct mxl862xx_priv::flags */
+#define MXL862XX_FLAG_CRC_ERR		0
+#define MXL862XX_FLAG_WORK_STOPPED	1
 
 /**
  * struct mxl862xx_priv - driver private data for an MxL862xx switch
@@ -203,8 +255,10 @@ struct mxl862xx_port {
  * @mdiodev:            MDIO device used to communicate with the switch firmware
  * @crc_err_work:       deferred work for shutting down all ports on MDIO CRC
  *                      errors
- * @crc_err:            set atomically before CRC-triggered shutdown, cleared
- *                      after
+ * @flags:              atomic status flags; %MXL862XX_FLAG_CRC_ERR is set
+ *                      before CRC-triggered shutdown and cleared after;
+ *                      %MXL862XX_FLAG_WORK_STOPPED is set before cancelling
+ *                      stats_work to prevent rescheduling during teardown
  * @drop_meter:         index of the single shared zero-rate firmware meter
  *                      used to unconditionally drop traffic (used to block
  *                      flooding)
@@ -216,18 +270,21 @@ struct mxl862xx_port {
  * @evlan_ingress_size: per-port ingress Extended VLAN block size
  * @evlan_egress_size:  per-port egress Extended VLAN block size
  * @vf_block_size:      per-port VLAN Filter block size
+ * @stats_work:         periodic work item that polls RMON hardware counters
+ *                      and accumulates them into 64-bit per-port stats
  */
 struct mxl862xx_priv {
 	struct dsa_switch *ds;
 	struct mdio_device *mdiodev;
 	struct work_struct crc_err_work;
-	unsigned long crc_err;
+	unsigned long flags;
 	u16 drop_meter;
 	struct mxl862xx_port ports[MXL862XX_MAX_PORTS];
 	u16 bridges[MXL862XX_MAX_BRIDGES + 1];
 	u16 evlan_ingress_size;
 	u16 evlan_egress_size;
 	u16 vf_block_size;
+	struct delayed_work stats_work;
 };
 
 #endif /* __MXL862XX_H */
