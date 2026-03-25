@@ -960,9 +960,11 @@ static int en7581_pci_enable(struct clk_hw *hw)
 	struct regmap *map = cg->map;
 	u32 mask;
 
-	mask = REG_PCI_CONTROL_REFCLK_EN0 | REG_PCI_CONTROL_REFCLK_EN1 |
-	       REG_PCI_CONTROL_PERSTOUT1 | REG_PCI_CONTROL_PERSTOUT2 |
-	       REG_PCI_CONTROL_PERSTOUT;
+	/* Only enable reference clocks - PERST is managed separately by the
+	 * PCIe controller driver to allow proper sequencing of MAC register
+	 * configuration between PERST assert and deassert.
+	 */
+	mask = REG_PCI_CONTROL_REFCLK_EN0 | REG_PCI_CONTROL_REFCLK_EN1;
 	regmap_set_bits(map, REG_PCI_CONTROL, mask);
 
 	return 0;
@@ -974,9 +976,8 @@ static void en7581_pci_disable(struct clk_hw *hw)
 	struct regmap *map = cg->map;
 	u32 mask;
 
-	mask = REG_PCI_CONTROL_REFCLK_EN0 | REG_PCI_CONTROL_REFCLK_EN1 |
-	       REG_PCI_CONTROL_PERSTOUT1 | REG_PCI_CONTROL_PERSTOUT2 |
-	       REG_PCI_CONTROL_PERSTOUT;
+	/* Only disable reference clocks - PCIe driver manages PERST */
+	mask = REG_PCI_CONTROL_REFCLK_EN0 | REG_PCI_CONTROL_REFCLK_EN1;
 	regmap_clear_bits(map, REG_PCI_CONTROL, mask);
 	usleep_range(1000, 2000);
 }
