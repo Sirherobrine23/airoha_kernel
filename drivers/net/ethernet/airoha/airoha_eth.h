@@ -19,7 +19,6 @@
 #define AIROHA_MAX_NUM_GDM_PORTS	4
 #define AIROHA_MAX_NUM_GDM_DEVS		2
 #define AIROHA_MAX_NUM_QDMA		2
-#define AIROHA_MAX_NUM_IRQ_BANKS	4
 #define AIROHA_MAX_DSA_PORTS		7
 #define AIROHA_MAX_NUM_RSTS		3
 #define AIROHA_MAX_MTU			9220
@@ -27,30 +26,48 @@
 #define AIROHA_MAX_PACKET_SIZE		2048
 #define AIROHA_NUM_QOS_CHANNELS		4
 #define AIROHA_NUM_QOS_QUEUES		8
-#define AIROHA_NUM_TX_RING		32
-#define AIROHA_NUM_RX_RING		32
-#define AIROHA_NUM_NETDEV_TX_RINGS	(AIROHA_NUM_TX_RING + \
+#define AIROHA_NUM_NETDEV_TX_RINGS(_soc) (_soc->tx_ring + \
 					 AIROHA_NUM_QOS_CHANNELS)
 #define AIROHA_FE_MC_MAX_VLAN_TABLE	64
 #define AIROHA_FE_MC_MAX_VLAN_PORT	16
 #define AIROHA_NUM_TX_IRQ		2
-#define AIROHA_RX_HEADROOM		(NET_SKB_PAD + NET_IP_ALIGN)
-#define AIROHA_RX_LEN(_n)		((_n) - AIROHA_RX_HEADROOM)
 #define HW_DSCP_NUM			2048
 #define IRQ_QUEUE_LEN(_n)		((_n) ? 1024 : 2048)
-#define TX_DSCP_NUM			1024
-#define RX_DSCP_NUM(_n)			\
-	((_n) ==  2 ? 128 :		\
-	 (_n) == 11 ? 128 :		\
-	 (_n) == 15 ? 128 :		\
-	 (_n) ==  0 ? 1024 : 16)
+#define TX_DSCP_NUM(_n) 	\
+	((_n) == 0 ? 1536 : 	\
+	(_n) == 1 ? 128 : 	\
+	(_n) == 2 ? 128 : 	\
+	(_n) == 3 ? 128 : 	\
+	(_n) == 4 ? 128 : 	\
+	(_n) == 5 ? 128 : 	\
+	(_n) == 6 ? 1024 : 	\
+	(_n) == 7 ? 4096 : 1024)
+#define RX_DSCP_NUM(_n)		\
+	((_n) == 0 ? 512 :	\
+	(_n) == 1 ? 1024 :	\
+	(_n) == 2 ? 128 :	\
+	(_n) == 3 ? 16 :	\
+	(_n) == 4 ? 16 :	\
+	(_n) == 5 ? 8 :		\
+	(_n) == 6 ? 8 :		\
+	(_n) == 7 ? 16 :	\
+	(_n) == 8 ? 16 :	\
+	(_n) == 9 ? 16 :	\
+	(_n) == 10 ? 16 :	\
+	(_n) == 11 ? 128 :	\
+	(_n) == 12 ? 16 :	\
+	(_n) == 13 ? 16 :	\
+	(_n) == 14 ? 16 :	\
+	(_n) == 15 ? 128 : 16)
 
-#define AIROHA_LRO_PAGE_ORDER		order_base_2(SZ_16K / PAGE_SIZE)
-#define AIROHA_MAX_NUM_LRO_QUEUES	8
-#define AIROHA_RXQ_LRO_EN_MASK		GENMASK(7, 0)
-#define AIROHA_RXQ_LRO_MAX_AGG_COUNT	64
-#define AIROHA_RXQ_LRO_MAX_AGG_TIME	100
-#define AIROHA_RXQ_LRO_MAX_AGE_TIME	2000
+#define AIROHA_LRO_PAGE_ORDER			2
+#define AIROHA_MAX_NUM_LRO_QUEUES		8
+#define EN7523_AIROHA_MAX_NUM_LRO_QUEUES	4
+#define AIROHA_RXQ_LRO_EN_MASK			GENMASK(31, 24)
+#define EN7523_AIROHA_RXQ_LRO_EN_MASK		GENMASK(14, 11)
+#define AIROHA_RXQ_LRO_MAX_AGG_COUNT		64
+#define AIROHA_RXQ_LRO_MAX_AGG_TIME		100
+#define AIROHA_RXQ_LRO_MAX_AGE_TIME		2000 /* 1ms */
 
 #define AIROHA_HW_FEATURES			\
 	(NETIF_F_IP_CSUM | NETIF_F_RXCSUM |	\
@@ -63,11 +80,8 @@
 #define QDMA_METER_IDX(_n)		((_n) & 0xff)
 #define QDMA_METER_GROUP(_n)		(((_n) >> 8) & 0x3)
 
-#define PPE_SRAM_NUM_ENTRIES		(8 * 1024)
-#define PPE_STATS_NUM_ENTRIES		(4 * 1024)
-#define PPE_DRAM_NUM_ENTRIES		(16 * 1024)
 #define PPE_ENTRY_SIZE			80
-#define PPE_RAM_NUM_ENTRIES_SHIFT(_n)	(__ffs((_n) >> 10))
+#define PPE_RAM_NUM_ENTRIES_SHIFT(_n)	((_n) == 512 ? 7 : __ffs((_n) >> 10))
 
 #define MTK_HDR_LEN			4
 #define MTK_HDR_XMIT_TAGGED_TPID_8100	1
@@ -79,6 +93,8 @@ enum {
 	QDMA_INT_REG_IDX2,
 	QDMA_INT_REG_IDX3,
 	QDMA_INT_REG_IDX4,
+	QDMA_INT_REG_IDX5,
+	QDMA_INT_REG_IDX6,
 	QDMA_INT_REG_MAX
 };
 
@@ -93,6 +109,13 @@ enum {
 	HSGMII_LAN_7583_ETH_SRCPORT	= 0x16,
 	HSGMII_LAN_7583_PCIE_SRCPORT	= 0x18,
 	HSGMII_LAN_7583_USB_SRCPORT,
+};
+
+enum {
+	HSGMII_LAN_7523_PCIE0_SRCPORT	= 0x16,
+	HSGMII_LAN_7523_PCIE1_SRCPORT,
+	HSGMII_LAN_7523_USB_SRCPORT,
+	HSGMII_LAN_7523_ETH_SRCPORT	= 0xffff,
 };
 
 enum {
@@ -412,6 +435,8 @@ struct airoha_foe_ipv6 {
 		u32 ports;
 	};
 
+	u32 rsv2[3];
+	
 	u32 data;
 
 	u32 ib2;
@@ -539,12 +564,12 @@ struct airoha_qdma {
 
 	int users;
 
-	struct airoha_irq_bank irq_banks[AIROHA_MAX_NUM_IRQ_BANKS];
+	struct airoha_irq_bank *irq_banks;
 
 	struct airoha_tx_irq_queue q_tx_irq[AIROHA_NUM_TX_IRQ];
 
-	struct airoha_queue q_tx[AIROHA_NUM_TX_RING];
-	struct airoha_queue q_rx[AIROHA_NUM_RX_RING];
+	struct airoha_queue *q_tx;
+	struct airoha_queue *q_rx;
 
 	DECLARE_BITMAP(qos_channel_map, AIROHA_NUM_QOS_CHANNELS);
 };
@@ -584,8 +609,14 @@ struct airoha_gdm_port {
 	struct metadata_dst *dsa_meta[AIROHA_MAX_DSA_PORTS];
 };
 
-#define AIROHA_RXD4_PPE_CPU_REASON	GENMASK(20, 16)
-#define AIROHA_RXD4_FOE_ENTRY		GENMASK(15, 0)
+#define AIROHA_RXD4_PPE_CPU_REASON			GENMASK(20, 16)
+#define AIROHA_RXD4_FOE_ENTRY				GENMASK(15, 0)
+#define AN7581_AIROHA_RXD4_FOE_ENTRY_INVALID		0xffff
+#define EN7523_AIROHA_RXD4_FOE_ENTRY_INVALID		0x7fff
+
+#define AIROHA_PPE_CPU_REASON_FOE_UNHIT			0x0d
+#define AIROHA_PPE_CPU_REASON_HIT_UNBIND		0x0e
+#define AIROHA_PPE_CPU_REASON_HIT_UNBIND_RATE_REACHED	0x0f
 
 struct airoha_ppe {
 	struct airoha_ppe_dev dev;
@@ -595,6 +626,7 @@ struct airoha_ppe {
 	dma_addr_t foe_dma;
 
 	struct rhashtable l2_flows;
+	struct hlist_head pending_flows;
 
 	struct hlist_head *foe_flow;
 	u16 *foe_check_time;
@@ -610,6 +642,11 @@ struct airoha_eth_soc_data {
 	const char * const *xsi_rsts_names;
 	int num_xsi_rsts;
 	int num_ppe;
+	int tx_ring, rx_ring;
+	int irq_banks;
+	u32 ppe_stats_entries;
+	u32 ppe_sram_entries;
+	u32 ppe_dram_entries;
 	struct {
 		int (*get_sport)(struct airoha_gdm_port *port, int nbq);
 		u32 (*get_vip_port)(struct airoha_gdm_port *port, int nbq);
@@ -625,6 +662,7 @@ struct airoha_eth {
 
 	unsigned long state;
 	void __iomem *fe_regs;
+	void __iomem *gdmp_regs;
 
 	struct airoha_npu __rcu *npu;
 
@@ -672,7 +710,7 @@ u32 airoha_rmw(void __iomem *base, u32 offset, u32 mask, u32 val);
 
 static inline u16 airoha_qdma_get_txq(struct airoha_qdma *qdma, u16 qid)
 {
-	return qid % ARRAY_SIZE(qdma->q_tx);
+	return qid % qdma->eth->soc->tx_ring;
 }
 
 static inline bool airoha_is_lan_gdm_dev(struct airoha_gdm_dev *dev)
@@ -680,26 +718,46 @@ static inline bool airoha_is_lan_gdm_dev(struct airoha_gdm_dev *dev)
 	return !(dev->flags & AIROHA_PRIV_F_WAN);
 }
 
-static inline bool airoha_is_7581(struct airoha_eth *eth)
-{
-	return eth->soc->version == 0x7581;
-}
+enum airoha_ids {
+	en7523 = 0x7523,
+	en7581 = 0x7581,
+	an7583 = 0x7583,
+};
 
-static inline bool airoha_is_7583(struct airoha_eth *eth)
-{
-	return eth->soc->version == 0x7583;
-}
+#define airoha_is(eth, ...) ({ \
+	const enum airoha_ids _ids[] = {__VA_ARGS__, 0}; \
+	bool _found = false; \
+	for (int _i = 0; _ids[_i] != 0; _i++) { \
+		if (_ids[_i] == (eth)->soc->version) { \
+			_found = true; \
+			break; \
+		} \
+	} \
+	_found; \
+})
 
 static inline bool airoha_qdma_is_lro_queue(struct airoha_queue *q)
 {
 	struct airoha_qdma *qdma = q->qdma;
 	int qid = q - &qdma->q_rx[0];
+	
+	switch (qdma->eth->soc->version) {
+	case en7523:
+		/* en7523 11-14 */
+		BUILD_BUG_ON(hweight32(EN7523_AIROHA_RXQ_LRO_EN_MASK) >
+			     EN7523_AIROHA_MAX_NUM_LRO_QUEUES);
 
-	/* EN7581 SoC supports at most 8 LRO rx queues */
-	BUILD_BUG_ON(hweight32(AIROHA_RXQ_LRO_EN_MASK) >
-		     AIROHA_MAX_NUM_LRO_QUEUES);
-
-	return !!(AIROHA_RXQ_LRO_EN_MASK & BIT(qid));
+		return !!(EN7523_AIROHA_RXQ_LRO_EN_MASK & BIT(qid));
+	case en7581:
+	case an7583:
+		/* EN7581 SoC supports at most 8 LRO rx queues (24-31) */
+		BUILD_BUG_ON(hweight32(AIROHA_RXQ_LRO_EN_MASK) >
+			     AIROHA_MAX_NUM_LRO_QUEUES);
+	
+		return !!(AIROHA_RXQ_LRO_EN_MASK & BIT(qid));
+	default:
+		return false;
+	}
 }
 
 int airoha_get_fe_port(struct airoha_gdm_dev *dev);
