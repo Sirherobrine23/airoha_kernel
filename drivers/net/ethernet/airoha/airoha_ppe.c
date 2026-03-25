@@ -37,10 +37,10 @@ static int airoha_ppe_get_num_stats_entries(struct airoha_ppe *ppe)
 	if (!IS_ENABLED(CONFIG_NET_AIROHA_FLOW_STATS))
 		return -EOPNOTSUPP;
 
-	if (airoha_is_7583(ppe->eth))
+	if (airoha_is(ppe->eth, an7583))
 		return -EOPNOTSUPP;
 
-	return PPE_STATS_NUM_ENTRIES;
+	return PPE_STATS_NUM_ENTRIES(ppe->eth->soc);
 }
 
 static int airoha_ppe_get_total_num_stats_entries(struct airoha_ppe *ppe)
@@ -60,14 +60,14 @@ static u32 airoha_ppe_get_total_sram_num_entries(struct airoha_ppe *ppe)
 {
 	struct airoha_eth *eth = ppe->eth;
 
-	return PPE_SRAM_NUM_ENTRIES * eth->soc->num_ppe;
+	return PPE_SRAM_NUM_ENTRIES(ppe->eth->soc) * eth->soc->num_ppe;
 }
 
 u32 airoha_ppe_get_total_num_entries(struct airoha_ppe *ppe)
 {
 	u32 sram_num_entries = airoha_ppe_get_total_sram_num_entries(ppe);
 
-	return sram_num_entries + PPE_DRAM_NUM_ENTRIES;
+	return sram_num_entries + PPE_DRAM_NUM_ENTRIES(ppe->eth->soc);
 }
 
 bool airoha_ppe_is_enabled(struct airoha_eth *eth, int index)
@@ -101,14 +101,14 @@ void airoha_ppe_set_cpu_port(struct airoha_gdm_port *port, u8 ppe_id)
 
 static void airoha_ppe_hw_init(struct airoha_ppe *ppe)
 {
-	u32 sram_ppe_num_data_entries = PPE_SRAM_NUM_ENTRIES, sram_num_entries;
+	u32 sram_ppe_num_data_entries = PPE_SRAM_NUM_ENTRIES(ppe->eth->soc), sram_num_entries;
 	u32 sram_tb_size, dram_num_entries;
 	struct airoha_eth *eth = ppe->eth;
 	int i, sram_num_stats_entries;
 
 	sram_num_entries = airoha_ppe_get_total_sram_num_entries(ppe);
-	sram_tb_size = sram_num_entries * sizeof(struct airoha_foe_entry);
-	dram_num_entries = PPE_RAM_NUM_ENTRIES_SHIFT(PPE_DRAM_NUM_ENTRIES);
+	sram_tb_size = sram_num_entries * PPE_ENTRY_SIZE(eth->soc);
+	dram_num_entries = PPE_RAM_NUM_ENTRIES_SHIFT(PPE_DRAM_NUM_ENTRIES(ppe->eth->soc));
 
 	sram_num_stats_entries = airoha_ppe_get_num_stats_entries(ppe);
 	if (sram_num_stats_entries > 0)
@@ -298,7 +298,7 @@ static int airoha_ppe_foe_entry_prepare(struct airoha_eth *eth,
 	struct airoha_foe_mac_info_common *l2;
 	u8 smac_id = 0xf;
 
-	memset(hwe, 0, sizeof(*hwe));
+	memset(hwe, 0, PPE_ENTRY_SIZE(eth->soc));
 
 	val = FIELD_PREP(AIROHA_FOE_IB1_BIND_STATE, AIROHA_FOE_STATE_BIND) |
 	      FIELD_PREP(AIROHA_FOE_IB1_BIND_PACKET_TYPE, type) |
@@ -538,7 +538,7 @@ static int airoha_ppe_foe_get_flow_stats_index(struct airoha_ppe *ppe,
 	if (ppe_num_stats_entries < 0)
 		return ppe_num_stats_entries;
 
-	*index = hash >= ppe_num_stats_entries ? hash - PPE_STATS_NUM_ENTRIES
+	*index = hash >= ppe_num_stats_entries ? hash - PPE_STATS_NUM_ENTRIES(ppe->eth->soc)
 					       : hash;
 
 	return 0;
@@ -628,8 +628,8 @@ airoha_ppe_foe_get_entry_locked(struct airoha_ppe *ppe, u32 hash)
 	lockdep_assert_held(&ppe_lock);
 
 	if (hash < sram_num_entries) {
-		u32 *hwe = ppe->foe + hash * sizeof(struct airoha_foe_entry);
-		bool ppe2 = hash >= PPE_SRAM_NUM_ENTRIES;
+		u32 *hwe = ppe->foe + hash * PPE_ENTRY_SIZE(ppe->eth->soc);
+		bool ppe2 = hash >= PPE_SRAM_NUM_ENTRIES(ppe->eth->soc);
 		struct airoha_eth *eth = ppe->eth;
 		u32 val;
 		int i;
@@ -643,13 +643,13 @@ airoha_ppe_foe_get_entry_locked(struct airoha_ppe *ppe, u32 hash)
 					     REG_PPE_RAM_CTRL(ppe2)))
 			return NULL;
 
-		for (i = 0; i < sizeof(struct airoha_foe_entry) / sizeof(*hwe);
+		for (i = 0; i < PPE_ENTRY_SIZE(eth->soc) / PPE_ENTRY_SIZE(eth->soc);
 		     i++)
 			hwe[i] = airoha_fe_rr(eth,
 					      REG_PPE_RAM_ENTRY(ppe2, i));
 	}
 
-	return ppe->foe + hash * sizeof(struct airoha_foe_entry);
+	return ppe->foe + hash * PPE_ENTRY_SIZE(ppe->eth->soc);
 }
 
 struct airoha_foe_entry *airoha_ppe_foe_get_entry(struct airoha_ppe *ppe,
@@ -683,12 +683,12 @@ static bool airoha_ppe_foe_compare_entry(struct airoha_flow_table_entry *e,
 
 static int airoha_ppe_foe_commit_sram_entry(struct airoha_ppe *ppe, u32 hash)
 {
-	struct airoha_foe_entry *hwe = ppe->foe + hash * sizeof(*hwe);
-	bool ppe2 = hash >= PPE_SRAM_NUM_ENTRIES;
+	struct airoha_foe_entry *hwe = ppe->foe + hash * PPE_ENTRY_SIZE(ppe->eth->soc);
+	bool ppe2 = hash >= PPE_SRAM_NUM_ENTRIES(ppe->eth->soc);
 	u32 *ptr = (u32 *)hwe, val;
 	int i;
 
-	for (i = 0; i < sizeof(*hwe) / sizeof(*ptr); i++)
+	for (i = 0; i < PPE_ENTRY_SIZE(ppe->eth->soc) / sizeof(*ptr); i++)
 		airoha_fe_wr(ppe->eth, REG_PPE_RAM_ENTRY(ppe2, i), ptr[i]);
 
 	wmb();
@@ -707,13 +707,13 @@ static int airoha_ppe_foe_commit_entry(struct airoha_ppe *ppe,
 				       u32 hash, bool rx_wlan)
 {
 	u32 sram_num_entries = airoha_ppe_get_total_sram_num_entries(ppe);
-	struct airoha_foe_entry *hwe = ppe->foe + hash * sizeof(*hwe);
+	struct airoha_foe_entry *hwe = ppe->foe + hash * PPE_ENTRY_SIZE(ppe->eth->soc);
 	u32 ts = airoha_ppe_get_timestamp(ppe);
 	struct airoha_eth *eth = ppe->eth;
 	struct airoha_npu *npu;
 	int err = 0;
 
-	memcpy(&hwe->d, &e->d, sizeof(*hwe) - sizeof(hwe->ib1));
+	memcpy(&hwe->d, &e->d, PPE_ENTRY_SIZE(eth->soc) - sizeof(hwe->ib1));
 	wmb();
 
 	e->ib1 &= ~AIROHA_FOE_IB1_BIND_TIMESTAMP;
@@ -1325,7 +1325,7 @@ static int airoha_ppe_flush_sram_entries(struct airoha_ppe *ppe)
 	for (i = 0; i < sram_num_entries; i++) {
 		int err;
 
-		memset(&hwe[i], 0, sizeof(*hwe));
+		memset(&hwe[i], 0, PPE_ENTRY_SIZE(ppe->eth->soc));
 		err = airoha_ppe_foe_commit_sram_entry(ppe, i);
 		if (err)
 			break;
@@ -1511,7 +1511,7 @@ int airoha_ppe_init(struct airoha_eth *eth)
 	eth->ppe = ppe;
 
 	ppe_num_entries = airoha_ppe_get_total_num_entries(ppe);
-	foe_size = ppe_num_entries * sizeof(struct airoha_foe_entry);
+	foe_size = ppe_num_entries * PPE_ENTRY_SIZE(eth->soc);
 	ppe->foe = dmam_alloc_coherent(eth->dev, foe_size, &ppe->foe_dma,
 				       GFP_KERNEL);
 	if (!ppe->foe)
