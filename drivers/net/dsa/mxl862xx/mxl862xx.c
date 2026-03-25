@@ -811,6 +811,15 @@ static int mxl862xx_sync_bridge_members(struct dsa_switch *ds,
 		__set_bit(mxl862xx_cpu_bridge_port_id(ds, port),
 			  priv->ports[port].portmap);
 
+		/* Hairpin: include the port's own bridge port so bridged
+		 * frames can egress the ingress port.
+		 * For LAG ports this adds the LAG bridge port, which
+		 * propagates to the LAG BP in the second loop below.
+		 */
+		if (priv->ports[port].hairpin)
+			__set_bit(mxl862xx_lag_bridge_port(priv, port),
+				  priv->ports[port].portmap);
+
 		err = mxl862xx_set_bridge_port(ds, port);
 		if (err)
 			ret = err;
@@ -3898,7 +3907,7 @@ static int mxl862xx_port_pre_bridge_flags(struct dsa_switch *ds, int port,
 					  struct netlink_ext_ack *extack)
 {
 	if (flags.mask & ~(BR_FLOOD | BR_MCAST_FLOOD | BR_BCAST_FLOOD |
-			   BR_LEARNING))
+			   BR_LEARNING | BR_HAIRPIN_MODE))
 		return -EINVAL;
 
 	return 0;
@@ -3912,6 +3921,7 @@ static int mxl862xx_port_bridge_flags(struct dsa_switch *ds, int port,
 	unsigned long old_block = priv->ports[port].flood_block;
 	unsigned long block = old_block;
 	int ret;
+	u16 bp;
 
 	if (flags.mask & BR_FLOOD) {
 		if (flags.val & BR_FLOOD)
@@ -3940,7 +3950,22 @@ static int mxl862xx_port_bridge_flags(struct dsa_switch *ds, int port,
 	if (flags.mask & BR_LEARNING)
 		priv->ports[port].learning = !!(flags.val & BR_LEARNING);
 
-	if ((block != old_block) || (flags.mask & BR_LEARNING)) {
+	if (flags.mask & BR_HAIRPIN_MODE) {
+		bp = mxl862xx_lag_bridge_port(priv, port);
+		priv->ports[port].hairpin = !!(flags.val & BR_HAIRPIN_MODE);
+
+		/* Hairpin adds/removes the port's own bridge port from its
+		 * cached portmap. Only this port is affected -- push the
+		 * updated portmap directly.
+		 */
+		if (flags.val & BR_HAIRPIN_MODE)
+			__set_bit(bp, priv->ports[port].portmap);
+		else
+			__clear_bit(bp, priv->ports[port].portmap);
+	}
+
+	if ((block != old_block) ||
+	    (flags.mask & (BR_LEARNING | BR_HAIRPIN_MODE))) {
 		priv->ports[port].flood_block = block;
 		ret = mxl862xx_set_bridge_port(ds, port);
 		if (ret)
