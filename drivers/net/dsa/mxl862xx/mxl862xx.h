@@ -214,6 +214,9 @@ struct mxl862xx_port_stats {
  * @flood_block:         bitmask of firmware meter indices that are currently
  *                       rate-limiting flood traffic on this port (zero-rate
  *                       meters used to block flooding)
+ * @isolated:            true when port isolation is active (BR_ISOLATED);
+ *                       isolated ports are excluded from each other's
+ *                       forwarding portmaps
  * @learning:            true when address learning is enabled on this port
  * @setup_done:          set at end of port_setup, cleared at start of
  *                       port_teardown; guards deferred work against
@@ -261,6 +264,7 @@ struct mxl862xx_port {
 	u16 fid;
 	DECLARE_BITMAP(portmap, MXL862XX_MAX_BRIDGE_PORTS);
 	unsigned long flood_block;
+	bool isolated;
 	bool learning;
 	bool setup_done;
 	/* VLAN state */
