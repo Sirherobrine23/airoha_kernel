@@ -983,8 +983,12 @@ char *symbol_string(char *buf, char *end, void *ptr,
 		    struct printf_spec spec, const char *fmt)
 {
 	unsigned long value;
-#ifdef CONFIG_KALLSYMS
 	char sym[KSYM_SYMBOL_LEN];
+#ifndef CONFIG_KALLSYMS
+#ifdef CONFIG_MODULES
+	struct module *mod;
+#endif
+	int len;
 #endif
 
 	if (fmt[1] == 'R')
@@ -1005,8 +1009,16 @@ char *symbol_string(char *buf, char *end, void *ptr,
 
 	return string_nocheck(buf, end, sym, spec);
 #else
-	return special_hex_number(buf, end, value, sizeof(void *));
+	len = snprintf(sym, sizeof(sym), "0x%lx", value);
+#ifdef CONFIG_MODULES
+	mod = __module_address(value);
+	if (mod)
+		snprintf(sym + len, sizeof(sym) - len, " [%s@%p+0x%x]",
+			 mod->name, mod->mem[MOD_TEXT].base,
+			 mod->mem[MOD_TEXT].size);
 #endif
+#endif
+	return string(buf, end, sym, spec);
 }
 
 static const struct printf_spec default_str_spec = {
