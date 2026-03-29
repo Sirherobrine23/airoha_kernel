@@ -90,6 +90,7 @@ enum {
 
 enum {
 	DEV_STATE_INITIALIZED,
+	DEV_STATE_REGISTERED,
 };
 
 enum {
