@@ -87,7 +87,7 @@ static int io_populate_area_dma(struct io_zcrx_ifq *ifq,
 
 static void io_release_dmabuf(struct io_zcrx_mem *mem)
 {
-	if (!IS_ENABLED(CONFIG_DMA_SHARED_BUFFER))
+	if (!IS_REACHABLE(CONFIG_DMA_SHARED_BUFFER))
 		return;
 
 	if (mem->sgt)
@@ -118,7 +118,7 @@ static int io_import_dmabuf(struct io_zcrx_ifq *ifq,
 		return -EINVAL;
 	if (WARN_ON_ONCE(!ifq->dev))
 		return -EFAULT;
-	if (!IS_ENABLED(CONFIG_DMA_SHARED_BUFFER))
+	if (!IS_REACHABLE(CONFIG_DMA_SHARED_BUFFER))
 		return -EINVAL;
 
 	mem->is_dmabuf = true;
