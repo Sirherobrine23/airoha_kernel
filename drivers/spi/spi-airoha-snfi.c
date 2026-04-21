@@ -565,6 +565,11 @@ static ssize_t airoha_snand_dirmap_read(struct spi_mem_dirmap_desc *desc,
 
 	as_ctrl = spi_controller_get_devdata(spi->controller);
 
+	err = regmap_write(as_ctrl->regmap_ctrl, REG_SPI_CTRL_MACMUX_SEL,
+			   spi_get_chipselect(desc->mem->spi, 0));
+	if (err)
+		return err;
+
 	/* minimum oob size is 64 */
 	bytes = round_up(offs + len, 64);
 
@@ -758,6 +763,11 @@ static ssize_t airoha_snand_dirmap_write(struct spi_mem_dirmap_desc *desc,
 
 	as_ctrl = spi_controller_get_devdata(spi->controller);
 
+	err = regmap_write(as_ctrl->regmap_ctrl, REG_SPI_CTRL_MACMUX_SEL,
+			   spi_get_chipselect(desc->mem->spi, 0));
+	if (err)
+		return err;
+
 	/* minimum oob size is 64 */
 	bytes = round_up(offs + len, 64);
 
@@ -938,6 +948,11 @@ static int airoha_snand_exec_op(struct spi_mem *mem,
 	int i, err;
 
 	as_ctrl = spi_controller_get_devdata(mem->spi->controller);
+
+	err = regmap_write(as_ctrl->regmap_ctrl, REG_SPI_CTRL_MACMUX_SEL,
+			   spi_get_chipselect(mem->spi, 0));
+	if (err)
+		return err;
 
 	op_len = op->cmd.nbytes;
 	addr_len = op->addr.nbytes;
