@@ -565,11 +565,6 @@ static ssize_t airoha_snand_dirmap_read(struct spi_mem_dirmap_desc *desc,
 
 	as_ctrl = spi_controller_get_devdata(spi->controller);
 
-	err = regmap_write(as_ctrl->regmap_ctrl, REG_SPI_CTRL_MACMUX_SEL,
-			   spi_get_chipselect(desc->mem->spi, 0));
-	if (err)
-		return err;
-
 	/* minimum oob size is 64 */
 	bytes = round_up(offs + len, 64);
 
@@ -601,6 +596,11 @@ static ssize_t airoha_snand_dirmap_read(struct spi_mem_dirmap_desc *desc,
 	err = airoha_snand_set_mode(as_ctrl, SPI_MODE_DMA);
 	if (err < 0)
 		return err;
+
+	err = regmap_write(as_ctrl->regmap_ctrl, REG_SPI_CTRL_MACMUX_SEL,
+			   spi_get_chipselect(spi, 0));
+	if (err)
+		goto error_dma_mode_off;
 
 	/* NFI reset */
 	err = regmap_write(as_ctrl->regmap_nfi, REG_SPI_NFI_CON,
@@ -763,11 +763,6 @@ static ssize_t airoha_snand_dirmap_write(struct spi_mem_dirmap_desc *desc,
 
 	as_ctrl = spi_controller_get_devdata(spi->controller);
 
-	err = regmap_write(as_ctrl->regmap_ctrl, REG_SPI_CTRL_MACMUX_SEL,
-			   spi_get_chipselect(desc->mem->spi, 0));
-	if (err)
-		return err;
-
 	/* minimum oob size is 64 */
 	bytes = round_up(offs + len, 64);
 
@@ -795,6 +790,11 @@ static ssize_t airoha_snand_dirmap_write(struct spi_mem_dirmap_desc *desc,
 	err = airoha_snand_set_mode(as_ctrl, SPI_MODE_DMA);
 	if (err < 0)
 		return err;
+
+	err = regmap_write(as_ctrl->regmap_ctrl, REG_SPI_CTRL_MACMUX_SEL,
+			   spi_get_chipselect(spi, 0));
+	if (err)
+		goto error_dma_mode_off;
 
 	/* NFI reset */
 	err = regmap_write(as_ctrl->regmap_nfi, REG_SPI_NFI_CON,
@@ -949,11 +949,6 @@ static int airoha_snand_exec_op(struct spi_mem *mem,
 
 	as_ctrl = spi_controller_get_devdata(mem->spi->controller);
 
-	err = regmap_write(as_ctrl->regmap_ctrl, REG_SPI_CTRL_MACMUX_SEL,
-			   spi_get_chipselect(mem->spi, 0));
-	if (err)
-		return err;
-
 	op_len = op->cmd.nbytes;
 	addr_len = op->addr.nbytes;
 	dummy_len = op->dummy.nbytes;
@@ -972,6 +967,11 @@ static int airoha_snand_exec_op(struct spi_mem *mem,
 	/* switch to manual mode */
 	err = airoha_snand_set_mode(as_ctrl, SPI_MODE_MANUAL);
 	if (err < 0)
+		return err;
+
+	err = regmap_write(as_ctrl->regmap_ctrl, REG_SPI_CTRL_MACMUX_SEL,
+			   spi_get_chipselect(mem->spi, 0));
+	if (err)
 		return err;
 
 	err = airoha_snand_set_cs(as_ctrl, SPI_CHIP_SEL_LOW);
