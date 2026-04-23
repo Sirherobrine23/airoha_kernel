@@ -96,6 +96,8 @@ enum {
 #define MTK_FOE_WINFO_AMSDU_HF		BIT(23)
 #define MTK_FOE_WINFO_AMSDU_EN		BIT(24)
 
+#define MTK_FOE_TPORT_IDX		GENMASK(3, 0)
+
 enum {
 	MTK_FOE_STATE_INVALID,
 	MTK_FOE_STATE_UNBIND,
@@ -124,6 +126,8 @@ struct mtk_foe_mac_info {
 	/* netsys_v3 */
 	u32 w3info;
 	u32 amsdu;
+	u16 tinfo;
+	u16 tport;
 };
 
 /* software-only entry type */
