@@ -479,6 +479,7 @@ int mtk_foe_entry_set_queue(struct mtk_eth *eth, struct mtk_foe_entry *entry,
 			    unsigned int queue)
 {
 	u32 *ib2 = mtk_foe_entry_ib2(eth, entry);
+	struct mtk_foe_mac_info *l2;
 
 	if (mtk_is_netsys_v2_or_greater(eth)) {
 		*ib2 &= ~MTK_FOE_IB2_QID_V2;
@@ -488,6 +489,12 @@ int mtk_foe_entry_set_queue(struct mtk_eth *eth, struct mtk_foe_entry *entry,
 		*ib2 &= ~MTK_FOE_IB2_QID;
 		*ib2 |= FIELD_PREP(MTK_FOE_IB2_QID, queue);
 		*ib2 |= MTK_FOE_IB2_PSE_QOS;
+	}
+
+	if (mtk_is_netsys_v3_or_greater(eth)) {
+		l2 = mtk_foe_entry_l2(eth, entry);
+		l2->tport &= ~MTK_FOE_TPORT_IDX;
+		l2->tport |= FIELD_PREP(MTK_FOE_TPORT_IDX, 1);
 	}
 
 	return 0;
