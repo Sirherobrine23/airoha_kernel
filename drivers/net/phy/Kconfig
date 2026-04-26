@@ -170,6 +170,11 @@ config AS21XXX_PHY
 	  AS21210PB1 that all register with the PHY ID 0x7500 0x7500
 	  before the firmware is loaded.
 
+config AIROHA_EN8801S_PHY
+	tristate "Drivers for Airoha EN8801S Gigabit PHYs"
+	help
+	  Currently supports the Airoha EN8801S PHY.
+
 config AIR_EN8811H_PHY
 	tristate "Airoha EN8811H 2.5 Gigabit PHY"
 	select PHY_COMMON_PROPS
