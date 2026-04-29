@@ -937,6 +937,17 @@ static int get_phy_c45_devs_in_pkg(struct mii_bus *bus, int addr, int dev_addr,
 	return 0;
 }
 
+static bool phy_c45_skip_mmd_read(int mmd, struct phy_c45_device_ids *c45_ids)
+{
+	if (c45_ids->device_ids[MDIO_MMD_PMAPMD] == 0x001cc849 ||
+	    c45_ids->device_ids[MDIO_MMD_PMAPMD] == 0x001cc84a) {
+		/* Reading MMD 30 on RTL8221B may cause the PHY to stop working. */
+		return mmd == MDIO_MMD_VEND1;
+	}
+
+	return false;
+}
+
 /**
  * get_phy_c45_ids - reads the specified addr for its 802.3-c45 IDs.
  * @bus: the target MII bus
@@ -1002,6 +1013,10 @@ static int get_phy_c45_ids(struct mii_bus *bus, int addr,
 	/* Now probe Device Identifiers for each device present. */
 	for (i = 1; i < num_ids; i++) {
 		if (!(devs_in_pkg & (1 << i)))
+			continue;
+
+		/* Some PHYs react badly to reading from specific MMDs. */
+		if (phy_c45_skip_mmd_read(i, c45_ids))
 			continue;
 
 		if (i == MDIO_MMD_VEND1 || i == MDIO_MMD_VEND2) {
