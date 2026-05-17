@@ -385,6 +385,7 @@ static int nf_flow_offload_forward(struct nf_flowtable_ctx *ctx,
 	struct flow_offload *flow;
 	unsigned int thoff, mtu;
 	struct iphdr *iph;
+	u8 dscp;
 
 	dir = tuplehash->tuple.dir;
 	flow = container_of(tuplehash, struct flow_offload, tuplehash[dir]);
@@ -413,6 +414,12 @@ static int nf_flow_offload_forward(struct nf_flowtable_ctx *ctx,
 
 	iph = ip_hdr(skb);
 	nf_flow_nat_ip(flow, skb, thoff, dir, iph);
+
+	dscp = FIELD_GET(INET_DSCP_MASK, ipv4_get_dsfield(iph));
+	if (tuplehash->tuple.dscp != dscp)
+		ipv4_change_dsfield(iph, INET_ECN_MASK,
+				    FIELD_PREP(INET_DSCP_MASK,
+					       tuplehash->tuple.dscp));
 
 	ip_decrease_ttl(iph);
 	skb_clear_tstamp(skb);
@@ -674,6 +681,7 @@ static int nf_flow_offload_ipv6_forward(struct nf_flowtable_ctx *ctx,
 	struct flow_offload *flow;
 	unsigned int thoff, mtu;
 	struct ipv6hdr *ip6h;
+	u8 dscp;
 
 	dir = tuplehash->tuple.dir;
 	flow = container_of(tuplehash, struct flow_offload, tuplehash[dir]);
@@ -701,6 +709,12 @@ static int nf_flow_offload_ipv6_forward(struct nf_flowtable_ctx *ctx,
 
 	ip6h = ipv6_hdr(skb);
 	nf_flow_nat_ipv6(flow, skb, dir, ip6h);
+
+	dscp = FIELD_GET(INET_DSCP_MASK, ipv6_get_dsfield(ip6h));
+	if (tuplehash->tuple.dscp != dscp)
+		ipv6_change_dsfield(ip6h, INET_ECN_MASK,
+				    FIELD_PREP(INET_DSCP_MASK,
+					       tuplehash->tuple.dscp));
 
 	ip6h->hop_limit--;
 	skb_clear_tstamp(skb);

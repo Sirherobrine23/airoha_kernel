@@ -103,6 +103,7 @@ static int nf_flow_rule_match(struct nf_flow_match *match,
 	NF_FLOW_DISSECTOR(match, FLOW_DISSECTOR_KEY_BASIC, basic);
 	NF_FLOW_DISSECTOR(match, FLOW_DISSECTOR_KEY_IPV4_ADDRS, ipv4);
 	NF_FLOW_DISSECTOR(match, FLOW_DISSECTOR_KEY_IPV6_ADDRS, ipv6);
+	NF_FLOW_DISSECTOR(match, FLOW_DISSECTOR_KEY_IP, ip);
 	NF_FLOW_DISSECTOR(match, FLOW_DISSECTOR_KEY_TCP, tcp);
 	NF_FLOW_DISSECTOR(match, FLOW_DISSECTOR_KEY_PORTS, tp);
 
@@ -167,6 +168,10 @@ static int nf_flow_rule_match(struct nf_flow_match *match,
 	mask->control.addr_type = 0xffff;
 	match->dissector.used_keys |= BIT_ULL(key->control.addr_type);
 	mask->basic.n_proto = 0xffff;
+
+	key->ip.tos = FIELD_PREP(INET_DSCP_MASK, tuple->dscp);
+	mask->ip.tos = 0xff;
+	match->dissector.used_keys |= BIT_ULL(FLOW_DISSECTOR_KEY_IP);
 
 	switch (tuple->l4proto) {
 	case IPPROTO_TCP:

@@ -8,6 +8,7 @@
 #include <linux/spinlock.h>
 #include <linux/netfilter/nf_conntrack_common.h>
 #include <linux/netfilter/nf_tables.h>
+#include <net/dsfield.h>
 #include <net/ip.h>
 #include <net/flow.h>
 #include <net/netfilter/nf_tables.h>
@@ -19,6 +20,27 @@
 struct nft_flow_offload {
 	struct nft_flowtable	*flowtable;
 };
+
+static void nft_flow_set_dscp(const struct nft_pktinfo *pkt,
+			      struct flow_offload *flow,
+			      enum ip_conntrack_dir dir)
+{
+	struct flow_offload_tuple *tuple = &flow->tuplehash[dir].tuple;
+	struct sk_buff *skb = pkt->skb;
+
+	switch (skb->protocol) {
+	case htons(ETH_P_IP):
+		tuple->dscp = FIELD_GET(INET_DSCP_MASK,
+					ipv4_get_dsfield(ip_hdr(skb)));
+		break;
+	case htons(ETH_P_IPV6):
+		tuple->dscp = FIELD_GET(INET_DSCP_MASK,
+					ipv6_get_dsfield(ipv6_hdr(skb)));
+		break;
+	default:
+		break;
+	}
+}
 
 static bool nft_flow_offload_skip(struct sk_buff *skb, int family)
 {
@@ -111,6 +133,9 @@ static void nft_flow_offload_eval(const struct nft_expr *expr,
 	flow = flow_offload_alloc(ct);
 	if (!flow)
 		goto err_flow_alloc;
+
+	nft_flow_set_dscp(pkt, flow, dir);
+	nft_flow_set_dscp(pkt, flow, !dir);
 
 	flow_offload_route_init(flow, &route);
 	if (tcph)
