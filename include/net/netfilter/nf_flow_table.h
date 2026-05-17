@@ -29,6 +29,7 @@ struct nf_flow_key {
 		struct flow_dissector_key_ipv4_addrs	ipv4;
 		struct flow_dissector_key_ipv6_addrs	ipv6;
 	};
+	struct flow_dissector_key_ip			ip;
 	struct flow_dissector_key_keyid			enc_key_id;
 	union {
 		struct flow_dissector_key_ipv4_addrs	enc_ipv4;
@@ -138,6 +139,7 @@ struct flow_offload_tuple {
 					encap_num:2,
 					in_vlan_ingress:2;
 	u16				mtu;
+	u8				dscp;
 	union {
 		struct {
 			struct dst_entry *dst_cache;
