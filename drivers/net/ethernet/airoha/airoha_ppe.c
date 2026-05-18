@@ -11,6 +11,7 @@
 #include <linux/rhashtable.h>
 #include <net/ipv6.h>
 #include <net/pkt_cls.h>
+#include <net/route.h>
 
 #include "airoha_regs.h"
 #include "airoha_eth.h"
@@ -314,7 +315,7 @@ static int airoha_ppe_foe_entry_prepare(struct airoha_eth *eth,
 					struct airoha_foe_entry *hwe,
 					struct net_device *netdev, int type,
 					struct airoha_flow_data *data,
-					int l4proto)
+					int l4proto, u8 dsfield)
 {
 	u32 qdata = FIELD_PREP(AIROHA_FOE_SHAPER_ID, 0x7f), ports_pad, val;
 	int wlan_etype = -EINVAL, dsa_port = airoha_get_dsa_port(&netdev);
@@ -349,7 +350,7 @@ static int airoha_ppe_foe_entry_prepare(struct airoha_eth *eth,
 		} else {
 			struct airoha_gdm_dev *dev = netdev_priv(netdev);
 			struct airoha_gdm_port *port;
-			u8 pse_port, channel;
+			u8 pse_port, channel, priority;
 
 			if (!airoha_is_valid_gdm_dev(eth, dev))
 				return -EINVAL;
@@ -369,9 +370,13 @@ static int airoha_ppe_foe_entry_prepare(struct airoha_eth *eth,
 			 */
 			channel = dsa_port >= 0 ? dsa_port : port->id;
 			channel = channel % AIROHA_NUM_QOS_CHANNELS;
-			qdata |= FIELD_PREP(AIROHA_FOE_CHANNEL, channel);
+			priority = rt_tos2priority(dsfield);
+			priority = priority % AIROHA_NUM_QOS_QUEUES;
+			qdata |= FIELD_PREP(AIROHA_FOE_CHANNEL, channel) |
+				 FIELD_PREP(AIROHA_FOE_QID, priority);
 
 			val |= FIELD_PREP(AIROHA_FOE_IB2_PSE_PORT, pse_port) |
+			       FIELD_PREP(AIROHA_FOE_IB2_DSCP, dsfield) |
 			       AIROHA_FOE_IB2_PSE_QOS;
 			/* For downlink traffic consume SRAM memory for hw
 			 * forwarding descriptors queue.
@@ -1063,9 +1068,9 @@ static int airoha_ppe_flow_offload_replace(struct airoha_eth *eth,
 	struct net_device *odev = NULL;
 	struct flow_action_entry *act;
 	struct airoha_foe_entry hwe;
+	u8 dsfield = 0, l4proto = 0;
 	int err, i, offload_type;
 	u16 addr_type = 0;
-	u8 l4proto = 0;
 
 	if (rhashtable_lookup(&eth->flow_table, &f->cookie,
 			      airoha_flow_table_params))
@@ -1093,6 +1098,13 @@ static int airoha_ppe_flow_offload_replace(struct airoha_eth *eth,
 		l4proto = match.key->ip_proto;
 	} else {
 		return -EOPNOTSUPP;
+	}
+
+	if (flow_rule_match_key(rule, FLOW_DISSECTOR_KEY_IP)) {
+		struct flow_match_ip match;
+
+		flow_rule_match_ip(rule, &match);
+		dsfield = match.key->tos;
 	}
 
 	switch (addr_type) {
@@ -1160,7 +1172,7 @@ static int airoha_ppe_flow_offload_replace(struct airoha_eth *eth,
 		return -EINVAL;
 
 	err = airoha_ppe_foe_entry_prepare(eth, &hwe, odev, offload_type,
-					   &data, l4proto);
+					   &data, l4proto, dsfield);
 	if (err)
 		return err;
 
