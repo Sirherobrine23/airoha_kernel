@@ -23,6 +23,7 @@
 #define AIROHA_MAX_DSA_PORTS		7
 #define AIROHA_MAX_NUM_RSTS		3
 #define AIROHA_MAX_MTU			9220
+#define AIROHA_MAX_RX_SIZE		16128
 #define AIROHA_MAX_PACKET_SIZE		2048
 #define AIROHA_NUM_QOS_CHANNELS		4
 #define AIROHA_NUM_QOS_QUEUES		8
@@ -715,6 +716,7 @@ airoha_qdma_deref(struct airoha_gdm_dev *dev)
 					 lockdep_is_held(&flow_offload_mutex));
 }
 
+void airoha_ppe_set_mtu(struct airoha_gdm_dev *dev);
 void airoha_ppe_set_cpu_port(struct airoha_gdm_dev *dev, u8 ppe_id, u8 fport);
 bool airoha_ppe_is_enabled(struct airoha_eth *eth, int index);
 void airoha_ppe_check_skb(struct airoha_ppe_dev *dev, struct sk_buff *skb,
