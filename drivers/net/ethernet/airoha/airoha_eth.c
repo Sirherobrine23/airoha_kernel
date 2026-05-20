@@ -181,10 +181,15 @@ static void airoha_fe_maccr_init(struct airoha_eth *eth)
 {
 	int p;
 
-	for (p = 1; p <= ARRAY_SIZE(eth->ports); p++)
+	for (p = 1; p <= ARRAY_SIZE(eth->ports); p++) {
 		airoha_fe_set(eth, REG_GDM_FWD_CFG(p),
 			      GDM_TCP_CKSUM_MASK | GDM_UDP_CKSUM_MASK |
 			      GDM_IP4_CKSUM_MASK | GDM_DROP_CRC_ERR_MASK);
+		airoha_fe_rmw(eth, REG_GDM_LEN_CFG(p),
+			      GDM_SHORT_LEN_MASK | GDM_LONG_LEN_MASK,
+			      FIELD_PREP(GDM_SHORT_LEN_MASK, 60) |
+			      FIELD_PREP(GDM_LONG_LEN_MASK, AIROHA_MAX_RX_SIZE));
+	}
 
 	airoha_fe_rmw(eth, REG_CDM_VLAN_CTRL(1), CDM_VLAN_MASK,
 		      FIELD_PREP(CDM_VLAN_MASK, 0x8100));
@@ -2102,15 +2107,25 @@ static void airoha_qdma_stop(struct airoha_qdma *qdma)
 	}
 }
 
+static void airoha_dev_set_mtu(struct net_device *netdev)
+{
+	struct airoha_gdm_dev *dev = netdev_priv(netdev);
+
+	airoha_ppe_set_mtu(dev);
+	if (!airoha_is_lan_gdm_dev(dev))
+		airoha_fe_rmw(dev->eth, REG_WAN_MTU0,
+			      WAN_MTU0_MASK,
+			      FIELD_PREP(WAN_MTU0_MASK, netdev->mtu));
+}
+
 static int airoha_dev_open(struct net_device *netdev)
 {
-	int err, len = ETH_HLEN + netdev->mtu + ETH_FCS_LEN;
 	struct airoha_gdm_dev *dev = netdev_priv(netdev);
 	struct airoha_gdm_port *port = dev->port;
-	u32 cur_len, pse_port = FE_PSE_PORT_PPE1;
 	struct airoha_eth *eth = dev->eth;
 	struct airoha_qdma *qdma;
-	int qdma_id;
+	u32 pse_port = FE_PSE_PORT_PPE1;
+	int err, qdma_id;
 
 	/* HW LRO is configured on the QDMA and it is shared between
 	 * all the devices using it. Refuse to open a second device on
@@ -2146,19 +2161,7 @@ static int airoha_dev_open(struct net_device *netdev)
 		airoha_fe_clear(eth, REG_GDM_INGRESS_CFG(port->id),
 				GDM_STAG_EN_MASK);
 
-	cur_len = airoha_fe_get(eth, REG_GDM_LEN_CFG(port->id),
-				GDM_LONG_LEN_MASK);
-	if (!port->users || len > cur_len) {
-		/* Opening a sibling net_device with a larger MTU updates the
-		 * MTU of already running devices. This is required to allow
-		 * multiple net_devices with different MTUs to share the same
-		 * GDM port.
-		 */
-		airoha_fe_rmw(eth, REG_GDM_LEN_CFG(port->id),
-			      GDM_SHORT_LEN_MASK | GDM_LONG_LEN_MASK,
-			      FIELD_PREP(GDM_SHORT_LEN_MASK, 60) |
-			      FIELD_PREP(GDM_LONG_LEN_MASK, len));
-	}
+	airoha_dev_set_mtu(netdev);
 	port->users++;
 
 	airoha_qdma_start(qdma);
@@ -2177,30 +2180,6 @@ static int airoha_dev_open(struct net_device *netdev)
 	return 0;
 }
 
-static void airoha_set_port_mtu(struct airoha_eth *eth,
-				struct airoha_gdm_port *port)
-{
-	u32 len = 0;
-	int i;
-
-	for (i = 0; i < ARRAY_SIZE(port->devs); i++) {
-		struct airoha_gdm_dev *dev = port->devs[i];
-		struct net_device *netdev;
-
-		if (!dev)
-			continue;
-
-		netdev = netdev_from_priv(dev);
-		if (netif_running(netdev))
-			len = max_t(u32, len, netdev->mtu);
-	}
-	len += ETH_HLEN + ETH_FCS_LEN;
-
-	airoha_fe_rmw(eth, REG_GDM_LEN_CFG(port->id),
-		      GDM_LONG_LEN_MASK,
-		      FIELD_PREP(GDM_LONG_LEN_MASK, len));
-}
-
 static int airoha_dev_stop(struct net_device *netdev)
 {
 	struct airoha_gdm_dev *dev = netdev_priv(netdev);
@@ -2215,7 +2194,7 @@ static int airoha_dev_stop(struct net_device *netdev)
 
 	qdma = airoha_qdma_deref(dev);
 	if (--port->users)
-		airoha_set_port_mtu(dev->eth, port);
+		airoha_ppe_set_mtu(dev);
 	else
 		airoha_set_gdm_port_fwd_cfg(qdma->eth,
 					    REG_GDM_FWD_CFG(port->id),
@@ -2274,10 +2253,6 @@ static int airoha_enable_gdm2_loopback(struct airoha_gdm_dev *dev)
 		      FIELD_PREP(LPBK_CHAN_MASK, chan) |
 		      LBK_GAP_MODE_MASK | LBK_LEN_MODE_MASK |
 		      LBK_CHAN_MODE_MASK | LPBK_EN_MASK);
-	airoha_fe_rmw(eth, REG_GDM_LEN_CFG(AIROHA_GDM2_IDX),
-		      GDM_SHORT_LEN_MASK | GDM_LONG_LEN_MASK,
-		      FIELD_PREP(GDM_SHORT_LEN_MASK, 60) |
-		      FIELD_PREP(GDM_LONG_LEN_MASK, AIROHA_MAX_MTU));
 	/* Forward the traffic to the proper GDM port */
 	pse_port = port->id == AIROHA_GDM3_IDX ? FE_PSE_PORT_GDM3
 					       : FE_PSE_PORT_GDM4;
@@ -2472,7 +2447,7 @@ static int airoha_dev_change_mtu(struct net_device *netdev, int mtu)
 
 	WRITE_ONCE(netdev->mtu, mtu);
 	if (port->users)
-		airoha_set_port_mtu(dev->eth, port);
+		airoha_dev_set_mtu(netdev);
 
 	return 0;
 }
@@ -3496,6 +3471,7 @@ static void airoha_disable_qos_for_gdm34(struct net_device *netdev)
 
 	dev->flags &= ~AIROHA_PRIV_F_WAN;
 	airoha_dev_set_qdma(dev);
+	airoha_dev_set_mtu(netdev);
 
 	airoha_set_macaddr(dev, netdev->dev_addr);
 	if (netif_running(netdev))
@@ -3544,6 +3520,7 @@ static int airoha_enable_qos_for_gdm34(struct net_device *netdev,
 	if (err)
 		goto error_disable_loopback;
 
+	airoha_dev_set_mtu(netdev);
 	if (netif_running(netdev)) {
 		u32 pse_port;
 
