@@ -106,6 +106,7 @@ static const struct of_device_id allowlist[] __initconst = {
 static const struct of_device_id blocklist[] __initconst = {
 	{ .compatible = "airoha,an7583", },
 	{ .compatible = "airoha,en7581", },
+	{ .compatible = "airoha,en7523", },
 
 	{ .compatible = "allwinner,sun50i-a100" },
 	{ .compatible = "allwinner,sun50i-h6", },

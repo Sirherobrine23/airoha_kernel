@@ -1,0 +1,19 @@
+/* SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause) */
+
+#ifndef __DT_BINDINGS_AIROHA_SOC_VARIANT_H
+#define __DT_BINDINGS_AIROHA_SOC_VARIANT_H
+
+#define AIROHA_CPU_HW_C		0x00000001 /* <= 1.0 GHz */
+#define AIROHA_CPU_HW_D		0x00000002 /* <= 1.2 GHz */
+#define AIROHA_CPU_HW_G		0x00000004 /* <= 1.3 GHz */
+#define AIROHA_CPU_HW_P		0x00000008 /* <= 1.4 GHz */
+#define AIROHA_CPU_HW_S		0x00000010 /* special */
+#define AIROHA_CPU_HW_I		0x00000020 /* special */
+
+#define AIROHA_CPU_HW_ALL	0x0000003f
+#define AIROHA_CPU_HW_1G	AIROHA_CPU_HW_ALL
+#define AIROHA_CPU_HW_12G	0x0000003e
+#define AIROHA_CPU_HW_13G	0x0000003c
+#define AIROHA_CPU_HW_14G	0x00000038
+
+#endif /* __DT_BINDINGS_AIROHA_SOC_VARIANT_H */

@@ -1,10 +1,13 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
+#include <linux/arm-smccc.h>
 #include <linux/bitfield.h>
 #include <linux/delay.h>
 #include <linux/clk-provider.h>
 #include <linux/io.h>
+#include <linux/irqflags.h>
 #include <linux/mfd/syscon.h>
+#include <linux/of_address.h>
 #include <linux/of_platform.h>
 #include <linux/platform_device.h>
 #include <linux/property.h>
@@ -16,6 +19,36 @@
 #include <dt-bindings/reset/airoha,an7583-reset.h>
 
 #define RST_NR_PER_BANK			32
+
+#define AIROHA_SIP_AVS_HANDLE		0x82000301
+#define AIROHA_AVS_OP_BASE		0xddddddd0
+#define AIROHA_AVS_OP_MASK		GENMASK(1, 0)
+#define AIROHA_AVS_OP_FREQ_DYN_ADJ	(AIROHA_AVS_OP_BASE | \
+					 FIELD_PREP(AIROHA_AVS_OP_MASK, 0x1))
+#define AIROHA_AVS_OP_GET_FREQ		(AIROHA_AVS_OP_BASE | \
+					 FIELD_PREP(AIROHA_AVS_OP_MASK, 0x2))
+
+#define EN7523_CPU_MIN_RATE		500000000UL
+#define EN7523_CPU_MAX_RATE		1400000000UL
+#define EN7523_CPU_RATE_STEP		50000000UL
+
+#define EN7523_CPUPLL_CLK_MUX		0x1e0
+#define EN7523_SCU_XTAL_SELECT		0x254
+#define EN7523_PLLRG_PROTECT		0x264
+#define EN7523_PLLRG_PROTECT_MASK	GENMASK(7, 0)
+#define EN7523_PLLRG_PROTECT_KEY	0x80
+#define EN7523_SYSPLL_PCW_25M		0x2a8
+#define EN7523_SYSPLL_PCW_20M		0x2ac
+#define EN7523_SYSPLL_DISABLE		0x2b0
+#define EN7523_SYSPLL_PCW_MASK		GENMASK(30, 24)
+#define EN7523_SYSPLL_CHG_BIT		BIT(3)
+
+#define EN7523_MCUCFG_CK_SWITCH_UNLOCK	0x640
+#define EN7523_MCUCFG_CK_SOURCE_SEL	0x7c0
+#define EN7523_MCUCFG_CK_UNLOCK_KEY	0x12
+#define EN7523_MCUCFG_CK_SEL_MASK	GENMASK(10, 9)
+#define EN7523_MCUCFG_CK_SEL_ARMPLL	1
+#define EN7523_MCUCFG_CK_SEL_PLL2	3
 
 #define REG_PCI_CONTROL			0x88
 #define   REG_PCI_CONTROL_PERSTOUT	BIT(29)
@@ -86,6 +119,18 @@ struct en_clk {
 	struct clk_hw hw;
 };
 
+struct en7523_cpu_clk {
+	struct clk_hw hw;
+	void __iomem *chip_scu;
+	void __iomem *mcucfg;
+	bool use_smc;
+};
+
+static void en7523_cpu_iounmap(void *base)
+{
+	iounmap(base);
+}
+
 struct en_rst_data {
 	const u16 *bank_ofs;
 	const u16 *idx_map;
@@ -96,6 +141,7 @@ struct en_rst_data {
 struct en_clk_soc_data {
 	bool probe_child;
 	u32 num_clocks;
+	u32 num_base_clks;
 	const u16 *rst_map;
 	int nr_resets;
 	const struct en_clk_desc *base_clks;
@@ -915,6 +961,251 @@ static const struct clk_ops en75xx_clk_ops = {
 	.set_rate = en75xx_set_rate,
 };
 
+
+#define to_en7523_cpu_clk(_hw) container_of(_hw, struct en7523_cpu_clk, hw)
+
+static unsigned long en7523_cpu_smc_get_rate(void)
+{
+	struct arm_smccc_res res;
+
+	arm_smccc_1_1_invoke(AIROHA_SIP_AVS_HANDLE, AIROHA_AVS_OP_GET_FREQ,
+			     0, 0, 0, 0, 0, 0, &res);
+
+	if (!res.a0 || res.a0 >= 2000)
+		return 0;
+
+	return (unsigned long)res.a0 * 1000000UL;
+}
+
+static bool en7523_cpu_smc_available(void)
+{
+	return !!en7523_cpu_smc_get_rate();
+}
+
+static int en7523_cpu_rate_to_state(unsigned long rate, unsigned int *state)
+{
+	if (rate < EN7523_CPU_MIN_RATE || rate > EN7523_CPU_MAX_RATE)
+		return -EINVAL;
+
+	if ((rate - EN7523_CPU_MIN_RATE) % EN7523_CPU_RATE_STEP)
+		return -EINVAL;
+
+	*state = (rate - EN7523_CPU_MIN_RATE) / EN7523_CPU_RATE_STEP;
+	return 0;
+}
+
+static int en7523_cpu_smc_set_rate(unsigned long rate)
+{
+	struct arm_smccc_res res;
+	unsigned int state;
+	int ret;
+
+	ret = en7523_cpu_rate_to_state(rate, &state);
+	if (ret)
+		return ret;
+
+	arm_smccc_1_1_invoke(AIROHA_SIP_AVS_HANDLE,
+			     AIROHA_AVS_OP_FREQ_DYN_ADJ,
+			     0, state, 0, 0, 0, 0, &res);
+
+	return res.a0 & BIT(0) ? -EINVAL : 0;
+}
+
+static u32 en7523_cpu_xtal_mhz(struct en7523_cpu_clk *cpu_clk)
+{
+	u32 val;
+
+	val = readl(cpu_clk->chip_scu + EN7523_SCU_XTAL_SELECT);
+
+	return val & BIT(19) ? 25 : 20;
+}
+
+static u32 en7523_cpu_pcw_reg(struct en7523_cpu_clk *cpu_clk)
+{
+	return en7523_cpu_xtal_mhz(cpu_clk) == 25 ?
+		EN7523_SYSPLL_PCW_25M : EN7523_SYSPLL_PCW_20M;
+}
+
+static unsigned long en7523_cpu_pll_get_rate(struct en7523_cpu_clk *cpu_clk)
+{
+	unsigned long rate;
+	u32 pcw, pcw_int, xtal;
+
+	xtal = en7523_cpu_xtal_mhz(cpu_clk);
+	if (!xtal)
+		return 0;
+
+	pcw = readl(cpu_clk->chip_scu + en7523_cpu_pcw_reg(cpu_clk));
+
+	pcw_int = FIELD_GET(EN7523_SYSPLL_PCW_MASK, pcw);
+	rate = (unsigned long)pcw_int * xtal * 1000000UL;
+
+	return rate / 2;
+}
+
+static void en7523_cpu_clock_switch(struct en7523_cpu_clk *cpu_clk,
+				    unsigned int sel)
+{
+	u32 val;
+
+	if (sel) {
+		val = readl(cpu_clk->chip_scu + EN7523_CPUPLL_CLK_MUX);
+		writel(val | BIT(sel - 1),
+		       cpu_clk->chip_scu + EN7523_CPUPLL_CLK_MUX);
+	}
+
+	val = readl(cpu_clk->mcucfg + EN7523_MCUCFG_CK_SWITCH_UNLOCK);
+	writel((val & ~0x1f) | EN7523_MCUCFG_CK_UNLOCK_KEY,
+	       cpu_clk->mcucfg + EN7523_MCUCFG_CK_SWITCH_UNLOCK);
+	udelay(1);
+
+	val = readl(cpu_clk->mcucfg + EN7523_MCUCFG_CK_SOURCE_SEL);
+	val &= ~EN7523_MCUCFG_CK_SEL_MASK;
+	val |= FIELD_PREP(EN7523_MCUCFG_CK_SEL_MASK, sel);
+	writel(val, cpu_clk->mcucfg + EN7523_MCUCFG_CK_SOURCE_SEL);
+}
+
+static int en7523_cpu_pll_set_rate(struct en7523_cpu_clk *cpu_clk,
+				   unsigned long rate)
+{
+	unsigned long flags;
+	unsigned int state;
+	u32 freq_mhz, old_chg, pcw_int, val, xtal;
+	int ret;
+
+	ret = en7523_cpu_rate_to_state(rate, &state);
+	if (ret)
+		return ret;
+
+	xtal = en7523_cpu_xtal_mhz(cpu_clk);
+	if (!xtal)
+		return -EIO;
+
+	freq_mhz = rate / 1000000UL;
+	pcw_int = (freq_mhz * 2) / xtal;
+	if ((pcw_int * xtal) / 2 != freq_mhz)
+		return -EINVAL;
+
+	local_irq_save(flags);
+
+	en7523_cpu_clock_switch(cpu_clk, EN7523_MCUCFG_CK_SEL_PLL2);
+
+	val = readl(cpu_clk->chip_scu + EN7523_PLLRG_PROTECT);
+	writel((val & ~EN7523_PLLRG_PROTECT_MASK) |
+	       EN7523_PLLRG_PROTECT_KEY,
+	       cpu_clk->chip_scu + EN7523_PLLRG_PROTECT);
+
+	val = readl(cpu_clk->chip_scu + en7523_cpu_pcw_reg(cpu_clk));
+	val &= ~EN7523_SYSPLL_PCW_MASK;
+	val |= FIELD_PREP(EN7523_SYSPLL_PCW_MASK, pcw_int);
+	writel(val, cpu_clk->chip_scu + en7523_cpu_pcw_reg(cpu_clk));
+
+	old_chg = readl(cpu_clk->chip_scu + EN7523_SYSPLL_DISABLE);
+	writel(old_chg ^ EN7523_SYSPLL_CHG_BIT,
+	       cpu_clk->chip_scu + EN7523_SYSPLL_DISABLE);
+
+	udelay(20);
+
+	en7523_cpu_clock_switch(cpu_clk, EN7523_MCUCFG_CK_SEL_ARMPLL);
+
+	val = readl(cpu_clk->chip_scu + EN7523_CPUPLL_CLK_MUX);
+	writel(val & ~BIT(2), cpu_clk->chip_scu + EN7523_CPUPLL_CLK_MUX);
+
+	val = readl(cpu_clk->chip_scu + EN7523_PLLRG_PROTECT);
+	writel(val & ~EN7523_PLLRG_PROTECT_MASK,
+	       cpu_clk->chip_scu + EN7523_PLLRG_PROTECT);
+
+	local_irq_restore(flags);
+	return 0;
+}
+
+static unsigned long en7523_cpu_clk_recalc_rate(struct clk_hw *hw,
+					unsigned long parent_rate)
+{
+	struct en7523_cpu_clk *cpu_clk = to_en7523_cpu_clk(hw);
+
+	if (cpu_clk->use_smc)
+		return en7523_cpu_smc_get_rate();
+
+	if (!cpu_clk->chip_scu)
+		return 0;
+
+	return en7523_cpu_pll_get_rate(cpu_clk);
+}
+
+static long en7523_cpu_clk_round_rate(struct clk_hw *hw, unsigned long rate,
+				      unsigned long *parent_rate)
+{
+	rate = clamp_val(rate, EN7523_CPU_MIN_RATE, EN7523_CPU_MAX_RATE);
+	rate -= EN7523_CPU_MIN_RATE;
+	rate = DIV_ROUND_CLOSEST(rate, EN7523_CPU_RATE_STEP) *
+	       EN7523_CPU_RATE_STEP;
+
+	return rate + EN7523_CPU_MIN_RATE;
+}
+
+static int en7523_cpu_clk_set_rate(struct clk_hw *hw, unsigned long rate,
+				   unsigned long parent_rate)
+{
+	struct en7523_cpu_clk *cpu_clk = to_en7523_cpu_clk(hw);
+	unsigned int state;
+	int ret;
+
+	ret = en7523_cpu_rate_to_state(rate, &state);
+	if (ret)
+		return ret;
+
+	if (cpu_clk->use_smc)
+		return en7523_cpu_smc_set_rate(rate);
+
+	return en7523_cpu_pll_set_rate(cpu_clk, rate);
+}
+
+static int en7523_cpu_clk_is_enabled(struct clk_hw *hw)
+{
+	return true;
+}
+
+static const struct clk_ops en7523_cpu_clk_ops = {
+	.recalc_rate = en7523_cpu_clk_recalc_rate,
+	.round_rate = en7523_cpu_clk_round_rate,
+	.set_rate = en7523_cpu_clk_set_rate,
+	.is_enabled = en7523_cpu_clk_is_enabled,
+};
+
+static struct clk_hw *en7523_register_cpu_clk(struct device *dev,
+				      void __iomem *chip_scu,
+				      void __iomem *mcucfg)
+{
+	struct clk_init_data init = {
+		.name = "cpu",
+		.ops = &en7523_cpu_clk_ops,
+		.flags = CLK_GET_RATE_NOCACHE | CLK_IS_CRITICAL,
+	};
+	struct en7523_cpu_clk *cpu_clk;
+	int ret;
+
+	cpu_clk = devm_kzalloc(dev, sizeof(*cpu_clk), GFP_KERNEL);
+	if (!cpu_clk)
+		return ERR_PTR(-ENOMEM);
+
+	cpu_clk->chip_scu = chip_scu;
+	cpu_clk->mcucfg = mcucfg;
+	cpu_clk->use_smc = en7523_cpu_smc_available();
+	if (!cpu_clk->use_smc && (!chip_scu || !mcucfg))
+		return ERR_PTR(-EOPNOTSUPP);
+	cpu_clk->hw.init = &init;
+
+	ret = devm_clk_hw_register(dev, &cpu_clk->hw);
+	if (ret)
+		return ERR_PTR(ret);
+
+	dev_info(dev, "CPU clock control using %s\n",
+		 cpu_clk->use_smc ? "ATF SMC" : "direct PLL programming");
+
+	return &cpu_clk->hw;
+}
+
 static int en75xx_register_clocks(struct device *dev,
 				  const struct en_clk_soc_data *soc_data,
 				  struct clk_hw_onecell_data *clk_data,
@@ -923,7 +1214,7 @@ static int en75xx_register_clocks(struct device *dev,
 	struct clk_hw *hw;
 	int i;
 
-	for (i = 0; i < soc_data->num_clocks - 1; i++) {
+	for (i = 0; i < soc_data->num_base_clks; i++) {
 		const struct en_clk_desc *desc = &soc_data->base_clks[i];
 		struct clk_init_data init = {
 			.ops = &en75xx_clk_ops,
@@ -1004,35 +1295,83 @@ static int en7523_clk_hw_init(struct platform_device *pdev,
 			      struct clk_hw_onecell_data *clk_data)
 {
 	struct device *dev = &pdev->dev;
-	void __iomem *np_base;
+	struct device_node *chip_scu_np;
+	void __iomem *chip_scu_base, *mcucfg = NULL, *np_base;
 	struct regmap *map, *clk_map;
+	struct clk_hw *hw;
+	bool split_layout;
 	int err;
 
-	if (of_property_present(dev->of_node, "airoha,chip-scu"))
+	split_layout = of_property_present(dev->of_node, "airoha,chip-scu");
+	if (split_layout) {
 		map = syscon_regmap_lookup_by_phandle(dev->of_node,
 						      "airoha,chip-scu");
-	else
-		map = syscon_regmap_lookup_by_compatible("airoha,chip-scu");
-	if (IS_ERR(map))
-		return PTR_ERR(map);
+		if (IS_ERR(map))
+			return PTR_ERR(map);
 
-	np_base = devm_platform_ioremap_resource(pdev, 0);
-	if (IS_ERR(np_base))
-		return PTR_ERR(np_base);
+		chip_scu_np = of_parse_phandle(dev->of_node,
+						 "airoha,chip-scu", 0);
+		if (!chip_scu_np)
+			return -ENODEV;
 
-	clk_map = devm_regmap_init_mmio(&pdev->dev, np_base, &en7523_clk_regmap_config);
+		chip_scu_base = of_iomap(chip_scu_np, 0);
+		of_node_put(chip_scu_np);
+		if (!chip_scu_base)
+			return -ENOMEM;
+
+		err = devm_add_action_or_reset(dev, en7523_cpu_iounmap,
+					       chip_scu_base);
+		if (err)
+			return err;
+
+		np_base = devm_platform_ioremap_resource_byname(pdev,
+							      "np-scu");
+		if (IS_ERR(np_base))
+			return PTR_ERR(np_base);
+
+		mcucfg = devm_platform_ioremap_resource_byname(pdev,
+							     "mcucfg");
+		if (IS_ERR(mcucfg))
+			return PTR_ERR(mcucfg);
+	} else {
+		chip_scu_base = devm_platform_ioremap_resource(pdev, 0);
+		if (IS_ERR(chip_scu_base))
+			return PTR_ERR(chip_scu_base);
+
+		map = devm_regmap_init_mmio(dev, chip_scu_base,
+					     &en7523_clk_regmap_config);
+		if (IS_ERR(map))
+			return PTR_ERR(map);
+
+		np_base = devm_platform_ioremap_resource(pdev, 1);
+		if (IS_ERR(np_base))
+			return PTR_ERR(np_base);
+	}
+
+	clk_map = devm_regmap_init_mmio(dev, np_base,
+				       &en7523_clk_regmap_config);
 	if (IS_ERR(clk_map))
 		return PTR_ERR(clk_map);
 
-	err = en75xx_register_clocks(&pdev->dev, soc_data, clk_data, map, clk_map);
+	err = en75xx_register_clocks(dev, soc_data, clk_data, map, clk_map);
 	if (err)
 		return err;
+
+	hw = en7523_register_cpu_clk(dev, chip_scu_base, mcucfg);
+	if (IS_ERR(hw)) {
+		if (PTR_ERR(hw) != -EOPNOTSUPP)
+			return PTR_ERR(hw);
+
+		dev_warn(dev, "CPU clock unavailable without ATF SMC or MCUCFG\n");
+	} else {
+		clk_data->hws[EN7523_CLK_CPU] = hw;
+	}
 
 	regmap_set_bits(map, REG_TRNG_BUS_CLK_GAT, REG_TRNG_BUS_EN);
 	regmap_set_bits(map, REG_TRNG_PER_CLK_GAT_1, REG_TRNG_PER1_EN);
 	regmap_set_bits(map, REG_TRNG_PER_CLK_GAT_2, REG_TRNG_PER2_EN);
 
-	return register_resets(&pdev->dev, clk_map, soc_data);
+	return register_resets(dev, clk_map, soc_data);
 }
 
 static int en7523_reset_update(struct reset_controller_dev *rcdev,
@@ -1245,8 +1584,8 @@ static int en7523_clk_probe(struct platform_device *pdev)
 
 static const struct en_clk_soc_data en7523_data = {
 	.base_clks = en7523_base_clks,
-	/* We increment num_clocks by 1 to account for additional PCIe clock */
-	.num_clocks = ARRAY_SIZE(en7523_base_clks) + 1,
+	.num_base_clks = ARRAY_SIZE(en7523_base_clks),
+	.num_clocks = EN7523_CLK_CPU + 1,
 	.rst_map = en7523_rst_map,
 	.nr_resets = ARRAY_SIZE(en7523_rst_map),
 	.pcie_ops = {
@@ -1259,6 +1598,7 @@ static const struct en_clk_soc_data en7523_data = {
 
 static const struct en_clk_soc_data en7581_data = {
 	.base_clks = en7581_base_clks,
+	.num_base_clks = ARRAY_SIZE(en7581_base_clks),
 	/* We increment num_clocks by 1 to account for additional PCIe clock */
 	.num_clocks = ARRAY_SIZE(en7581_base_clks) + 1,
 	.rst_map = en7581_rst_map,
@@ -1274,6 +1614,7 @@ static const struct en_clk_soc_data en7581_data = {
 static const struct en_clk_soc_data an7583_data = {
 	.probe_child = true,
 	.base_clks = an7583_base_clks,
+	.num_base_clks = ARRAY_SIZE(an7583_base_clks),
 	/* We increment num_clocks by 1 to account for additional PCIe clock */
 	.num_clocks = ARRAY_SIZE(an7583_base_clks) + 1,
 	.rst_map = an7583_rst_map,
