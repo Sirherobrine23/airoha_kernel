@@ -11,6 +11,7 @@
 #define EN7523_CLK_NPU		5
 #define EN7523_CLK_CRYPTO	6
 #define EN7523_CLK_PCIE		7
+#define EN7523_CLK_CPU		8
 
 #define EN7581_CLK_EMMC		8
 
