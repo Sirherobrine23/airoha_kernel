@@ -1147,6 +1147,10 @@ static int en7581_clk_hw_init(struct platform_device *pdev,
 	regmap_update_bits(clk_map, REG_NP_SCU_PCIC, REG_PCIE_CTRL,
 			   FIELD_PREP(REG_PCIE_CTRL, 3));
 
+	/* Reset PCIE_HB */
+	regmap_set_bits(clk_map, REG_RST_CTRL1, BIT(29));
+	regmap_clear_bits(clk_map, REG_RST_CTRL1, BIT(29));
+
 	return en7581_reset_register(&pdev->dev, clk_map, en7581_rst_map,
 				     ARRAY_SIZE(en7581_rst_map));
 }
