@@ -20,6 +20,13 @@ config PSE_REGULATOR
 	  Sourcing Equipment without automatic classification support. For
 	  example for basic implementation of PoDL (802.3bu) specification.
 
+config PSE_GENERIC_GPIO
+	tristate "Generic GPIO PSE controller"
+	depends on GPIOLIB
+	depends on OF || COMPILE_TEST
+	help
+	  Generic GPIO-controlled PoE PSE controller.
+
 config PSE_PD692X0
 	tristate "PD692X0 PSE controller"
 	depends on I2C
