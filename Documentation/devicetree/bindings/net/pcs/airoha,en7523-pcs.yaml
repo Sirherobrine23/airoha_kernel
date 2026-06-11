@@ -1,0 +1,143 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/net/pcs/airoha,en7523-pcs.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Airoha EN7523 SGMII/HSGMII PCS
+
+maintainers:
+  - Matheus Sampaio Queiroga <srherobrine20@gmail.com>
+
+description:
+  The EN7523 exposes SGMII/HSGMII PCS blocks on the PON, PCIe0, PCIe1 and
+  USB3 SerDes lanes. The PCIe lanes share one PCS provider and use one cell
+  to select the lane index.
+
+properties:
+  compatible:
+    enum:
+      - airoha,en7523-pcs-pon
+      - airoha,en7523-pcs-pcie
+      - airoha,en7523-pcs-usb
+
+  reg:
+    minItems: 5
+    maxItems: 12
+
+  reg-names:
+    minItems: 1
+    maxItems: 12
+
+  airoha,scu:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: Phandle to the EN7523 NP SCU syscon.
+
+  resets:
+    minItems: 1
+    maxItems: 2
+
+  reset-names:
+    items:
+      - const: mac
+      - const: phy
+
+  phys:
+    maxItems: 1
+
+  '#pcs-cells': true
+
+  status: true
+
+required:
+  - compatible
+  - reg
+  - airoha,scu
+  - '#pcs-cells'
+
+allOf:
+  - if:
+      properties:
+        compatible:
+          contains:
+            const: airoha,en7523-pcs-pcie
+    then:
+      properties:
+        reg:
+          minItems: 12
+          maxItems: 12
+        '#pcs-cells':
+          const: 1
+
+  - if:
+      properties:
+        compatible:
+          contains:
+            enum:
+              - airoha,en7523-pcs-pon
+              - airoha,en7523-pcs-usb
+    then:
+      properties:
+        reg:
+          minItems: 5
+          maxItems: 6
+        '#pcs-cells':
+          const: 0
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/clock/en7523-clk.h>
+    #include <dt-bindings/reset/airoha,en7523-reset.h>
+
+    pcs@1fa04000 {
+        compatible = "airoha,en7523-pcs-pcie";
+        reg = <0x1fa70000 0x1000>,
+              <0x1fa71000 0x1000>,
+              <0x1fa72100 0x4a0>,
+              <0x1fa72a00 0x160>,
+              <0x1fa72000 0x64>,
+              <0x1fa72600 0xdc>,
+              <0x1fa72c00 0x3b0>,
+              <0x1fa77100 0x4a0>,
+              <0x1fa77a00 0x160>,
+              <0x1fa77000 0x64>,
+              <0x1fa77600 0xdc>,
+              <0x1fa77c00 0x3b0>;
+        reg-names = "pcs_mac0", "pcs_mac1";
+        airoha,scu = <&scuclk>;
+        #pcs-cells = <1>;
+    };
+
+  - |
+    #include <dt-bindings/clock/en7523-clk.h>
+    #include <dt-bindings/reset/airoha,en7523-reset.h>
+
+    pcs@1fa08000 {
+        compatible = "airoha,en7523-pcs-pon";
+        reg = <0x1fa60000 0x1000>,
+              <0x1fa65100 0x4a0>,
+              <0x1fa65a00 0x1ac>,
+              <0x1fa65e00 0x64>,
+              <0x1fa66000 0xdc>;
+        reg-names = "pcs_mac";
+        resets = <&scuclk EN7523_XPON_MAC_RST>,
+                 <&scuclk EN7523_XPON_PHY_RST>;
+        reset-names = "mac", "phy";
+        airoha,scu = <&scuclk>;
+        #pcs-cells = <0>;
+    };
+
+  - |
+    #include <dt-bindings/phy/phy.h>
+
+    pcs@1fa07000 {
+        compatible = "airoha,en7523-pcs-usb";
+        reg = <0x1fa80000 0x1000>,
+              <0x1fa81100 0x4a0>,
+              <0x1fa81a00 0x160>,
+              <0x1fa81000 0x64>,
+              <0x1fa81600 0xdc>,
+              <0x1fa81c00 0x3b0>;
+        reg-names = "pcs_mac";
