@@ -1447,6 +1447,20 @@ static const struct mtk_pcie_soc mtk_pcie_soc_en7528 = {
 	.quirks = MTK_PCIE_RETRAIN,
 };
 
+#define PCI_DEVICE_ID_MEDIATEK_EN7523_PCIE0	0x0810
+#define PCI_DEVICE_ID_MEDIATEK_EN7523_PCIE1	0x0811
+
+static void mtk_pcie_en7523_bar_quirk(struct pci_dev *pdev)
+{
+	pdev->non_compliant_bars = 1;
+}
+DECLARE_PCI_FIXUP_EARLY(PCI_VENDOR_ID_MEDIATEK,
+			PCI_DEVICE_ID_MEDIATEK_EN7523_PCIE0,
+			mtk_pcie_en7523_bar_quirk);
+DECLARE_PCI_FIXUP_EARLY(PCI_VENDOR_ID_MEDIATEK,
+			PCI_DEVICE_ID_MEDIATEK_EN7523_PCIE1,
+			mtk_pcie_en7523_bar_quirk);
+
 static const struct of_device_id mtk_pcie_ids[] = {
 	{ .compatible = "airoha,an7583-pcie", .data = &mtk_pcie_soc_an7583 },
 	{ .compatible = "econet,en7528-pcie", .data = &mtk_pcie_soc_en7528 },
