@@ -4400,7 +4400,7 @@ static int airoha_en7523_get_sport(struct airoha_gdm_port *port, int nbq)
 			return HSGMII_LAN_7523_PCIE0_SRCPORT;
 		if (nbq == 5)
 			return HSGMII_LAN_7523_PCIE1_SRCPORT;
-		if (nbq == 1)
+		if (nbq == 6)
 			return HSGMII_LAN_7523_USB_SRCPORT;
 		if (!nbq)
 			return HSGMII_LAN_7523_ETH_SRCPORT;
@@ -4421,7 +4421,7 @@ static u32 airoha_en7523_get_vip_port(struct airoha_gdm_port *port, int nbq)
 			return XSI_PCIE1_VIP_PORT_MASK;
 		if (!nbq)
 			return XSI_ETH_VIP_PORT_MASK;
-		if (nbq == 1)
+		if (nbq == 6)
 			return XSI_USB_VIP_PORT_MASK;
 		break;
 	default:
@@ -4452,7 +4452,7 @@ static int airoha_en7523_get_dev_from_sport(struct airoha_qdma_desc *desc,
 		*port = 2; /* GDM3 */
 		break;
 	case HSGMII_LAN_7523_USB_SRCPORT:
-		*dev = 1;
+		*dev = 2;
 		fallthrough;
 	case HSGMII_LAN_7523_ETH_SRCPORT:
 		*port = 2; /* GDM3 */
