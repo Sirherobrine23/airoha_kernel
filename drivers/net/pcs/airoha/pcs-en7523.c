@@ -260,6 +260,34 @@ static void en7523_pcs_pon_serdes_2500basex_init(struct en7523_pcs_port *port)
 		regmap_write(port->mac, 0x0, glb);
 }
 
+/*
+ * XSI serdes (USB / PCIe0 / PCIe1) init, ported from the vendor
+ * sgmii_api_{usb0,pcie0,pcie1}_force_hsgmii(). These serdes have a real phya
+ * (handled by set_phya_mode()), so unlike the PON serdes no analog PMA poke is
+ * needed -- only the rate-adapt/AN/PCS-control values and a per-port
+ * clock-domain reset (RST_CFG bits, saving/restoring the MAC global config),
+ * which mainline otherwise omits, leaving the serdes link down. The reset bits
+ * differ per port: PCIe0=0x12000, PCIe1=0x24000, USB=0x48000.
+ */
+static void en7523_pcs_xsi_serdes_init(struct en7523_pcs_port *port,
+				       u32 rst_bits)
+{
+	struct en7523_pcs *priv = port->priv;
+	u32 glb = EN7523_XSI_MAC_GLB_CFG, rst;
+
+	regmap_write(port->ra, AIROHA_PCS_HSGMII_RATE_ADAPT_CTRL_0, 0x0c000c11);
+	regmap_write(port->an, AIROHA_PCS_HSGMII_AN_SGMII_REG_AN_0, 0x00000140);
+	regmap_write(port->pcs2, AIROHA_PCS_HSGMII_PCS_CTROL_6, 0x3);
+
+	if (port->mac)
+		regmap_read(port->mac, 0x0, &glb);
+	regmap_read(priv->scu, EN7523_SCU_RST_CFG, &rst);
+	regmap_write(priv->scu, EN7523_SCU_RST_CFG, rst | rst_bits);
+	regmap_write(priv->scu, EN7523_SCU_RST_CFG, rst & ~rst_bits);
+	if (port->mac)
+		regmap_write(port->mac, 0x0, glb);
+}
+
 static void en7523_pcs_setup_scu(struct en7523_pcs_port *port,
 					 phy_interface_t interface)
 {
@@ -490,6 +518,19 @@ static int en7523_pcs_config(struct phylink_pcs *pcs, unsigned int neg_mode,
 				   AIROHA_PCS_HSGMII_PCS_FORCE_RATEADAPT |
 				   AIROHA_PCS_HSGMII_PCS_FORCE_RATEADAPT_VAL,
 				   0);
+
+		switch (port->priv->data->type) {
+		case EN7523_PCS_USB:
+			en7523_pcs_xsi_serdes_init(port, 0x48000);
+			break;
+		case EN7523_PCS_PCIE:
+			en7523_pcs_xsi_serdes_init(port,
+						   port->index ? 0x24000 : 0x12000);
+			break;
+		default:
+			break;
+		}
+
 		port->interface = interface;
 		return 0;
 	}
