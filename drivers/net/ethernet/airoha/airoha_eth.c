@@ -4006,12 +4006,21 @@ static int airoha_setup_phylink(struct net_device *netdev)
 			  config->supported_interfaces);
 		__set_bit(PHY_INTERFACE_MODE_1000BASEX,
 			  config->supported_interfaces);
-		__set_bit(PHY_INTERFACE_MODE_2500BASEX,
-			  config->supported_interfaces);
-		__set_bit(PHY_INTERFACE_MODE_10GBASER,
-			  config->supported_interfaces);
-		__set_bit(PHY_INTERFACE_MODE_USXGMII,
-			  config->supported_interfaces);
+		/*
+		 * Only advertise the higher-rate interfaces when the port is actually
+		 * configured for them. An RTL8221B attached in SGMII mode (1G copper)
+		 * otherwise sees 2500BASEX in host_interfaces and forces its serdes to
+		 * 2500Base-X rate-match, which never links against an SGMII PCS.
+		 */
+		if (phy_mode != PHY_INTERFACE_MODE_SGMII &&
+		    phy_mode != PHY_INTERFACE_MODE_1000BASEX) {
+			__set_bit(PHY_INTERFACE_MODE_2500BASEX,
+				  dev->phylink_config.supported_interfaces);
+			__set_bit(PHY_INTERFACE_MODE_10GBASER,
+				  dev->phylink_config.supported_interfaces);
+			__set_bit(PHY_INTERFACE_MODE_USXGMII,
+				  dev->phylink_config.supported_interfaces);
+		}
 
 		phy_interface_copy(config->pcs_interfaces,
 				   config->supported_interfaces);
