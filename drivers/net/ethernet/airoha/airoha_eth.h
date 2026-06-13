@@ -17,7 +17,7 @@
 #include <net/dsa.h>
 
 #define AIROHA_MAX_NUM_GDM_PORTS	4
-#define AIROHA_MAX_NUM_GDM_DEVS		2
+#define AIROHA_MAX_NUM_GDM_DEVS		3
 #define AIROHA_MAX_NUM_QDMA		2
 #define AIROHA_MAX_DSA_PORTS		7
 #define AIROHA_MAX_NUM_RSTS		3
