@@ -2269,10 +2269,20 @@ static void airoha_dev_set_mtu(struct net_device *netdev)
 	struct airoha_gdm_dev *dev = netdev_priv(netdev);
 
 	airoha_ppe_set_mtu(dev);
-	if (!airoha_is_lan_gdm_dev(dev))
+	if (!airoha_is_lan_gdm_dev(dev)) {
+		/* WAN_MTU0 gates the egress *L2 frame* length for wan-port
+		 * forwarding (HIT_BIND_EXCEED_MTU). netdev->mtu is the L3
+		 * payload limit, so account for the Ethernet header and any
+		 * VLAN/PPPoE tags + FCS, otherwise full-size hw-forwarded
+		 * frames are bounced to the CPU and offload never engages.
+		 */
+		u32 wan_mtu = netdev->mtu + ETH_HLEN + 2 * VLAN_HLEN +
+			      8 /* PPPoE */ + ETH_FCS_LEN;
+
 		airoha_fe_rmw(dev->eth, REG_WAN_MTU0,
 			      WAN_MTU0_MASK,
-			      FIELD_PREP(WAN_MTU0_MASK, netdev->mtu + VLAN_ETH_HLEN));
+			      FIELD_PREP(WAN_MTU0_MASK, wan_mtu));
+	}
 }
 
 static int airoha_dev_open(struct net_device *netdev)
@@ -4673,6 +4683,9 @@ static const struct airoha_eth_soc_data en7523_soc_data = {
 	.num_ppe = 1,
 	.irq_banks = 2,
 	.ppe_stats_entries = 0,
+	/* 64-byte entry mode: 512 on-chip SRAM FOE entries (EN7523 hw default,
+	 * "512 at 64byte"), 16K DRAM entries.
+	 */
 	.ppe_sram_entries = 512,
 	.ppe_dram_entries = 16 * 1024,
 	.ops = {
