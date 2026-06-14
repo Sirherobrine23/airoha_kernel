@@ -1,0 +1,68 @@
+What:          /sys/bus/platform/devices/*memory-controller/frequency
+Date:          June 2026
+Contact:       Benjamin Larsson <benjamin.larsson@genexis.eu>
+Description:
+               Current DDR PHY clock frequency in Hz. This follows the
+               existing memory-controller frequency ABI. Since DDR transfers
+               on both clock edges, this is half the data rate in MT/s after
+               unit conversion; DDR3-1866 is reported as 933000000.
+What:          /sys/bus/platform/devices/*memory-controller/dram_data_rate
+Date:          June 2026
+Contact:       Benjamin Larsson <benjamin.larsson@genexis.eu>
+Description:
+               Current DDR data rate in MT/s as one decimal integer.
+What:          /sys/bus/platform/devices/*memory-controller/dram_type
+Date:          June 2026
+Contact:       Benjamin Larsson <benjamin.larsson@genexis.eu>
+Description:
+               Configured DRAM protocol name: UNKNOWN, DDR2, DDR3, DDR4,
+               LPDDR2, LPDDR3, LPDDR4, or LPDDR5.
+What:          /sys/bus/platform/devices/*memory-controller/channel_count
+Date:          June 2026
+Contact:       Benjamin Larsson <benjamin.larsson@genexis.eu>
+Description:
+               Number of DRAM controller channels as one decimal integer.
+What:          /sys/bus/platform/devices/*memory-controller/dram_size
+Date:          June 2026
+Contact:       Benjamin Larsson <benjamin.larsson@genexis.eu>
+Description:
+               Total installed DRAM capacity in bytes, calculated from the
+               controller's rank boundary and rank configuration registers.
+               This is the physical controller capacity, before reserved
+               memory and other kernel accounting are subtracted.
+What:          /sys/bus/platform/devices/*memory-controller/mr4_ch[01]
+Date:          June 2026
+Contact:       Benjamin Larsson <benjamin.larsson@genexis.eu>
+Description:
+               Hardware-captured MR4 value for the indicated channel. The
+               files are present only on controllers with hardware MR4 reads.
+What:          /sys/bus/platform/devices/*memory-controller/rank_count
+What:          /sys/bus/platform/devices/*memory-controller/rank_sizes
+Date:          June 2026
+Contact:       Benjamin Larsson <benjamin.larsson@genexis.eu>
+Description:
+               Optional firmware-described rank count and rank sizes in bytes.
+               Rank sizes are ordered, space-separated decimal integers.
+What:          /sys/bus/platform/devices/*memory-controller/mode_registers
+Date:          June 2026
+Contact:       Benjamin Larsson <benjamin.larsson@genexis.eu>
+Description:
+               Optional firmware-described mode-register values, starting at
+               MR0, as ordered space-separated decimal integers.
+What:          /sys/bus/platform/devices/*memory-controller/available_frequencies
+Date:          June 2026
+Contact:       Benjamin Larsson <benjamin.larsson@genexis.eu>
+Description:
+               Optional firmware-described supported DDR PHY clock
+               frequencies in Hz as ordered space-separated decimal integers.
+Userspace notes:
+               Installed and usable system RAM is described by the device
+               tree /memory node's reg property. The dram_size file is a
+               controller-register diagnostic and must not replace that
+               standard description.
+               Static SDRAM topology should use JEDEC sdram-channel-N nodes,
+               rank@N children, and the standard density and io-width
+               properties. A controller supporting runtime frequency changes
+               should register with devfreq, whose standard files are cur_freq
+               and available_frequencies, instead of adding writable files to
+               this telemetry ABI.
