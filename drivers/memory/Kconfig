@@ -22,6 +22,15 @@ config DDR
 	  information. This data is useful for drivers handling
 	  DDR SDRAM controllers.
 
+config AIROHA_DRAMC
+	tristate "Airoha DRAM controller telemetry driver"
+	depends on OF
+	depends on HAS_IOMEM
+	depends on MFD_SYSCON || COMPILE_TEST
+	depends on ARCH_AIROHA || ARCH_ECONET || COMPILE_TEST
+	help
+	  Enable read-only telemetry for Airoha DRAM controllers.
+
 config ARM_PL172_MPMC
 	tristate "ARM PL172 MPMC driver"
 	depends on ARM_AMBA && OF
