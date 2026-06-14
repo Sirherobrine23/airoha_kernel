@@ -80,7 +80,7 @@
 #define QDMA_METER_IDX(_n)		((_n) & 0xff)
 #define QDMA_METER_GROUP(_n)		(((_n) >> 8) & 0x3)
 
-#define PPE_ENTRY_SIZE			80
+#define PPE_ENTRY_SIZE			64
 #define PPE_RAM_NUM_ENTRIES_SHIFT(_n)	((_n) == 512 ? 7 : __ffs((_n) >> 10))
 
 #define MTK_HDR_LEN			4
@@ -316,7 +316,9 @@ struct airoha_foe_mac_info {
 	u16 pppoe_id;
 	u16 src_mac_lo;
 
-	u32 meter;
+	/* 64-byte FOE entry mode (EN7523): no room for the trailing meter
+	 * word; the per-flow meter/stats path is NPU-only and unused here.
+	 */
 };
 
 #define AIROHA_FOE_IB1_UNBIND_PREBIND		BIT(24)
@@ -435,15 +437,14 @@ struct airoha_foe_ipv6 {
 		u32 ports;
 	};
 
-	u32 rsv2[3];
-	
+	/* 64-byte FOE entry mode (EN7523): drop rsv2[3] and the trailing
+	 * meter word so the entry fits in 64 bytes.
+	 */
 	u32 data;
 
 	u32 ib2;
 
 	struct airoha_foe_mac_info_common l2;
-
-	u32 meter;
 };
 
 struct airoha_foe_entry {
@@ -633,6 +634,12 @@ struct airoha_ppe {
 
 	struct airoha_foe_stats *foe_stats;
 	dma_addr_t foe_stats_dma;
+
+	/* Set once CPU-direct PPE offload has been initialized on systems
+	 * with no attached NPU, to avoid re-running setup (and re-requesting
+	 * the airoha-npu module) on every flow.
+	 */
+	bool offload_setup_done;
 
 	struct dentry *debugfs_dir;
 };
