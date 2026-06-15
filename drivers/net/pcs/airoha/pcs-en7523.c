@@ -289,6 +289,28 @@ static void en7523_pcs_xsi_serdes_init(struct en7523_pcs_port *port,
 		regmap_write(port->mac, 0x0, glb);
 }
 
+/*
+ * The USB (SSUSB) serdes that GDM3 rides needs its XSI-MAC/serdes
+ * clock-domain reset pulsed before the RX datapath comes up. The vendor
+ * sgmii_api_usb0_force_{sgmii,hsgmii}() do this (SCU_RST bits 15+18) around
+ * a save/restore of the PCS MAC global config; without it the USB PCS
+ * trains link/AN but receives no frames. The PON path resets inside its
+ * PMA init; the non-PON (USB) path otherwise never resets.
+ */
+static void en7523_pcs_usb_serdes_reset(struct en7523_pcs_port *port)
+{
+	struct en7523_pcs *priv = port->priv;
+	u32 glb = 0, rst;
+
+	if (port->mac)
+		regmap_read(port->mac, 0x0, &glb);
+	regmap_read(priv->scu, EN7523_SCU_RST_CFG, &rst);
+	regmap_write(priv->scu, EN7523_SCU_RST_CFG, rst | 0x48000);
+	regmap_write(priv->scu, EN7523_SCU_RST_CFG, rst & ~0x48000);
+	if (port->mac)
+		regmap_write(port->mac, 0x0, glb);
+}
+
 static void en7523_pcs_setup_scu(struct en7523_pcs_port *port,
 					 phy_interface_t interface)
 {
@@ -518,6 +540,9 @@ static int en7523_pcs_config(struct phylink_pcs *pcs, unsigned int neg_mode,
 			AIROHA_PCS_TBI_10B_MODE |
 			AIROHA_PCS_RX_CLK_ENA |
 			AIROHA_PCS_GMII_TXCLK_ENA);
+
+	if (port->priv->data->type == EN7523_PCS_USB)
+		en7523_pcs_usb_serdes_reset(port);
 
 	if (interface == PHY_INTERFACE_MODE_2500BASEX) {
 		regmap_clear_bits(port->an, AIROHA_PCS_HSGMII_AN_SGMII_REG_AN_0,
