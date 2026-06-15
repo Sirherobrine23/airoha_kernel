@@ -620,6 +620,17 @@ static int airoha_ppe_foe_entry_prepare(struct airoha_eth *eth,
 			if (dsa_port >= 0)
 				val |= FIELD_PREP(AIROHA_FOE_IB2_NBQ,
 						  dsa_port);
+			else if (airoha_is(eth, en7523) &&
+				 port->id == AIROHA_GDM3_IDX)
+				/* GDM3 (USB serdes) hw-NAT egress needs the USB
+				 * source-port queue (nbq 6, the same value used on
+				 * the RX source-port path). The vendor FOE uses
+				 * INFO2=0x266 (PSE_PORT=3, PSE_QOS, NBQ=6); with
+				 * NBQ=0 the frame targets a PSE port-3 queue the
+				 * USB-serdes output never services, so hw-forwarded
+				 * GDM3 traffic is blackholed.
+				 */
+				val |= FIELD_PREP(AIROHA_FOE_IB2_NBQ, 6);
 
 			smac_id = port->id;
 		}
