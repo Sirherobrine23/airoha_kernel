@@ -404,7 +404,7 @@ static void airoha_ppe_hw_init(struct airoha_ppe *ppe)
 		airoha_fe_set(eth, REG_PPE_GLO_CFG(i), PPE_GLO_CFG_EN_MASK);
 	}
 
-	for (i = 0; i < ARRAY_SIZE(eth->ports); i++) {
+	for (i = 0; i < eth->soc->max_gdm_ports; i++) {
 		struct airoha_gdm_port *port = eth->ports[i];
 		int j;
 
@@ -589,6 +589,11 @@ static int airoha_ppe_foe_entry_prepare(struct airoha_eth *eth,
 			}
 
 			port = dev->port;
+			if (!port) {
+				dev_err(eth->dev, "GDM device without parent port during FOE prepare\n");
+				return -EINVAL;
+			}
+
 			if (dsa_port >= 0 || airoha_is_lan_gdm_dev(dev))
 				pse_port = port->id == 4 ? FE_PSE_PORT_GDM4
 							 : port->id;
@@ -621,18 +626,14 @@ static int airoha_ppe_foe_entry_prepare(struct airoha_eth *eth,
 				val |= FIELD_PREP(AIROHA_FOE_IB2_NBQ,
 						  dsa_port);
 			else if (airoha_is(eth, en7523) &&
-				 port->id == AIROHA_GDM3_IDX)
-				/* GDM3 (USB serdes) hw-NAT egress needs the USB
-				 * source-port queue (nbq 6, the same value used on
-				 * the RX source-port path). The vendor FOE uses
-				 * INFO2=0x266 (PSE_PORT=3, PSE_QOS, NBQ=6); with
-				 * NBQ=0 the frame targets a PSE port-3 queue the
-				 * USB-serdes output never services, so hw-forwarded
-				 * GDM3 traffic is blackholed.
-				 */
-				val |= FIELD_PREP(AIROHA_FOE_IB2_NBQ, 6);
+				 port->id == AIROHA_GDM3_IDX &&
+				 dev->nbq != 0)
+				val |= FIELD_PREP(AIROHA_FOE_IB2_NBQ, dev->nbq);
 
-			smac_id = port->id;
+			smac_id = port->id;			
+			dev_dbg(eth->dev,
+				 "foe_prepare: port_id=%d dev_nbq=%d dsa_port=%d ib2=%08x nbq=%lu\n",
+				 port->id, dev->nbq, dsa_port, val, FIELD_GET(AIROHA_FOE_IB2_NBQ, val));
 		}
 	}
 
