@@ -16,7 +16,6 @@
 #include <linux/soc/airoha/airoha_offload.h>
 #include <net/dsa.h>
 
-#define AIROHA_MAX_NUM_GDM_PORTS	4
 #define AIROHA_MAX_NUM_GDM_DEVS		3
 #define AIROHA_MAX_NUM_QDMA		2
 #define AIROHA_MAX_DSA_PORTS		7
@@ -651,6 +650,7 @@ struct airoha_eth_soc_data {
 	int num_ppe;
 	int tx_ring, rx_ring;
 	int irq_banks;
+	int max_gdm_ports;
 	u32 ppe_stats_entries;
 	u32 ppe_sram_entries;
 	u32 ppe_dram_entries;
@@ -682,7 +682,7 @@ struct airoha_eth {
 	struct net_device *napi_dev;
 
 	struct airoha_qdma qdma[AIROHA_MAX_NUM_QDMA];
-	struct airoha_gdm_port *ports[AIROHA_MAX_NUM_GDM_PORTS];
+	struct airoha_gdm_port **ports;
 };
 
 u32 airoha_rr(void __iomem *base, u32 offset);
