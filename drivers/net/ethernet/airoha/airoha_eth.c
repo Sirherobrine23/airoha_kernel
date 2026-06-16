@@ -86,7 +86,7 @@ static int airoha_set_macaddr(struct airoha_gdm_dev *dev, const u8 *addr)
 	lmin = (addr[3] << 16) | (addr[4] << 8) | addr[5];
 	lmax = lmin;
 
-	for (i = 0; i < ARRAY_SIZE(eth->ports); i++) {
+	for (i = 0; i < eth->soc->max_gdm_ports; i++) {
 		struct airoha_gdm_port *port = eth->ports[i];
 		int j;
 
@@ -182,7 +182,7 @@ static void airoha_fe_maccr_init(struct airoha_eth *eth)
 {
 	int p;
 
-	for (p = 1; p <= ARRAY_SIZE(eth->ports); p++) {
+	for (p = 1; p <= eth->soc->max_gdm_ports; p++) {
 		airoha_fe_set(eth, REG_GDM_FWD_CFG(p),
 			      GDM_TCP_CKSUM_MASK | GDM_UDP_CKSUM_MASK |
 			      GDM_IP4_CKSUM_MASK | GDM_DROP_CRC_ERR_MASK);
@@ -800,7 +800,7 @@ airoha_qdma_get_gdm_dev(struct airoha_eth *eth, struct airoha_qdma_desc *desc)
 	if (eth->soc->ops.get_dev_from_sport(desc, &p, &d))
 		return ERR_PTR(-ENODEV);
 
-	if (p >= ARRAY_SIZE(eth->ports))
+	if (p >= eth->soc->max_gdm_ports)
 		return ERR_PTR(-ENODEV);
 
 	port = eth->ports[p];
@@ -1267,7 +1267,7 @@ static void airoha_qdma_wake_netdev_txqs(struct airoha_queue *q)
 	struct airoha_eth *eth = qdma->eth;
 	int i, qid = q - &qdma->q_tx[0];
 
-	for (i = 0; i < ARRAY_SIZE(eth->ports); i++) {
+	for (i = 0; i < eth->soc->max_gdm_ports; i++) {
 		struct airoha_gdm_port *port = eth->ports[i];
 		int d;
 
@@ -2203,7 +2203,7 @@ static void airoha_update_netdev_features(struct airoha_gdm_dev *dev)
 	struct airoha_eth *eth = dev->eth;
 	int i;
 
-	for (i = 0; i < ARRAY_SIZE(eth->ports); i++) {
+	for (i = 0; i < eth->soc->max_gdm_ports; i++) {
 		struct airoha_gdm_port *port = dev->port;
 		int j;
 
@@ -2504,7 +2504,7 @@ airoha_get_wan_gdm_dev(struct airoha_eth *eth)
 {
 	int i;
 
-	for (i = 0; i < ARRAY_SIZE(eth->ports); i++) {
+	for (i = 0; i < eth->soc->max_gdm_ports; i++) {
 		struct airoha_gdm_port *port = eth->ports[i];
 		int j;
 
@@ -3869,7 +3869,7 @@ bool airoha_is_valid_gdm_dev(struct airoha_eth *eth,
 {
 	int i;
 
-	for (i = 0; i < ARRAY_SIZE(eth->ports); i++) {
+	for (i = 0; i < eth->soc->max_gdm_ports; i++) {
 		struct airoha_gdm_port *port = eth->ports[i];
 		int j;
 
@@ -4128,7 +4128,7 @@ static int airoha_alloc_gdm_port(struct airoha_eth *eth,
 	id = be32_to_cpup(id_ptr);
 	p = id - 1;
 
-	if (!id || id > ARRAY_SIZE(eth->ports)) {
+	if (!id || id > eth->soc->max_gdm_ports) {
 		dev_err(eth->dev, "invalid gdm port id: %d\n", id);
 		return -EINVAL;
 	}
@@ -4195,7 +4195,7 @@ static int airoha_register_gdm_devices(struct airoha_eth *eth)
 {
 	int i;
 
-	for (i = 0; i < ARRAY_SIZE(eth->ports); i++) {
+	for (i = 0; i < eth->soc->max_gdm_ports; i++) {
 		struct airoha_gdm_port *port = eth->ports[i];
 		int j;
 
@@ -4282,6 +4282,11 @@ static int airoha_probe(struct platform_device *pdev)
 		return err;
 	}
 
+	eth->ports = devm_kcalloc(eth->dev, eth->soc->max_gdm_ports,
+				  sizeof(eth->ports[0]), GFP_KERNEL);
+	if (!eth->ports)
+		return -ENOMEM;
+	
 	eth->napi_dev = alloc_netdev_dummy(0);
 	if (!eth->napi_dev)
 		return -ENOMEM;
@@ -4332,7 +4337,7 @@ error_napi_stop:
 		airoha_qdma_stop_napi(&eth->qdma[i]);
 	airoha_hw_cleanup(eth);
 error_ports_free:
-	for (i = 0; i < ARRAY_SIZE(eth->ports); i++) {
+	for (i = 0; i < eth->soc->max_gdm_ports; i++) {
 		struct airoha_gdm_port *port = eth->ports[i];
 		int j;
 
@@ -4369,7 +4374,7 @@ static void airoha_remove(struct platform_device *pdev)
 	for (i = 0; i < ARRAY_SIZE(eth->qdma); i++)
 		airoha_qdma_stop_napi(&eth->qdma[i]);
 
-	for (i = 0; i < ARRAY_SIZE(eth->ports); i++) {
+	for (i = 0; i < eth->soc->max_gdm_ports; i++) {
 		struct airoha_gdm_port *port = eth->ports[i];
 		int j;
 
@@ -4646,6 +4651,7 @@ static const struct airoha_eth_soc_data en7581_soc_data = {
 	.rx_ring = 32,
 	.tx_ring = 32,
 	.irq_banks = 4,
+	.max_gdm_ports = 4,
 	.ppe_stats_entries = 4 * 1024,
 	.ppe_sram_entries = 8 * 1024,
 	.ppe_dram_entries = 16 * 1024,
@@ -4664,6 +4670,7 @@ static const struct airoha_eth_soc_data an7583_soc_data = {
 	.rx_ring = 32,
 	.tx_ring = 32,
 	.irq_banks = 4,
+	.max_gdm_ports = 4,
 	.ppe_stats_entries = 4 * 1024,
 	.ppe_sram_entries = 8 * 1024,
 	.ppe_dram_entries = 16 * 1024,
@@ -4682,6 +4689,7 @@ static const struct airoha_eth_soc_data en7523_soc_data = {
 	.tx_ring = 8,
 	.num_ppe = 1,
 	.irq_banks = 2,
+	.max_gdm_ports = 3,
 	.ppe_stats_entries = 0,
 	/* 64-byte entry mode: 512 on-chip SRAM FOE entries (EN7523 hw default,
 	 * "512 at 64byte"), 16K DRAM entries.
