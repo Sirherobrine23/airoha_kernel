@@ -8,6 +8,7 @@
 #include <linux/of_reserved_mem.h>
 #include <linux/platform_device.h>
 #include <linux/tcp.h>
+#include <linux/if_vlan.h>
 #include <linux/pcs/pcs.h>
 #include <linux/u64_stats_sync.h>
 #include <net/dst_metadata.h>
@@ -2115,7 +2116,7 @@ static void airoha_dev_set_mtu(struct net_device *netdev)
 	if (!airoha_is_lan_gdm_dev(dev))
 		airoha_fe_rmw(dev->eth, REG_WAN_MTU0,
 			      WAN_MTU0_MASK,
-			      FIELD_PREP(WAN_MTU0_MASK, netdev->mtu));
+			      FIELD_PREP(WAN_MTU0_MASK, netdev->mtu + VLAN_ETH_HLEN));
 }
 
 static int airoha_dev_open(struct net_device *netdev)
