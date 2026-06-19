@@ -10,6 +10,7 @@
 #include <linux/platform_device.h>
 #include <linux/rhashtable.h>
 #include <net/ipv6.h>
+#include <linux/if_vlan.h>
 #include <net/pkt_cls.h>
 #include <net/route.h>
 
@@ -107,7 +108,7 @@ void airoha_ppe_set_mtu(struct airoha_gdm_dev *dev)
 	struct airoha_eth *eth = dev->eth;
 	struct airoha_qdma *qdma;
 	int i, ppe_id, index;
-	u32 mtu = 0;
+	u32 len = 0;
 
 	qdma = airoha_qdma_deref(dev);
 	for (i = 0; i < ARRAY_SIZE(port->devs); i++) {
@@ -124,14 +125,15 @@ void airoha_ppe_set_mtu(struct airoha_gdm_dev *dev)
 
 		netdev = netdev_from_priv(d);
 		if (netif_running(netdev))
-			mtu = max_t(u32, mtu, netdev->mtu);
+			len = max_t(u32, len, netdev->mtu);
 	}
 
+	len += VLAN_ETH_HLEN;
 	ppe_id = !airoha_is_lan_gdm_dev(dev) && airoha_ppe_is_enabled(eth, 1);
 	index = port->id == AIROHA_GDM4_IDX ? 7 : port->id;
 	airoha_fe_rmw(eth, REG_PPE_MTU(ppe_id, index),
 		      FP_EGRESS_MTU_MASK(index),
-		      __field_prep(FP_EGRESS_MTU_MASK(index), mtu));
+		      __field_prep(FP_EGRESS_MTU_MASK(index), len));
 }
 
 static void airoha_ppe_hw_init(struct airoha_ppe *ppe)
