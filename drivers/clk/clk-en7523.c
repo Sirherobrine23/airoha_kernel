@@ -451,6 +451,7 @@ static const struct en_clk_desc an7583_base_clks[] = {
 static const u16 en7581_rst_ofs[] = {
 	REG_RST_CTRL2,
 	REG_RST_CTRL1,
+	REG_NP_SCU_PCIC,
 };
 
 static const u16 en7523_rst_map[] = {
@@ -556,6 +557,11 @@ static const u16 en7581_rst_map[] = {
 	[EN7581_CPU_TIMER_RST]		= RST_NR_PER_BANK + 28,
 	[EN7581_PCIE_HB_RST]		= RST_NR_PER_BANK + 29,
 	[EN7581_XPON_MAC_RST]		= RST_NR_PER_BANK + 31,
+
+	/* RST_PCIC */
+	[EN7581_PCIC_PERSTOUT0_RST]	= 2 * RST_NR_PER_BANK + 29,
+	[EN7581_PCIC_PERSTOUT1_RST]	= 2 * RST_NR_PER_BANK + 26,
+	[EN7581_PCIC_PERSTOUT2_RST]	= 2 * RST_NR_PER_BANK + 16,
 };
 
 static const u16 an7583_rst_map[] = {
@@ -960,9 +966,7 @@ static int en7581_pci_enable(struct clk_hw *hw)
 	struct regmap *map = cg->map;
 	u32 mask;
 
-	mask = REG_PCI_CONTROL_REFCLK_EN0 | REG_PCI_CONTROL_REFCLK_EN1 |
-	       REG_PCI_CONTROL_PERSTOUT1 | REG_PCI_CONTROL_PERSTOUT2 |
-	       REG_PCI_CONTROL_PERSTOUT;
+	mask = REG_PCI_CONTROL_REFCLK_EN0 | REG_PCI_CONTROL_REFCLK_EN1;
 	regmap_set_bits(map, REG_PCI_CONTROL, mask);
 
 	return 0;
@@ -974,9 +978,7 @@ static void en7581_pci_disable(struct clk_hw *hw)
 	struct regmap *map = cg->map;
 	u32 mask;
 
-	mask = REG_PCI_CONTROL_REFCLK_EN0 | REG_PCI_CONTROL_REFCLK_EN1 |
-	       REG_PCI_CONTROL_PERSTOUT1 | REG_PCI_CONTROL_PERSTOUT2 |
-	       REG_PCI_CONTROL_PERSTOUT;
+	mask = REG_PCI_CONTROL_REFCLK_EN0 | REG_PCI_CONTROL_REFCLK_EN1;
 	regmap_clear_bits(map, REG_PCI_CONTROL, mask);
 	usleep_range(1000, 2000);
 }
@@ -1027,9 +1029,16 @@ static int en7523_reset_update(struct reset_controller_dev *rcdev,
 {
 	struct en_rst_data *rst_data = container_of(rcdev, struct en_rst_data, rcdev);
 	u32 addr = rst_data->bank_ofs[id / RST_NR_PER_BANK];
+	u32 val;
+
+	/* For PCIC reset logic is inverted, 0:assert 1:deassert*/
+	if (addr == REG_NP_SCU_PCIC)
+		val |= assert ? 0 : BIT(id % RST_NR_PER_BANK);
+	else
+		val |= assert ? BIT(id % RST_NR_PER_BANK) : 0;
 
 	regmap_update_bits(rst_data->map, addr, BIT(id % RST_NR_PER_BANK),
-			   assert ? BIT(id % RST_NR_PER_BANK) : 0);
+			   val);
 
 	return 0;
 }
@@ -1051,10 +1060,16 @@ static int en7523_reset_status(struct reset_controller_dev *rcdev,
 {
 	struct en_rst_data *rst_data = container_of(rcdev, struct en_rst_data, rcdev);
 	u32 addr = rst_data->bank_ofs[id / RST_NR_PER_BANK];
+	bool inverted = false;
 	u32 val;
 
+	/* For PCIC reset logic is inverted, 0:assert 1:deassert*/
+	if (addr == REG_NP_SCU_PCIC)
+		inverted = true;
+
 	regmap_read(rst_data->map, addr, &val);
-	return !!(val & BIT(id % RST_NR_PER_BANK));
+	val &= BIT(id % RST_NR_PER_BANK);
+	return inverted ? !val : !!val;
 }
 
 static int en7523_reset_xlate(struct reset_controller_dev *rcdev,
