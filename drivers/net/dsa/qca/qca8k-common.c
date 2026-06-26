@@ -829,6 +829,17 @@ int qca8k_port_fdb_add(struct dsa_switch *ds, int port,
 	struct qca8k_priv *priv = ds->priv;
 	u16 port_mask = BIT(port);
 
+	/* The ATU forwards a unicast hit to every port set in the
+	 * destination mask, so a host entry spanning multiple CPU ports
+	 * would deliver one copy of each host-bound frame per CPU port.
+	 * Skip host entries entirely: unknown unicast is already forwarded
+	 * to all CPU ports by GLOBAL_FW_CTRL1 and filtered by the ingress
+	 * port LOOKUP_MEMBER, so host-bound frames reach exactly one CPU
+	 * port, the conduit of the ingress port.
+	 */
+	if (dsa_is_cpu_port(ds, port) || dsa_is_dsa_port(ds, port))
+		return 0;
+
 	return qca8k_port_fdb_insert(priv, addr, port_mask, vid);
 }
 
@@ -838,6 +849,9 @@ int qca8k_port_fdb_del(struct dsa_switch *ds, int port,
 {
 	struct qca8k_priv *priv = ds->priv;
 	u16 port_mask = BIT(port);
+
+	if (dsa_is_cpu_port(ds, port) || dsa_is_dsa_port(ds, port))
+		return 0;
 
 	if (!vid)
 		vid = QCA8K_PORT_VID_DEF;
