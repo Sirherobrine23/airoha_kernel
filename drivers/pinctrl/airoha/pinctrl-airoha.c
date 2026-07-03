@@ -87,6 +87,7 @@
 #define AN7583_GPIO_MODE_MASK			(GENMASK(22, 15) | GENMASK(26, 25))
 #define AN7583_MDC_0_GPIO_MODE_MASK		BIT(25)
 #define AN7583_MDIO_0_GPIO_MODE_MASK		BIT(26)
+#define AN7583_SPI_GPIO_MODE_MASK		GENMASK(22, 19)
 #define AN7583_I2C1_SDA_GPIO_MODE_MASK		BIT(18)
 #define AN7583_I2C1_SCL_GPIO_MODE_MASK		BIT(17)
 #define AN7583_I2C0_SDA_GPIO_MODE_MASK		BIT(16)
@@ -736,7 +737,7 @@ static const int an7583_jtag_udi_pins[] = { 23, 24, 22, 25, 26 };
 static const int an7583_jtag_dfd_pins[] = { 23, 24, 22, 25, 26 };
 static const int an7583_pcm1_pins[] = { 10, 11, 12, 13, 14 };
 static const int an7583_pcm2_pins[] = { 28, 29, 30, 31, 24 };
-static const int an7583_spi_pins[] = { 28, 29, 30, 31 };
+static const int an7583_spi_pins[] = { 45, 46, 47, 48 };
 static const int an7583_spi_quad_pins[] = { 25, 26 };
 static const int an7583_spi_cs1_pins[] = { 27 };
 static const int an7583_pcm_spi_pins[] = { 28, 29, 30, 31, 10, 11, 12, 13 };
@@ -890,6 +891,7 @@ static const char *const an7583_i2c_groups[] = { "i2c0", "i2c1" };
 static const char *const jtag_groups[] = { "jtag_udi", "jtag_dfd" };
 static const char *const pcm_groups[] = { "pcm1", "pcm2" };
 static const char *const spi_groups[] = { "spi_quad", "spi_cs1" };
+static const char *const an7583_spi_groups[] = { "spi", "spi_quad", "spi_cs1" };
 static const char *const pcm_spi_groups[] = { "pcm_spi", "pcm_spi_int",
 					      "pcm_spi_rst", "pcm_spi_cs1",
 					      "pcm_spi_cs2_p156",
@@ -1260,6 +1262,37 @@ static const struct airoha_pinctrl_func_group spi_func_group[] = {
 			REG_GPIO_SPI_CS1_MODE,
 			GPIO_SPI_CS4_MODE_MASK,
 			GPIO_SPI_CS4_MODE_MASK
+		},
+		.regmap_size = 1,
+	},
+};
+
+static const struct airoha_pinctrl_func_group an7583_spi_func_group[] = {
+	{
+		.name = "spi",
+		.regmap[0] = {
+			AIROHA_FUNC_MUX,
+			REG_GPIO_PON_MODE,
+			AN7583_SPI_GPIO_MODE_MASK,
+			0
+		},
+		.regmap_size = 1,
+	}, {
+		.name = "spi_quad",
+		.regmap[0] = {
+			AIROHA_FUNC_MUX,
+			REG_GPIO_SPI_CS1_MODE,
+			GPIO_SPI_QUAD_MODE_MASK,
+			GPIO_SPI_QUAD_MODE_MASK
+		},
+		.regmap_size = 1,
+	}, {
+		.name = "spi_cs1",
+		.regmap[0] = {
+			AIROHA_FUNC_MUX,
+			REG_GPIO_SPI_CS1_MODE,
+			GPIO_SPI_CS1_MODE_MASK,
+			GPIO_SPI_CS1_MODE_MASK
 		},
 		.regmap_size = 1,
 	},
@@ -1898,7 +1931,7 @@ static const struct airoha_pinctrl_func an7583_pinctrl_funcs[] = {
 	PINCTRL_FUNC_DESC("i2c", an7583_i2c),
 	PINCTRL_FUNC_DESC("jtag", jtag),
 	PINCTRL_FUNC_DESC("pcm", pcm),
-	PINCTRL_FUNC_DESC("spi", spi),
+	PINCTRL_FUNC_DESC("spi", an7583_spi),
 	PINCTRL_FUNC_DESC("pcm_spi", an7583_pcm_spi),
 	PINCTRL_FUNC_DESC("emmc", emmc),
 	PINCTRL_FUNC_DESC("pnand", pnand),
