@@ -1385,15 +1385,6 @@ static const struct airoha_pinctrl_func_group an7583_pcm_spi_func_group[] = {
 		},
 		.regmap_size = 1,
 	}, {
-		.name = "pcm_spi_int",
-		.regmap[0] = {
-			AIROHA_FUNC_MUX,
-			REG_GPIO_SPI_CS1_MODE,
-			GPIO_PCM_INT_MODE_MASK,
-			GPIO_PCM_INT_MODE_MASK
-		},
-		.regmap_size = 1,
-	}, {
 		.name = "pcm_spi_rst",
 		.regmap[0] = {
 			AIROHA_FUNC_MUX,
@@ -1409,33 +1400,6 @@ static const struct airoha_pinctrl_func_group an7583_pcm_spi_func_group[] = {
 			REG_GPIO_SPI_CS1_MODE,
 			GPIO_PCM_SPI_CS1_MODE_MASK,
 			GPIO_PCM_SPI_CS1_MODE_MASK
-		},
-		.regmap_size = 1,
-	}, {
-		.name = "pcm_spi_cs2",
-		.regmap[0] = {
-			AIROHA_FUNC_MUX,
-			REG_GPIO_SPI_CS1_MODE,
-			AN7583_GPIO_PCM_SPI_CS2_MODE_MASK,
-			AN7583_GPIO_PCM_SPI_CS2_MODE_MASK
-		},
-		.regmap_size = 1,
-	}, {
-		.name = "pcm_spi_cs3",
-		.regmap[0] = {
-			AIROHA_FUNC_MUX,
-			REG_GPIO_SPI_CS1_MODE,
-			GPIO_PCM_SPI_CS3_MODE_MASK,
-			GPIO_PCM_SPI_CS3_MODE_MASK
-		},
-		.regmap_size = 1,
-	}, {
-		.name = "pcm_spi_cs4",
-		.regmap[0] = {
-			AIROHA_FUNC_MUX,
-			REG_GPIO_SPI_CS1_MODE,
-			GPIO_PCM_SPI_CS4_MODE_MASK,
-			GPIO_PCM_SPI_CS4_MODE_MASK
 		},
 		.regmap_size = 1,
 	},
