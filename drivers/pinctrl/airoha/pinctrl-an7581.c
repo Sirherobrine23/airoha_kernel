@@ -1431,6 +1431,14 @@ static const struct airoha_pinctrl_conf pinctrl_pcie_rst_od_conf[] = {
 	PINCTRL_CONF_DESC(62, REG_PCIE_RESET_OD, PCIE2_RESET_OD_MASK),
 };
 
+static const struct airoha_pinctrl_hwinit_regs hwinit_regs[] = {
+	{ REG_GPIO_2ND_I2C_MODE, 0 },
+	{ REG_GPIO_SPI_CS1_MODE, 0 },
+	{ REG_GPIO_PON_MODE, 0 },
+	{ REG_NPU_UART_EN, 0 },
+	{ REG_FORCE_GPIO_EN, 0 },
+};
+
 static const struct airoha_pinctrl_match_data pinctrl_match_data = {
 	.chip_scu_compatible = "airoha,en7581-chip-scu",
 	.pinctrl_name = KBUILD_MODNAME,
@@ -1441,6 +1449,8 @@ static const struct airoha_pinctrl_match_data pinctrl_match_data = {
 	.num_grps = ARRAY_SIZE(pinctrl_groups),
 	.funcs = pinctrl_funcs,
 	.num_funcs = ARRAY_SIZE(pinctrl_funcs),
+	.hwinit_regs = hwinit_regs,
+	.num_hwinit_regs = ARRAY_SIZE(hwinit_regs),
 	.confs_info = {
 		[AIROHA_PINCTRL_CONFS_PULLUP] = {
 			.confs = pinctrl_pullup_conf,

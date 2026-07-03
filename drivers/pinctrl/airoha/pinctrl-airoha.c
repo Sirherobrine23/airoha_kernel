@@ -802,6 +802,19 @@ int airoha_pinctrl_probe(struct platform_device *pdev)
 
 	pinctrl->chip_scu = map;
 
+	/*
+	 * Reset all SCU mux register to reset defaults to undo bootloader modifications.
+	 */
+	for (i = 0; i < data->num_hwinit_regs; i++) {
+		err = regmap_write(pinctrl->chip_scu,
+				   data->hwinit_regs[i].offset,
+				   data->hwinit_regs[i].val);
+		if (err)
+			return dev_err_probe(dev, err,
+				"Failed to reset SCU IOMUX register 0x%x\n",
+				data->hwinit_regs[i].offset);
+	}
+
 	/* Init pinctrl desc struct */
 	pinctrl->desc.name = data->pinctrl_name;
 	pinctrl->desc.owner = data->pinctrl_owner;
