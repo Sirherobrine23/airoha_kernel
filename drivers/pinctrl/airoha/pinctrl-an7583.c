@@ -44,6 +44,7 @@
 #define MDC_0_GPIO_MODE_MASK			BIT(25)
 #define UART_RXD_GPIO_MODE_MASK			BIT(24)
 #define UART_TXD_GPIO_MODE_MASK			BIT(23)
+#define SPI_GPIO_MODE_MASK			GENMASK(22, 19)
 #define SPI_MISO_GPIO_MODE_MASK			BIT(22)
 #define SPI_MOSI_GPIO_MODE_MASK			BIT(21)
 #define SPI_CS_GPIO_MODE_MASK			BIT(20)
@@ -587,7 +588,7 @@ static const char *const uart_groups[] = {
 static const char *const i2c_groups[] = { "i2c0", "i2c1" };
 static const char *const jtag_groups[] = { "jtag_udi", "jtag_dfd" };
 static const char *const pcm_groups[] = { "pcm1", "pcm2" };
-static const char *const spi_groups[] = { "spi_quad", "spi_cs1" };
+static const char *const spi_groups[] = { "spi", "spi_quad", "spi_cs1" };
 static const char *const pcm_spi_groups[] = {
 	"pcm_spi", "pcm_spi_rst", "pcm_spi_cs1"
 };
@@ -864,6 +865,15 @@ static const struct airoha_pinctrl_func_group pcm_func_group[] = {
 
 static const struct airoha_pinctrl_func_group spi_func_group[] = {
 	{
+		.name = "spi",
+		.regmap[0] = {
+			AIROHA_FUNC_MUX,
+			REG_GPIO_PON_MODE,
+			SPI_GPIO_MODE_MASK,
+			0
+		},
+		.regmap_size = 1,
+	}, {
 		.name = "spi_quad",
 		.regmap[0] = {
 			AIROHA_FUNC_MUX,
