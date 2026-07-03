@@ -5092,6 +5092,35 @@ static u16 mtk_select_queue(struct net_device *dev, struct sk_buff *skb,
 	return queue;
 }
 
+#if IS_ENABLED(CONFIG_NET_DSA)
+static netdev_features_t mtk_features_check(struct sk_buff *skb,
+					   struct net_device *dev,
+					   netdev_features_t features)
+{
+	/* No point in doing any of this if neither checksum nor GSO are
+	 * being requested for this frame. We can rule out both by just
+	 * checking for CHECKSUM_PARTIAL
+	 */
+	if (skb->ip_summed != CHECKSUM_PARTIAL)
+		return features;
+
+	if (netdev_uses_dsa(dev)) {
+		const struct dsa_device_ops *tag_ops = dev->dsa_ptr->tag_ops;
+
+		/* RTL8_4 hides the L2 ethertype this driver relies on for
+		 * offload. RTL8_4T (the trailing-tag variant) is unaffected
+		 * because its rtl8_4t tagger already checksums the frame in
+		 * software before appending the tag, so ip_summed is no longer
+		 * CHECKSUM_PARTIAL by the time this driver sees it.
+		 */
+		if (tag_ops->proto == DSA_TAG_PROTO_RTL8_4)
+			features &= ~(NETIF_F_CSUM_MASK | NETIF_F_GSO_MASK);
+	}
+
+	return features;
+}
+#endif
+
 static const struct ethtool_ops mtk_ethtool_ops = {
 	.get_link_ksettings	= mtk_get_link_ksettings,
 	.set_link_ksettings	= mtk_set_link_ksettings,
@@ -5131,6 +5160,9 @@ static const struct net_device_ops mtk_netdev_ops = {
 	.ndo_bpf		= mtk_xdp,
 	.ndo_xdp_xmit		= mtk_xdp_xmit,
 	.ndo_select_queue	= mtk_select_queue,
+#if IS_ENABLED(CONFIG_NET_DSA)
+	.ndo_features_check	= mtk_features_check,
+#endif
 };
 
 static int mtk_fill_available_pcs(struct phylink_config *config,
