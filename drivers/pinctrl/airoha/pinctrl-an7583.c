@@ -39,6 +39,7 @@
 
 #define REG_GPIO_PON_MODE			0x021c
 #define GPIO_PON_ALT_MODE_MASK			BIT(27)
+#define GPIO_MODE_MASK				(GENMASK(22, 15) | GENMASK(26, 25))
 #define MDIO_0_GPIO_MODE_MASK			BIT(26)
 #define MDC_0_GPIO_MODE_MASK			BIT(25)
 #define UART_RXD_GPIO_MODE_MASK			BIT(24)
@@ -74,6 +75,8 @@
 
 #define REG_FORCE_GPIO_EN			0x0228
 #define FORCE_GPIO_EN(n)			BIT(n)
+
+#define REG_FORCE_GPIO32_EN			0x022C
 
 /* LED MAP */
 #define REG_LAN_LED0_MAPPING			0x027c
@@ -1461,6 +1464,15 @@ static const struct airoha_pinctrl_conf pinctrl_pcie_rst_od_conf[] = {
 	PINCTRL_CONF_DESC(52, REG_PCIE_RESET_OD, PCIE1_RESET_OD_MASK),
 };
 
+static const struct airoha_pinctrl_hwinit_regs hwinit_regs[] = {
+	{ REG_SW_TOD_1PPS_MODE, 0 },
+	{ REG_GPIO_SPI_CS1_MODE, 0 },
+	{ REG_GPIO_PON_MODE, GPIO_MODE_MASK },
+	{ REG_NPU_UART_EN, 0 },
+	{ REG_FORCE_GPIO_EN, 0 },
+	{ REG_FORCE_GPIO32_EN, 0 },
+};
+
 static const struct airoha_pinctrl_match_data pinctrl_match_data = {
 	.chip_scu_compatible = "airoha,en7581-chip-scu",
 	.pinctrl_name = KBUILD_MODNAME,
@@ -1471,6 +1483,8 @@ static const struct airoha_pinctrl_match_data pinctrl_match_data = {
 	.num_grps = ARRAY_SIZE(pinctrl_groups),
 	.funcs = pinctrl_funcs,
 	.num_funcs = ARRAY_SIZE(pinctrl_funcs),
+	.hwinit_regs = hwinit_regs,
+	.num_hwinit_regs = ARRAY_SIZE(hwinit_regs),
 	.confs_info = {
 		[AIROHA_PINCTRL_CONFS_PULLUP] = {
 			.confs = pinctrl_pullup_conf,
