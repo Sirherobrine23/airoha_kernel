@@ -85,6 +85,8 @@
 
 #define REG_GPIO_PON_MODE			0x021c
 #define AN7583_GPIO_MODE_MASK			(GENMASK(22, 15) | GENMASK(26, 25))
+#define AN7583_MDC_0_GPIO_MODE_MASK		BIT(25)
+#define AN7583_MDIO_0_GPIO_MODE_MASK		BIT(26)
 #define AN7583_I2C1_SDA_GPIO_MODE_MASK		BIT(18)
 #define AN7583_I2C1_SCL_GPIO_MODE_MASK		BIT(17)
 #define AN7583_I2C0_SDA_GPIO_MODE_MASK		BIT(16)
@@ -720,7 +722,7 @@ static const int an7583_pon_tod_1pps_pins[] = { 32 };
 static const int an7583_gsw_tod_1pps_pins[] = { 32 };
 static const int an7583_sipo_pins[] = { 34, 35 };
 static const int an7583_sipo_rclk_pins[] = { 34, 35, 33 };
-static const int an7583_mdio_pins[] = { 43, 44 };
+static const int an7583_mdio_pins[] = { 53, 54 };
 static const int an7583_uart2_pins[] = { 34, 35 };
 static const int an7583_uart2_cts_rts_pins[] = { 32, 33 };
 static const int an7583_hsuart_pins[] = { 30, 31 };
@@ -1069,16 +1071,10 @@ static const struct airoha_pinctrl_func_group an7583_mdio_func_group[] = {
 		.regmap[0] = {
 			AIROHA_FUNC_MUX,
 			REG_GPIO_PON_MODE,
-			GPIO_SGMII_MDIO_MODE_MASK,
-			GPIO_SGMII_MDIO_MODE_MASK
+			AN7583_MDC_0_GPIO_MODE_MASK | AN7583_MDIO_0_GPIO_MODE_MASK,
+			0
 		},
-		.regmap[1] = {
-			AIROHA_FUNC_MUX,
-			REG_GPIO_SPI_CS1_MODE,
-			GPIO_MDC_IO_MASTER_MODE_MODE,
-			GPIO_MDC_IO_MASTER_MODE_MODE
-		},
-		.regmap_size = 2,
+		.regmap_size = 1,
 	},
 };
 
