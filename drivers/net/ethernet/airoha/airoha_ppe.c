@@ -583,10 +583,8 @@ static int airoha_ppe_foe_entry_prepare(struct airoha_eth *eth,
 			struct airoha_gdm_port *port;
 			u8 pse_port, channel, priority;
 
-			if (!airoha_is_valid_gdm_dev(eth, dev)) {
-				dev_err(eth->dev, "Invalid GDM device during FOE prepare\n");
+			if (!airoha_is_valid_gdm_dev(eth, dev))
 				return -EINVAL;
-			}
 
 			port = dev->port;
 			if (!port) {
@@ -1848,10 +1846,8 @@ static int airoha_ppe_flow_offload_replace(struct airoha_eth *eth,
 
 	err = airoha_ppe_foe_entry_prepare(eth, &hwe, odev, offload_type,
 					   &data, l4proto, dsfield);
-	if (err) {
-		dev_err(eth->dev, "Failed to prepare FOE entry (err: %d)\n", err);
+	if (err)
 		return err;
-	}
 
 	if (flow_rule_match_key(rule, FLOW_DISSECTOR_KEY_PORTS)) {
 		struct flow_match_ports ports;
