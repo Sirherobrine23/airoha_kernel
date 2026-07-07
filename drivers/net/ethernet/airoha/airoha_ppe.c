@@ -572,7 +572,11 @@ static int airoha_ppe_foe_entry_prepare(struct airoha_eth *eth,
 					      &info)) {
 			val |= FIELD_PREP(AIROHA_FOE_IB2_NBQ, info.idx) |
 			       FIELD_PREP(AIROHA_FOE_IB2_PSE_PORT,
+					  airoha_is(eth, en7523) ?
+					  FE_PSE_PORT_GDM3 :
 					  FE_PSE_PORT_CDM4);
+			if (airoha_is(eth, en7523))
+				val |= AIROHA_FOE_IB2_PSE_QOS;
 			qdata |= FIELD_PREP(AIROHA_FOE_ACTDP, info.bss);
 			wlan_etype = FIELD_PREP(AIROHA_FOE_MAC_WDMA_BAND,
 						info.idx) |
@@ -935,7 +939,9 @@ static void airoha_ppe_foe_flow_stats_update(struct airoha_ppe *ppe,
 	meter = data;
 
 	pse_port = FIELD_GET(AIROHA_FOE_IB2_PSE_PORT, *ib2);
-	if (pse_port == FE_PSE_PORT_CDM4)
+	if (pse_port == FE_PSE_PORT_CDM4 ||
+	    (airoha_is(ppe->eth, en7523) &&
+	     pse_port == FE_PSE_PORT_GDM3))
 		return;
 
 	airoha_ppe_foe_flow_stat_entry_reset(ppe, npu, index);
