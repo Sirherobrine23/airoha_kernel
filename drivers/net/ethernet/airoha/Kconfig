@@ -32,4 +32,16 @@ config NET_AIROHA_FLOW_STATS
 	help
 	  Enable Airoha flowtable statistic counters.
 
+config NET_AIROHA_SOC_WED
+	bool "Airoha EN7523 WED support"
+	depends on NET_AIROHA && PCI
+	select NET_MEDIATEK_WED_COMMON
+	help
+	  Enable WiFi Ethernet Datapath (WED) hardware offload for the
+	  EN7523 SoC. When enabled, mt76 WiFi drivers can offload
+	  wireless transmit processing through the WED engine rather than
+	  taking the slow path through the CPU.
+
+	  If unsure, say N.
+
 endif #NET_VENDOR_AIROHA

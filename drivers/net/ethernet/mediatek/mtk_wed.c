@@ -2769,31 +2769,32 @@ mtk_wed_setup_tc(struct mtk_wed_device *wed, struct net_device *dev,
 	}
 }
 
+static const struct mtk_wed_ops mtk_wed_ops = {
+	.attach = mtk_wed_attach,
+	.tx_ring_setup = mtk_wed_tx_ring_setup,
+	.rx_ring_setup = mtk_wed_rx_ring_setup,
+	.txfree_ring_setup = mtk_wed_txfree_ring_setup,
+	.msg_update = mtk_wed_mcu_msg_update,
+	.start = mtk_wed_start,
+	.stop = mtk_wed_stop,
+	.reset_dma = mtk_wed_reset_dma,
+	.reg_read = wed_r32,
+	.reg_write = wed_w32,
+	.irq_get = mtk_wed_irq_get,
+	.irq_set_mask = mtk_wed_irq_set_mask,
+	.detach = mtk_wed_detach,
+	.ppe_check = mtk_wed_ppe_check,
+	.setup_tc = mtk_wed_setup_tc,
+	.start_hw_rro = mtk_wed_start_hw_rro,
+	.rro_rx_ring_setup = mtk_wed_rro_rx_ring_setup,
+	.msdu_pg_rx_ring_setup = mtk_wed_msdu_pg_rx_ring_setup,
+	.ind_rx_ring_setup = mtk_wed_ind_rx_ring_setup,
+};
+
 void mtk_wed_add_hw(struct device_node *np, struct mtk_eth *eth,
 		    void __iomem *wdma, phys_addr_t wdma_phy,
 		    int index)
 {
-	static const struct mtk_wed_ops wed_ops = {
-		.attach = mtk_wed_attach,
-		.tx_ring_setup = mtk_wed_tx_ring_setup,
-		.rx_ring_setup = mtk_wed_rx_ring_setup,
-		.txfree_ring_setup = mtk_wed_txfree_ring_setup,
-		.msg_update = mtk_wed_mcu_msg_update,
-		.start = mtk_wed_start,
-		.stop = mtk_wed_stop,
-		.reset_dma = mtk_wed_reset_dma,
-		.reg_read = wed_r32,
-		.reg_write = wed_w32,
-		.irq_get = mtk_wed_irq_get,
-		.irq_set_mask = mtk_wed_irq_set_mask,
-		.detach = mtk_wed_detach,
-		.ppe_check = mtk_wed_ppe_check,
-		.setup_tc = mtk_wed_setup_tc,
-		.start_hw_rro = mtk_wed_start_hw_rro,
-		.rro_rx_ring_setup = mtk_wed_rro_rx_ring_setup,
-		.msdu_pg_rx_ring_setup = mtk_wed_msdu_pg_rx_ring_setup,
-		.ind_rx_ring_setup = mtk_wed_ind_rx_ring_setup,
-	};
 	struct device_node *eth_np = eth->dev->of_node;
 	struct platform_device *pdev;
 	struct mtk_wed_hw *hw;
@@ -2815,7 +2816,6 @@ void mtk_wed_add_hw(struct device_node *np, struct mtk_eth *eth,
 	if (IS_ERR(regs))
 		goto err_put_device;
 
-	rcu_assign_pointer(mtk_soc_wed_ops, &wed_ops);
 
 	mutex_lock(&hw_lock);
 
@@ -2865,6 +2865,12 @@ void mtk_wed_add_hw(struct device_node *np, struct mtk_eth *eth,
 	mtk_wed_hw_add_debugfs(hw);
 
 	hw_list[index] = hw;
+	if (mtk_wed_ops_register(&mtk_wed_ops)) {
+		hw_list[index] = NULL;
+		debugfs_remove(hw->debugfs_dir);
+		kfree(hw);
+		goto unlock;
+	}
 
 	mutex_unlock(&hw_lock);
 
@@ -2882,9 +2888,7 @@ void mtk_wed_exit(void)
 {
 	int i;
 
-	rcu_assign_pointer(mtk_soc_wed_ops, NULL);
-
-	synchronize_rcu();
+	mtk_wed_ops_unregister(&mtk_wed_ops);
 
 	for (i = 0; i < ARRAY_SIZE(hw_list); i++) {
 		struct mtk_wed_hw *hw;

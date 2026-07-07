@@ -81,6 +81,14 @@ properties:
       interface to implement hardware flow offloading programming Packet
       Processor Engine (PPE) flow table.
 
+  airoha,wed:
+    $ref: /schemas/types.yaml#/definitions/phandle-array
+    minItems: 1
+    maxItems: 2
+    description:
+      WED instances associated with the PCIe domains used by the wireless
+      devices. Entries are ordered by PCI domain number.
+
 patternProperties:
   "^ethernet@[1-4]$":
     type: object

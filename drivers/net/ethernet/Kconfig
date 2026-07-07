@@ -15,6 +15,9 @@ if ETHERNET
 config MDIO
 	tristate
 
+config NET_MEDIATEK_WED_COMMON
+	bool
+
 source "drivers/net/ethernet/3com/Kconfig"
 source "drivers/net/ethernet/actions/Kconfig"
 source "drivers/net/ethernet/adaptec/Kconfig"
