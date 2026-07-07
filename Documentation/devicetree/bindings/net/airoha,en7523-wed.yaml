@@ -1,0 +1,56 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/net/airoha,en7523-wed.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Airoha EN7523 Wireless Ethernet Dispatch controller
+
+maintainers:
+  - Lorenzo Bianconi <lorenzo@kernel.org>
+
+description:
+  The Wireless Ethernet Dispatch (WED) controller connects a PCIe wireless
+  DMA engine to the Ethernet frame engine and offloads the wireless transmit
+  datapath. Each EN7523 WED instance is associated with one PCIe domain and
+  one WDMA instance.
+
+properties:
+  compatible:
+    items:
+      - const: airoha,en7523-wed
+      - const: syscon
+
+  reg:
+    items:
+      - description: WED register block
+      - description: WDMA register block
+
+  reg-names:
+    items:
+      - const: wed
+      - const: wdma
+
+  interrupts:
+    maxItems: 1
+
+required:
+  - compatible
+  - reg
+  - reg-names
+  - interrupts
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/interrupt-controller/arm-gic.h>
+    #include <dt-bindings/interrupt-controller/irq.h>
+
+    wed@1fa02000 {
+      compatible = "airoha,en7523-wed", "syscon";
+      reg = <0x1fa02000 0xb00>,
+            <0x1fa06000 0x400>;
+      reg-names = "wed", "wdma";
+      interrupts = <GIC_SPI 67 IRQ_TYPE_LEVEL_HIGH>;
+    };
