@@ -20,6 +20,7 @@
 
 #include "airoha_regs.h"
 #include "airoha_eth.h"
+#include "airoha_wed.h"
 
 u32 airoha_rr(void __iomem *base, u32 offset)
 {
@@ -4323,6 +4324,20 @@ static int airoha_probe(struct platform_device *pdev)
 	if (err)
 		goto error_ports_free;
 
+	/* Register WED instances.  The DT eth node lists WED device nodes via
+	 * the "airoha,wed" phandle array (one entry per PCIe domain / WED hw).
+	 * Ownership of the node reference is transferred to the WED driver.
+	 */
+	for (i = 0; ; i++) {
+		struct device_node *wed_np =
+			of_parse_phandle(pdev->dev.of_node, "airoha,wed", i);
+		if (!wed_np)
+			break;
+		err = airoha_wed_add_hw(wed_np, i);
+		if (err)
+			goto error_wed_exit;
+	}
+
 	for (i = 0; i < ARRAY_SIZE(eth->qdma); i++)
 		airoha_qdma_start_napi(&eth->qdma[i]);
 
@@ -4335,6 +4350,8 @@ static int airoha_probe(struct platform_device *pdev)
 error_napi_stop:
 	for (i = 0; i < ARRAY_SIZE(eth->qdma); i++)
 		airoha_qdma_stop_napi(&eth->qdma[i]);
+error_wed_exit:
+	airoha_wed_exit();
 	airoha_hw_cleanup(eth);
 error_ports_free:
 	for (i = 0; i < eth->soc->max_gdm_ports; i++) {
@@ -4371,6 +4388,7 @@ static void airoha_remove(struct platform_device *pdev)
 	struct airoha_eth *eth = platform_get_drvdata(pdev);
 	int i;
 
+	airoha_wed_exit();
 	for (i = 0; i < ARRAY_SIZE(eth->qdma); i++)
 		airoha_qdma_stop_napi(&eth->qdma[i]);
 
