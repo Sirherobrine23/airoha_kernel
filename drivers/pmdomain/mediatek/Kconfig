@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-2.0-only
 
 menu "MediaTek PM Domains"
-	depends on ARCH_MEDIATEK || COMPILE_TEST
+	depends on ARCH_MEDIATEK || ARCH_AIROHA || COMPILE_TEST
 
 config MTK_SCPSYS
 	bool "MediaTek SCPSYS Support"
