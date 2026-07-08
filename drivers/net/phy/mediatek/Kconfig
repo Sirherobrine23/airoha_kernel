@@ -1,4 +1,17 @@
 # SPDX-License-Identifier: GPL-2.0-only
+config AIROHA_GE_SOC_PHY
+	tristate "Airoha SoC Ethernet PHYs"
+	depends on ARM64 || COMPILE_TEST
+	depends on ARCH_AIROHA || COMPILE_TEST
+	select MTK_NET_PHYLIB
+	select PHY_PACKAGE
+	help
+	  Supports Airoha SoC built-in Gigabit Ethernet PHYs.
+
+	  Include support for built-in Ethernet PHYs which are present in
+	  the AN7581 and AN7583 SoCs. These PHYs d will dynamically
+	  calibrate during startup.
+
 config MEDIATEK_2P5GE_PHY
 	tristate "MediaTek 2.5Gb Ethernet PHYs"
 	depends on (ARM64 && ARCH_MEDIATEK) || COMPILE_TEST
@@ -36,9 +49,8 @@ config MEDIATEK_GE_SOC_PHY
 	  present in the SoCs efuse and will dynamically calibrate VCM
 	  (common-mode voltage) during startup.
 
-	  Also include support for the built-in Gigabit Ethernet PHYs of
-	  the Airoha AN7581 and AN7583 SoCs and of the EcoNet EN7528 SoC,
-	  which need no efuse calibration data.
+	  Also include support for the built-in Gigabit Ethernet PHY of
+	  the EcoNet EN7528 SoC, which needs no efuse calibration data.
 
 config MTK_NET_PHYLIB
 	tristate
