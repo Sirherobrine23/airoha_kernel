@@ -124,6 +124,7 @@ static void airoha_cpu_pmdomain_remove(struct platform_device *pdev)
 }
 
 static const struct of_device_id airoha_cpu_pmdomain_of_match[] = {
+	{ .compatible = "airoha,an7583-cpufreq" },
 	{ .compatible = "airoha,en7581-cpufreq" },
 	{ },
 };
