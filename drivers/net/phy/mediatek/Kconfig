@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: GPL-2.0-only
 config AIROHA_GE_SOC_PHY
 	tristate "Airoha SoC Ethernet PHYs"
-	depends on ARM64 || COMPILE_TEST
 	depends on ARCH_AIROHA || COMPILE_TEST
 	select MTK_NET_PHYLIB
 	select PHY_PACKAGE
