@@ -44,4 +44,26 @@ config NET_AIROHA_SOC_WED
 
 	  If unsure, say N.
 
+config AIROHA_GPON
+	tristate "EcoNet EN7521/EN7526 GPON MAC driver"
+	depends on ARCH_AIROHA || COMPILE_TEST
+	depends on OF
+	depends on SFP
+	help
+	  Driver for the GPON MAC on EcoNet EN7521, EN7526 and EN751221 SoCs.
+	  Implements ITU-T G.984.3 ONU activation, GEM port and T-CONT/Alloc-ID
+	  management, downstream PLOAM handling and AES-128 decryption. It
+	  attaches to an SFP socket specified in the device tree.
+
+config AIROHA_EPON
+	tristate "EcoNet EN7521/EN7526 EPON MAC driver"
+	depends on ARCH_AIROHA || COMPILE_TEST
+	depends on OF
+	depends on SFP
+	help
+	  Driver for the EPON MAC on EcoNet EN7521, EN7526 and EN751221 SoCs.
+	  Implements IEEE 802.3 clause 64 MPCP LLID registration, triple-churning
+	  and AES-128 security, dying gasp and power saving. It attaches to an
+	  SFP socket specified in the device tree.
+
 endif #NET_VENDOR_AIROHA
