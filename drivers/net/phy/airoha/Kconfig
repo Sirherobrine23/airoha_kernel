@@ -1,0 +1,28 @@
+config AIROHA_LDDLA_PHY
+	tristate "Airoha EN757x xPON PHY lddla devices"
+	select PHY_COMMON_PROPS
+	default n
+	help
+	  Currently supports the Airoha EN757x PHY.
+
+if AIROHA_LDDLA_PHY
+
+config EN7570_PHY
+	bool "xPON PHY for EN7570"
+	depends on AIROHA_LDDLA_PHY
+	help
+	 en7570
+
+config EN7571_PHY
+	bool "xPON PHY for EN7571"
+	depends on AIROHA_LDDLA_PHY
+	help
+	 en7571
+
+config EN7572_PHY
+	bool "xPON PHY for EN7572"
+	depends on AIROHA_LDDLA_PHY
+	help
+	 en7572
+
+endif
