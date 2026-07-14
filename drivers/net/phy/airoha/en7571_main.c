@@ -392,6 +392,23 @@ static u16 en7571_op_rx_power(struct airoha_lddla *lddla)
 static void en7571_op_diag(struct airoha_lddla *lddla, struct seq_file *s)
 {
 	struct en7571_priv *priv = container_of(lddla, struct en7571_priv, lddla);
+	u32 limiter0 = 0, limiter2 = 0, pwr_ctrl0 = 0;
+	u32 pwr_ctrl9 = 0, pwr_ctrld = 0;
+	u32 p0_cs2 = 0, p0_cs3 = 0, p1_cs2 = 0, p1_cs3 = 0;
+	u32 tgen = 0, dummy = 0, safe = 0;
+
+	lddla_rd32(lddla, EN7571_PWR_LIMITER_0, &limiter0);
+	lddla_rd32(lddla, EN7571_PWR_LIMITER_2, &limiter2);
+	lddla_rd32(lddla, EN7571_PWR_CTRL_0, &pwr_ctrl0);
+	lddla_rd32(lddla, EN7571_PWR_CTRL_9, &pwr_ctrl9);
+	lddla_rd32(lddla, EN7571_PWR_CTRL_D, &pwr_ctrld);
+	lddla_rd32(lddla, EN7571_P0_PWR_CTRL_CS2, &p0_cs2);
+	lddla_rd32(lddla, EN7571_P0_PWR_CTRL_CS3, &p0_cs3);
+	lddla_rd32(lddla, EN7571_P1_PWR_CTRL_CS2, &p1_cs2);
+	lddla_rd32(lddla, EN7571_P1_PWR_CTRL_CS3, &p1_cs3);
+	lddla_rd32(lddla, EN7571_T1DELAY, &tgen);
+	lddla_rd32(lddla, EN7571_DUMMY, &dummy);
+	lddla_rd32(lddla, EN7571_SAFE_PROTECT, &safe);
 
 	seq_printf(s, "version:     %d\n", EN7571_VERSION);
 	seq_printf(s, "silicon rev: %d\n", priv->ver);
@@ -413,6 +430,16 @@ static void en7571_op_diag(struct airoha_lddla *lddla, struct seq_file *s)
 		   priv->adc_slope_nv, priv->adc_offset_uv);
 	seq_printf(s, "efuse off:   %d m degC\n", priv->efuse_offset_mc);
 	seq_printf(s, "rssi factor: %d (x1000)\n", priv->rssi_factor);
+	seq_printf(s, "raw limiter: ibias=0x%08x imod=0x%08x\n",
+		   limiter0, limiter2);
+	seq_printf(s, "raw loop:    ctrl0=0x%08x setpoint=0x%08x pav_p1=0x%08x\n",
+		   pwr_ctrl0, pwr_ctrl9, pwr_ctrld);
+	seq_printf(s, "raw phase0:  cs2=0x%08x cs3=0x%08x\n",
+		   p0_cs2, p0_cs3);
+	seq_printf(s, "raw phase1:  cs2=0x%08x cs3=0x%08x\n",
+		   p1_cs2, p1_cs3);
+	seq_printf(s, "raw burst:   tgen=0x%08x dummy=0x%08x safe=0x%08x\n",
+		   tgen, dummy, safe);
 }
 
 static const struct airoha_lddla_ops en7571_ops = {
