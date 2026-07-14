@@ -2,3 +2,4 @@
 
 obj-$(CONFIG_PHY_AIROHA_PCIE)		+= phy-airoha-pcie.o
 obj-$(CONFIG_PHY_AIROHA_USB)		+= phy-airoha-usb.o
+obj-$(CONFIG_PHY_AIROHA_XPON)		+= phy-airoha-xpon.o
