@@ -95,6 +95,7 @@
 #define REG_GDM_MISC_CFG		0x0148
 #define GDM2_RDM_ACK_WAIT_PREF_MASK	BIT(9)
 #define GDM2_CHN_VLD_MODE_MASK		BIT(5)
+#define GDM2_RLS_MODE_MASK		BIT(1)
 
 #define REG_QDMA_FC_WIFI_SP		0x0190
 #define WIFI_OFFLOAD_FC_EN_MASK		BIT(6)
@@ -204,6 +205,17 @@
 
 #define REG_GDM_TXCHN_EN(_n)		(GDM_BASE(_n) + 0x24)
 #define REG_GDM_RXCHN_EN(_n)		(GDM_BASE(_n) + 0x28)
+#define REG_CDM_HWF_CHN_EN(_n)		(CDM_BASE(_n) + 0x0c)
+
+/* EN7523 xPON uses the legacy combined GDM2 channel-enable register.
+ * TX/T-CONT channels occupy bits 0..15 and the two downstream GPON
+ * receive channels occupy bits 16..17.
+ */
+#define REG_GDM_XPON_CHN_EN(_n)		(GDM_BASE(_n) + 0x2c)
+#define EN7523_GDM2_XPON_RX_CHN_MASK	GENMASK(17, 16)
+#define EN7523_GDM2_EPON_TX_CHN_MASK	(GENMASK(7, 0) | GENMASK(23, 16))
+#define EN7523_GDM2_EPON_RX_CHN_MASK	GENMASK(7, 0)
+#define EN7523_CDM2_EPON_HWF_CHN_MASK	GENMASK(7, 0)
 
 #define REG_FE_CPORT_CFG		(GDM1_BASE + 0x40)
 #define FE_CPORT_DIS_FE2GSW_CRC		BIT(31)
