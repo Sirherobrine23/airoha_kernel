@@ -110,13 +110,18 @@ void en7571_burst_ctrl(struct en7571_priv *priv)
 void en7571_link_reg(struct en7571_priv *priv, bool enable)
 {
 	if (priv->ver == 2) {
+		/*
+		 * Match xpon_en757x/v1: rev-2 controls MPDH, TGEN and the
+		 * burst gate here, but leaves the HW-KT select cleared.
+		 * Temperature compensation is handled by the software KT loop.
+		 */
 		en7571_mpdh_stepsize(priv, !enable);
 		en7571_t1delay_setting(priv, !enable);
 		en7571_burst_ctrl(priv);
 	} else {
+		en7571_hwkt(priv, enable);
 		en7571_t1delay_setting(priv, !enable);
 	}
-	en7571_hwkt(priv, enable);
 }
 
 /*
@@ -136,22 +141,26 @@ void en7571_cdr(struct en7571_priv *priv, bool enable)
 void en7571_reg_init(struct en7571_priv *priv)
 {
 	u8 b[4];
-	u32 w;
 
 	/* TIA default: clear the TIA gain / mux bits in TIAMUX byte 1. */
 	lddla_update8(&priv->lddla, EN7571_TIAMUX + 1, ~0xce & 0xff, 0);
 
-	/* Ibias / Imod current limiters: only when provisioned (full word). */
-	w = lddla_flash_read(&priv->lddla, EN7571_FL_IBIAS_LIMITER);
-	if (w != EN7571_FLASH_ERASED) {
-		b[0] = w; b[1] = w >> 8; b[2] = w >> 16; b[3] = w >> 24;
-		lddla_wr(&priv->lddla, EN7571_PWR_LIMITER_0, b, 4);
-	}
-	w = lddla_flash_read(&priv->lddla, EN7571_FL_IMOD_LIMITER);
-	if (w != EN7571_FLASH_ERASED) {
-		b[0] = w; b[1] = w >> 8; b[2] = w >> 16; b[3] = w >> 24;
-		lddla_wr(&priv->lddla, EN7571_PWR_LIMITER_2, b, 4);
-	}
+	/*
+	 * The v1 EN7571 driver does not source these limiter registers from
+	 * calibration offsets 0x070/0x074.  It always programs the production
+	 * defaults into the minimum-current field while preserving the other
+	 * lanes.  Loading the complete flash words here can clear both limits
+	 * and clamp the live Ibias/Imod readbacks to zero.
+	 */
+	lddla_rd(&priv->lddla, EN7571_PWR_LIMITER_0, b, 4);
+	b[3] = (b[3] & 0xf0) | ((EN7571_DA_IBIAS_MIN >> 8) & 0x0f);
+	b[2] = EN7571_DA_IBIAS_MIN & 0xff;
+	lddla_wr(&priv->lddla, EN7571_PWR_LIMITER_0, b, 4);
+
+	lddla_rd(&priv->lddla, EN7571_PWR_LIMITER_2, b, 4);
+	b[3] = (b[3] & 0xf0) | ((EN7571_DA_IMOD_MIN >> 8) & 0x0f);
+	b[2] = EN7571_DA_IMOD_MIN & 0xff;
+	lddla_wr(&priv->lddla, EN7571_PWR_LIMITER_2, b, 4);
 
 	/* Imax = 0x0fff0000 in both PWR_CTRL_6 and PWR_CTRL_7. */
 	b[0] = 0; b[1] = 0; b[2] = EN7571_IMAX & 0xff; b[3] = (EN7571_IMAX >> 8) & 0x0f;

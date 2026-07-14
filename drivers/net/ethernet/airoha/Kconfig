@@ -50,6 +50,8 @@ config AIROHA_XPON
 	depends on NET_AIROHA
 	depends on OF
 	depends on SFP
+	depends on MFD_SYSCON
+	select PHY_AIROHA_XPON
 	help
 	  Driver for the shared xPON MAC complex found in Airoha/EcoNet SoCs.
 	  GPON and EPON are implemented by one platform driver and selected by

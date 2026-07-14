@@ -37,7 +37,6 @@ properties:
     minItems: 1
     items:
       - const: mac
-      - enum: [phy, epon-reset]
       - enum: [tx-off, epon-reset]
       - const: epon-reset
 
@@ -68,6 +67,29 @@ properties:
       not require it.
     enum: [gpon, epon]
 
+  airoha,gpon-serial-number:
+    $ref: /schemas/types.yaml#/definitions/uint8-array
+    minItems: 8
+    maxItems: 8
+    description:
+      Eight-byte GPON serial number. The first four bytes are the vendor ID
+      and the last four bytes are the vendor-specific serial number.
+
+  airoha,gpon-password:
+    $ref: /schemas/types.yaml#/definitions/uint8-array
+    minItems: 10
+    maxItems: 10
+    description:
+      Ten-byte GPON registration password. The driver must not expose the
+      password through kernel logs.
+
+  phys:
+    maxItems: 1
+    description: Phandle to the EN7523 digital xPON PHY.
+
+  phy-names:
+    const: xpon
+
   sfp:
     $ref: /schemas/types.yaml#/definitions/phandle
     description: Phandle to the optical module or virtual SFP cage.
@@ -86,6 +108,9 @@ allOf:
         compatible:
           const: airoha,en7523-xpon
     then:
+      required:
+        - phys
+        - phy-names
       properties:
         airoha,pon-mode: true
     else:
@@ -112,6 +137,10 @@ examples:
         ethernet = <&gdm2>;
         airoha,scu = <&scuclk>;
         airoha,pon-mode = "gpon";
+        airoha,gpon-serial-number = [49 4e 56 50 71 43 86 02];
+        airoha,gpon-password = [30 30 31 34 34 35 31 38 33 30];
+        phys = <&xpon_phy>;
+        phy-names = "xpon";
         sfp = <&pon0>;
     };
 ...

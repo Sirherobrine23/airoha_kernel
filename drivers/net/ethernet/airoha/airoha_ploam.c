@@ -147,14 +147,6 @@ static void ploam_send(struct ploam_priv *pp, u8 type,
 	pp->ops->send_upstream(pp->hw_priv, &msg, times);
 }
 
-static void ploam_send_serial_number(struct ploam_priv *pp)
-{
-	u8 content[PLOAM_CONTENT_LEN] = {};
-
-	memcpy(content, pp->sn, 8);
-	ploam_send(pp, PLOAM_UP_SERIAL_NUMBER_ONU, content, 1);
-}
-
 static void ploam_send_password(struct ploam_priv *pp)
 {
 	u8 content[PLOAM_CONTENT_LEN] = {};
@@ -227,11 +219,17 @@ static void ploam_set_state(struct ploam_priv *pp, enum gpon_state new_state)
 {
 	if (pp->state == new_state)
 		return;
+
 	pp->state = new_state;
 	pp->ops->state_changed(pp->hw_priv, new_state);
-	/* In O3, immediately announce serial number to the OLT */
-	if (new_state == GPON_O3_SERIAL_NUMBER)
-		ploam_send_serial_number(pp);
+
+	/*
+	 * Do not enqueue Serial_Number_ONU when entering O3.  The EN7523 GPON
+	 * MAC builds the message from G_VENDOR_ID, G_VS_SN and G_SN_MSG_CFG
+	 * and transmits it in the OLT-provided serial-number grant.  Sending a
+	 * second software-generated message here occurs outside that grant and
+	 * also omits the hardware random-delay and power-level fields.
+	 */
 }
 
 /* -----------------------------------------------------------------------
