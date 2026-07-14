@@ -10,7 +10,6 @@ obj-$(CONFIG_NET_AIROHA_NPU) += airoha_npu.o
 
 airoha-eth-$(CONFIG_NET_AIROHA_SOC_WED) += airoha_wed.o airoha_wed_debugfs.o
 
-# Airoha EN7521/EN7526/EN751221 GPON + EPON MAC drivers (attach to a DT sfp)
-obj-$(CONFIG_AIROHA_EPON) += airoha_epon.o
-obj-$(CONFIG_AIROHA_GPON) += airoha-gpon.o
-airoha-gpon-y := airoha_gpon.o airoha_ploam.o
+# Airoha/EcoNet shared GPON + EPON MAC complex
+obj-$(CONFIG_AIROHA_XPON) += airoha-xpon.o
+airoha-xpon-y := airoha_xpon.o airoha_ploam.o
