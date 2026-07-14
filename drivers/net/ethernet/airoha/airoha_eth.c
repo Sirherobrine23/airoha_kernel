@@ -3,6 +3,7 @@
  * Copyright (c) 2024 AIROHA Inc
  * Author: Lorenzo Bianconi <lorenzo@kernel.org>
  */
+#include <linux/export.h>
 #include <linux/of.h>
 #include <linux/of_net.h>
 #include <linux/of_reserved_mem.h>
@@ -21,6 +22,8 @@
 #include "airoha_regs.h"
 #include "airoha_eth.h"
 #include "airoha_wed.h"
+
+static const struct net_device_ops airoha_netdev_ops;
 
 u32 airoha_rr(void __iomem *base, u32 offset)
 {
@@ -147,6 +150,102 @@ static int airoha_set_macaddr(struct airoha_gdm_dev *dev, const u8 *addr)
 
 	return 0;
 }
+
+static int airoha_eth_get_xpon_gdm2(struct net_device *netdev,
+				    struct airoha_gdm_dev **gdm)
+{
+	struct airoha_gdm_dev *dev;
+	struct airoha_eth *eth;
+
+	if (!netdev)
+		return -EINVAL;
+	if (netdev->netdev_ops != &airoha_netdev_ops)
+		return -ENODEV;
+
+	dev = netdev_priv(netdev);
+	eth = dev->eth;
+	if (!eth || !dev->port || !airoha_is(eth, en7523) ||
+	    dev->port->id != AIROHA_GDM2_IDX)
+		return -EOPNOTSUPP;
+
+	*gdm = dev;
+	return 0;
+}
+
+int airoha_eth_set_xpon_mode(struct net_device *netdev,
+			      enum airoha_xpon_mode mode)
+{
+	struct airoha_gdm_dev *dev;
+	int ret;
+
+	ret = airoha_eth_get_xpon_gdm2(netdev, &dev);
+	if (ret)
+		return ret;
+	if (mode != AIROHA_XPON_MODE_GPON &&
+	    mode != AIROHA_XPON_MODE_EPON)
+		return -EINVAL;
+
+	/* FE_API_SET_GDMA_MISC_CONFIG(FE_GDM_SEL_GDMA2, mode).
+	 * The vendor SDK sets GDMA2_RLS_MODE only for GPON.
+	 */
+	airoha_fe_rmw(dev->eth, REG_GDM_MISC_CFG, GDM2_RLS_MODE_MASK,
+		      mode == AIROHA_XPON_MODE_GPON ?
+		      GDM2_RLS_MODE_MASK : 0);
+
+	/* A mode switch starts from a quiescent GDM2/CDM2 datapath. */
+	airoha_fe_clear(dev->eth, REG_GDM_TXCHN_EN(AIROHA_GDM2_IDX), ~0U);
+	airoha_fe_clear(dev->eth, REG_GDM_RXCHN_EN(AIROHA_GDM2_IDX), ~0U);
+	airoha_fe_clear(dev->eth, REG_CDM_HWF_CHN_EN(2), ~0U);
+	airoha_fe_clear(dev->eth, REG_GDM_XPON_CHN_EN(AIROHA_GDM2_IDX),
+		       EN7523_GDM2_XPON_RX_CHN_MASK);
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(airoha_eth_set_xpon_mode);
+
+int airoha_eth_set_xpon_datapath(struct net_device *netdev,
+				  enum airoha_xpon_mode mode, bool enable)
+{
+	struct airoha_gdm_dev *dev;
+	int ret;
+
+	ret = airoha_eth_get_xpon_gdm2(netdev, &dev);
+	if (ret)
+		return ret;
+
+	switch (mode) {
+	case AIROHA_XPON_MODE_GPON:
+		/* The EN7523 GPON path uses the legacy combined channel
+		 * register. Downstream channels are bits 16 and 17.
+		 */
+		airoha_fe_rmw(dev->eth,
+			      REG_GDM_XPON_CHN_EN(AIROHA_GDM2_IDX),
+			      EN7523_GDM2_XPON_RX_CHN_MASK,
+			      enable ? EN7523_GDM2_XPON_RX_CHN_MASK : 0);
+		break;
+	case AIROHA_XPON_MODE_EPON:
+		/* xpon_1g/eponFeChannelEnable(): LLID channels 0..7,
+		 * plus TX channels 16..23 for OAM-favour mode.
+		 */
+		airoha_fe_rmw(dev->eth,
+			      REG_GDM_TXCHN_EN(AIROHA_GDM2_IDX),
+			      EN7523_GDM2_EPON_TX_CHN_MASK,
+			      enable ? EN7523_GDM2_EPON_TX_CHN_MASK : 0);
+		airoha_fe_rmw(dev->eth,
+			      REG_GDM_RXCHN_EN(AIROHA_GDM2_IDX),
+			      EN7523_GDM2_EPON_RX_CHN_MASK,
+			      enable ? EN7523_GDM2_EPON_RX_CHN_MASK : 0);
+		airoha_fe_rmw(dev->eth, REG_CDM_HWF_CHN_EN(2),
+			      EN7523_CDM2_EPON_HWF_CHN_MASK,
+			      enable ? EN7523_CDM2_EPON_HWF_CHN_MASK : 0);
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(airoha_eth_set_xpon_datapath);
 
 static void airoha_set_gdm_port_fwd_cfg(struct airoha_eth *eth, u32 addr,
 					u32 val)
@@ -1999,9 +2098,9 @@ static void airoha_hw_cleanup(struct airoha_eth *eth)
 {
 	int i;
 
+	airoha_ppe_deinit(eth);
 	for (i = 0; i < ARRAY_SIZE(eth->qdma); i++)
 		airoha_qdma_cleanup(&eth->qdma[i]);
-	airoha_ppe_deinit(eth);
 }
 
 static void airoha_qdma_start_napi(struct airoha_qdma *qdma)
@@ -3992,12 +4091,15 @@ static int airoha_setup_phylink(struct net_device *netdev)
 	config->type = PHYLINK_NETDEV;
 
 	/*
-	 * GDM1 only supports internal for Embedded Switch
+	 * GDM{1,2} only supports internal for Embedded Switch
 	 * and doesn't require a PCS.
 	 */
-	if (port->id == AIROHA_GDM1_IDX) {
+	if (port->id == AIROHA_GDM1_IDX || (port->id == AIROHA_GDM2_IDX && phy_mode == PHY_INTERFACE_MODE_INTERNAL)) {
 		config->mac_capabilities = MAC_ASYM_PAUSE | MAC_SYM_PAUSE |
 					   MAC_10000FD;
+		if (port->id == AIROHA_GDM2_IDX)
+			config->mac_capabilities = MAC_ASYM_PAUSE | MAC_SYM_PAUSE |
+						   MAC_2500FD | MAC_10000FD;
 
 		__set_bit(PHY_INTERFACE_MODE_INTERNAL,
 			  config->supported_interfaces);

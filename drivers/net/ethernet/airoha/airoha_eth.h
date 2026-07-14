@@ -151,6 +151,11 @@ enum airoha_gdm_index {
 	AIROHA_GDM4_IDX = 4,
 };
 
+enum airoha_xpon_mode {
+	AIROHA_XPON_MODE_GPON,
+	AIROHA_XPON_MODE_EPON,
+};
+
 enum {
 	FE_PSE_PORT_CDM1,
 	FE_PSE_PORT_GDM1,
@@ -767,6 +772,10 @@ static inline bool airoha_qdma_is_lro_queue(struct airoha_queue *q)
 	}
 }
 
+int airoha_eth_set_xpon_mode(struct net_device *netdev,
+			      enum airoha_xpon_mode mode);
+int airoha_eth_set_xpon_datapath(struct net_device *netdev,
+				  enum airoha_xpon_mode mode, bool enable);
 int airoha_get_fe_port(struct airoha_gdm_dev *dev);
 bool airoha_is_valid_gdm_dev(struct airoha_eth *eth,
 			     struct airoha_gdm_dev *dev);

@@ -1,0 +1,117 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/net/airoha,en7523-xpon.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Airoha EN7523 shared GPON and EPON MAC
+
+maintainers:
+  - Matheus Sampaio Queiroga <srherobrine20@gmail.com>
+
+description: |
+  The EN7523 family contains one xPON MAC complex shared by the GPON and
+  EPON protocol engines.  Both modes use GDM2/CDM2 as the packet datapath.
+  The common register region starts at 0x1fb60000, with the GPON register
+  window at offset 0x4000 and the EPON register window at offset 0x6000.
+
+properties:
+  compatible:
+    oneOf:
+      - const: airoha,en7523-xpon
+      - enum:
+          - airoha,en7523-gpon
+          - airoha,en7523-epon
+          - econet,en7521-gpon
+          - econet,en7526-gpon
+          - econet,en751221-gpon
+          - econet,en7521-epon
+          - econet,en7526-epon
+          - econet,en751221-epon
+
+  reg:
+    minItems: 1
+    maxItems: 4
+
+  reg-names:
+    minItems: 1
+    items:
+      - const: mac
+      - enum: [phy, epon-reset]
+      - enum: [tx-off, epon-reset]
+      - const: epon-reset
+
+  interrupts:
+    minItems: 1
+    maxItems: 2
+
+  interrupt-names:
+    minItems: 1
+    items:
+      - const: mac
+      - const: dying-gasp
+
+  ethernet:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description:
+      Phandle to the airoha,eth-mac GDM2 child used as the xPON datapath.
+
+  airoha,scu:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description:
+      Phandle to the EN7523 SCU syscon used to select GPON or EPON mode.
+
+  airoha,pon-mode:
+    description:
+      Protocol engine selected for airoha,en7523-xpon.  The property is
+      optional and defaults to GPON.  Legacy mode-specific compatibles do
+      not require it.
+    enum: [gpon, epon]
+
+  sfp:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: Phandle to the optical module or virtual SFP cage.
+
+required:
+  - compatible
+  - reg
+  - interrupts
+  - ethernet
+  - airoha,scu
+  - sfp
+
+allOf:
+  - if:
+      properties:
+        compatible:
+          const: airoha,en7523-xpon
+    then:
+      properties:
+        airoha,pon-mode: true
+    else:
+      properties:
+        airoha,pon-mode: false
+
+additionalProperties: true
+
+examples:
+  - |
+    #include <dt-bindings/interrupt-controller/arm-gic.h>
+
+    pon0: sfp {
+        compatible = "sff,sfp";
+        i2c-bus = <&i2c_sfp>;
+    };
+
+    xpon@1fb60000 {
+        compatible = "airoha,en7523-xpon";
+        reg = <0x1fb60000 0x10000>;
+        reg-names = "mac";
+        interrupts = <GIC_SPI 42 IRQ_TYPE_LEVEL_HIGH>;
+        interrupt-names = "mac";
+        ethernet = <&gdm2>;
+        airoha,scu = <&scuclk>;
+        airoha,pon-mode = "gpon";
+        sfp = <&pon0>;
+    };
+...
