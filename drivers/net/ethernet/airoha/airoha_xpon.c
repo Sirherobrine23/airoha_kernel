@@ -795,18 +795,34 @@ static int gpon_prepare_hardware(struct gpon_priv *priv)
 	return 0;
 }
 
+static void gpon_reset_activation_context(struct gpon_priv *priv)
+{
+	gpon_clear_bits(priv, GPON_GBL_CFG, GBL_CFG_US_FEC_EN);
+	gpon_write(priv, GPON_ONU_ID, PLOAM_ONU_UNASSIGNED);
+	gpon_write(priv, GPON_ACTIVATION_ST, GPON_O1_INITIAL);
+	gpon_write(priv, GPON_PRE_ASSIGNED_DLY, 0);
+	gpon_write(priv, GPON_EQD, 0);
+	gpon_write(priv, GPON_RSP_TIME, GPON_RSP_TIME_RESET);
+	gpon_write(priv, GPON_SN_MSG_CFG, 0);
+	priv->byte_delay = 0;
+	priv->bit_delay = 0;
+}
+
 static int gpon_dev_init(struct gpon_priv *priv)
 {
-	/* Follow vendor gpon_dev_init(): initialise only the activation
-	 * registers. Do not sweep the indirect GEM/T-CONT tables here;
-	 * the EN7523 command engine may not acknowledge those accesses
-	 * during startup or shutdown.
+	/*
+	 * Reset all activation state that can survive an optical or interface
+	 * restart. Do not sweep the indirect GEM/T-CONT tables here; the EN7523
+	 * command engine may not acknowledge those accesses during startup.
 	 */
-	gpon_write(priv, GPON_ONU_ID, PLOAM_ONU_UNASSIGNED);
-	gpon_write(priv, GPON_RSP_TIME, GPON_RSP_TIME_RESET);
+	gpon_reset_activation_context(priv);
 	dev_info(priv->dev,
-		 "GPON activation registers initialized: onu_id=%#08x rsp_time=%#08x\n",
-		 gpon_read(priv, GPON_ONU_ID), gpon_read(priv, GPON_RSP_TIME));
+		 "GPON activation reset: onu=%#x state=%#x rsp=%#x pre=%#x eqd=%#x\n",
+		 gpon_read(priv, GPON_ONU_ID),
+		 gpon_read(priv, GPON_ACTIVATION_ST),
+		 gpon_read(priv, GPON_RSP_TIME),
+		 gpon_read(priv, GPON_PRE_ASSIGNED_DLY),
+		 gpon_read(priv, GPON_EQD));
 
 	return 0;
 }
@@ -1633,8 +1649,7 @@ static void gpon_disable(struct gpon_priv *priv)
 	 */
 	gpon_write(priv, GPON_INT_ENABLE, 0);
 	gpon_write(priv, GPON_INT_STATUS, ~0U);
-	gpon_clear_bits(priv, GPON_GBL_CFG, GBL_CFG_US_FEC_EN);
-	gpon_write(priv, GPON_ONU_ID, PLOAM_ONU_UNASSIGNED);
+	gpon_reset_activation_context(priv);
 	gpon_write(priv, GPON_OMCI_ID, 0);
 
 	if (priv->omci_dev) {
