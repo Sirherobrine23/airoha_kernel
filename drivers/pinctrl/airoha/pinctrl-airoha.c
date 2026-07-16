@@ -446,13 +446,56 @@ static int airoha_pinmux_set_direction(struct pinctrl_dev *pctrl_dev,
 	return airoha_gpio_set_direction(&pinctrl->gpiochip, pin, input);
 }
 
+static int
+airoha_pinmux_gpio_request_enable(struct pinctrl_dev *pctrl_dev,
+				  struct pinctrl_gpio_range *range,
+				  unsigned int pin)
+{
+	struct airoha_pinctrl *pinctrl = pinctrl_dev_get_drvdata(pctrl_dev);
+	int gpio;
+
+	if (!pinctrl->force_gpio_reg)
+		return 0;
+
+	gpio = airoha_convert_pin_to_reg_offset(pctrl_dev, range, pin);
+	if (gpio < 0)
+		return gpio;
+
+	if (gpio >= BITS_PER_TYPE(u32))
+		return 0;
+
+	return regmap_set_bits(pinctrl->chip_scu, pinctrl->force_gpio_reg,
+			       FORCE_GPIO_EN(gpio));
+}
+
+static void
+airoha_pinmux_gpio_disable_free(struct pinctrl_dev *pctrl_dev,
+				struct pinctrl_gpio_range *range,
+				unsigned int pin)
+{
+	struct airoha_pinctrl *pinctrl = pinctrl_dev_get_drvdata(pctrl_dev);
+	int gpio;
+
+	if (!pinctrl->force_gpio_reg)
+		return;
+
+	gpio = airoha_convert_pin_to_reg_offset(pctrl_dev, range, pin);
+	if (gpio < 0 || gpio >= BITS_PER_TYPE(u32))
+		return;
+
+	regmap_clear_bits(pinctrl->chip_scu, pinctrl->force_gpio_reg,
+			  FORCE_GPIO_EN(gpio));
+}
+
 static const struct pinmux_ops airoha_pmxops = {
 	.get_functions_count = pinmux_generic_get_function_count,
 	.get_function_name = pinmux_generic_get_function_name,
 	.get_function_groups = pinmux_generic_get_function_groups,
+	.gpio_request_enable = airoha_pinmux_gpio_request_enable,
+	.gpio_disable_free = airoha_pinmux_gpio_disable_free,
 	.gpio_set_direction = airoha_pinmux_set_direction,
 	.set_mux = airoha_pinmux_set_mux,
-	.strict = true,
+	.strict = false,
 };
 
 /* pinconf callbacks */
@@ -801,6 +844,7 @@ int airoha_pinctrl_probe(struct platform_device *pdev)
 	}
 
 	pinctrl->chip_scu = map;
+	pinctrl->force_gpio_reg = data->force_gpio_reg;
 
 	/*
 	 * Reset all SCU mux register to reset defaults to undo bootloader modifications.
