@@ -1169,6 +1169,10 @@ static struct phylink_pcs *airoha_pcs_get(struct fwnode_reference_args *pcsspec,
 	if (pcsspec->nargs)
 		index = pcsspec->args[0];
 
+	if (index >= priv->data->num_port)
+		return dev_err_ptr_probe(dev, -EINVAL,
+					 "invalid PCS index %d\n", index);
+
 	return &priv->ports[index].pcs;
 }
 
@@ -1403,6 +1407,7 @@ static const struct airoha_pcs_match_data an7581_pcs_usb = {
 };
 
 static const struct airoha_pcs_match_data an7583_pcs_eth = {
+	.num_port = 1,
 	.port_type = AIROHA_PCS_ETH,
 	.usxgmii_rx_gb_out_vld_tweak = true,
 	.usxgmii_xfi_mode_sel = true,
@@ -1411,6 +1416,7 @@ static const struct airoha_pcs_match_data an7583_pcs_eth = {
 };
 
 static const struct airoha_pcs_match_data an7583_pcs_pon = {
+	.num_port = 1,
 	.port_type = AIROHA_PCS_PON,
 	.usxgmii_rx_gb_out_vld_tweak = true,
 	.usxgmii_xfi_mode_sel = true,
@@ -1419,6 +1425,7 @@ static const struct airoha_pcs_match_data an7583_pcs_pon = {
 };
 
 static const struct airoha_pcs_match_data an7583_pcs_pcie = {
+	.num_port = 2,
 	.port_type = AIROHA_PCS_PCIE,
 	.usxgmii_rx_gb_out_vld_tweak = true,
 	.usxgmii_xfi_mode_sel = true,
@@ -1427,6 +1434,7 @@ static const struct airoha_pcs_match_data an7583_pcs_pcie = {
 };
 
 static const struct airoha_pcs_match_data an7583_pcs_usb = {
+	.num_port = 1,
 	.port_type = AIROHA_PCS_USB,
 	.bringup = an7583_pcs_usb_phya_bringup,
 };
