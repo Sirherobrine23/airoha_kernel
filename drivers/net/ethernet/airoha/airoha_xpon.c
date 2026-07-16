@@ -532,6 +532,7 @@ static void airoha_xpon_phy_stop(struct device *dev, struct phy *phy,
 
 #define GPON_MAX_GEM_ID		4096
 #define GPON_MAX_TCONT		32
+#define GPON_SN_REQ_THRESHOLD	10
 
 #define GPON_PLOAM_RX_QUEUE_LEN	128
 #define GPON_PLOAM_RX_QUEUE_MASK	(GPON_PLOAM_RX_QUEUE_LEN - 1)
@@ -800,13 +801,26 @@ static int gpon_prepare_hardware(struct gpon_priv *priv)
 
 static void gpon_reset_activation_context(struct gpon_priv *priv)
 {
+	u32 sn_cfg;
+
 	gpon_clear_bits(priv, GPON_GBL_CFG, GBL_CFG_US_FEC_EN);
 	gpon_write(priv, GPON_ONU_ID, PLOAM_ONU_UNASSIGNED);
 	gpon_write(priv, GPON_ACTIVATION_ST, GPON_O1_INITIAL);
 	gpon_write(priv, GPON_PRE_ASSIGNED_DLY, 0);
 	gpon_write(priv, GPON_EQD, 0);
 	gpon_write(priv, GPON_RSP_TIME, GPON_RSP_TIME_RESET);
-	gpon_write(priv, GPON_SN_MSG_CFG, 0);
+
+	/*
+	 * Preserve the transmitter power mode while restoring the vendor
+	 * serial-request threshold and clearing only the random delay. A zero
+	 * threshold makes INT_SN_REQ_CRS continuously retrigger.
+	 */
+	sn_cfg = gpon_read(priv, GPON_SN_MSG_CFG);
+	sn_cfg &= ~(SN_MSG_CFG_SN_REQ_THR_MASK |
+		    SN_MSG_CFG_RANDOM_DELAY_MASK);
+	sn_cfg |= FIELD_PREP(SN_MSG_CFG_SN_REQ_THR_MASK,
+			     GPON_SN_REQ_THRESHOLD);
+	gpon_write(priv, GPON_SN_MSG_CFG, sn_cfg);
 	priv->byte_delay = 0;
 	priv->bit_delay = 0;
 }
