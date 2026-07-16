@@ -388,6 +388,20 @@ static u16 en7571_op_rx_power(struct airoha_lddla *lddla)
 	return en7571_rx_power_ddmi(container_of(lddla, struct en7571_priv, lddla));
 }
 
+static int en7571_op_tx_rearm(struct airoha_lddla *lddla)
+{
+	int ret;
+
+	ret = lddla_update8(lddla, EN7571_PWR_CTRL_0 + 1,
+			    EN7571_DCL_RST_B_MASK, EN7571_DCL_RST_B);
+	if (ret)
+		return ret;
+
+	return lddla_update8(lddla, EN7571_SAFE_PROTECT + 1,
+			     EN7571_SAFE_CIRCUIT_MASK,
+			     EN7571_SAFE_CIRCUIT_RESET);
+}
+
 /* Chip-specific debugfs lines (the shared core prints the common ones). */
 static void en7571_op_diag(struct airoha_lddla *lddla, struct seq_file *s)
 {
@@ -453,6 +467,7 @@ static const struct airoha_lddla_ops en7571_ops = {
 	.tx_power_refresh = en7571_op_tx_power,
 	.rx_power_refresh = en7571_op_rx_power,
 	.diag_show = en7571_op_diag,
+	.tx_rearm = en7571_op_tx_rearm,
 };
 
 /* ------------------------------------------------------------------ */

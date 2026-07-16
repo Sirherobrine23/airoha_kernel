@@ -19,6 +19,7 @@
 #include <linux/etherdevice.h>
 #include <linux/export.h>
 #include <linux/interrupt.h>
+#include <linux/i2c.h>
 #include <linux/io.h>
 #include <linux/iopoll.h>
 #include <linux/mfd/syscon.h>
@@ -64,6 +65,64 @@ struct airoha_xpon_match_data {
 	enum airoha_xpon_mode mode;
 	bool mode_from_dt;
 };
+
+static struct device *airoha_xpon_find_lddla(struct device *dev)
+{
+	struct device_node *sfp_node, *i2c_node, *lddla_node;
+	struct i2c_client *client;
+
+	if (!IS_REACHABLE(CONFIG_AIROHA_LDDLA_PHY))
+		return NULL;
+
+	sfp_node = of_parse_phandle(dev->of_node, "sfp", 0);
+	if (!sfp_node)
+		return NULL;
+
+	i2c_node = of_parse_phandle(sfp_node, "i2c-bus", 0);
+	of_node_put(sfp_node);
+	if (!i2c_node)
+		return NULL;
+
+	lddla_node = of_get_parent(i2c_node);
+	of_node_put(i2c_node);
+	if (!lddla_node)
+		return NULL;
+
+	if (!of_device_is_compatible(lddla_node, "airoha,en7570") &&
+	    !of_device_is_compatible(lddla_node, "airoha,en7571") &&
+	    !of_device_is_compatible(lddla_node, "airoha,en7572")) {
+		of_node_put(lddla_node);
+		return NULL;
+	}
+
+	client = of_find_i2c_device_by_node(lddla_node);
+	of_node_put(lddla_node);
+	if (!client)
+		return ERR_PTR(-EPROBE_DEFER);
+
+	if (!dev_get_drvdata(&client->dev)) {
+		put_device(&client->dev);
+		return ERR_PTR(-EPROBE_DEFER);
+	}
+
+	return &client->dev;
+}
+
+static int airoha_xpon_tx_rearm(struct device *dev, struct device *lddla_dev)
+{
+	int ret;
+
+	if (!lddla_dev)
+		return 0;
+
+	ret = airoha_lddla_tx_rearm(lddla_dev);
+	if (ret)
+		dev_err(dev, "failed to rearm optical transmitter: %d\n", ret);
+	else
+		dev_info(dev, "optical transmitter safety circuit rearmed\n");
+
+	return ret;
+}
 
 static const char *airoha_xpon_mode_name(enum airoha_xpon_mode mode)
 {
@@ -537,6 +596,7 @@ struct gpon_priv {
 	struct net_device	*netdev;
 	struct net_device	*omci_dev;
 	struct sfp_bus		*sfp_bus;
+	struct device		*lddla_dev;
 	int			irq;
 	bool			irq_enabled;
 
@@ -582,6 +642,36 @@ static inline u32 gpon_read(struct gpon_priv *priv, u32 reg)
 static inline void gpon_write(struct gpon_priv *priv, u32 reg, u32 val)
 {
 	writel(val, priv->regs + reg);
+}
+
+static void gpon_dump_activation_regs(struct gpon_priv *priv,
+				      const char *reason)
+{
+	u32 phy_tx_frames = 0, phy_tx_bursts = 0;
+	int phy_ret;
+
+	phy_ret = airoha_xpon_phy_get_gpon_tx_counters(priv->phy,
+						       &phy_tx_frames,
+						       &phy_tx_bursts);
+	dev_info(priv->dev,
+		 "GPON activation dump (%s): state=%s onu=%#06x act=%#08x rsp=%#06x pre_delay=%#010x eqd=%#010x sn_cfg=%#010x guard=%#010x type12=%#010x type3=%#010x dbg_dly=%#010x tx_sync=%#010x plou_fifo=%#010x int=%#010x/%#010x pending=%#010x phy_tx=%#010x/%#010x phy_ret=%d\n",
+		 reason, gpon_state_name(ploam_get_state(priv->ploam)),
+		 gpon_read(priv, GPON_ONU_ID),
+		 gpon_read(priv, GPON_ACTIVATION_ST),
+		 gpon_read(priv, GPON_RSP_TIME),
+		 gpon_read(priv, GPON_PRE_ASSIGNED_DLY),
+		 gpon_read(priv, GPON_EQD),
+		 gpon_read(priv, GPON_SN_MSG_CFG),
+		 gpon_read(priv, GPON_PLOu_GUARD_BIT),
+		 gpon_read(priv, GPON_PLOu_PRMBL_TYPE1_2),
+		 gpon_read(priv, GPON_PLOu_PRMBL_TYPE3),
+		 gpon_read(priv, GPON_DBG_DLY),
+		 gpon_read(priv, GPON_DBG_TX_SYNC_OFFSET),
+		 gpon_read(priv, GPON_PLOAMu_FIFO_STS),
+		 gpon_read(priv, GPON_INT_STATUS),
+		 gpon_read(priv, GPON_INT_ENABLE),
+		 (u32)atomic_read(&priv->pending_irqs),
+		 phy_tx_frames, phy_tx_bursts, phy_ret);
 }
 
 static inline void gpon_set_bits(struct gpon_priv *priv, u32 reg, u32 bits)
@@ -936,6 +1026,7 @@ static void gpon_cb_set_onu_id(void *hw_priv, u8 onu_id)
 
 	dev_info(priv->dev, "GPON assigned ONU-ID %u\n", onu_id);
 	gpon_write(priv, GPON_ONU_ID, ONU_ID_VLD | (onu_id & ONU_ID_MASK));
+	gpon_dump_activation_regs(priv, "ONU-ID assigned");
 }
 
 static void gpon_cb_set_eqd_o4(void *hw_priv, u32 byte_delay, u32 bit_delay)
@@ -948,6 +1039,7 @@ static void gpon_cb_set_eqd_o4(void *hw_priv, u32 byte_delay, u32 bit_delay)
 	priv->bit_delay  = bit_delay;
 	/* Write byte delay to G_EQD; bit delay goes to PHY (not abstracted) */
 	gpon_write(priv, GPON_EQD, byte_delay);
+	gpon_dump_activation_regs(priv, "O4 EqD programmed");
 }
 
 static void gpon_cb_adjust_eqd_o5(void *hw_priv, u32 new_eqd)
@@ -1218,6 +1310,9 @@ static void gpon_cb_state_changed(void *hw_priv, enum gpon_state state)
 	dev_info(priv->dev, "GPON state -> %s (%u), activation_reg=%#08x\n",
 		 gpon_state_name(state), state,
 		 gpon_read(priv, GPON_ACTIVATION_ST));
+
+	if (state == GPON_O4_RANGING || state == GPON_O5_OPERATION)
+		gpon_dump_activation_regs(priv, "state transition");
 
 	switch (state) {
 	case GPON_O2_STANDBY:
@@ -1496,6 +1591,7 @@ static void gpon_to1_work_fn(struct work_struct *work)
 	 * of the O3/O4 -> O2 transition.
 	 */
 	if (st == GPON_O3_SERIAL_NUMBER || st == GPON_O4_RANGING) {
+		gpon_dump_activation_regs(priv, "TO1 expired");
 		dev_warn(priv->dev,
 			 "GPON TO1 expired in O%d, returning to O2\n", (int)st);
 		gpon_write(priv, GPON_ONU_ID, PLOAM_ONU_UNASSIGNED);
@@ -1588,11 +1684,13 @@ static void gpon_irq_work_fn(struct work_struct *work)
 				 "GPON MAC error interrupt: %#08x\n",
 				 active & (u32)GPON_INT_ERROR_MASK);
 
-		if (active & INT_TX_LATE_START)
+		if (active & INT_TX_LATE_START) {
+			gpon_dump_activation_regs(priv, "TX late start");
 			dev_warn(priv->dev,
 				 "GPON upstream burst started late: rsp_time=%#06x state=%s\n",
 				 gpon_read(priv, GPON_RSP_TIME),
 				 gpon_state_name(ploam_get_state(priv->ploam)));
+		}
 	}
 }
 
@@ -1813,8 +1911,15 @@ static int gpon_sfp_module_start(void *upstream)
 		 gpon_state_name(state));
 
 	/* PHY ready: if we were in emergency stop, stay there */
-	if (state == GPON_O1_INITIAL)
+	if (state == GPON_O1_INITIAL) {
+		int ret;
+
+		ret = airoha_xpon_tx_rearm(priv->dev, priv->lddla_dev);
+		if (ret)
+			return ret;
+
 		return gpon_enable(priv);
+	}
 
 	return 0;
 }
@@ -2041,16 +2146,24 @@ static int gpon_probe(struct platform_device *pdev)
 		goto err_destroy_fsm_wq;
 	}
 
+	priv->lddla_dev = airoha_xpon_find_lddla(dev);
+	if (IS_ERR(priv->lddla_dev)) {
+		ret = dev_err_probe(dev, PTR_ERR(priv->lddla_dev),
+				    "failed to find LDDLA device\n");
+		priv->lddla_dev = NULL;
+		goto err_free_ploam;
+	}
+
 	priv->sfp_bus = sfp_bus_find_fwnode(dev->fwnode);
 	if (!priv->sfp_bus) {
 		ret = -ENODEV;
 		dev_err(dev, "missing SFP reference\n");
-		goto err_free_ploam;
+		goto err_put_lddla;
 	}
 	if (IS_ERR(priv->sfp_bus)) {
 		ret = PTR_ERR(priv->sfp_bus);
 		dev_err(dev, "failed to find SFP bus: %d\n", ret);
-		goto err_free_ploam;
+		goto err_put_lddla;
 	}
 
 	ret = sfp_bus_add_upstream(priv->sfp_bus, priv, &gpon_sfp_ops);
@@ -2087,6 +2200,9 @@ err_del_upstream:
 	sfp_bus_del_upstream(priv->sfp_bus);
 err_put_sfp:
 	sfp_bus_put(priv->sfp_bus);
+err_put_lddla:
+	if (priv->lddla_dev)
+		put_device(priv->lddla_dev);
 err_free_ploam:
 	ploam_free(priv->ploam);
 err_destroy_fsm_wq:
@@ -2113,6 +2229,8 @@ static void gpon_remove(struct platform_device *pdev)
 	unregister_netdev(priv->netdev);
 	sfp_bus_del_upstream(priv->sfp_bus);
 	sfp_bus_put(priv->sfp_bus);
+	if (priv->lddla_dev)
+		put_device(priv->lddla_dev);
 	ploam_free(priv->ploam);
 	destroy_workqueue(priv->fsm_wq);
 	of_node_put(priv->eth_node);
@@ -2300,6 +2418,7 @@ struct epon_priv {
 	struct device_node	*eth_node;
 	struct net_device	*netdev;
 	struct sfp_bus		*sfp_bus;
+	struct device		*lddla_dev;
 	int			irq;
 	bool			irq_enabled;
 
@@ -2855,8 +2974,14 @@ static void epon_sfp_module_remove(void *upstream)
 static int epon_sfp_module_start(void *upstream)
 {
 	struct epon_priv *priv = upstream;
+	int ret;
 
 	dev_info(priv->dev, "EPON SFP module start\n");
+
+	ret = airoha_xpon_tx_rearm(priv->dev, priv->lddla_dev);
+	if (ret)
+		return ret;
+
 	return epon_enable(priv);
 }
 
@@ -3051,15 +3176,23 @@ static int epon_probe(struct platform_device *pdev)
 	dev_info(dev, "EPON IRQ %d requested and initially disabled\n",
 		 priv->irq);
 
+	priv->lddla_dev = airoha_xpon_find_lddla(dev);
+	if (IS_ERR(priv->lddla_dev)) {
+		ret = dev_err_probe(dev, PTR_ERR(priv->lddla_dev),
+				    "failed to find LDDLA device\n");
+		priv->lddla_dev = NULL;
+		goto err_put_eth_node;
+	}
+
 	priv->sfp_bus = sfp_bus_find_fwnode(dev->fwnode);
 	if (!priv->sfp_bus) {
 		ret = dev_err_probe(dev, -ENODEV, "missing SFP reference\n");
-		goto err_put_eth_node;
+		goto err_put_lddla;
 	}
 	if (IS_ERR(priv->sfp_bus)) {
 		ret = PTR_ERR(priv->sfp_bus);
 		dev_err(dev, "failed to find SFP bus: %d\n", ret);
-		goto err_put_eth_node;
+		goto err_put_lddla;
 	}
 
 	ret = sfp_bus_add_upstream(priv->sfp_bus, priv, &epon_sfp_ops);
@@ -3086,6 +3219,9 @@ err_del_upstream:
 	sfp_bus_del_upstream(priv->sfp_bus);
 err_put_sfp:
 	sfp_bus_put(priv->sfp_bus);
+err_put_lddla:
+	if (priv->lddla_dev)
+		put_device(priv->lddla_dev);
 err_put_eth_node:
 	of_node_put(priv->eth_node);
 err_free_netdev:
@@ -3103,6 +3239,8 @@ static void epon_remove(struct platform_device *pdev)
 	unregister_netdev(priv->netdev);
 	sfp_bus_del_upstream(priv->sfp_bus);
 	sfp_bus_put(priv->sfp_bus);
+	if (priv->lddla_dev)
+		put_device(priv->lddla_dev);
 	of_node_put(priv->eth_node);
 	free_netdev(priv->netdev);
 }
