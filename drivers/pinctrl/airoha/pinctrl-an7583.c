@@ -1441,6 +1441,7 @@ static const struct airoha_pinctrl_match_data pinctrl_match_data = {
 	.num_irq_pins = AIROHA_NUM_PINS,
 	.hwinit_regs = hwinit_regs,
 	.num_hwinit_regs = ARRAY_SIZE(hwinit_regs),
+	.force_gpio_reg = REG_FORCE_GPIO_EN,
 	.confs_info = {
 		[AIROHA_PINCTRL_CONFS_PULLUP] = {
 			.confs = pinctrl_pullup_conf,

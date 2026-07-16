@@ -38,6 +38,8 @@
 #define AIROHA_PIN_BANK_SIZE			(AIROHA_NUM_PINS / 2)
 #define AIROHA_REG_GPIOCTRL_NUM_PIN		(AIROHA_NUM_PINS / 4)
 
+#define FORCE_GPIO_EN(n)			BIT(n)
+
 #define PINCTRL_PIN_GROUP(id, table)					\
 	PINCTRL_PINGROUP(id, table##_pins, ARRAY_SIZE(table##_pins))
 
@@ -123,6 +125,7 @@ struct airoha_pinctrl {
 	const struct airoha_pinctrl_confs_info *confs_info;
 
 	struct regmap *chip_scu;
+	u32 force_gpio_reg;
 	struct regmap *regmap;
 
 	struct gpio_chip gpiochip;
@@ -150,6 +153,7 @@ struct airoha_pinctrl_match_data {
 	const unsigned int num_hwinit_regs;
 	/* number of GPIOs wired to the interrupt controller */
 	const unsigned int num_irq_pins;
+	u32 force_gpio_reg;
 };
 
 int airoha_pinctrl_probe(struct platform_device *pdev);
