@@ -64,7 +64,6 @@
 #define JTAG_DFD_EN_MASK			BIT(3)
 
 #define REG_FORCE_GPIO_EN			0x0228
-#define FORCE_GPIO_EN(n)			BIT(n)
 
 /* LED MAP */
 #define REG_LAN_LED0_MAPPING			0x027c
@@ -1487,6 +1486,7 @@ static const struct airoha_pinctrl_match_data pinctrl_match_data = {
 	.num_funcs = ARRAY_SIZE(pinctrl_funcs),
 	.hwinit_regs = hwinit_regs,
 	.num_hwinit_regs = ARRAY_SIZE(hwinit_regs),
+	.force_gpio_reg = REG_FORCE_GPIO_EN,
 	.confs_info = {
 		[AIROHA_PINCTRL_CONFS_PULLUP] = {
 			.confs = pinctrl_pullup_conf,

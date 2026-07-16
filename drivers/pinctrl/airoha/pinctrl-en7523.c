@@ -53,7 +53,6 @@
 #define NPU_UART_EN_MASK			BIT(2)
 
 #define REG_FORCE_GPIO_EN			0x0224
-#define FORCE_GPIO_EN(n)			BIT(n)
 
 /* LED MAP */
 #define REG_LAN_LED0_MAPPING			0x0278
@@ -1081,6 +1080,7 @@ static const struct airoha_pinctrl_match_data pinctrl_match_data = {
 	.num_grps = ARRAY_SIZE(pinctrl_groups),
 	.funcs = pinctrl_funcs,
 	.num_funcs = ARRAY_SIZE(pinctrl_funcs),
+	.force_gpio_reg = REG_FORCE_GPIO_EN,
 	.confs_info = {
 		[AIROHA_PINCTRL_CONFS_PULLUP] = {
 			.confs = pinctrl_pullup_conf,
