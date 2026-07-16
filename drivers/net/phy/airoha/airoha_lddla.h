@@ -77,6 +77,7 @@ struct airoha_lddla;
  * @tx_power_refresh: refresh and return the cached Tx optical-power word.
  * @rx_power_refresh: refresh and return the cached Rx optical-power word.
  * @diag_show: chip-specific debugfs diagnostic dump (optional).
+ * @tx_rearm: rearm the optical transmitter after TX_DISABLE is released.
  *
  * The refreshers update the matching airoha_lddla.ddmi_* cache and the alarm
  * bitmap; the shared hwmon and SFP layers only read the cache.
@@ -93,6 +94,7 @@ struct airoha_lddla_ops {
 	u16 (*tx_power_refresh)(struct airoha_lddla *lddla);
 	u16 (*rx_power_refresh)(struct airoha_lddla *lddla);
 	void (*diag_show)(struct airoha_lddla *lddla, struct seq_file *s);
+	int (*tx_rearm)(struct airoha_lddla *lddla);
 };
 
 /**

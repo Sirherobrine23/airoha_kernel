@@ -112,7 +112,7 @@
 #define EN7571_DCL_RST_B		0x01
 
 /* --- Safe-circuit reset (SAFE_PROTECT byte 1) --- */
-#define EN7571_SAFE_CIRCUIT_MASK	0x0f	/* SAFE_PROTECT byte 1 keep-mask */
+#define EN7571_SAFE_CIRCUIT_MASK	0xbf	/* SAFE_PROTECT byte 1 keep-mask */
 #define EN7571_SAFE_CIRCUIT_RESET	0x40
 
 /* --- reg_init power-loop settings --- */

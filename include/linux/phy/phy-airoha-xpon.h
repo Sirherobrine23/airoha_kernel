@@ -2,8 +2,11 @@
 #ifndef __LINUX_PHY_AIROHA_XPON_H
 #define __LINUX_PHY_AIROHA_XPON_H
 
+#include <linux/errno.h>
+#include <linux/kconfig.h>
 #include <linux/types.h>
 
+struct device;
 struct phy;
 
 /* Driver-specific submodes used with PHY_MODE_ETHERNET. */
@@ -34,5 +37,14 @@ int airoha_xpon_phy_set_gpon_extended_preamble(struct phy *phy,
 					       u8 o5_preamble);
 int airoha_xpon_phy_set_gpon_oper_state(
 	struct phy *phy, enum airoha_xpon_phy_gpon_oper_state state);
+
+#if IS_REACHABLE(CONFIG_AIROHA_LDDLA_PHY)
+int airoha_lddla_tx_rearm(struct device *dev);
+#else
+static inline int airoha_lddla_tx_rearm(struct device *dev)
+{
+	return -EOPNOTSUPP;
+}
+#endif
 
 #endif /* __LINUX_PHY_AIROHA_XPON_H */
