@@ -30,6 +30,8 @@
  * multi-step channel-select/latch/read ADC sequence atomic.
  */
 #include <linux/debugfs.h>
+#include <linux/export.h>
+#include <linux/phy/phy-airoha-xpon.h>
 #include <linux/delay.h>
 #include <linux/firmware.h>
 #include <linux/hwmon.h>
@@ -452,6 +454,33 @@ int lddla_hwmon_register(struct airoha_lddla *lddla)
 	return PTR_ERR_OR_ZERO(lddla->hwmon);
 }
 
+/**
+ * airoha_lddla_tx_rearm() - rearm an LDDLA optical transmitter
+ * @dev: LDDLA I2C device
+ *
+ * The caller must invoke this after external TX_DISABLE has been released.
+ *
+ * Return: 0 on success or a negative errno.
+ */
+int airoha_lddla_tx_rearm(struct device *dev)
+{
+	struct airoha_lddla *lddla = dev_get_drvdata(dev);
+	int ret;
+
+	if (!lddla || lddla->dev != dev || !lddla->ops->tx_rearm)
+		return -EOPNOTSUPP;
+
+	ret = lddla_lock(lddla);
+	if (ret)
+		return ret;
+
+	ret = lddla->ops->tx_rearm(lddla);
+	mutex_unlock(&lddla->lock);
+
+	return ret;
+}
+EXPORT_SYMBOL_GPL(airoha_lddla_tx_rearm);
+
 /* ------------------------------------------------------------------ */
 /* debugfs								      */
 /* ------------------------------------------------------------------ */
@@ -495,6 +524,34 @@ static int airoha_lddla_flash_show(struct seq_file *s, void *unused)
 }
 DEFINE_SHOW_ATTRIBUTE(airoha_lddla_flash);
 
+static ssize_t airoha_lddla_tx_rearm_write(struct file *file,
+					   const char __user *buf, size_t count,
+					   loff_t *ppos)
+{
+	struct airoha_lddla *lddla = file->private_data;
+	bool rearm;
+	int ret;
+
+	ret = kstrtobool_from_user(buf, count, &rearm);
+	if (ret)
+		return ret;
+	if (!rearm)
+		return -EINVAL;
+
+	ret = airoha_lddla_tx_rearm(lddla->dev);
+	if (ret)
+		return ret;
+
+	return count;
+}
+
+static const struct file_operations airoha_lddla_tx_rearm_fops = {
+	.owner = THIS_MODULE,
+	.open = simple_open,
+	.write = airoha_lddla_tx_rearm_write,
+	.llseek = noop_llseek,
+};
+
 /**
  * lddla_debugfs_init() - create the per-device debugfs directory.
  * @lddla: device
@@ -510,6 +567,9 @@ void lddla_debugfs_init(struct airoha_lddla *lddla)
 			    &airoha_lddla_diag_fops);
 	debugfs_create_file("flash", 0444, lddla->debugfs, lddla,
 			    &airoha_lddla_flash_fops);
+	if (lddla->ops->tx_rearm)
+		debugfs_create_file("tx_rearm", 0200, lddla->debugfs,
+				    lddla, &airoha_lddla_tx_rearm_fops);
 }
 
 /* Tear down the debugfs directory and everything under it. */

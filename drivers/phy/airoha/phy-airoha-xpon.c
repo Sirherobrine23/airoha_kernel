@@ -86,7 +86,7 @@
 #define XPON_GPON_TX_ENABLE_PATTERN	0xaa
 #define XPON_GPON_TX_COUNTER_ENABLE	BIT(3)
 
-#define XPON_SETTING_EN7571		0x0000010f
+#define XPON_SETTING_EN7571		0x0000014f
 #define XPON_TDCSET2_EN7571		0x0000002d
 #define XPON_GPON_DELIMITER_DEFAULT	0xaaab5983
 #define XPON_READY_RECOVERY_MS		5000
@@ -309,7 +309,7 @@ static void airoha_xpon_phy_dump(struct airoha_xpon_phy *priv,
 				 const char *stage)
 {
 	dev_info(priv->dev,
-		 "%s: mode=%s ready=%u los=%u set3=%#010x set10=%#010x sta1=%#010x setting=%#010x ben=%#010x gpon=%#010x/%#010x/%#010x int=%#010x/%#010x pma=%#010x/%#010x\n",
+		 "%s: mode=%s ready=%u los=%u set3=%#010x set10=%#010x sta1=%#010x setting=%#010x pma0=%#010x serdes0=%#010x ben=%#010x tdc2=%#010x gpon=%#010x/%#010x/%#010x int=%#010x/%#010x pma=%#010x/%#010x\n",
 		 stage,
 		 priv->submode == AIROHA_XPON_PHY_SUBMODE_GPON ?
 		 "GPON" : "EPON",
@@ -318,7 +318,10 @@ static void airoha_xpon_phy_dump(struct airoha_xpon_phy *priv,
 		 airoha_xpon_phy_read(priv, XPON_PHYSET10),
 		 airoha_xpon_phy_read(priv, XPON_PHYSTA1),
 		 airoha_xpon_phy_read(priv, XPON_SETTING),
+		 airoha_xpon_phy_read(priv, XPON_PMA_CTRL0),
+		 airoha_xpon_phy_read(priv, XPON_SERDES_CTRL0),
 		 airoha_xpon_phy_read(priv, XPON_SERDES_BEN_CTRL),
+		 airoha_xpon_phy_read(priv, XPON_TDCSET2),
 		 airoha_xpon_phy_read(priv, XPON_GPON_PREAMBLE),
 		 airoha_xpon_phy_read(priv, XPON_GPON_DELIMITER_GUARD),
 		 airoha_xpon_phy_read(priv, XPON_GPON_EXT_PREAMBLE),
@@ -467,9 +470,9 @@ static int airoha_xpon_phy_configure(struct airoha_xpon_phy *priv)
 	airoha_xpon_phy_write(priv, XPON_SETTING, XPON_SETTING_EN7571);
 
 	/*
-	 * xpon_en757x/v1 initializes phy_xpon_trans_val to 0x10f and the
-	 * EN7571 setup writes the same value as its xPON polarity setting.
-	 * Do not add bit 6 here: it is absent from the EN7523/EN7571 v1 path.
+	 * The XX230v EN7571 path updates phy_xpon_trans_val to 0x14f after
+	 * transceiver detection. Its bit 6 and bit 7 values are mirrored in
+	 * the PMA RX-SD and SerDes burst-enable polarity controls below.
 	 */
 	airoha_xpon_phy_rmw(priv, XPON_PMA_CTRL0, BIT(29), BIT(29));
 	airoha_xpon_phy_rmw(priv, XPON_SERDES_CTRL0, BIT(24), 0);
