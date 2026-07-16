@@ -53,11 +53,12 @@ config AIROHA_XPON
 	depends on AIROHA_LDDLA_PHY || AIROHA_LDDLA_PHY=n
 	depends on MFD_SYSCON
 	select PHY_AIROHA_XPON
+	select OMCI
 	help
 	  Driver for the shared xPON MAC complex found in Airoha/EcoNet SoCs.
 	  GPON and EPON are implemented by one platform driver and selected by
 	  the airoha,pon-mode device-tree property. GPON includes ITU-T G.984.3
-	  activation/PLOAM and OMCI support; EPON includes IEEE 802.3 MPCP LLID
-	  registration and security support.
+	  activation/PLOAM and uses the generic OMCI transport; EPON
+	  includes IEEE 802.3 MPCP LLID registration and security support.
 
 endif #NET_VENDOR_AIROHA

@@ -584,6 +584,16 @@ enum airoha_priv_flags {
 	AIROHA_PRIV_F_QOS = BIT(1),
 };
 
+#define AIROHA_XPON_OAM_RX_F_MIC_PRESENT	BIT(0)
+#define AIROHA_XPON_OAM_RX_F_MIC_VALID	BIT(1)
+#define AIROHA_XPON_OAM_RX_F_CRC_ERROR	BIT(2)
+
+struct airoha_xpon_oam_handler {
+	bool (*rx)(void *priv, struct sk_buff *skb, u16 gem_port_id,
+		   u32 flags);
+	void *priv;
+};
+
 struct airoha_gdm_dev {
 	struct airoha_qdma __rcu *qdma;
 	struct airoha_gdm_port *port;
@@ -598,6 +608,8 @@ struct airoha_gdm_dev {
 	int nbq;
 
 	struct airoha_hw_stats stats;
+
+	struct airoha_xpon_oam_handler __rcu *xpon_oam;
 
 	struct phylink *phylink;
 	struct phylink_config phylink_config;
@@ -772,6 +784,12 @@ static inline bool airoha_qdma_is_lro_queue(struct airoha_queue *q)
 	}
 }
 
+int airoha_eth_register_xpon_oam(struct net_device *netdev,
+				 struct airoha_xpon_oam_handler *handler);
+void airoha_eth_unregister_xpon_oam(struct net_device *netdev,
+				    struct airoha_xpon_oam_handler *handler);
+int airoha_eth_xmit_xpon_oam(struct net_device *netdev, struct sk_buff *skb,
+			     u16 gem_port_id);
 int airoha_eth_set_xpon_mode(struct net_device *netdev,
 			      enum airoha_xpon_mode mode);
 int airoha_eth_set_xpon_datapath(struct net_device *netdev,
