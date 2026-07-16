@@ -247,6 +247,41 @@ int airoha_eth_set_xpon_datapath(struct net_device *netdev,
 }
 EXPORT_SYMBOL_GPL(airoha_eth_set_xpon_datapath);
 
+int airoha_eth_register_xpon_oam(struct net_device *netdev,
+				 struct airoha_xpon_oam_handler *handler)
+{
+	struct airoha_gdm_dev *dev;
+	int ret;
+
+	if (!handler || !handler->rx)
+		return -EINVAL;
+
+	ret = airoha_eth_get_xpon_gdm2(netdev, &dev);
+	if (ret)
+		return ret;
+	if (rcu_access_pointer(dev->xpon_oam))
+		return -EBUSY;
+
+	rcu_assign_pointer(dev->xpon_oam, handler);
+	return 0;
+}
+EXPORT_SYMBOL_GPL(airoha_eth_register_xpon_oam);
+
+void airoha_eth_unregister_xpon_oam(struct net_device *netdev,
+				    struct airoha_xpon_oam_handler *handler)
+{
+	struct airoha_gdm_dev *dev;
+
+	if (airoha_eth_get_xpon_gdm2(netdev, &dev))
+		return;
+	if (rcu_access_pointer(dev->xpon_oam) != handler)
+		return;
+
+	RCU_INIT_POINTER(dev->xpon_oam, NULL);
+	synchronize_rcu();
+}
+EXPORT_SYMBOL_GPL(airoha_eth_unregister_xpon_oam);
+
 static void airoha_set_gdm_port_fwd_cfg(struct airoha_eth *eth, u32 addr,
 					u32 val)
 {
@@ -1050,13 +1085,14 @@ static struct sk_buff *airoha_qdma_lro_rx_skb(struct airoha_queue *q,
 static struct sk_buff *airoha_qdma_build_rx_skb(struct airoha_queue *q,
 						struct airoha_qdma_desc *desc,
 						struct airoha_queue_entry *e,
-						struct net_device *netdev)
+						struct net_device *netdev,
+						bool raw)
 {
 	u32 msg2 = le32_to_cpu(READ_ONCE(desc->msg2));
 	int qid = q - &q->qdma->q_rx[0];
 	struct sk_buff *skb;
 
-	if (FIELD_GET(QDMA_ETH_RXMSG_AGG_COUNT_MASK, msg2) > 1) { /* LRO */
+	if (!raw && FIELD_GET(QDMA_ETH_RXMSG_AGG_COUNT_MASK, msg2) > 1) { /* LRO */
 		skb = airoha_qdma_lro_rx_skb(q, desc, e);
 		if (!skb)
 			return NULL;
@@ -1075,7 +1111,12 @@ static struct sk_buff *airoha_qdma_build_rx_skb(struct airoha_queue *q,
 	skb_mark_for_recycle(skb);
 	skb->dev = netdev;
 	skb_record_rx_queue(skb, qid);
-	skb->protocol = eth_type_trans(skb, netdev);
+	if (raw) {
+		skb_reset_mac_header(skb);
+		skb->protocol = 0;
+	} else {
+		skb->protocol = eth_type_trans(skb, netdev);
+	}
 
 	return skb;
 }
@@ -1142,7 +1183,11 @@ static int airoha_qdma_rx_process(struct airoha_queue *q, int budget)
 
 		netdev = netdev_from_priv(dev);
 		if (!q->skb) { /* first buffer */
-			q->skb = airoha_qdma_build_rx_skb(q, desc, e, netdev);
+			u32 msg0 = le32_to_cpu(READ_ONCE(desc->msg0));
+			bool raw = airoha_is(eth, en7523) &&
+				   (msg0 & EN7523_QDMA_ETH_RXMSG_OAM_MASK);
+
+			q->skb = airoha_qdma_build_rx_skb(q, desc, e, netdev, raw);
 			if (!q->skb)
 				goto free_frag;
 		} else { /* scattered frame */
@@ -1159,6 +1204,40 @@ static int airoha_qdma_rx_process(struct airoha_queue *q, int budget)
 
 		if (FIELD_GET(QDMA_DESC_MORE_MASK, desc_ctrl))
 			continue;
+
+		if (airoha_is(eth, en7523)) {
+			struct airoha_xpon_oam_handler *handler;
+			u32 msg0 = le32_to_cpu(READ_ONCE(desc->msg0));
+
+			if (msg0 & EN7523_QDMA_ETH_RXMSG_OAM_MASK) {
+				u16 gem_port_id;
+				u32 flags = 0;
+				bool consumed = false;
+
+				gem_port_id = FIELD_GET(EN7523_QDMA_ETH_RXMSG_GEM_MASK, msg0);
+				if (!(msg0 & EN7523_QDMA_ETH_RXMSG_NO_MIC_MASK))
+					flags |= AIROHA_XPON_OAM_RX_F_MIC_PRESENT;
+				if (!(msg0 & EN7523_QDMA_ETH_RXMSG_CRC_ERR_MASK))
+					flags |= AIROHA_XPON_OAM_RX_F_MIC_VALID;
+				else
+					flags |= AIROHA_XPON_OAM_RX_F_CRC_ERROR;
+
+				rcu_read_lock();
+				handler = rcu_dereference(dev->xpon_oam);
+				if (handler && handler->rx)
+					consumed = handler->rx(handler->priv,
+							       q->skb,
+							       gem_port_id,
+							       flags);
+				rcu_read_unlock();
+
+				if (!consumed)
+					dev_kfree_skb_any(q->skb);
+				q->skb = NULL;
+				done++;
+				continue;
+			}
+		}
 
 		if (netdev_uses_dsa(netdev)) {
 			struct airoha_gdm_port *port = dev->port;
@@ -2842,11 +2921,12 @@ static int airoha_dev_set_features(struct net_device *netdev,
 	return 0;
 }
 
-static netdev_tx_t airoha_dev_xmit(struct sk_buff *skb,
-				   struct net_device *netdev)
+static netdev_tx_t __airoha_dev_xmit(struct sk_buff *skb,
+				     struct net_device *netdev,
+				     bool xpon_oam, u16 gem_port_id)
 {
 	struct airoha_gdm_dev *dev = netdev_priv(netdev);
-	u32 nr_frags, tag, msg0, msg1, len;
+	u32 nr_frags, tag = 0, msg0, msg1, len;
 	struct airoha_queue_entry *e;
 	struct airoha_qdma *qdma;
 	struct netdev_queue *txq;
@@ -2860,25 +2940,35 @@ static netdev_tx_t airoha_dev_xmit(struct sk_buff *skb,
 	rcu_read_lock();
 	qdma = rcu_dereference(dev->qdma);
 	qid = airoha_qdma_get_txq(qdma, skb_get_queue_mapping(skb));
-	tag = airoha_get_dsa_tag(skb, netdev);
-	chn = airoha_get_channel(tag);
+	if (xpon_oam) {
+		if (!airoha_is(qdma->eth, en7523))
+			goto error;
 
-	if (airoha_is(qdma->eth, en7523))
+		msg0 = FIELD_PREP(QDMA_ETH_TXMSG_QUEUE_MASK, 7) |
+		       QDMA_ETH_TXMSG_OAM_MASK |
+		       FIELD_PREP(QDMA_ETH_TXMSG_CHAN_MASK, 0) |
+		       FIELD_PREP(QDMA_ETH_TXMSG_SP_TAG_MASK, gem_port_id);
+	} else if (airoha_is(qdma->eth, en7523)) {
+		tag = airoha_get_dsa_tag(skb, netdev);
+		chn = airoha_get_channel(tag);
 		msg0 = FIELD_PREP(QDMA_ETH_TXMSG_CHAN_MASK, chn) |
 		       FIELD_PREP(QDMA_ETH_TXMSG_SP_TAG_MASK, tag | 0x8000);
-	else
+	} else {
+		tag = airoha_get_dsa_tag(skb, netdev);
+		chn = airoha_get_channel(tag);
 		msg0 = FIELD_PREP(QDMA_ETH_TXMSG_CHAN_MASK,
 				  qid / AIROHA_NUM_QOS_QUEUES) |
 		       FIELD_PREP(QDMA_ETH_TXMSG_QUEUE_MASK,
 				  qid % AIROHA_NUM_QOS_QUEUES) |
 		       FIELD_PREP(QDMA_ETH_TXMSG_SP_TAG_MASK, tag);
-	if (skb->ip_summed == CHECKSUM_PARTIAL)
+	}
+	if (!xpon_oam && skb->ip_summed == CHECKSUM_PARTIAL)
 		msg0 |= FIELD_PREP(QDMA_ETH_TXMSG_TCO_MASK, 1) |
 			FIELD_PREP(QDMA_ETH_TXMSG_UCO_MASK, 1) |
 			FIELD_PREP(QDMA_ETH_TXMSG_ICO_MASK, 1);
 
 	/* TSO: fill MSS info in tcp checksum field */
-	if (skb_is_gso(skb)) {
+	if (!xpon_oam && skb_is_gso(skb)) {
 		if (skb_cow_head(skb, 0))
 			goto error;
 
@@ -2991,12 +3081,42 @@ error_unmap:
 
 	spin_unlock_bh(&q->lock);
 error:
+	if (xpon_oam) {
+		rcu_read_unlock();
+		return NETDEV_TX_BUSY;
+	}
+
 	dev_kfree_skb_any(skb);
 	netdev->stats.tx_dropped++;
 	rcu_read_unlock();
 
 	return NETDEV_TX_OK;
 }
+
+static netdev_tx_t airoha_dev_xmit(struct sk_buff *skb,
+				   struct net_device *netdev)
+{
+	return __airoha_dev_xmit(skb, netdev, false, 0);
+}
+
+int airoha_eth_xmit_xpon_oam(struct net_device *netdev, struct sk_buff *skb,
+			     u16 gem_port_id)
+{
+	struct airoha_gdm_dev *dev;
+	netdev_tx_t ret;
+	int err;
+
+	err = airoha_eth_get_xpon_gdm2(netdev, &dev);
+	if (err)
+		return err;
+	if (!skb || gem_port_id > FIELD_MAX(QDMA_ETH_TXMSG_SP_TAG_MASK))
+		return -EINVAL;
+
+	skb_set_queue_mapping(skb, 7);
+	ret = __airoha_dev_xmit(skb, netdev, true, gem_port_id);
+	return ret == NETDEV_TX_BUSY ? -EBUSY : 0;
+}
+EXPORT_SYMBOL_GPL(airoha_eth_xmit_xpon_oam);
 
 static void airoha_ethtool_get_drvinfo(struct net_device *netdev,
 				       struct ethtool_drvinfo *info)

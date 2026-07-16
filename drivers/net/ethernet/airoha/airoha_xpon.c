@@ -37,11 +37,12 @@
 #include <linux/timer.h>
 #include <linux/unaligned.h>
 #include <linux/workqueue.h>
+#include <net/omci.h>
 
 #include "airoha_eth.h"
+#include "airoha_gpon_omci.h"
 #include "airoha_regs.h"
 #include "airoha_ploam.h"
-#include "airoha_xpon.h"
 
 /* Linux 6.18 replaced from_timer() with timer_container_of().
  * Keep the driver buildable on older kernel trees as well.
@@ -548,23 +549,6 @@ static void airoha_xpon_phy_stop(struct device *dev, struct phy *phy,
 #define GPON_PHY_GUARD_BIT_NUM	20
 
 /* -----------------------------------------------------------------------
- * OMCI network device
- * -------------------------------------------------------------------- */
-
-struct omci_priv {
-	struct net_device	*netdev;
-	struct gpon_priv	*gpon;
-
-	u16			gem_port_id;
-	bool			gem_port_valid;
-
-	u64			rx_packets;
-	u64			rx_bytes;
-	u64			tx_packets;
-	u64			tx_bytes;
-};
-
-/* -----------------------------------------------------------------------
  * GPON private data
  * -------------------------------------------------------------------- */
 
@@ -600,7 +584,9 @@ struct gpon_priv {
 	bool			phy_powered;
 	struct device_node	*eth_node;
 	struct net_device	*netdev;
-	struct net_device	*omci_dev;
+	struct net_device	*gdm_dev;
+	struct airoha_gpon_omci omci;
+	struct airoha_xpon_oam_handler omci_handler;
 	struct sfp_bus		*sfp_bus;
 	struct device		*lddla_dev;
 	int			irq;
@@ -1166,6 +1152,7 @@ static void gpon_cb_set_onu_id(void *hw_priv, u8 onu_id)
 
 	dev_info(priv->dev, "GPON assigned ONU-ID %u\n", onu_id);
 	gpon_write(priv, GPON_ONU_ID, ONU_ID_VLD | (onu_id & ONU_ID_MASK));
+	airoha_gpon_omci_set_onu_id(&priv->omci, onu_id);
 	gpon_dump_activation_regs(priv, "ONU-ID assigned");
 }
 
@@ -1355,25 +1342,13 @@ static void gpon_cb_set_ber_interval(void *hw_priv, u32 interval_ms)
 static void gpon_cb_set_omci_gem(void *hw_priv, u16 gem_port_id, bool valid)
 {
 	struct gpon_priv *priv = hw_priv;
-	struct omci_priv *omci;
 	u32 reg_val = valid ? (OMCI_PORT_VLD | (gem_port_id & OMCI_GPID_MASK))
 			    : 0;
 
 	dev_info(priv->dev, "GPON OMCI GEM %s: port=%u reg=%#08x\n",
 		 valid ? "enabled" : "disabled", gem_port_id, reg_val);
 	gpon_write(priv, GPON_OMCI_ID, reg_val);
-
-	if (!priv->omci_dev)
-		return;
-
-	omci = netdev_priv(priv->omci_dev);
-	omci->gem_port_id    = gem_port_id;
-	omci->gem_port_valid = valid;
-
-	if (valid)
-		netif_carrier_on(priv->omci_dev);
-	else
-		netif_carrier_off(priv->omci_dev);
+	airoha_gpon_omci_set_channel(&priv->omci, gem_port_id, valid);
 }
 
 static void gpon_cb_set_gem_encryption(void *hw_priv, u16 port_id,
@@ -1450,6 +1425,7 @@ static void gpon_cb_state_changed(void *hw_priv, enum gpon_state state)
 	dev_info(priv->dev, "GPON state -> %s (%u), activation_reg=%#08x\n",
 		 gpon_state_name(state), state,
 		 gpon_read(priv, GPON_ACTIVATION_ST));
+	airoha_gpon_omci_set_state(&priv->omci, state);
 
 	if (state == GPON_O4_RANGING || state == GPON_O5_OPERATION)
 		gpon_dump_activation_regs(priv, "state transition");
@@ -1484,22 +1460,16 @@ static void gpon_cb_state_changed(void *hw_priv, enum gpon_state state)
 		mod_delayed_work(priv->fsm_wq, &priv->to2_work,
 				 msecs_to_jiffies(GPON_TO2_MS));
 		netif_carrier_off(priv->netdev);
-		if (priv->omci_dev)
-			netif_carrier_off(priv->omci_dev);
 		break;
 	case GPON_O7_EMERGENCY_STOP:
 		cancel_delayed_work(&priv->to1_work);
 		cancel_delayed_work(&priv->to2_work);
 		netif_carrier_off(priv->netdev);
-		if (priv->omci_dev)
-			netif_carrier_off(priv->omci_dev);
 		break;
 	case GPON_O1_INITIAL:
 		cancel_delayed_work(&priv->to1_work);
 		cancel_delayed_work(&priv->to2_work);
 		netif_carrier_off(priv->netdev);
-		if (priv->omci_dev)
-			netif_carrier_off(priv->omci_dev);
 		break;
 	default:
 		break;
@@ -1628,7 +1598,6 @@ static int gpon_enable(struct gpon_priv *priv)
 
 static void gpon_disable(struct gpon_priv *priv)
 {
-	struct omci_priv *omci;
 	int ret;
 
 	dev_info(priv->dev,
@@ -1675,11 +1644,8 @@ static void gpon_disable(struct gpon_priv *priv)
 	gpon_reset_activation_context(priv);
 	gpon_write(priv, GPON_OMCI_ID, 0);
 
-	if (priv->omci_dev) {
-		omci = netdev_priv(priv->omci_dev);
-		omci->gem_port_id = 0xffff;
-		omci->gem_port_valid = false;
-	}
+	airoha_gpon_omci_set_channel(&priv->omci, 0xffff, false);
+	airoha_gpon_omci_set_onu_id(&priv->omci, 0xffff);
 
 	ret = gpon_set_fe_datapath(priv, false);
 	if (ret)
@@ -1697,8 +1663,6 @@ static void gpon_disable(struct gpon_priv *priv)
 
 	ploam_reset(priv->ploam);
 	netif_carrier_off(priv->netdev);
-	if (priv->omci_dev)
-		netif_carrier_off(priv->omci_dev);
 	dev_info(priv->dev, "GPON MAC stopped, state reset to %s\n",
 		 gpon_state_name(ploam_get_state(priv->ploam)));
 }
@@ -1893,149 +1857,6 @@ static irqreturn_t gpon_isr(int irq, void *data)
 	}
 
 	return IRQ_HANDLED;
-}
-
-/* -----------------------------------------------------------------------
- * OMCI network device
- * -------------------------------------------------------------------- */
-
-/**
- * gpon_omci_rx_frame() - deliver a received OMCI frame to the netdev
- * @gpon_dev: the GPON netdev
- * @skb: received raw OMCI PDU; ownership transfers to network stack
- */
-void gpon_omci_rx_frame(struct net_device *gpon_dev, struct sk_buff *skb)
-{
-	struct gpon_priv *priv  = netdev_priv(gpon_dev);
-	struct net_device *odev = priv->omci_dev;
-	struct omci_priv *omci;
-
-	if (!odev || !netif_running(odev)) {
-		dev_kfree_skb_any(skb);
-		return;
-	}
-
-	omci = netdev_priv(odev);
-	skb->dev      = odev;
-	skb->protocol = htons(ETH_P_802_3);
-	skb_reset_mac_header(skb);
-
-	omci->rx_packets++;
-	omci->rx_bytes += skb->len;
-
-	netif_rx(skb);
-}
-EXPORT_SYMBOL_GPL(gpon_omci_rx_frame);
-
-static int omci_ndo_open(struct net_device *dev)
-{
-	struct omci_priv *omci = netdev_priv(dev);
-
-	dev_info(omci->gpon->dev, "opening %s: gem_valid=%u gem_port=%u\n",
-		 dev->name, omci->gem_port_valid, omci->gem_port_id);
-	if (omci->gem_port_valid) {
-		struct gpon_priv *priv = omci->gpon;
-		u32 reg = OMCI_PORT_VLD | (omci->gem_port_id & OMCI_GPID_MASK);
-
-		gpon_write(priv, GPON_OMCI_ID, reg);
-		netif_carrier_on(dev);
-	}
-	netif_start_queue(dev);
-	return 0;
-}
-
-static int omci_ndo_stop(struct net_device *dev)
-{
-	struct omci_priv *omci = netdev_priv(dev);
-
-	dev_info(omci->gpon->dev, "stopping %s\n", dev->name);
-	netif_stop_queue(dev);
-	netif_carrier_off(dev);
-	gpon_write(omci->gpon, GPON_OMCI_ID, 0);
-	return 0;
-}
-
-static netdev_tx_t omci_ndo_start_xmit(struct sk_buff *skb,
-					struct net_device *dev)
-{
-	struct omci_priv *omci = netdev_priv(dev);
-
-	if (!omci->gem_port_valid) {
-		dev_info(omci->gpon->dev,
-				    "dropping OMCI TX frame: GEM port is not configured\n");
-		dev_kfree_skb_any(skb);
-		dev->stats.tx_dropped++;
-		return NETDEV_TX_OK;
-	}
-
-	omci->tx_packets++;
-	omci->tx_bytes += skb->len;
-	dev_kfree_skb_any(skb);
-	return NETDEV_TX_OK;
-}
-
-static void omci_ndo_get_stats64(struct net_device *dev,
-				  struct rtnl_link_stats64 *stats)
-{
-	struct omci_priv *omci = netdev_priv(dev);
-
-	stats->rx_packets = omci->rx_packets;
-	stats->rx_bytes   = omci->rx_bytes;
-	stats->tx_packets = omci->tx_packets;
-	stats->tx_bytes   = omci->tx_bytes;
-}
-
-static const struct net_device_ops omci_netdev_ops = {
-	.ndo_open	 = omci_ndo_open,
-	.ndo_stop	 = omci_ndo_stop,
-	.ndo_start_xmit	 = omci_ndo_start_xmit,
-	.ndo_get_stats64 = omci_ndo_get_stats64,
-};
-
-static int gpon_omci_netdev_create(struct gpon_priv *priv)
-{
-	struct net_device *dev;
-	struct omci_priv *omci;
-	int ret;
-
-	dev = alloc_netdev(sizeof(*omci), "omci%d", NET_NAME_PREDICTABLE,
-			   ether_setup);
-	if (!dev)
-		return -ENOMEM;
-
-	omci           = netdev_priv(dev);
-	omci->netdev   = dev;
-	omci->gpon     = priv;
-	omci->gem_port_id    = 0xFFFF;
-	omci->gem_port_valid = false;
-
-	dev->netdev_ops = &omci_netdev_ops;
-	dev->flags     |= IFF_NOARP;
-	dev->flags     &= ~IFF_MULTICAST;
-	eth_hw_addr_inherit(dev, priv->netdev);
-
-	SET_NETDEV_DEV(dev, priv->dev);
-	netif_carrier_off(dev);
-
-	ret = register_netdev(dev);
-	if (ret) {
-		free_netdev(dev);
-		return ret;
-	}
-
-	priv->omci_dev = dev;
-	dev_info(priv->dev, "registered OMCI netdev %s, MAC %pM\n",
-		 dev->name, dev->dev_addr);
-	return 0;
-}
-
-static void gpon_omci_netdev_destroy(struct gpon_priv *priv)
-{
-	if (!priv->omci_dev)
-		return;
-	unregister_netdev(priv->omci_dev);
-	free_netdev(priv->omci_dev);
-	priv->omci_dev = NULL;
 }
 
 /* -----------------------------------------------------------------------
@@ -2358,19 +2179,34 @@ static int gpon_probe(struct platform_device *pdev)
 		goto err_del_upstream;
 	}
 
-	ret = gpon_omci_netdev_create(priv);
-	if (ret) {
-		dev_err(dev, "failed to create OMCI netdev: %d\n", ret);
+	ret = airoha_xpon_find_gdm2(dev, priv->eth_node, &priv->gdm_dev);
+	if (ret)
 		goto err_unreg_netdev;
-	}
+
+	ret = airoha_gpon_omci_register(&priv->omci, dev, netdev,
+					priv->gdm_dev);
+	if (ret)
+		goto err_put_gdm;
+
+	priv->omci_handler.rx = airoha_gpon_omci_receive;
+	priv->omci_handler.priv = &priv->omci;
+	ret = airoha_eth_register_xpon_oam(priv->gdm_dev,
+					   &priv->omci_handler);
+	if (ret)
+		goto err_unregister_omci;
 
 	platform_set_drvdata(pdev, priv);
 	dev_info(dev,
-		 "GPON probe complete: pon=%s omci=%s irq=%d MAC=%pM default_state=%s\n",
-		 netdev->name, priv->omci_dev->name, priv->irq,
+		 "GPON probe complete: pon=%s omci-genl=%u irq=%d MAC=%pM default_state=%s\n",
+		 netdev->name, omci_device_id(priv->omci.odev), priv->irq,
 		 netdev->dev_addr, gpon_state_name(ploam_get_state(priv->ploam)));
 	return 0;
 
+err_unregister_omci:
+	airoha_gpon_omci_unregister(&priv->omci);
+err_put_gdm:
+	dev_put(priv->gdm_dev);
+	priv->gdm_dev = NULL;
 err_unreg_netdev:
 	unregister_netdev(netdev);
 err_del_upstream:
@@ -2403,7 +2239,11 @@ static void gpon_remove(struct platform_device *pdev)
 		cancel_delayed_work_sync(&priv->to1_work);
 		cancel_delayed_work_sync(&priv->to2_work);
 	}
-	gpon_omci_netdev_destroy(priv);
+	airoha_eth_unregister_xpon_oam(priv->gdm_dev,
+				       &priv->omci_handler);
+	airoha_gpon_omci_unregister(&priv->omci);
+	dev_put(priv->gdm_dev);
+	priv->gdm_dev = NULL;
 	unregister_netdev(priv->netdev);
 	sfp_bus_del_upstream(priv->sfp_bus);
 	sfp_bus_put(priv->sfp_bus);
@@ -3502,6 +3342,7 @@ static struct platform_driver airoha_xpon_driver = {
 		.of_match_table = airoha_xpon_of_match,
 	},
 };
+
 module_platform_driver(airoha_xpon_driver);
 
 MODULE_DESCRIPTION("Airoha/EcoNet unified GPON and EPON MAC driver");
