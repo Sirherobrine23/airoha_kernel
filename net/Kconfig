@@ -87,6 +87,7 @@ config NET_CRC32C
 
 menu "Networking options"
 
+source "net/omci/Kconfig"
 source "net/packet/Kconfig"
 source "net/psp/Kconfig"
 source "net/unix/Kconfig"

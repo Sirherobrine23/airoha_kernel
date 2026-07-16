@@ -20,6 +20,7 @@ obj-$(CONFIG_XFRM)		+= xfrm/
 obj-$(CONFIG_UNIX)		+= unix/
 obj-$(CONFIG_INET_PSP)		+= psp/
 obj-y				+= ipv6/
+obj-$(CONFIG_OMCI)		+= omci/
 obj-$(CONFIG_PACKET)		+= packet/
 obj-$(CONFIG_NET_KEY)		+= key/
 obj-$(CONFIG_BRIDGE)		+= bridge/

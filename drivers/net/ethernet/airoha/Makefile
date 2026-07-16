@@ -12,4 +12,4 @@ airoha-eth-$(CONFIG_NET_AIROHA_SOC_WED) += airoha_wed.o airoha_wed_debugfs.o
 
 # Airoha/EcoNet shared GPON + EPON MAC complex
 obj-$(CONFIG_AIROHA_XPON) += airoha-xpon.o
-airoha-xpon-y := airoha_xpon.o airoha_ploam.o
+airoha-xpon-y := airoha_xpon.o airoha_ploam.o airoha_gpon_omci.o
