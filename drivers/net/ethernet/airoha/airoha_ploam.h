@@ -105,7 +105,8 @@ struct ploam_msg {
  * @request_new_key: OLT sent Request_Key; hardware generates a random key,
  *   loads it into shadow registers, returns the key via the aes_key array.
  * @set_ber_interval: update BER reporting timer to @interval_ms.
- * @set_omci_gem: configure or clear the OMCI GEM port in G_OMCI_ID.
+ * @set_omci_gem: configure or clear the OMCI GEM port in G_OMCI_ID;
+ *   return zero only when the hardware channel is ready.
  * @set_gem_encryption: program per-GEM-port encryption mode in GEM port table.
  * @set_alloc_id: allocate or deallocate a T-CONT for the given alloc-ID.
  * @state_changed: ONU activation state has changed; start/stop TO1/TO2 timers,
@@ -125,7 +126,7 @@ struct ploam_ops {
 	void (*set_key_switch_time)(void *priv, u32 superframe);
 	void (*request_new_key)(void *priv);
 	void (*set_ber_interval)(void *priv, u32 interval_ms);
-	void (*set_omci_gem)(void *priv, u16 gem_port_id, bool valid);
+	int (*set_omci_gem)(void *priv, u16 gem_port_id, bool valid);
 	void (*set_gem_encryption)(void *priv, u16 port_id, u8 encrypt_mode);
 	void (*set_alloc_id)(void *priv, u16 alloc_id, bool allocate);
 	void (*state_changed)(void *priv, enum gpon_state state);

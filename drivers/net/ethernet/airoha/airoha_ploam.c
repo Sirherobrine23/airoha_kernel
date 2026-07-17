@@ -473,7 +473,12 @@ static void handle_configure_port_id(struct ploam_priv *pp,
 	/* c[1]=port_id_m, c[2] BE: bits[7:4]=port_id_l, [3:0]=resv */
 	port_id = ((u16)c[1] << 4) | ((c[2] >> 4) & 0xF);
 
-	pp->ops->set_omci_gem(pp->hw_priv, port_id, activate);
+	/* Do not acknowledge an OMCC assignment until the hardware path is
+	 * ready. The OLT will retry Configure-Port-ID after a transient
+	 * command failure.
+	 */
+	if (pp->ops->set_omci_gem(pp->hw_priv, port_id, activate))
+		return;
 
 send_ack:
 	ploam_make_dm_bytes(dm_bytes, onu_id, type, c);
