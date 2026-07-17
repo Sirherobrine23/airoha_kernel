@@ -22,7 +22,8 @@ struct omci_device_ops {
 	int (*set_tcont)(struct omci_device *odev, u16 entity_id,
 			 u16 alloc_id, bool valid);
 	int (*set_gem_port)(struct omci_device *odev, u16 entity_id,
-			    u16 gem_port_id, bool valid, bool encrypted);
+			    u16 gem_port_id, u16 tcont_entity_id,
+			    bool valid, bool encrypted);
 	int (*set_uni)(struct omci_device *odev, u16 entity_id, bool enable);
 };
 
