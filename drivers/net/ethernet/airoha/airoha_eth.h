@@ -842,6 +842,7 @@ void airoha_eth_unregister_xpon(struct net_device *netdev,
 				const struct airoha_xpon_link_ops *ops,
 				void *priv);
 void airoha_eth_xpon_set_carrier(struct net_device *netdev, bool up);
+void airoha_eth_xpon_dump_oam_rx_state(struct net_device *netdev);
 int airoha_eth_register_xpon_oam(struct net_device *netdev,
 				 struct airoha_xpon_oam_handler *handler);
 void airoha_eth_unregister_xpon_oam(struct net_device *netdev,
