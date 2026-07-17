@@ -58,7 +58,7 @@ config AIROHA_XPON
 	  Driver for the shared xPON MAC complex found in Airoha/EcoNet SoCs.
 	  GPON and EPON are implemented by one platform driver and selected by
 	  the airoha,pon-mode device-tree property. GPON includes ITU-T G.984.3
-	  activation/PLOAM and uses the generic OMCI transport; EPON
+	  activation/PLOAM and uses the in-kernel OMCI agent; EPON
 	  includes IEEE 802.3 MPCP LLID registration and security support.
 
 endif #NET_VENDOR_AIROHA

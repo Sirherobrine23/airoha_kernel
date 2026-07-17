@@ -932,6 +932,46 @@ static void gpon_load_aes_shadow(struct gpon_priv *priv, const u8 key[16],
 		   switch_superframe & AES_KEY_SWITCH_CNT_MASK);
 }
 
+static int gpon_set_tcont_hw(struct gpon_priv *priv, unsigned int index,
+			     u16 alloc_id, bool valid)
+{
+	if (index < 16) {
+		unsigned int reg_idx = index / 2;
+		u32 val = gpon_read(priv, GPON_TCONT_ID_0_1 + reg_idx * 4);
+
+		if (index & 1) {
+			val &= ~((TCONT_ID_MASK << TCONT1_ID_SHIFT) |
+				 TCONT1_VALID);
+			if (valid)
+				val |= ((alloc_id & TCONT_ID_MASK) <<
+					TCONT1_ID_SHIFT) | TCONT1_VALID;
+		} else {
+			val &= ~(TCONT_ID_MASK | TCONT0_VALID);
+			if (valid)
+				val |= (alloc_id & TCONT_ID_MASK) |
+				       TCONT0_VALID;
+		}
+		gpon_write(priv, GPON_TCONT_ID_0_1 + reg_idx * 4, val);
+		return 0;
+	}
+
+	if (index < GPON_MAX_TCONT) {
+		u32 cfg = TCONT16_CMD_EXEC |
+			  ((index - 16) << TCONT16_IDX_SHIFT);
+
+		if (valid)
+			cfg |= TCONT16_VALID |
+			       (alloc_id & TCONT16_ALLOC_MASK);
+		gpon_write(priv, GPON_TCONT_ID_16_31_CFG, cfg);
+		if (gpon_wait_bits(priv, GPON_TCONT_ID_16_31_STS,
+				   TCONT16_CMD_DONE, GPON_CMD_TIMEOUT_US))
+			return -ETIMEDOUT;
+		return 0;
+	}
+
+	return -EINVAL;
+}
+
 static void gpon_set_alloc_id_hw(struct gpon_priv *priv, u16 alloc_id,
 				  bool allocate)
 {
@@ -1379,6 +1419,55 @@ static void gpon_cb_set_alloc_id(void *hw_priv, u16 alloc_id, bool allocate)
 	dev_info(priv->dev, "GPON Alloc-ID %s: %u\n",
 		 allocate ? "assign" : "remove", alloc_id);
 	gpon_set_alloc_id_hw(priv, alloc_id, allocate);
+}
+
+int airoha_gpon_omci_hw_set_tcont(void *hw_priv, u16 entity_id,
+				  u16 alloc_id, bool valid)
+{
+	struct gpon_priv *priv = hw_priv;
+	unsigned int index = entity_id & (GPON_MAX_TCONT - 1);
+	int ret;
+
+	ret = gpon_set_tcont_hw(priv, index, alloc_id, valid);
+	if (ret)
+		dev_err(priv->dev,
+			"failed to configure OMCI T-CONT %u alloc-id %u: %d\n",
+			index, alloc_id, ret);
+	else
+		dev_info(priv->dev,
+			 "OMCI T-CONT %u %s alloc-id %u\n", index,
+			 valid ? "enabled" : "disabled", alloc_id);
+	return ret;
+}
+
+int airoha_gpon_omci_hw_set_gem_port(void *hw_priv, u16 entity_id,
+				     u16 gem_port_id, bool valid,
+				     bool encrypted)
+{
+	struct gpon_priv *priv = hw_priv;
+	u32 cfg = GEM_CMD_WRITE | (gem_port_id & (GPON_MAX_GEM_ID - 1));
+
+	if (valid)
+		cfg |= GEM_VALID;
+	if (valid && encrypted)
+		cfg |= GEM_ENCRYPT;
+	gpon_write(priv, GPON_GEM_PORT_CFG, cfg);
+	if (gpon_wait_bits(priv, GPON_GEM_PORT_STS, GEM_CMD_DONE,
+			   GPON_CMD_TIMEOUT_US))
+		return -ETIMEDOUT;
+
+	dev_info(priv->dev, "OMCI GEM port %u %s (ME %#x)\n",
+		 gem_port_id, valid ? "enabled" : "disabled", entity_id);
+	return 0;
+}
+
+int airoha_gpon_omci_hw_set_uni(void *hw_priv, u16 entity_id, bool enable)
+{
+	struct gpon_priv *priv = hw_priv;
+
+	dev_dbg(priv->dev, "OMCI UNI %#x requested %s\n", entity_id,
+		enable ? "enabled" : "disabled");
+	return 0;
 }
 
 /* Forward declaration needed by gpon_disable */
@@ -2184,7 +2273,8 @@ static int gpon_probe(struct platform_device *pdev)
 		goto err_unreg_netdev;
 
 	ret = airoha_gpon_omci_register(&priv->omci, dev, netdev,
-					priv->gdm_dev);
+					priv->gdm_dev, priv, priv->sn,
+					priv->passwd);
 	if (ret)
 		goto err_put_gdm;
 
