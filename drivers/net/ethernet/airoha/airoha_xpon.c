@@ -998,10 +998,33 @@ static int gpon_set_tcont_hw(struct gpon_priv *priv, unsigned int index,
 	return ret;
 }
 
+static int gpon_read_gem_port_hw(struct gpon_priv *priv, u16 gem_port_id,
+				 bool *valid, bool *encrypted)
+{
+	u32 status;
+
+	gpon_write(priv, GPON_GEM_PORT_CFG, gem_port_id);
+	/* Let the command engine clear the completion bit from the previous
+	 * transaction before polling it again.
+	 */
+	udelay(1);
+	if (gpon_wait_bits(priv, GPON_GEM_PORT_STS, GEM_CMD_DONE,
+			   GPON_CMD_TIMEOUT_US))
+		return -ETIMEDOUT;
+
+	status = gpon_read(priv, GPON_GEM_PORT_STS);
+	*valid = !!(status & GEM_STS_VALID);
+	*encrypted = !!(status & GEM_STS_ENCRYPT);
+
+	return 0;
+}
+
 static int gpon_set_gem_port_hw(struct gpon_priv *priv, u16 gem_port_id,
 				bool valid, bool encrypted)
 {
-	u32 cfg, status;
+	bool read_encrypted, read_valid;
+	u32 cfg;
+	int ret, retry;
 
 	if (gem_port_id >= GPON_MAX_GEM_ID)
 		return -EINVAL;
@@ -1012,21 +1035,32 @@ static int gpon_set_gem_port_hw(struct gpon_priv *priv, u16 gem_port_id,
 	if (valid && encrypted)
 		cfg |= GEM_ENCRYPT;
 
-	gpon_write(priv, GPON_GEM_PORT_CFG, cfg);
-	if (gpon_wait_bits(priv, GPON_GEM_PORT_STS, GEM_CMD_DONE,
-			   GPON_CMD_TIMEOUT_US))
-		return -ETIMEDOUT;
+	for (retry = 0; retry < 3; retry++) {
+		gpon_write(priv, GPON_GEM_PORT_CFG, cfg);
+		/* G_GEM_PORT_STS may still contain the completion state of the
+		 * preceding command on the first bus read.
+		 */
+		udelay(1);
+		ret = gpon_wait_bits(priv, GPON_GEM_PORT_STS, GEM_CMD_DONE,
+				     GPON_CMD_TIMEOUT_US);
+		if (ret)
+			continue;
 
-	status = gpon_read(priv, GPON_GEM_PORT_STS);
-	if (!!(status & GEM_STS_VALID) != valid ||
-	    !!(status & GEM_STS_ENCRYPT) != (valid && encrypted)) {
-		dev_err(priv->dev,
-			"GPON GEM port %u readback mismatch: cfg=%#010x status=%#010x\n",
-			gem_port_id, cfg, status);
-		return -EIO;
+		ret = gpon_read_gem_port_hw(priv, gem_port_id,
+					    &read_valid, &read_encrypted);
+		if (!ret && read_valid == valid &&
+		    read_encrypted == (valid && encrypted))
+			return 0;
+
+		usleep_range(10, 20);
 	}
 
-	return 0;
+	dev_err(priv->dev,
+		"GPON GEM port %u configuration failed: valid=%u encrypted=%u ret=%d
+",
+		gem_port_id, valid, valid && encrypted, ret);
+
+	return ret ?: -EIO;
 }
 
 static void gpon_set_alloc_id_hw(struct gpon_priv *priv, u16 alloc_id,
@@ -1436,12 +1470,12 @@ static void gpon_cb_set_ber_interval(void *hw_priv, u32 interval_ms)
 		timer_delete(&priv->ber_timer);
 }
 
-static void gpon_cb_set_omci_gem(void *hw_priv, u16 gem_port_id, bool valid)
+static int gpon_cb_set_omci_gem(void *hw_priv, u16 gem_port_id, bool valid)
 {
 	struct gpon_priv *priv = hw_priv;
 	u8 onu_id = ploam_get_onu_id(priv->ploam);
 	u32 reg_val;
-	int ret;
+	int ret, tcont_ret;
 
 	if (!valid) {
 		gpon_write(priv, GPON_OMCI_ID, 0);
@@ -1450,49 +1484,71 @@ static void gpon_cb_set_omci_gem(void *hw_priv, u16 gem_port_id, bool valid)
 		ret = gpon_set_gem_port_hw(priv, gem_port_id, false, false);
 		if (ret)
 			dev_err(priv->dev,
-				"failed to remove GPON OMCC GEM port %u: %d\n",
+				"failed to remove GPON OMCC GEM port %u: %d
+",
 				gem_port_id, ret);
-		gpon_set_tcont_hw(priv, 0, 0, false);
-		dev_info(priv->dev, "GPON OMCI GEM disabled: port=%u\n",
+		tcont_ret = gpon_set_tcont_hw(priv, 0, 0, false);
+		if (!ret)
+			ret = tcont_ret;
+		dev_info(priv->dev, "GPON OMCI GEM disabled: port=%u
+",
 			 gem_port_id);
-		return;
+		return ret;
 	}
 
 	if (onu_id == PLOAM_ONU_UNASSIGNED) {
 		dev_err(priv->dev,
-			"cannot enable GPON OMCC GEM %u without an ONU-ID\n",
+			"cannot enable GPON OMCC GEM %u without an ONU-ID
+",
 			gem_port_id);
-		return;
+		return -EINVAL;
 	}
 
 	ret = gpon_set_tcont_hw(priv, 0, onu_id, true);
 	if (ret) {
 		dev_err(priv->dev,
-			"failed to configure GPON OMCC T-CONT: %d\n", ret);
-		return;
+			"failed to configure GPON OMCC T-CONT: %d
+", ret);
+		return ret;
 	}
 
 	ret = gpon_set_gem_port_hw(priv, gem_port_id, true, false);
 	if (ret) {
 		dev_err(priv->dev,
-			"failed to configure GPON OMCC GEM port %u: %d\n",
+			"failed to configure GPON OMCC GEM port %u: %d
+",
 			gem_port_id, ret);
 		gpon_set_tcont_hw(priv, 0, 0, false);
-		return;
+		return ret;
 	}
 
 	reg_val = OMCI_PORT_VLD | (gem_port_id & OMCI_GPID_MASK);
 	gpon_write(priv, GPON_OMCI_ID, reg_val);
+	if ((gpon_read(priv, GPON_OMCI_ID) &
+	     (OMCI_PORT_VLD | OMCI_GPID_MASK)) != reg_val) {
+		dev_err(priv->dev,
+			"failed to enable GPON OMCC register for GEM port %u
+",
+			gem_port_id);
+		gpon_set_gem_port_hw(priv, gem_port_id, false, false);
+		gpon_set_tcont_hw(priv, 0, 0, false);
+		return -EIO;
+	}
+
 	airoha_gpon_omci_set_channel(&priv->omci, gem_port_id, true);
 	dev_info(priv->dev,
-		 "GPON OMCC datapath enabled: onu-id=%u tcont=0 gem=%u reg=%#08x\n",
+		 "GPON OMCC datapath enabled: onu-id=%u tcont=0 gem=%u reg=%#08x
+",
 		 onu_id, gem_port_id, reg_val);
 	dev_info(priv->dev,
-		 "GPON OMCC readback: omci=%#010x gem-status=%#010x tcont0-1=%#010x\n",
+		 "GPON OMCC readback: omci=%#010x gem-status=%#010x tcont0-1=%#010x
+",
 		 gpon_read(priv, GPON_OMCI_ID),
 		 gpon_read(priv, GPON_GEM_PORT_STS),
 		 gpon_read(priv, GPON_TCONT_ID_0_1));
 	airoha_eth_xpon_dump_oam_rx_state(priv->gdm_dev);
+
+	return 0;
 }
 
 static void gpon_cb_set_gem_encryption(void *hw_priv, u16 port_id,
