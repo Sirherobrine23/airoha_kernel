@@ -496,6 +496,21 @@ static int omci_agent_upload_next_locked(struct omci_agent *agent,
 	return 0;
 }
 
+static void omci_agent_log_baseline(struct omci_device *odev,
+				    const char *direction, const u8 *pdu)
+{
+	u8 action = pdu[2] & 0x1f;
+	u16 class_id = get_unaligned_be16(pdu + 4);
+	u16 entity_id = get_unaligned_be16(pdu + 6);
+
+	dev_info(odev->parent,
+		 "OMCI %s: tci=%#06x type=%#04x action=%u class=%u entity=%#06x result=%u\n",
+		 direction, get_unaligned_be16(pdu), pdu[2], action,
+		 class_id, entity_id, pdu[8]);
+	dev_info(odev->parent, "OMCI %s PDU: %*phN\n",
+		 direction, OMCI_BASELINE_LEN_NO_MIC, pdu);
+}
+
 static bool omci_agent_build_response_locked(struct omci_device *odev,
 					     const u8 *request,
 					      u8 *response,
@@ -594,6 +609,8 @@ void omci_agent_receive(struct omci_device *odev, const struct sk_buff *skb)
 	if (skb->data[3] != OMCI_BASELINE_DEV_ID)
 		return;
 
+	omci_agent_log_baseline(odev, "RX", skb->data);
+
 	mutex_lock(&agent->lock);
 	if (!agent->enabled) {
 		mutex_unlock(&agent->lock);
@@ -617,6 +634,7 @@ void omci_agent_receive(struct omci_device *odev, const struct sk_buff *skb)
 	}
 	mutex_unlock(&agent->lock);
 
+	omci_agent_log_baseline(odev, "TX", response);
 	ret = omci_device_xmit(odev, response, sizeof(response));
 	if (!ret)
 		atomic64_inc(&agent->responses);
