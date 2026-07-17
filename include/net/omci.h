@@ -10,11 +10,36 @@ struct omci_device;
 struct sk_buff;
 
 /**
+ * struct omci_telemetry - current PON and optical telemetry
+ * @valid: OMCI_TELEMETRY_F_* bitmap
+ * @bosa_temperature_mc: BOSA temperature in milli-degrees Celsius
+ * @bosa_voltage_uv: optical frontend supply voltage in microvolts
+ * @bosa_bias_ua: laser bias current in microamps
+ * @bosa_tx_power_nw: transmitted optical power in nanowatts
+ * @bosa_rx_power_nw: received optical power in nanowatts
+ * @bosa_alarms: hardware-specific optical alarm bitmap
+ * @downstream_fec: enum omci_fec_status
+ * @upstream_fec: enum omci_fec_status
+ */
+struct omci_telemetry {
+	u32 valid;
+	s32 bosa_temperature_mc;
+	u32 bosa_voltage_uv;
+	u32 bosa_bias_ua;
+	u32 bosa_tx_power_nw;
+	u32 bosa_rx_power_nw;
+	u32 bosa_alarms;
+	u8 downstream_fec;
+	u8 upstream_fec;
+};
+
+/**
  * struct omci_device_ops - hardware transport and provisioning operations
  * @xmit: transmit an OMCI PDU; consumes @skb only on success
  * @set_tcont: configure a T-CONT mapping
  * @set_gem_port: configure a GEM port
  * @set_uni: enable or disable a UNI
+ * @get_telemetry: refresh PON FEC and optical telemetry
  */
 struct omci_device_ops {
 	int (*xmit)(struct omci_device *odev, struct sk_buff *skb,
@@ -25,6 +50,8 @@ struct omci_device_ops {
 			    u16 gem_port_id, u16 tcont_entity_id,
 			    bool valid, bool encrypted);
 	int (*set_uni)(struct omci_device *odev, u16 entity_id, bool enable);
+	int (*get_telemetry)(struct omci_device *odev,
+			     struct omci_telemetry *telemetry);
 };
 
 struct omci_device *
