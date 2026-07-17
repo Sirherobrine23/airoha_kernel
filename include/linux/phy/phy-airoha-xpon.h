@@ -27,6 +27,8 @@ enum airoha_xpon_phy_gpon_oper_state {
 int airoha_xpon_phy_get_gpon_tx_counters(struct phy *phy,
 					 u32 *frame_count,
 					 u32 *burst_count);
+int airoha_xpon_phy_get_gpon_fec_status(struct phy *phy,
+					bool *downstream, bool *upstream);
 int airoha_xpon_phy_set_gpon_overhead(struct phy *phy, u8 guard_bits,
 				      u8 t1_pbits, u8 t2_pbits,
 				      u8 t3_pattern,
