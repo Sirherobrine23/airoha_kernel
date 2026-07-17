@@ -32,14 +32,15 @@ static int airoha_gpon_omci_set_tcont(struct omci_device *odev,
 static int airoha_gpon_omci_set_gem_port(struct omci_device *odev,
 					 u16 entity_id,
 					  u16 gem_port_id,
+					  u16 tcont_entity_id,
 					  bool valid,
 					  bool encrypted)
 {
 	struct airoha_gpon_omci *omci = omci_device_priv(odev);
 
 	return airoha_gpon_omci_hw_set_gem_port(omci->hw_priv, entity_id,
-						gem_port_id, valid,
-						encrypted);
+						gem_port_id, tcont_entity_id,
+						valid, encrypted);
 }
 
 static int airoha_gpon_omci_set_uni(struct omci_device *odev,
@@ -59,7 +60,6 @@ static const struct omci_device_ops airoha_gpon_omci_ops = {
 
 int airoha_gpon_omci_register(struct airoha_gpon_omci *omci,
 			      struct device *dev,
-			      struct net_device *pon_dev,
 			      struct net_device *gdm_dev,
 			      void *hw_priv,
 			      const u8 serial_number[8],
@@ -67,7 +67,7 @@ int airoha_gpon_omci_register(struct airoha_gpon_omci *omci,
 {
 	omci->gdm_dev = gdm_dev;
 	omci->hw_priv = hw_priv;
-	omci->odev = omci_device_register(dev, pon_dev->ifindex,
+	omci->odev = omci_device_register(dev, gdm_dev->ifindex,
 					  OMCI_CAP_HW_MIC,
 					  &airoha_gpon_omci_ops, omci);
 	if (IS_ERR(omci->odev))

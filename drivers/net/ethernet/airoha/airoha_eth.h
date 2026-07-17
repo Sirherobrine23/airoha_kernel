@@ -11,6 +11,7 @@
 #include <linux/etherdevice.h>
 #include <linux/iopoll.h>
 #include <linux/kernel.h>
+#include <linux/mutex.h>
 #include <linux/netdevice.h>
 #include <linux/reset.h>
 #include <linux/soc/airoha/airoha_offload.h>
@@ -30,6 +31,7 @@
 #define AIROHA_FE_MC_MAX_VLAN_TABLE	64
 #define AIROHA_FE_MC_MAX_VLAN_PORT	16
 #define AIROHA_NUM_TX_IRQ		2
+#define AIROHA_XPON_MAX_SERVICES	32
 #define HW_DSCP_NUM			2048
 #define IRQ_QUEUE_LEN(_n)		((_n) ? 1024 : 2048)
 #define TX_DSCP_NUM(_n) 	\
@@ -582,6 +584,7 @@ struct airoha_qdma {
 enum airoha_priv_flags {
 	AIROHA_PRIV_F_WAN = BIT(0),
 	AIROHA_PRIV_F_QOS = BIT(1),
+	AIROHA_PRIV_F_XPON_MANAGED = BIT(2),
 };
 
 #define AIROHA_XPON_OAM_RX_F_MIC_PRESENT	BIT(0)
@@ -592,6 +595,35 @@ struct airoha_xpon_oam_handler {
 	bool (*rx)(void *priv, struct sk_buff *skb, u16 gem_port_id,
 		   u32 flags);
 	void *priv;
+};
+
+/**
+ * struct airoha_xpon_link_ops - xPON lifecycle callbacks owned by GDM2
+ * @start: start the optical upstream after GDM2 and QDMA are available
+ * @stop: stop the optical upstream before GDM2 and QDMA are disabled
+ */
+struct airoha_xpon_link_ops {
+	int (*start)(void *priv);
+	void (*stop)(void *priv);
+};
+
+struct airoha_xpon_service_cfg {
+	u16 gem_port_id;
+	u16 vlan_id;
+	u8 tcont;
+	u8 queue;
+	u8 pcp;
+	bool vlan_valid;
+	bool pcp_valid;
+	bool default_service;
+	bool valid;
+};
+
+struct airoha_xpon_tx_info {
+	u16 gem_port_id;
+	u8 tcont;
+	u8 queue;
+	bool oam;
 };
 
 struct airoha_gdm_dev {
@@ -610,6 +642,18 @@ struct airoha_gdm_dev {
 	struct airoha_hw_stats stats;
 
 	struct airoha_xpon_oam_handler __rcu *xpon_oam;
+
+	/* Serializes xPON provider registration and netdev lifecycle calls. */
+	struct mutex xpon_lock;
+	const struct airoha_xpon_link_ops *xpon_ops;
+	void *xpon_priv;
+	enum airoha_xpon_mode xpon_mode;
+	bool xpon_started;
+
+	/* Protects GPON GEM/T-CONT service classification. */
+	spinlock_t xpon_service_lock;
+	struct airoha_xpon_service_cfg
+		xpon_services[AIROHA_XPON_MAX_SERVICES];
 
 	struct phylink *phylink;
 	struct phylink_config phylink_config;
@@ -784,16 +828,30 @@ static inline bool airoha_qdma_is_lro_queue(struct airoha_queue *q)
 	}
 }
 
+int airoha_eth_register_xpon(struct net_device *netdev,
+			     enum airoha_xpon_mode mode,
+			     const struct airoha_xpon_link_ops *ops,
+			     void *priv);
+void airoha_eth_unregister_xpon(struct net_device *netdev,
+				const struct airoha_xpon_link_ops *ops,
+				void *priv);
+void airoha_eth_xpon_set_carrier(struct net_device *netdev, bool up);
 int airoha_eth_register_xpon_oam(struct net_device *netdev,
 				 struct airoha_xpon_oam_handler *handler);
 void airoha_eth_unregister_xpon_oam(struct net_device *netdev,
 				    struct airoha_xpon_oam_handler *handler);
 int airoha_eth_xmit_xpon_oam(struct net_device *netdev, struct sk_buff *skb,
 			     u16 gem_port_id);
+int airoha_eth_xpon_add_service(struct net_device *netdev,
+				const struct airoha_xpon_service_cfg *cfg);
+void airoha_eth_xpon_del_service(struct net_device *netdev, u16 gem_port_id);
+void airoha_eth_xpon_flush_services(struct net_device *netdev);
 int airoha_eth_set_xpon_mode(struct net_device *netdev,
 			      enum airoha_xpon_mode mode);
 int airoha_eth_set_xpon_datapath(struct net_device *netdev,
 				  enum airoha_xpon_mode mode, bool enable);
+int airoha_eth_set_xpon_tcont_channel(struct net_device *netdev,
+				      unsigned int channel, bool enable);
 int airoha_get_fe_port(struct airoha_gdm_dev *dev);
 bool airoha_is_valid_gdm_dev(struct airoha_eth *eth,
 			     struct airoha_gdm_dev *dev);

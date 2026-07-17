@@ -343,7 +343,8 @@ static int omci_agent_hw_update(struct omci_device *odev,
 		if (!ops->set_gem_port)
 			return 0;
 		return ops->set_gem_port(odev, object->entity_id,
-					 object->entity_id,
+					 get_unaligned_be16(object->data),
+					 get_unaligned_be16(object->data + 2),
 					 action != OMCI_MSG_TYPE_DELETE, false);
 	case OMCI_CLASS_PPTP_ETHERNET_UNI:
 	case OMCI_CLASS_VEIP:
