@@ -1049,6 +1049,29 @@ static int airoha_qdma_fill_rx_queue(struct airoha_queue *q)
 }
 
 static struct airoha_gdm_dev *
+airoha_qdma_get_xpon_dev(struct airoha_eth *eth)
+{
+	int i, j;
+
+	for (i = 0; i < ARRAY_SIZE(eth->ports); i++) {
+		struct airoha_gdm_port *port = eth->ports[i];
+
+		if (!port || port->id != AIROHA_GDM2_IDX)
+			continue;
+
+		for (j = 0; j < ARRAY_SIZE(port->devs); j++) {
+			struct airoha_gdm_dev *dev = port->devs[j];
+
+			if (dev &&
+			    (dev->flags & AIROHA_PRIV_F_XPON_MANAGED))
+				return dev;
+		}
+	}
+
+	return ERR_PTR(-ENODEV);
+}
+
+static struct airoha_gdm_dev *
 airoha_qdma_get_gdm_dev(struct airoha_eth *eth, struct airoha_qdma_desc *desc)
 {
 	struct airoha_gdm_port *port;
@@ -1272,9 +1295,10 @@ static int airoha_qdma_rx_process(struct airoha_queue *q, int budget)
 	while (done < budget) {
 		struct airoha_queue_entry *e = &q->entry[q->tail];
 		struct airoha_qdma_desc *desc = &q->desc[q->tail];
-		u32 hash, reason, msg1, desc_ctrl;
+		u32 hash, reason, msg0, msg1, desc_ctrl;
 		struct airoha_gdm_dev *dev;
 		struct net_device *netdev;
+		bool xpon_oam;
 		int data_len, len;
 		struct page *page;
 
@@ -1299,17 +1323,22 @@ static int airoha_qdma_rx_process(struct airoha_queue *q, int budget)
 		if (!len || data_len < len)
 			goto free_frag;
 
-		dev = airoha_qdma_get_gdm_dev(eth, desc);
+		msg0 = le32_to_cpu(READ_ONCE(desc->msg0));
+		xpon_oam = airoha_is(eth, en7523) &&
+			   (msg0 & EN7523_QDMA_ETH_RXMSG_OAM_MASK);
+
+		/* GPON OAM descriptors are not required to carry an Ethernet
+		 * source port. Resolve them through the registered xPON GDM2
+		 * provider before applying the normal source-port decoder.
+		 */
+		dev = xpon_oam ? airoha_qdma_get_xpon_dev(eth) :
+				 airoha_qdma_get_gdm_dev(eth, desc);
 		if (IS_ERR(dev))
 			goto free_frag;
 
 		netdev = netdev_from_priv(dev);
 		if (!q->skb) { /* first buffer */
-			u32 msg0 = le32_to_cpu(READ_ONCE(desc->msg0));
-			bool raw = airoha_is(eth, en7523) &&
-				   (msg0 & EN7523_QDMA_ETH_RXMSG_OAM_MASK);
-
-			q->skb = airoha_qdma_build_rx_skb(q, desc, e, netdev, raw);
+			q->skb = airoha_qdma_build_rx_skb(q, desc, e, netdev, xpon_oam);
 			if (!q->skb)
 				goto free_frag;
 		} else { /* scattered frame */
@@ -1329,9 +1358,8 @@ static int airoha_qdma_rx_process(struct airoha_queue *q, int budget)
 
 		if (airoha_is(eth, en7523)) {
 			struct airoha_xpon_oam_handler *handler;
-			u32 msg0 = le32_to_cpu(READ_ONCE(desc->msg0));
 
-			if (msg0 & EN7523_QDMA_ETH_RXMSG_OAM_MASK) {
+			if (xpon_oam) {
 				u16 gem_port_id;
 				u32 flags = 0;
 				bool consumed = false;
