@@ -839,13 +839,6 @@
 #define REG_RX_SCATTER_CFG(_n)	\
 	(((_n) < 16) ? 0x0214 + ((_n) << 5) : 0x0e14 + (((_n) - 16) << 5))
 
-/* EN7523 keeps RX rings 2 through 15 in the legacy QDMA window. */
-#define EN7523_REG_RX_RING_BASE(_n)	(0x0800 + (((_n) - 2) << 5))
-#define EN7523_REG_RX_RING_SIZE(_n)	(0x0804 + (((_n) - 2) << 5))
-#define EN7523_REG_RX_CPU_IDX(_n)	(0x0808 + (((_n) - 2) << 5))
-#define EN7523_REG_RX_DMA_IDX(_n)	(0x080c + (((_n) - 2) << 5))
-#define EN7523_REG_RX_DELAY_INT_IDX(_n)	(0x0810 + (((_n) - 2) << 5))
-
 #define RX_DELAY_INT_MASK		GENMASK(15, 0)
 
 #define RX_RING_DMA_IDX_MASK		GENMASK(15, 0)
