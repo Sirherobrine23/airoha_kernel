@@ -34,9 +34,11 @@
 #define XPON_PHYSTA1			0x0130
 #define XPON_SETTING			0x0138
 #define XPON_TDCSET2			0x01f8
+#define XPON_RX_FEC_STATUS		0x021c
 #define XPON_GPON_PREAMBLE		0x0400
 #define XPON_GPON_DELIMITER_GUARD	0x0404
 #define XPON_GPON_EXT_PREAMBLE		0x0408
+#define XPON_TX_FEC_STATUS		0x040c
 #define XPON_GPON_TX_COUNTER_CTRL	0x0424
 #define XPON_GPON_TX_FRAME_COUNTER	0x0434
 #define XPON_GPON_TX_BURST_COUNTER	0x0438
@@ -85,6 +87,7 @@
 
 #define XPON_GPON_TX_ENABLE_PATTERN	0xaa
 #define XPON_GPON_TX_COUNTER_ENABLE	BIT(3)
+#define XPON_FEC_STATUS_ACTIVE	BIT(15)
 
 #define XPON_SETTING_EN7571		0x0000014f
 #define XPON_TDCSET2_EN7571		0x0000002d
@@ -195,6 +198,28 @@ int airoha_xpon_phy_get_gpon_tx_counters(struct phy *phy,
 	return 0;
 }
 EXPORT_SYMBOL_GPL(airoha_xpon_phy_get_gpon_tx_counters);
+
+int airoha_xpon_phy_get_gpon_fec_status(struct phy *phy,
+					bool *downstream, bool *upstream)
+{
+	struct airoha_xpon_phy *priv;
+	int ret;
+
+	if (!downstream || !upstream)
+		return -EINVAL;
+
+	ret = airoha_xpon_phy_get_active_gpon(phy, &priv);
+	if (ret)
+		return ret;
+
+	*downstream = airoha_xpon_phy_read(priv, XPON_RX_FEC_STATUS) &
+			  XPON_FEC_STATUS_ACTIVE;
+	*upstream = airoha_xpon_phy_read(priv, XPON_TX_FEC_STATUS) &
+		       XPON_FEC_STATUS_ACTIVE;
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(airoha_xpon_phy_get_gpon_fec_status);
 
 int airoha_xpon_phy_set_gpon_overhead(struct phy *phy, u8 guard_bits,
 				      u8 t1_pbits, u8 t2_pbits,

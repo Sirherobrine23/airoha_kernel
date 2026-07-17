@@ -28,6 +28,7 @@
 #include <linux/of.h>
 #include <linux/of_net.h>
 #include <linux/platform_device.h>
+#include <linux/phy/airoha-lddla.h>
 #include <linux/phy/phy.h>
 #include <linux/phy/phy-airoha-xpon.h>
 #include <linux/random.h>
@@ -1579,6 +1580,65 @@ int airoha_gpon_omci_hw_set_uni(void *hw_priv, u16 entity_id, bool enable)
 
 	dev_dbg(priv->dev, "OMCI UNI %#x requested %s\n", entity_id,
 		enable ? "enabled" : "disabled");
+	return 0;
+}
+
+int airoha_gpon_omci_hw_get_telemetry(void *hw_priv,
+				      struct omci_telemetry *telemetry)
+{
+	struct airoha_lddla_telemetry optical = {};
+	struct gpon_priv *priv = hw_priv;
+	bool downstream_fec, upstream_fec;
+	int ret;
+
+	if (!telemetry)
+		return -EINVAL;
+
+	memset(telemetry, 0, sizeof(*telemetry));
+	ret = airoha_xpon_phy_get_gpon_fec_status(priv->phy,
+						  &downstream_fec,
+						  &upstream_fec);
+	if (!ret) {
+		telemetry->downstream_fec = downstream_fec ?
+			OMCI_FEC_STATUS_UP : OMCI_FEC_STATUS_DOWN;
+		telemetry->upstream_fec = upstream_fec ?
+			OMCI_FEC_STATUS_UP : OMCI_FEC_STATUS_DOWN;
+		telemetry->valid |= OMCI_TELEMETRY_F_FEC_DOWNSTREAM |
+				    OMCI_TELEMETRY_F_FEC_UPSTREAM;
+	}
+
+	if (!priv->lddla_dev)
+		return telemetry->valid ? 0 : -ENODATA;
+
+	ret = airoha_lddla_get_telemetry(priv->lddla_dev, &optical);
+	if (ret)
+		return telemetry->valid ? 0 : ret;
+
+	if (optical.valid & AIROHA_LDDLA_TELEMETRY_F_TEMPERATURE) {
+		telemetry->bosa_temperature_mc = optical.bosa_temperature_mc;
+		telemetry->valid |= OMCI_TELEMETRY_F_BOSA_TEMPERATURE;
+	}
+	if (optical.valid & AIROHA_LDDLA_TELEMETRY_F_VOLTAGE) {
+		telemetry->bosa_voltage_uv = optical.voltage_uv;
+		telemetry->valid |= OMCI_TELEMETRY_F_BOSA_VOLTAGE;
+	}
+	if (optical.valid & AIROHA_LDDLA_TELEMETRY_F_BIAS) {
+		telemetry->bosa_bias_ua = optical.bias_ua;
+		telemetry->valid |= OMCI_TELEMETRY_F_BOSA_BIAS;
+	}
+	if (optical.valid & AIROHA_LDDLA_TELEMETRY_F_TX_POWER) {
+		telemetry->bosa_tx_power_nw = optical.tx_power_nw;
+		telemetry->valid |= OMCI_TELEMETRY_F_BOSA_TX_POWER;
+	}
+	if (optical.valid & AIROHA_LDDLA_TELEMETRY_F_RX_POWER) {
+		telemetry->bosa_rx_power_nw = optical.rx_power_nw;
+		telemetry->valid |= OMCI_TELEMETRY_F_BOSA_RX_POWER;
+	}
+	if (optical.valid & AIROHA_LDDLA_TELEMETRY_F_ALARMS) {
+		telemetry->bosa_alarms = optical.alarms;
+		telemetry->valid |= OMCI_TELEMETRY_F_BOSA_ALARMS;
+	}
+
 	return 0;
 }
 

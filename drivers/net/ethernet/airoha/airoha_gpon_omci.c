@@ -51,11 +51,20 @@ static int airoha_gpon_omci_set_uni(struct omci_device *odev,
 	return airoha_gpon_omci_hw_set_uni(omci->hw_priv, entity_id, enable);
 }
 
+static int airoha_gpon_omci_get_telemetry(struct omci_device *odev,
+					  struct omci_telemetry *telemetry)
+{
+	struct airoha_gpon_omci *omci = omci_device_priv(odev);
+
+	return airoha_gpon_omci_hw_get_telemetry(omci->hw_priv, telemetry);
+}
+
 static const struct omci_device_ops airoha_gpon_omci_ops = {
 	.xmit = airoha_gpon_omci_xmit,
 	.set_tcont = airoha_gpon_omci_set_tcont,
 	.set_gem_port = airoha_gpon_omci_set_gem_port,
 	.set_uni = airoha_gpon_omci_set_uni,
+	.get_telemetry = airoha_gpon_omci_get_telemetry,
 };
 
 int airoha_gpon_omci_register(struct airoha_gpon_omci *omci,
@@ -68,7 +77,7 @@ int airoha_gpon_omci_register(struct airoha_gpon_omci *omci,
 	omci->gdm_dev = gdm_dev;
 	omci->hw_priv = hw_priv;
 	omci->odev = omci_device_register(dev, gdm_dev->ifindex,
-					  OMCI_CAP_HW_MIC,
+					  OMCI_CAP_HW_MIC | OMCI_CAP_TELEMETRY,
 					  &airoha_gpon_omci_ops, omci);
 	if (IS_ERR(omci->odev))
 		return PTR_ERR(omci->odev);
