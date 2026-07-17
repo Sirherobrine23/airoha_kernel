@@ -1053,7 +1053,7 @@ airoha_qdma_get_xpon_dev(struct airoha_eth *eth)
 {
 	int i, j;
 
-	for (i = 0; i < ARRAY_SIZE(eth->ports); i++) {
+	for (i = 0; i < eth->soc->max_gdm_ports; i++) {
 		struct airoha_gdm_port *port = eth->ports[i];
 
 		if (!port || port->id != AIROHA_GDM2_IDX)
@@ -1408,8 +1408,8 @@ static int airoha_qdma_rx_process(struct airoha_queue *q, int budget)
 					dev_kfree_skb_any(q->skb);
 				}
 
-				netdev_info_ratelimited(netdev,
-							"xPON OAM RX: ring=%td len=%u msg=%#010x/%#010x/%#010x/%#010x sport=%u channel=%u gem=%u no-mic=%u crc=%u runt=%u long=%u consumed=%u totals=%lld/%lld/%lld\n",
+				dev_info_ratelimited(&netdev->dev,
+						     "xPON OAM RX: ring=%td len=%u msg=%#010x/%#010x/%#010x/%#010x sport=%u channel=%u gem=%u no-mic=%u crc=%u runt=%u long=%u consumed=%u totals=%lld/%lld/%lld\n",
 					q - &q->qdma->q_rx[0], skb_len,
 					msg0, msg1, msg2, msg3, sport, channel,
 					gem_port_id,
