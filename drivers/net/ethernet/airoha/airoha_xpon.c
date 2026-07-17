@@ -424,8 +424,10 @@ static void airoha_xpon_phy_stop(struct device *dev, struct phy *phy,
 #define INT_DYING_GASP		BIT(11)
 /*
  * G_INT_STATUS layout from the vendor EN7521/EN7523 register header.
- * Bits 12..15 are reserved.
+ * Bits 13 and 14 are reserved on EN7523. Bit 15 reports completion of
+ * the grant-size calculation used by the EN7523 DBA block.
  */
+#define INT_CAL_GNT_SIZE_DONE	BIT(15)
 #define INT_RX_ERR		BIT(16)
 #define INT_FIFO_ERR		BIT(17)
 #define INT_BST_SGL_DIFF	BIT(18)
@@ -447,12 +449,15 @@ static void airoha_xpon_phy_stop(struct device *dev, struct phy *phy,
 				 INT_SN_ONU_SEND_O3 | INT_RANGING_REQ_RECV | \
 				 INT_SN_ONU_SEND_O4 | INT_SN_REQ_CRS | \
 				 INT_LOS_GEM_DEL | INT_AES_KEY_SWITCH_DONE | \
-				 INT_DYING_GASP)
+				 INT_DYING_GASP | INT_CAL_GNT_SIZE_DONE)
+/*
+ * The EN7523 vendor driver enables only the common receive/burst errors.
+ * The interleave, BWM FIFO and BWM timing interrupts are EN7521-only and
+ * may expose unrelated status bits when enabled on EN7523.
+ */
 #define GPON_INT_ERROR_MASK		(INT_RX_ERR | INT_FIFO_ERR | \
 				 INT_BST_SGL_DIFF | INT_TX_LATE_START | \
-				 INT_RX_EOF_ERR | INT_RX_GEM_INTLV_ERR | \
-				 INT_BFIFO_FULL | INT_SFIFO_FULL | \
-				 INT_BWM_STOP_TIME_ERR | INT_BWM_US_FEC_ERR)
+				 INT_RX_EOF_ERR)
 #define GPON_INT_DEFAULT_MASK		(GPON_INT_ACTIVATION_MASK | \
 				 GPON_INT_ERROR_MASK)
 
