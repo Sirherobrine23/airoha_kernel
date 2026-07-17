@@ -455,6 +455,62 @@ int lddla_hwmon_register(struct airoha_lddla *lddla)
 }
 
 /**
+ * airoha_lddla_get_telemetry() - refresh optical frontend telemetry
+ * @dev: LDDLA I2C device
+ * @telemetry: output measurements
+ *
+ * Return: 0 when at least one measurement is available or a negative errno.
+ */
+int airoha_lddla_get_telemetry(struct device *dev,
+			       struct airoha_lddla_telemetry *telemetry)
+{
+	struct airoha_lddla *lddla;
+	const struct airoha_lddla_ops *ops;
+	int ret;
+
+	if (!dev || !telemetry)
+		return -EINVAL;
+
+	lddla = dev_get_drvdata(dev);
+	memset(telemetry, 0, sizeof(*telemetry));
+	if (!lddla || lddla->dev != dev)
+		return -ENODEV;
+
+	ops = lddla->ops;
+	ret = lddla_lock(lddla);
+	if (ret)
+		return ret;
+
+	if (ops->bosa_temp_refresh) {
+		telemetry->bosa_temperature_mc =
+			ops->bosa_temp_refresh(lddla);
+		telemetry->valid |= AIROHA_LDDLA_TELEMETRY_F_TEMPERATURE;
+	}
+	if (ops->vcc_refresh) {
+		telemetry->voltage_uv = ops->vcc_refresh(lddla) * 100U;
+		telemetry->valid |= AIROHA_LDDLA_TELEMETRY_F_VOLTAGE;
+	}
+	if (ops->bias_refresh) {
+		telemetry->bias_ua = ops->bias_refresh(lddla) * 2U;
+		telemetry->valid |= AIROHA_LDDLA_TELEMETRY_F_BIAS;
+	}
+	if (ops->tx_power_refresh) {
+		telemetry->tx_power_nw = ops->tx_power_refresh(lddla) * 100U;
+		telemetry->valid |= AIROHA_LDDLA_TELEMETRY_F_TX_POWER;
+	}
+	if (ops->rx_power_refresh) {
+		telemetry->rx_power_nw = ops->rx_power_refresh(lddla) * 100U;
+		telemetry->valid |= AIROHA_LDDLA_TELEMETRY_F_RX_POWER;
+	}
+	telemetry->alarms = lddla->alarm;
+	telemetry->valid |= AIROHA_LDDLA_TELEMETRY_F_ALARMS;
+	mutex_unlock(&lddla->lock);
+
+	return telemetry->valid ? 0 : -ENODATA;
+}
+EXPORT_SYMBOL_GPL(airoha_lddla_get_telemetry);
+
+/**
  * airoha_lddla_tx_rearm() - rearm an LDDLA optical transmitter
  * @dev: LDDLA I2C device
  *
