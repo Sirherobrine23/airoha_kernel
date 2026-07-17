@@ -105,6 +105,13 @@ patternProperties:
         maximum: 4
         description: GMAC port identifier
 
+      airoha,xpon-managed:
+        type: boolean
+        description:
+          Marks GDM2 as the packet netdevice owned by the xPON MAC. The
+          Ethernet driver keeps carrier down until the xPON provider reaches
+          its operational state and delegates start and stop to that provider.
+
     required:
       - reg
       - compatible
