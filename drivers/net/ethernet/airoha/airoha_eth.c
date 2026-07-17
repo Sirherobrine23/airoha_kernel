@@ -1333,8 +1333,14 @@ static int airoha_qdma_rx_process(struct airoha_queue *q, int budget)
 		 */
 		dev = xpon_oam ? airoha_qdma_get_xpon_dev(eth) :
 				 airoha_qdma_get_gdm_dev(eth, desc);
-		if (IS_ERR(dev))
+		if (IS_ERR(dev)) {
+			if (xpon_oam)
+				dev_warn_ratelimited(eth->dev,
+						     "xPON OAM RX dropped: no managed GDM2 ring=%td len=%d msg0=%#010x msg1=%#010x\n",
+					q - &q->qdma->q_rx[0], len, msg0,
+					le32_to_cpu(READ_ONCE(desc->msg1)));
 			goto free_frag;
+		}
 
 		netdev = netdev_from_priv(dev);
 		if (!q->skb) { /* first buffer */
@@ -1360,17 +1366,29 @@ static int airoha_qdma_rx_process(struct airoha_queue *q, int budget)
 			struct airoha_xpon_oam_handler *handler;
 
 			if (xpon_oam) {
-				u16 gem_port_id;
-				u32 flags = 0;
+				u32 msg2 = le32_to_cpu(READ_ONCE(desc->msg2));
+				u32 msg3 = le32_to_cpu(READ_ONCE(desc->msg3));
+				u16 gem_port_id, channel, sport;
+				u32 flags = 0, skb_len;
 				bool consumed = false;
 
-				gem_port_id = FIELD_GET(EN7523_QDMA_ETH_RXMSG_GEM_MASK, msg0);
+				gem_port_id = FIELD_GET(EN7523_QDMA_ETH_RXMSG_GEM_MASK,
+							msg0);
+				channel = FIELD_GET(EN7523_QDMA_ETH_RXMSG_CHAN_MASK,
+						    msg0);
+				msg1 = le32_to_cpu(READ_ONCE(desc->msg1));
+				sport = FIELD_GET(EN7523_QDMA_ETH_RXMSG_SPORT_MASK,
+						  msg1);
 				if (!(msg0 & EN7523_QDMA_ETH_RXMSG_NO_MIC_MASK))
 					flags |= AIROHA_XPON_OAM_RX_F_MIC_PRESENT;
 				if (!(msg0 & EN7523_QDMA_ETH_RXMSG_CRC_ERR_MASK))
 					flags |= AIROHA_XPON_OAM_RX_F_MIC_VALID;
 				else
 					flags |= AIROHA_XPON_OAM_RX_F_CRC_ERROR;
+
+				skb_len = q->skb->len;
+				atomic64_inc(&dev->xpon_oam_rx_packets);
+				atomic64_add(skb_len, &dev->xpon_oam_rx_bytes);
 
 				rcu_read_lock();
 				handler = rcu_dereference(dev->xpon_oam);
@@ -1379,10 +1397,31 @@ static int airoha_qdma_rx_process(struct airoha_queue *q, int budget)
 							       q->skb,
 							       gem_port_id,
 							       flags);
+				else
+					atomic64_inc(&dev->xpon_oam_rx_no_handler);
 				rcu_read_unlock();
 
-				if (!consumed)
+				if (consumed) {
+					atomic64_inc(&dev->xpon_oam_rx_delivered);
+				} else {
+					atomic64_inc(&dev->xpon_oam_rx_dropped);
 					dev_kfree_skb_any(q->skb);
+				}
+
+				netdev_info_ratelimited(netdev,
+							"xPON OAM RX: ring=%td len=%u msg=%#010x/%#010x/%#010x/%#010x sport=%u channel=%u gem=%u no-mic=%u crc=%u runt=%u long=%u consumed=%u totals=%lld/%lld/%lld\n",
+					q - &q->qdma->q_rx[0], skb_len,
+					msg0, msg1, msg2, msg3, sport, channel,
+					gem_port_id,
+					!!(msg0 & EN7523_QDMA_ETH_RXMSG_NO_MIC_MASK),
+					!!(msg0 & EN7523_QDMA_ETH_RXMSG_CRC_ERR_MASK),
+					!!(msg0 & EN7523_QDMA_ETH_RXMSG_RUNT_MASK),
+					!!(msg0 & EN7523_QDMA_ETH_RXMSG_LONG_MASK),
+					consumed,
+					(long long)atomic64_read(&dev->xpon_oam_rx_packets),
+					(long long)atomic64_read(&dev->xpon_oam_rx_delivered),
+					(long long)atomic64_read(&dev->xpon_oam_rx_dropped));
+
 				q->skb = NULL;
 				done++;
 				continue;
