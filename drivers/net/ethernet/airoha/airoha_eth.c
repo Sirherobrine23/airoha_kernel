@@ -3460,6 +3460,8 @@ static netdev_tx_t __airoha_dev_xmit(struct sk_buff *skb,
 	msg1 = FIELD_PREP(QDMA_ETH_TXMSG_NBOQ_MASK, dev->nbq) |
 	       FIELD_PREP(QDMA_ETH_TXMSG_FPORT_MASK, fport) |
 	       FIELD_PREP(QDMA_ETH_TXMSG_METER_MASK, 0x7f);
+	if (xpon_oam)
+		msg1 |= QDMA_ETH_TXMSG_NO_DROP;
 
 	if (xpon)
 		dev_info_ratelimited(&netdev->dev,
