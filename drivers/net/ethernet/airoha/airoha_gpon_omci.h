@@ -7,6 +7,7 @@
 struct device;
 struct net_device;
 struct omci_device;
+struct omci_telemetry;
 struct sk_buff;
 
 struct airoha_gpon_omci {
@@ -35,5 +36,7 @@ int airoha_gpon_omci_hw_set_gem_port(void *hw_priv, u16 entity_id,
 				     u16 gem_port_id, u16 tcont_entity_id,
 				     bool valid, bool encrypted);
 int airoha_gpon_omci_hw_set_uni(void *hw_priv, u16 entity_id, bool enable);
+int airoha_gpon_omci_hw_get_telemetry(void *hw_priv,
+				      struct omci_telemetry *telemetry);
 
 #endif /* _AIROHA_GPON_OMCI_H */
