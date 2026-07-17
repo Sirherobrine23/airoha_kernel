@@ -3600,6 +3600,12 @@ int airoha_eth_xmit_xpon_oam(struct net_device *netdev, struct sk_buff *skb,
 		return -EINVAL;
 
 	info.gem_port_id = gem_port_id;
+
+	/* OMCI frames are generated internally and are not passed through
+	 * dev_queue_xmit(), so associate them with the xPON netdev before
+	 * the QDMA completion path performs BQL accounting.
+	 */
+	skb->dev = netdev;
 	skb_set_queue_mapping(skb, 7);
 	ret = __airoha_dev_xmit(skb, netdev, &info);
 	return ret == NETDEV_TX_BUSY ? -EBUSY : 0;
