@@ -196,8 +196,6 @@ int airoha_eth_set_xpon_mode(struct net_device *netdev,
 	airoha_fe_clear(dev->eth, REG_GDM_TXCHN_EN(AIROHA_GDM2_IDX), ~0U);
 	airoha_fe_clear(dev->eth, REG_GDM_RXCHN_EN(AIROHA_GDM2_IDX), ~0U);
 	airoha_fe_clear(dev->eth, REG_CDM_HWF_CHN_EN(2), ~0U);
-	airoha_fe_clear(dev->eth, REG_GDM_XPON_CHN_EN(AIROHA_GDM2_IDX),
-		       EN7523_GDM2_XPON_RX_CHN_MASK);
 
 	return 0;
 }
@@ -215,13 +213,12 @@ int airoha_eth_set_xpon_datapath(struct net_device *netdev,
 
 	switch (mode) {
 	case AIROHA_XPON_MODE_GPON:
-		/* The EN7523 GPON path uses the legacy combined channel
-		 * register. Downstream channels are bits 16 and 17.
+		/* The vendor GPON path enables downstream channels 0 and 1
+		 * through the regular GDM2 receive channel register.
 		 */
-		airoha_fe_rmw(dev->eth,
-			      REG_GDM_XPON_CHN_EN(AIROHA_GDM2_IDX),
-			      EN7523_GDM2_XPON_RX_CHN_MASK,
-			      enable ? EN7523_GDM2_XPON_RX_CHN_MASK : 0);
+		airoha_fe_rmw(dev->eth, REG_GDM_RXCHN_EN(AIROHA_GDM2_IDX),
+			      EN7523_GDM2_GPON_RX_CHN_MASK,
+			      enable ? EN7523_GDM2_GPON_RX_CHN_MASK : 0);
 		break;
 	case AIROHA_XPON_MODE_EPON:
 		/* xpon_1g/eponFeChannelEnable(): LLID channels 0..7,

@@ -207,12 +207,8 @@
 #define REG_GDM_RXCHN_EN(_n)		(GDM_BASE(_n) + 0x28)
 #define REG_CDM_HWF_CHN_EN(_n)		(CDM_BASE(_n) + 0x0c)
 
-/* EN7523 xPON uses the legacy combined GDM2 channel-enable register.
- * TX/T-CONT channels occupy bits 0..15 and the two downstream GPON
- * receive channels occupy bits 16..17.
- */
-#define REG_GDM_XPON_CHN_EN(_n)		(GDM_BASE(_n) + 0x2c)
-#define EN7523_GDM2_XPON_RX_CHN_MASK	GENMASK(17, 16)
+/* GPON downstream traffic uses GDM2 receive channels 0 and 1. */
+#define EN7523_GDM2_GPON_RX_CHN_MASK	GENMASK(1, 0)
 #define EN7523_GDM2_EPON_TX_CHN_MASK	(GENMASK(7, 0) | GENMASK(23, 16))
 #define EN7523_GDM2_EPON_RX_CHN_MASK	GENMASK(7, 0)
 #define EN7523_CDM2_EPON_HWF_CHN_MASK	GENMASK(7, 0)
