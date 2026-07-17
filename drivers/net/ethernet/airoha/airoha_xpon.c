@@ -1852,6 +1852,7 @@ static void gpon_disable(struct gpon_priv *priv)
 			      &priv->phy_powered);
 
 	ploam_reset(priv->ploam);
+	airoha_gpon_omci_set_state(&priv->omci, GPON_O1_INITIAL);
 	airoha_eth_xpon_set_carrier(priv->gdm_dev, false);
 	dev_info(priv->dev, "GPON MAC stopped, state reset to %s\n",
 		 gpon_state_name(ploam_get_state(priv->ploam)));
