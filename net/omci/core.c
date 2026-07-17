@@ -71,6 +71,49 @@ static struct omci_device *omci_get_from_info(struct genl_info *info)
 	return omci_find_locked(id);
 }
 
+static int omci_put_telemetry(struct sk_buff *msg, struct omci_device *odev)
+{
+	struct omci_telemetry telemetry = {};
+
+	if (odev->ops->get_telemetry)
+		odev->ops->get_telemetry(odev, &telemetry);
+
+	if (nla_put_u32(msg, OMCI_ATTR_TELEMETRY_VALID, telemetry.valid))
+		return -EMSGSIZE;
+
+	if ((telemetry.valid & OMCI_TELEMETRY_F_FEC_DOWNSTREAM) &&
+	    nla_put_u8(msg, OMCI_ATTR_FEC_DOWNSTREAM,
+		       telemetry.downstream_fec))
+		return -EMSGSIZE;
+	if ((telemetry.valid & OMCI_TELEMETRY_F_FEC_UPSTREAM) &&
+	    nla_put_u8(msg, OMCI_ATTR_FEC_UPSTREAM, telemetry.upstream_fec))
+		return -EMSGSIZE;
+	if ((telemetry.valid & OMCI_TELEMETRY_F_BOSA_TEMPERATURE) &&
+	    nla_put_s32(msg, OMCI_ATTR_BOSA_TEMPERATURE_MC,
+			telemetry.bosa_temperature_mc))
+		return -EMSGSIZE;
+	if ((telemetry.valid & OMCI_TELEMETRY_F_BOSA_VOLTAGE) &&
+	    nla_put_u32(msg, OMCI_ATTR_BOSA_VOLTAGE_UV,
+			telemetry.bosa_voltage_uv))
+		return -EMSGSIZE;
+	if ((telemetry.valid & OMCI_TELEMETRY_F_BOSA_BIAS) &&
+	    nla_put_u32(msg, OMCI_ATTR_BOSA_BIAS_UA, telemetry.bosa_bias_ua))
+		return -EMSGSIZE;
+	if ((telemetry.valid & OMCI_TELEMETRY_F_BOSA_TX_POWER) &&
+	    nla_put_u32(msg, OMCI_ATTR_BOSA_TX_POWER_NW,
+			telemetry.bosa_tx_power_nw))
+		return -EMSGSIZE;
+	if ((telemetry.valid & OMCI_TELEMETRY_F_BOSA_RX_POWER) &&
+	    nla_put_u32(msg, OMCI_ATTR_BOSA_RX_POWER_NW,
+			telemetry.bosa_rx_power_nw))
+		return -EMSGSIZE;
+	if ((telemetry.valid & OMCI_TELEMETRY_F_BOSA_ALARMS) &&
+	    nla_put_u32(msg, OMCI_ATTR_BOSA_ALARMS, telemetry.bosa_alarms))
+		return -EMSGSIZE;
+
+	return 0;
+}
+
 static int omci_put_status(struct sk_buff *msg, struct omci_device *odev)
 {
 	u32 owner_portid;
@@ -111,6 +154,9 @@ static int omci_put_status(struct sk_buff *msg, struct omci_device *odev)
 			      atomic64_read(&odev->tx_bytes), OMCI_ATTR_PAD) ||
 	    nla_put_u64_64bit(msg, OMCI_ATTR_TX_ERRORS,
 			      atomic64_read(&odev->tx_errors), OMCI_ATTR_PAD))
+		return -EMSGSIZE;
+
+	if (omci_put_telemetry(msg, odev))
 		return -EMSGSIZE;
 
 	return omci_agent_put_status(msg, odev);
