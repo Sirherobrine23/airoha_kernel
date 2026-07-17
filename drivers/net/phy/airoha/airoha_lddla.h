@@ -25,6 +25,7 @@
 #include <linux/i2c.h>
 #include <linux/minmax.h>
 #include <linux/mutex.h>
+#include <linux/phy/airoha-lddla.h>
 #include <linux/types.h>
 
 struct dentry;
@@ -72,6 +73,7 @@ struct airoha_lddla;
  * @serial: SFP MSA vendor serial-number string.
  * @date_code: SFP MSA date code (6 chars).
  * @temp_refresh: refresh the temperature DDMI word; return IC temp (m degC).
+ * @bosa_temp_refresh: refresh and return BOSA temperature (m degC).
  * @vcc_refresh: refresh and return the cached supply-voltage word.
  * @bias_refresh: refresh and return the cached Tx bias-current word.
  * @tx_power_refresh: refresh and return the cached Tx optical-power word.
@@ -89,6 +91,7 @@ struct airoha_lddla_ops {
 	const char *date_code;
 
 	s32 (*temp_refresh)(struct airoha_lddla *lddla);
+	s32 (*bosa_temp_refresh)(struct airoha_lddla *lddla);
 	u16 (*vcc_refresh)(struct airoha_lddla *lddla);
 	u16 (*bias_refresh)(struct airoha_lddla *lddla);
 	u16 (*tx_power_refresh)(struct airoha_lddla *lddla);

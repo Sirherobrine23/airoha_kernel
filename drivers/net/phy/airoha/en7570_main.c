@@ -294,6 +294,14 @@ static s32 en7570_op_temp(struct airoha_lddla *lddla)
 	return priv->ic_temp_mc;
 }
 
+static s32 en7570_op_bosa_temp(struct airoha_lddla *lddla)
+{
+	struct en7570_priv *priv = container_of(lddla, struct en7570_priv, lddla);
+
+	en7570_temp_ddmi(priv);
+	return priv->bosa_temp_mc;
+}
+
 static u16 en7570_op_vcc(struct airoha_lddla *lddla)
 {
 	return en7570_vcc_ddmi(container_of(lddla, struct en7570_priv, lddla));
@@ -341,6 +349,7 @@ static const struct airoha_lddla_ops en7570_ops = {
 	.serial = "EN7570SN00000001",
 	.date_code = "260608",
 	.temp_refresh = en7570_op_temp,
+	.bosa_temp_refresh = en7570_op_bosa_temp,
 	.vcc_refresh = en7570_op_vcc,
 	.bias_refresh = en7570_op_bias,
 	.tx_power_refresh = en7570_op_tx_power,
