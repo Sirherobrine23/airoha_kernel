@@ -369,6 +369,71 @@ void airoha_eth_xpon_set_carrier(struct net_device *netdev, bool up)
 }
 EXPORT_SYMBOL_GPL(airoha_eth_xpon_set_carrier);
 
+void airoha_eth_xpon_dump_oam_rx_state(struct net_device *netdev)
+{
+	struct airoha_qdma_desc *desc;
+	struct airoha_gdm_dev *dev;
+	struct airoha_queue *q;
+	struct airoha_qdma *qdma;
+	u32 ctrl, msg0, msg1, msg2, msg3;
+	u32 cpu_idx, dma_idx, int_enable, int_status;
+	unsigned int tail;
+	int ret;
+
+	ret = airoha_eth_get_xpon_gdm2(netdev, &dev);
+	if (ret)
+		return;
+
+	rcu_read_lock();
+	qdma = rcu_dereference(dev->qdma);
+	if (!qdma || !qdma->q_rx) {
+		rcu_read_unlock();
+		dev_info_ratelimited(&netdev->dev,
+				     "GPON OAM RX state: QDMA is not attached\n");
+		return;
+	}
+
+	q = &qdma->q_rx[15];
+	if (!q->desc || !q->ndesc) {
+		rcu_read_unlock();
+		dev_info_ratelimited(&netdev->dev,
+				     "GPON OAM RX state: RX ring 15 is not initialized\n");
+		return;
+	}
+
+	tail = READ_ONCE(q->tail);
+	desc = &q->desc[tail];
+	ctrl = le32_to_cpu(READ_ONCE(desc->ctrl));
+	msg0 = le32_to_cpu(READ_ONCE(desc->msg0));
+	msg1 = le32_to_cpu(READ_ONCE(desc->msg1));
+	msg2 = le32_to_cpu(READ_ONCE(desc->msg2));
+	msg3 = le32_to_cpu(READ_ONCE(desc->msg3));
+	cpu_idx = FIELD_GET(RX_RING_CPU_IDX_MASK,
+			    airoha_qdma_rr(qdma, REG_RX_CPU_IDX(15)));
+	dma_idx = FIELD_GET(RX_RING_DMA_IDX_MASK,
+			    airoha_qdma_rr(qdma, REG_RX_DMA_IDX(15)));
+	int_status = airoha_qdma_rr(qdma, REG_INT_STATUS(1));
+	int_enable = airoha_qdma_rr(qdma, REG_INT_ENABLE(0, 1));
+
+	dev_info_ratelimited(&netdev->dev,
+			     "GPON OAM RX state: qdma=%td cdm2-fwd=%#010x ring=15 ndesc=%d queued=%d sw=%u/%u hw=%u/%u int=%#010x enable=%#010x\n",
+			     qdma - &dev->eth->qdma[0],
+			     airoha_fe_rr(dev->eth, REG_CDM_FWD_CFG(2)),
+			     q->ndesc, READ_ONCE(q->queued), READ_ONCE(q->head),
+			     tail, cpu_idx, dma_idx, int_status, int_enable);
+	dev_info_ratelimited(&netdev->dev,
+			     "GPON OAM RX descriptor: index=%u ctrl=%#010x done=%u len=%u msg=%#010x/%#010x/%#010x/%#010x oam=%u channel=%u gem=%u no-mic=%u\n",
+			     tail, ctrl, !!(ctrl & QDMA_DESC_DONE_MASK),
+			     FIELD_GET(EN7523_QDMA_DESC_LEN_MASK, ctrl), msg0,
+			     msg1, msg2, msg3,
+			     !!(msg0 & EN7523_QDMA_ETH_RXMSG_OAM_MASK),
+			     FIELD_GET(EN7523_QDMA_ETH_RXMSG_CHAN_MASK, msg0),
+			     FIELD_GET(EN7523_QDMA_ETH_RXMSG_GEM_MASK, msg0),
+			     !!(msg0 & EN7523_QDMA_ETH_RXMSG_NO_MIC_MASK));
+	rcu_read_unlock();
+}
+EXPORT_SYMBOL_GPL(airoha_eth_xpon_dump_oam_rx_state);
+
 int airoha_eth_register_xpon_oam(struct net_device *netdev,
 				 struct airoha_xpon_oam_handler *handler)
 {
@@ -1324,6 +1389,20 @@ static int airoha_qdma_rx_process(struct airoha_queue *q, int budget)
 			goto free_frag;
 
 		msg0 = le32_to_cpu(READ_ONCE(desc->msg0));
+		if (airoha_is(eth, en7523) &&
+		    q - &q->qdma->q_rx[0] == 15) {
+			u32 msg2 = le32_to_cpu(READ_ONCE(desc->msg2));
+			u32 msg3 = le32_to_cpu(READ_ONCE(desc->msg3));
+
+			msg1 = le32_to_cpu(READ_ONCE(desc->msg1));
+			dev_info_ratelimited(eth->dev,
+					     "QDMA RX15 descriptor: len=%d ctrl=%#010x msg=%#010x/%#010x/%#010x/%#010x oam=%u channel=%u gem=%u no-mic=%u\n",
+					     len, desc_ctrl, msg0, msg1, msg2, msg3,
+					     !!(msg0 & EN7523_QDMA_ETH_RXMSG_OAM_MASK),
+					     FIELD_GET(EN7523_QDMA_ETH_RXMSG_CHAN_MASK, msg0),
+					     FIELD_GET(EN7523_QDMA_ETH_RXMSG_GEM_MASK, msg0),
+					     !!(msg0 & EN7523_QDMA_ETH_RXMSG_NO_MIC_MASK));
+		}
 		xpon_oam = airoha_is(eth, en7523) &&
 			   (msg0 & EN7523_QDMA_ETH_RXMSG_OAM_MASK);
 

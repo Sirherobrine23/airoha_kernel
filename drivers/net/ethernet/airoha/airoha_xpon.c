@@ -461,6 +461,8 @@ static void airoha_xpon_phy_stop(struct device *dev, struct phy *phy,
 
 /* G_GEM_PORT_STS */
 #define GEM_CMD_DONE		BIT(31)
+#define GEM_STS_ENCRYPT		BIT(1)
+#define GEM_STS_VALID		BIT(0)
 
 /* G_GEM_TBL_INIT */
 #define GEM_TBL_INIT_DONE	BIT(8)
@@ -998,7 +1000,7 @@ static int gpon_set_tcont_hw(struct gpon_priv *priv, unsigned int index,
 static int gpon_set_gem_port_hw(struct gpon_priv *priv, u16 gem_port_id,
 				bool valid, bool encrypted)
 {
-	u32 cfg;
+	u32 cfg, status;
 
 	if (gem_port_id >= GPON_MAX_GEM_ID)
 		return -EINVAL;
@@ -1013,6 +1015,15 @@ static int gpon_set_gem_port_hw(struct gpon_priv *priv, u16 gem_port_id,
 	if (gpon_wait_bits(priv, GPON_GEM_PORT_STS, GEM_CMD_DONE,
 			   GPON_CMD_TIMEOUT_US))
 		return -ETIMEDOUT;
+
+	status = gpon_read(priv, GPON_GEM_PORT_STS);
+	if (!!(status & GEM_STS_VALID) != valid ||
+	    !!(status & GEM_STS_ENCRYPT) != (valid && encrypted)) {
+		dev_err(priv->dev,
+			"GPON GEM port %u readback mismatch: cfg=%#010x status=%#010x\n",
+			gem_port_id, cfg, status);
+		return -EIO;
+	}
 
 	return 0;
 }
@@ -1475,6 +1486,12 @@ static void gpon_cb_set_omci_gem(void *hw_priv, u16 gem_port_id, bool valid)
 	dev_info(priv->dev,
 		 "GPON OMCC datapath enabled: onu-id=%u tcont=0 gem=%u reg=%#08x\n",
 		 onu_id, gem_port_id, reg_val);
+	dev_info(priv->dev,
+		 "GPON OMCC readback: omci=%#010x gem-status=%#010x tcont0-1=%#010x\n",
+		 gpon_read(priv, GPON_OMCI_ID),
+		 gpon_read(priv, GPON_GEM_PORT_STS),
+		 gpon_read(priv, GPON_TCONT_ID_0_1));
+	airoha_eth_xpon_dump_oam_rx_state(priv->gdm_dev);
 }
 
 static void gpon_cb_set_gem_encryption(void *hw_priv, u16 port_id,
@@ -2010,6 +2027,9 @@ static void gpon_irq_work_fn(struct work_struct *work)
 			dev_warn(priv->dev,
 				 "GPON MAC error interrupt: %#08x\n",
 				 active & (u32)GPON_INT_ERROR_MASK);
+
+		if (active & (INT_RX_ERR | INT_FIFO_ERR))
+			airoha_eth_xpon_dump_oam_rx_state(priv->gdm_dev);
 
 		if (active & INT_TX_LATE_START) {
 			gpon_dump_activation_regs(priv, "TX late start");
