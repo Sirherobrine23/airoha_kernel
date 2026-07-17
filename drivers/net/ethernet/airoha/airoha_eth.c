@@ -1027,6 +1027,9 @@ static int airoha_fe_init(struct airoha_eth *eth)
 	airoha_fe_set(eth, REG_GDM_MISC_CFG,
 		      GDM2_RDM_ACK_WAIT_PREF_MASK |
 		      GDM2_CHN_VLD_MODE_MASK);
+	/* EN7523 routes PSE OAM through bits 15:12. Later SoCs use
+	 * the high queue-selection field instead.
+	 */
 	airoha_fe_rmw(eth, REG_CDM_FWD_CFG(2),
 		      airoha_is(eth, en7523) ? EN7523_CDM_OAM_QSEL_MASK : CDM_OAM_QSEL_MASK,
 		      airoha_is(eth, en7523) ? FIELD_PREP(EN7523_CDM_OAM_QSEL_MASK, 15) :
