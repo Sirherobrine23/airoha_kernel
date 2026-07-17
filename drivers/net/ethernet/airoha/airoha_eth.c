@@ -1144,10 +1144,13 @@ static int airoha_qdma_fill_rx_queue(struct airoha_queue *q)
 		WRITE_ONCE(desc->msg3, 0);
 	}
 
-	if (nframes)
+	if (nframes) {
+		/* Publish descriptor contents before handing ownership to DMA. */
+		dma_wmb();
 		airoha_qdma_rmw(qdma, REG_RX_CPU_IDX(qid),
 				RX_RING_CPU_IDX_MASK,
 				FIELD_PREP(RX_RING_CPU_IDX_MASK, q->head));
+	}
 
 	return nframes;
 }
@@ -1699,7 +1702,7 @@ static int airoha_qdma_init_rx_queue(struct airoha_queue *q,
 			FIELD_PREP(RX_RING_THR_MASK, thr));
 	airoha_qdma_rmw(qdma, REG_RX_DMA_IDX(qid), RX_RING_DMA_IDX_MASK,
 			FIELD_PREP(RX_RING_DMA_IDX_MASK, q->head));
-	if (lro_q)
+	if (lro_q || (airoha_is(eth, en7523) && qid == 15))
 		airoha_qdma_clear(qdma, REG_RX_SCATTER_CFG(qid),
 				  RX_RING_SG_EN_MASK);
 	else
