@@ -478,21 +478,25 @@ static u8 omci_agent_get_locked(struct omci_agent *agent, u16 class_id,
 }
 
 static int omci_agent_upload_next_locked(struct omci_agent *agent,
-					 u8 *content)
+					 u16 sequence, u8 *content)
 {
 	struct omci_mib_object *object;
-	unsigned long index = agent->upload_index;
+	unsigned long index;
+	u16 upload_pos = 0;
 
-	object = xa_find(&agent->mib, &index, ULONG_MAX, XA_PRESENT);
-	if (!object)
-		return -ENOENT;
+	xa_for_each(&agent->mib, index, object) {
+		if (upload_pos++ == sequence)
+			goto found;
+	}
 
-	content[0] = OMCI_RESULT_SUCCESS;
-	put_unaligned_be16(object->class_id, content + 1);
-	put_unaligned_be16(object->entity_id, content + 3);
-	put_unaligned_be16(object->attr_mask, content + 5);
-	memcpy(content + 7, object->data, 25);
-	agent->upload_index = index + 1;
+	return -ENOENT;
+
+found:
+	put_unaligned_be16(object->class_id, content);
+	put_unaligned_be16(object->entity_id, content + 2);
+	put_unaligned_be16(object->attr_mask, content + 4);
+	memcpy(content + 6, object->data, 26);
+	agent->upload_index = sequence + 1;
 	return 0;
 }
 
@@ -521,6 +525,7 @@ static bool omci_agent_build_response_locked(struct omci_device *odev,
 	u8 action = request[2] & 0x1f;
 	u16 class_id = get_unaligned_be16(request + 4);
 	u16 entity_id = get_unaligned_be16(request + 6);
+	u16 sequence;
 	u8 result = OMCI_RESULT_SUCCESS;
 
 	omci_response_init(response, request, action);
@@ -562,12 +567,11 @@ static bool omci_agent_build_response_locked(struct omci_device *odev,
 		break;
 	case OMCI_MSG_TYPE_MIB_UPLOAD:
 		agent->upload_index = 0;
-		content[0] = OMCI_RESULT_SUCCESS;
-		put_unaligned_be16(omci_mib_count_locked(agent), content + 1);
+		put_unaligned_be16(omci_mib_count_locked(agent), content);
 		break;
 	case OMCI_MSG_TYPE_MIB_UPLOAD_NEXT:
-		if (omci_agent_upload_next_locked(agent, content))
-			content[0] = OMCI_RESULT_UNKNOWN_INSTANCE;
+		sequence = get_unaligned_be16(request + 8);
+		omci_agent_upload_next_locked(agent, sequence, content);
 		break;
 	case OMCI_MSG_TYPE_MIB_RESET:
 		omci_agent_reset_olt_objects_locked(agent);
