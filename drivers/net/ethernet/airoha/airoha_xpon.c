@@ -552,6 +552,7 @@ static void airoha_xpon_phy_stop(struct device *dev, struct phy *phy,
 #define GPON_TO2_MS		100
 /* Restart delay after an OLT Deactivate_ONU-ID request. */
 #define GPON_DEACTIVATE_RESTART_MS	500
+#define GPON_REARM_RETRY_MS		1000
 
 #define GPON_MAX_GEM_ID		4096
 #define GPON_MAX_TCONT		32
@@ -2078,17 +2079,25 @@ static void gpon_restart_work_fn(struct work_struct *work)
 	if (!READ_ONCE(priv->started))
 		return;
 
-	dev_warn(priv->dev,
-		 "restarting GPON after Deactivate_ONU-ID from the OLT\n");
-	gpon_disable(priv);
+	if (ploam_get_state(priv->ploam) != GPON_O1_INITIAL) {
+		dev_warn(priv->dev,
+			 "restarting GPON after Deactivate_ONU-ID from the OLT\n");
+		gpon_disable(priv);
 
-	msleep(GPON_DEACTIVATE_RESTART_MS);
-	if (!READ_ONCE(priv->started))
-		return;
+		msleep(GPON_DEACTIVATE_RESTART_MS);
+		if (!READ_ONCE(priv->started))
+			return;
+	}
 
 	ret = airoha_xpon_tx_rearm(priv->dev, priv->lddla_dev);
-	if (ret)
+	if (ret) {
+		dev_warn(priv->dev,
+			 "retrying optical transmitter rearm in %u ms\n",
+			 GPON_REARM_RETRY_MS);
+		mod_delayed_work(priv->fsm_wq, &priv->restart_work,
+				 msecs_to_jiffies(GPON_REARM_RETRY_MS));
 		return;
+	}
 
 	ret = gpon_enable(priv);
 	if (ret)
