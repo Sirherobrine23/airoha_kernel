@@ -384,6 +384,7 @@ static void airoha_xpon_phy_stop(struct device *dev, struct phy *phy,
 /* EN7523 GPON debug and timing registers */
 #define GPON_DBG_DLY		0x208
 #define GPON_DBG_IDLE_GEM_THLD	0x20C
+#define GPON_DBG_BWM_FILTER_CTRL	0x220
 #define GPON_DBG_GRP_0		0x228
 #define GPON_DBG_GRP_1		0x22C
 /* Debug / TX sync (EN7521 EqD adjustment) */
@@ -513,15 +514,17 @@ static void airoha_xpon_phy_stop(struct device *dev, struct phy *phy,
 /* DBG_DLY */
 #define DBG_DLY_FINE_INT_MASK	GENMASK(15, 8)
 #define DBG_DLY_FINE_INT_DEFAULT	0x0D
+#define DBG_DLY_RESET_DEFAULT	0x80800F00
+
+/* DBG_BWM_FILTER_CTRL */
+#define BWM_FILTER_LEN_VALID_CHECK_EN	BIT(17)
 
 /* G_DBG_TX_SYNC_OFFSET bits[1:0] = internal byte delay */
 #define DBG_TX_SYNC_OFFSET_MASK	GENMASK(1, 0)
 
 /*
- * The stock RTF8225VW SDK keeps 0x058b while the MAC is reset/O1, then
- * switches to 0x0577 before serial-number activation in O2.  The
- * difference is 20 bit-times, matching the board's effective TX-enable
- * guard length.
+ * The EN7523 vendor driver keeps 0x058b while the MAC is reset/O1, then
+ * switches to 0x0577 before serial-number activation in O2.
  */
 #define GPON_RSP_TIME_RESET		0x058b
 #define GPON_RSP_TIME_ACTIVATION	0x0577
@@ -766,11 +769,21 @@ static int gpon_prepare_hardware(struct gpon_priv *priv)
 	gpon_write(priv, GPON_DBG_GRP_0, ~0U);
 	gpon_write(priv, GPON_DBG_GRP_1, ~0U);
 
-	/* EN7523 ASIC defaults used by the vendor activation path. */
+	/*
+	 * Restore the complete EN7523 ASIC burst-delay value before applying
+	 * the runtime fine-delay value. Preserving bootloader leftovers here
+	 * changes the fixed RX delay and TX delay fields and makes upstream
+	 * burst timing depend on the previous firmware.
+	 */
+	gpon_write(priv, GPON_DBG_DLY, DBG_DLY_RESET_DEFAULT);
 	gpon_rmw(priv, GPON_DBG_DLY, DBG_DLY_FINE_INT_MASK,
 		 FIELD_PREP(DBG_DLY_FINE_INT_MASK, DBG_DLY_FINE_INT_DEFAULT));
 	gpon_rmw(priv, GPON_DBG_IDLE_GEM_THLD, GENMASK(15, 0),
 		 GPON_IDLE_GEM_THLD_DEFAULT);
+
+	/* Apply the vendor workaround for invalid BWmap length filtering. */
+	gpon_clear_bits(priv, GPON_DBG_BWM_FILTER_CTRL,
+			BWM_FILTER_LEN_VALID_CHECK_EN);
 
 	mbi = gpon_read(priv, GPON_MBI_MPI_STOP);
 	if (mbi & (MBI_RX_STOP | MBI_TX_STOP))
@@ -778,9 +791,10 @@ static int gpon_prepare_hardware(struct gpon_priv *priv)
 				     "failed to start GPON MBI: %#08x\n", mbi);
 
 	dev_info(priv->dev,
-		 "GPON hardware prepared: mbi=%#08x dbg_dly=%#08x idle_gem=%#08x\n",
+		 "GPON hardware prepared: mbi=%#08x dbg_dly=%#08x idle_gem=%#08x bwm_filter=%#08x\n",
 		 mbi, gpon_read(priv, GPON_DBG_DLY),
-		 gpon_read(priv, GPON_DBG_IDLE_GEM_THLD));
+		 gpon_read(priv, GPON_DBG_IDLE_GEM_THLD),
+		 gpon_read(priv, GPON_DBG_BWM_FILTER_CTRL));
 	return 0;
 }
 
