@@ -972,6 +972,28 @@ static int gpon_set_tcont_hw(struct gpon_priv *priv, unsigned int index,
 	return -EINVAL;
 }
 
+static int gpon_set_gem_port_hw(struct gpon_priv *priv, u16 gem_port_id,
+				bool valid, bool encrypted)
+{
+	u32 cfg;
+
+	if (gem_port_id >= GPON_MAX_GEM_ID)
+		return -EINVAL;
+
+	cfg = GEM_CMD_WRITE | gem_port_id;
+	if (valid)
+		cfg |= GEM_VALID;
+	if (valid && encrypted)
+		cfg |= GEM_ENCRYPT;
+
+	gpon_write(priv, GPON_GEM_PORT_CFG, cfg);
+	if (gpon_wait_bits(priv, GPON_GEM_PORT_STS, GEM_CMD_DONE,
+			   GPON_CMD_TIMEOUT_US))
+		return -ETIMEDOUT;
+
+	return 0;
+}
+
 static void gpon_set_alloc_id_hw(struct gpon_priv *priv, u16 alloc_id,
 				  bool allocate)
 {
@@ -1382,34 +1404,71 @@ static void gpon_cb_set_ber_interval(void *hw_priv, u32 interval_ms)
 static void gpon_cb_set_omci_gem(void *hw_priv, u16 gem_port_id, bool valid)
 {
 	struct gpon_priv *priv = hw_priv;
-	u32 reg_val = valid ? (OMCI_PORT_VLD | (gem_port_id & OMCI_GPID_MASK))
-			    : 0;
+	u8 onu_id = ploam_get_onu_id(priv->ploam);
+	u32 reg_val;
+	int ret;
 
-	dev_info(priv->dev, "GPON OMCI GEM %s: port=%u reg=%#08x\n",
-		 valid ? "enabled" : "disabled", gem_port_id, reg_val);
+	if (!valid) {
+		gpon_write(priv, GPON_OMCI_ID, 0);
+		airoha_gpon_omci_set_channel(&priv->omci, gem_port_id, false);
+
+		ret = gpon_set_gem_port_hw(priv, gem_port_id, false, false);
+		if (ret)
+			dev_err(priv->dev,
+				"failed to remove GPON OMCC GEM port %u: %d\n",
+				gem_port_id, ret);
+		gpon_set_tcont_hw(priv, 0, 0, false);
+		dev_info(priv->dev, "GPON OMCI GEM disabled: port=%u\n",
+			 gem_port_id);
+		return;
+	}
+
+	if (onu_id == PLOAM_ONU_UNASSIGNED) {
+		dev_err(priv->dev,
+			"cannot enable GPON OMCC GEM %u without an ONU-ID\n",
+			gem_port_id);
+		return;
+	}
+
+	ret = gpon_set_tcont_hw(priv, 0, onu_id, true);
+	if (ret) {
+		dev_err(priv->dev,
+			"failed to configure GPON OMCC T-CONT: %d\n", ret);
+		return;
+	}
+
+	ret = gpon_set_gem_port_hw(priv, gem_port_id, true, false);
+	if (ret) {
+		dev_err(priv->dev,
+			"failed to configure GPON OMCC GEM port %u: %d\n",
+			gem_port_id, ret);
+		gpon_set_tcont_hw(priv, 0, 0, false);
+		return;
+	}
+
+	reg_val = OMCI_PORT_VLD | (gem_port_id & OMCI_GPID_MASK);
 	gpon_write(priv, GPON_OMCI_ID, reg_val);
-	airoha_gpon_omci_set_channel(&priv->omci, gem_port_id, valid);
+	airoha_gpon_omci_set_channel(&priv->omci, gem_port_id, true);
+	dev_info(priv->dev,
+		 "GPON OMCC datapath enabled: onu-id=%u tcont=0 gem=%u reg=%#08x\n",
+		 onu_id, gem_port_id, reg_val);
 }
 
 static void gpon_cb_set_gem_encryption(void *hw_priv, u16 port_id,
 					u8 encrypt_mode)
 {
 	struct gpon_priv *priv = hw_priv;
-	u32 cfg = GEM_CMD_WRITE | (port_id & (GPON_MAX_GEM_ID - 1));
+	int ret;
 
-	if (encrypt_mode == 3)
-		cfg |= GEM_ENCRYPT | GEM_VALID;
-	else
-		cfg |= GEM_VALID;
-
-	dev_info(priv->dev,
-		 "GPON GEM encryption update: port=%u mode=%u cfg=%#08x\n",
-		 port_id, encrypt_mode, cfg);
-	gpon_write(priv, GPON_GEM_PORT_CFG, cfg);
-	if (gpon_wait_bits(priv, GPON_GEM_PORT_STS, GEM_CMD_DONE,
-			   GPON_CMD_TIMEOUT_US))
+	ret = gpon_set_gem_port_hw(priv, port_id, true, encrypt_mode == 3);
+	if (ret)
 		dev_err(priv->dev,
-			"GEM command timed out for port %u\n", port_id);
+			"failed to update GEM port %u encryption: %d\n",
+			port_id, ret);
+	else
+		dev_info(priv->dev,
+			 "GPON GEM encryption update: port=%u mode=%u\n",
+			 port_id, encrypt_mode);
 }
 
 static void gpon_cb_set_alloc_id(void *hw_priv, u16 alloc_id, bool allocate)
@@ -1445,16 +1504,11 @@ int airoha_gpon_omci_hw_set_gem_port(void *hw_priv, u16 entity_id,
 				     bool encrypted)
 {
 	struct gpon_priv *priv = hw_priv;
-	u32 cfg = GEM_CMD_WRITE | (gem_port_id & (GPON_MAX_GEM_ID - 1));
+	int ret;
 
-	if (valid)
-		cfg |= GEM_VALID;
-	if (valid && encrypted)
-		cfg |= GEM_ENCRYPT;
-	gpon_write(priv, GPON_GEM_PORT_CFG, cfg);
-	if (gpon_wait_bits(priv, GPON_GEM_PORT_STS, GEM_CMD_DONE,
-			   GPON_CMD_TIMEOUT_US))
-		return -ETIMEDOUT;
+	ret = gpon_set_gem_port_hw(priv, gem_port_id, valid, encrypted);
+	if (ret)
+		return ret;
 
 	dev_info(priv->dev, "OMCI GEM port %u %s (ME %#x)\n",
 		 gem_port_id, valid ? "enabled" : "disabled", entity_id);
