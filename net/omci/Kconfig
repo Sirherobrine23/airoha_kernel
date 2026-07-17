@@ -1,9 +1,13 @@
 # SPDX-License-Identifier: GPL-2.0-only
 config OMCI
-	tristate "ONU Management and Control Interface transport"
+	tristate "ONU Management and Control Interface agent"
 	depends on NET
+	select GENERIC_NETLINK
 	help
-	  Provides a generic OMCI transport between GPON hardware drivers and
-	  a userspace agent through Generic Netlink. It maintains channel state,
-	  queues received PDUs, and exposes transport statistics. The managed-
-	  entity MIB and the ITU-T G.988 state machine remain in userspace.
+	  Provides an in-kernel baseline OMCI agent for GPON devices. The
+	  subsystem parses OMCI requests, maintains the operational managed-
+	  entity database, generates OLT responses, and exposes configuration,
+	  MIB objects, events, and statistics through Generic Netlink.
+
+	  Extended OMCI parsing and hardware-specific provisioning remain
+	  optional capabilities supplied by the GPON hardware driver.
