@@ -7,6 +7,7 @@
 #ifndef AIROHA_ETH_H
 #define AIROHA_ETH_H
 
+#include <linux/atomic.h>
 #include <linux/debugfs.h>
 #include <linux/etherdevice.h>
 #include <linux/iopoll.h>
@@ -642,6 +643,11 @@ struct airoha_gdm_dev {
 	struct airoha_hw_stats stats;
 
 	struct airoha_xpon_oam_handler __rcu *xpon_oam;
+	atomic64_t xpon_oam_rx_packets;
+	atomic64_t xpon_oam_rx_bytes;
+	atomic64_t xpon_oam_rx_delivered;
+	atomic64_t xpon_oam_rx_dropped;
+	atomic64_t xpon_oam_rx_no_handler;
 
 	/* Serializes xPON provider registration and netdev lifecycle calls. */
 	struct mutex xpon_lock;
