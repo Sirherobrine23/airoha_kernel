@@ -18821,6 +18821,7 @@ F:	Documentation/devicetree/bindings/net/omci.yaml
 F:	include/net/omci.h
 F:	include/uapi/linux/omci.h
 F:	net/omci/
+F:	net/omci/identity.c
 
 OMAP AUDIO SUPPORT
 M:	Peter Ujfalusi <peter.ujfalusi@gmail.com>

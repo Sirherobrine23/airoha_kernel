@@ -52,6 +52,11 @@ struct omci_agent_config {
 	u8 version[14];
 	u8 equipment_id[20];
 	u8 password[10];
+	u8 serial_source;
+	u8 vendor_source;
+	u8 version_source;
+	u8 equipment_source;
+	u8 password_source;
 	u8 traffic_mgmt_option;
 	u8 onu_type;
 	u8 uni_count;
@@ -128,6 +133,11 @@ int omci_agent_config_get(struct omci_device *odev, u16 key,
 			  void *value, size_t *len);
 int omci_agent_config_set(struct omci_device *odev, u16 key,
 			  const void *value, size_t len);
+int omci_agent_config_set_source(struct omci_device *odev, u16 key,
+				 const void *value, size_t len, u8 source);
+int omci_agent_config_source_get(struct omci_device *odev, u16 key, u8 *source);
+int omci_identity_normalize_config(u16 key, const void *value, size_t len,
+				   u8 *output, size_t *output_len);
 int omci_agent_mib_get(struct omci_device *odev, u16 class_id, u16 entity_id,
 		       struct omci_mib_object *object);
 int omci_agent_mib_set(struct omci_device *odev,

@@ -3,7 +3,7 @@
 #define _UAPI_LINUX_OMCI_H
 
 #define OMCI_GENL_NAME		"omci"
-#define OMCI_GENL_VERSION	7
+#define OMCI_GENL_VERSION	8
 #define OMCI_MAX_PDU_LEN	1980
 #define OMCI_MAX_ATTR_DATA	32
 #define OMCI_MAX_CONFIG_VALUE	64
@@ -102,6 +102,7 @@ enum omci_attr {
 	OMCI_ATTR_CLASS_CATEGORY,
 	OMCI_ATTR_CLASS_SUPPORT,
 	OMCI_ATTR_CLASS_FLAGS,
+	OMCI_ATTR_CONFIG_SOURCE,
 
 	__OMCI_ATTR_MAX,
 };
@@ -270,6 +271,18 @@ enum omci_config_key {
 };
 
 #define OMCI_CONFIG_MAX (__OMCI_CONFIG_MAX - 1)
+
+/**
+ * enum omci_config_source - source of a normalized configuration value
+ */
+enum omci_config_source {
+	OMCI_CONFIG_SOURCE_UNSPEC,
+	OMCI_CONFIG_SOURCE_DEFAULT,
+	OMCI_CONFIG_SOURCE_DEVICE_TREE,
+	OMCI_CONFIG_SOURCE_NVMEM,
+	OMCI_CONFIG_SOURCE_DRIVER,
+	OMCI_CONFIG_SOURCE_NETLINK,
+};
 
 enum omci_fec_status {
 	OMCI_FEC_STATUS_UNKNOWN,
