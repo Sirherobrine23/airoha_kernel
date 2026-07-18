@@ -232,6 +232,7 @@ void *omci_device_priv(const struct omci_device *odev);
 u32 omci_device_id(const struct omci_device *odev);
 
 int omci_identity_load(struct device *dev, struct omci_identity *identity);
+void gpon_random_serial_number(const u8 vendor[4], struct omci_identity *identity);
 void omci_device_set_identity_info(struct omci_device *odev,
 				   const struct omci_identity *identity);
 void omci_device_set_identity(struct omci_device *odev,

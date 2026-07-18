@@ -64,6 +64,8 @@
 #define EN7523_SCU_WAN_MODE_GPON        0x00
 #define EN7523_SCU_WAN_MODE_EPON        0x01
 
+static const u8 airoha_default_vendor_id[4] = {'M', 'T', 'K', 'G'};
+
 struct airoha_xpon_match_data {
 	enum airoha_xpon_mode mode;
 	bool mode_from_dt;
@@ -876,9 +878,6 @@ static int gpon_dev_init(struct gpon_priv *priv)
 
 static int gpon_load_credentials(struct gpon_priv *priv)
 {
-	static const u8 default_sn[8] = {
-		'M', 'T', 'K', 'G', 0x00, 0x00, 0x00, 0x01
-	};
 	struct omci_identity *identity = &priv->identity;
 	int ret;
 
@@ -886,16 +885,10 @@ static int gpon_load_credentials(struct gpon_priv *priv)
 	if (ret)
 		return ret;
 	if (!(identity->valid & OMCI_IDENTITY_F_SERIAL_NUMBER)) {
-		memcpy(identity->serial_number, default_sn,
-		       sizeof(identity->serial_number));
-		memcpy(identity->vendor_id, default_sn,
-		       sizeof(identity->vendor_id));
-		identity->valid |= OMCI_IDENTITY_F_SERIAL_NUMBER |
-				   OMCI_IDENTITY_F_VENDOR_ID;
-		identity->serial_source = OMCI_CONFIG_SOURCE_DEFAULT;
-		identity->vendor_source = OMCI_CONFIG_SOURCE_DEFAULT;
+		gpon_random_serial_number(airoha_default_vendor_id, identity);
 		dev_warn(priv->dev,
-			 "GPON serial number missing; using development default\n");
+			 "GPON serial number missing; generated random development serial %8phN\n",
+			 identity->serial_number);
 	}
 	if (!(identity->valid & OMCI_IDENTITY_F_PASSWORD)) {
 		memset(identity->password, 0, sizeof(identity->password));
