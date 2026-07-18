@@ -553,7 +553,6 @@ static void airoha_xpon_phy_stop(struct device *dev, struct phy *phy,
 /* Restart delay after an OLT Deactivate_ONU-ID request. */
 #define GPON_DEACTIVATE_RESTART_MS	500
 #define GPON_REARM_RETRY_MS		1000
-#define GPON_PHY_READY_RETRY_MS		200
 
 #define GPON_MAX_GEM_ID		4096
 #define GPON_MAX_TCONT		32
@@ -632,10 +631,8 @@ struct gpon_priv {
 	struct work_struct	irq_work;
 	struct delayed_work	to1_work;	/* O3/O4: 10 s → O2 */
 	struct delayed_work	to2_work;	/* O6: 100 ms → O1 */
-	struct delayed_work	start_work;	/* wait for optical PHY sync */
 	struct delayed_work	restart_work;	/* OLT deactivation recovery */
 	atomic_t		pending_irqs;
-	bool			waiting_for_phy;
 
 	/*
 	 * The IRQ top half drains the hardware FIFO into this single-producer,
@@ -1832,58 +1829,37 @@ static const struct ploam_ops gpon_ploam_ops = {
 static int gpon_enable(struct gpon_priv *priv)
 {
 	u32 fifo_depth, known, pending, unknown;
-	bool los, ready;
 	int ret;
 
-	if (READ_ONCE(priv->irq_enabled))
-		return 0;
+	dev_info(priv->dev, "starting GPON MAC from state %s\n",
+		 gpon_state_name(ploam_get_state(priv->ploam)));
 
-	if (!priv->phy_powered) {
-		dev_info(priv->dev, "starting GPON MAC from state %s\n",
-			 gpon_state_name(ploam_get_state(priv->ploam)));
-
-		ret = airoha_xpon_phy_start(priv->dev, priv->phy,
-					    AIROHA_XPON_MODE_GPON,
-					    &priv->phy_initialized,
-					    &priv->phy_powered);
-		if (ret)
-			return ret;
-	}
-
-	ret = airoha_xpon_phy_get_link_status(priv->phy, &ready, &los);
+	ret = airoha_xpon_phy_start(priv->dev, priv->phy,
+				    AIROHA_XPON_MODE_GPON,
+				    &priv->phy_initialized,
+				    &priv->phy_powered);
 	if (ret)
-		goto err_stop_phy;
-
-	if (!ready || los) {
-		if (!priv->waiting_for_phy)
-			dev_info(priv->dev,
-				 "waiting for GPON PHY synchronization: ready=%u los=%u\n",
-				 ready, los);
-
-		priv->waiting_for_phy = true;
-		if (READ_ONCE(priv->started))
-			mod_delayed_work(priv->fsm_wq, &priv->start_work,
-					 msecs_to_jiffies(GPON_PHY_READY_RETRY_MS));
-		return 0;
-	}
-
-	if (priv->waiting_for_phy)
-		dev_info(priv->dev,
-			 "GPON PHY synchronized, continuing MAC initialization\n");
-	priv->waiting_for_phy = false;
-	cancel_delayed_work(&priv->start_work);
+		return ret;
 
 	ret = gpon_prepare_hardware(priv);
 	if (ret) {
 		dev_err(priv->dev, "failed to prepare GPON hardware: %d\n", ret);
-		goto err_stop_phy;
+		airoha_xpon_phy_stop(priv->dev, priv->phy,
+				     AIROHA_XPON_MODE_GPON,
+				     &priv->phy_initialized,
+				     &priv->phy_powered);
+		return ret;
 	}
 
 	ret = gpon_dev_init(priv);
 	if (ret) {
 		gpon_set_fe_datapath(priv, false);
+		airoha_xpon_phy_stop(priv->dev, priv->phy,
+				     AIROHA_XPON_MODE_GPON,
+				     &priv->phy_initialized,
+				     &priv->phy_powered);
 		dev_err(priv->dev, "GPON hardware init failed: %d\n", ret);
-		goto err_stop_phy;
+		return ret;
 	}
 
 	gpon_set_serial_number_regs(priv);
@@ -1933,30 +1909,6 @@ static int gpon_enable(struct gpon_priv *priv)
 		 gpon_read(priv, GPON_INT_ENABLE));
 
 	return 0;
-
-err_stop_phy:
-	priv->waiting_for_phy = false;
-	airoha_xpon_phy_stop(priv->dev, priv->phy, AIROHA_XPON_MODE_GPON,
-			     &priv->phy_initialized, &priv->phy_powered);
-	return ret;
-}
-
-static void gpon_start_work_fn(struct work_struct *work)
-{
-	struct gpon_priv *priv =
-		container_of(to_delayed_work(work), struct gpon_priv, start_work);
-	int ret;
-
-	if (!READ_ONCE(priv->started) ||
-	    ploam_get_state(priv->ploam) != GPON_O1_INITIAL ||
-	    READ_ONCE(priv->irq_enabled))
-		return;
-
-	ret = gpon_enable(priv);
-	if (ret)
-		dev_err(priv->dev,
-			"failed to start GPON after PHY synchronization: %d\n",
-			ret);
 }
 
 static void gpon_disable(struct gpon_priv *priv)
@@ -1968,12 +1920,6 @@ static void gpon_disable(struct gpon_priv *priv)
 		 gpon_state_name(ploam_get_state(priv->ploam)),
 		 priv->irq_enabled, gpon_read(priv, GPON_MBI_MPI_STOP),
 		 gpon_read(priv, GPON_INT_STATUS));
-
-	if (current_work() == &priv->start_work.work)
-		cancel_delayed_work(&priv->start_work);
-	else
-		cancel_delayed_work_sync(&priv->start_work);
-	priv->waiting_for_phy = false;
 
 	/*
 	 * Stop new IRQ snapshots before cancelling queued FSM work.  This
@@ -2096,9 +2042,6 @@ static void gpon_to2_work_fn(struct work_struct *work)
 	if (ploam_get_state(priv->ploam) == GPON_O6_POPUP) {
 		dev_warn(priv->dev, "GPON TO2 expired in O6, resetting\n");
 		gpon_disable(priv);
-		if (READ_ONCE(priv->started))
-			mod_delayed_work(priv->fsm_wq, &priv->start_work,
-					 msecs_to_jiffies(GPON_PHY_READY_RETRY_MS));
 	}
 }
 
@@ -2299,10 +2242,8 @@ static void gpon_sfp_module_remove(void *upstream)
 	struct gpon_priv *priv = upstream;
 
 	dev_info(priv->dev, "GPON SFP module removed\n");
-	cancel_delayed_work_sync(&priv->start_work);
 	cancel_delayed_work_sync(&priv->restart_work);
-	if (priv->phy_powered ||
-	    ploam_get_state(priv->ploam) > GPON_O1_INITIAL)
+	if (ploam_get_state(priv->ploam) > GPON_O1_INITIAL)
 		gpon_disable(priv);
 }
 
@@ -2334,7 +2275,6 @@ static void gpon_sfp_module_stop(void *upstream)
 	struct gpon_priv *priv = upstream;
 
 	dev_info(priv->dev, "GPON SFP module stop\n");
-	cancel_delayed_work_sync(&priv->start_work);
 	cancel_delayed_work_sync(&priv->restart_work);
 	gpon_disable(priv);
 }
@@ -2352,10 +2292,6 @@ static void gpon_sfp_link_up(void *upstream)
 	struct gpon_priv *priv = upstream;
 
 	dev_info(priv->dev, "GPON optical link up\n");
-	if (READ_ONCE(priv->started) &&
-	    ploam_get_state(priv->ploam) == GPON_O1_INITIAL &&
-	    !READ_ONCE(priv->irq_enabled))
-		mod_delayed_work(priv->fsm_wq, &priv->start_work, 0);
 }
 
 static const struct sfp_upstream_ops gpon_sfp_ops = {
@@ -2396,7 +2332,6 @@ static void gpon_link_stop(void *data)
 		return;
 
 	WRITE_ONCE(priv->started, false);
-	cancel_delayed_work_sync(&priv->start_work);
 	cancel_delayed_work_sync(&priv->restart_work);
 	airoha_eth_xpon_set_carrier(priv->gdm_dev, false);
 	if (priv->sfp_bus)
@@ -2502,7 +2437,6 @@ static int gpon_probe(struct platform_device *pdev)
 	INIT_WORK(&priv->irq_work, gpon_irq_work_fn);
 	INIT_DELAYED_WORK(&priv->to1_work, gpon_to1_work_fn);
 	INIT_DELAYED_WORK(&priv->to2_work, gpon_to2_work_fn);
-	INIT_DELAYED_WORK(&priv->start_work, gpon_start_work_fn);
 	INIT_DELAYED_WORK(&priv->restart_work, gpon_restart_work_fn);
 	atomic_set(&priv->pending_irqs, 0);
 
@@ -2565,8 +2499,8 @@ static int gpon_probe(struct platform_device *pdev)
 		goto err_put_gdm;
 
 	/*
-	 * The OMCI device is zero-initialized. Publish O1 before the
-	 * deferred PHY synchronization path can leave the MAC uninitialized.
+	 * The OMCI device is zero-initialized. Publish O1 before the first
+	 * PLOAM state callback so userspace never observes an invalid O0.
 	 */
 	airoha_gpon_omci_set_state(&priv->omci, GPON_O1_INITIAL);
 
@@ -2621,10 +2555,9 @@ static void gpon_remove(struct platform_device *pdev)
 	struct gpon_priv *priv = platform_get_drvdata(pdev);
 
 	dev_info(priv->dev, "removing GPON MAC driver\n");
-	cancel_delayed_work_sync(&priv->start_work);
 	cancel_delayed_work_sync(&priv->restart_work);
 	airoha_eth_unregister_xpon(priv->gdm_dev, &gpon_link_ops, priv);
-	if (priv->irq_enabled || priv->phy_powered)
+	if (priv->irq_enabled)
 		gpon_disable(priv);
 	else {
 		cancel_work_sync(&priv->irq_work);
