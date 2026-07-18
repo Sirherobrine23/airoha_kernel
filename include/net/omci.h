@@ -9,6 +9,22 @@ struct device;
 struct omci_device;
 struct sk_buff;
 
+/**
+ * struct omci_me_class - managed entity class descriptor
+ * @class_id: ITU managed entity class identifier
+ * @category: enum omci_class_category
+ * @support: enum omci_class_support
+ * @flags: OMCI_CLASS_F_* bitmap
+ * @name: stable human-readable managed entity name
+ */
+struct omci_me_class {
+	u16 class_id;
+	u8 category;
+	u8 support;
+	u32 flags;
+	const char *name;
+};
+
 enum omci_gem_port_direction {
 	OMCI_GEM_PORT_DIRECTION_UNI_TO_ANI = 1,
 	OMCI_GEM_PORT_DIRECTION_ANI_TO_UNI = 2,

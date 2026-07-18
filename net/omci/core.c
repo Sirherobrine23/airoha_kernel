@@ -51,6 +51,9 @@ static const struct nla_policy omci_policy[OMCI_ATTR_MAX + 1] = {
 	},
 	[OMCI_ATTR_VLAN_TAGGING_FILTER] = { .type = NLA_NESTED },
 	[OMCI_ATTR_EXTENDED_VLAN] = { .type = NLA_NESTED },
+	[OMCI_ATTR_CLASS_CATEGORY] = { .type = NLA_U8 },
+	[OMCI_ATTR_CLASS_SUPPORT] = { .type = NLA_U8 },
+	[OMCI_ATTR_CLASS_FLAGS] = { .type = NLA_U32 },
 };
 
 static struct omci_device *omci_find_locked(u32 id)
@@ -648,6 +651,68 @@ cancel:
 	return ret;
 }
 
+static int omci_reply_class(struct genl_info *info, u8 command,
+			    const struct omci_me_class *class, u32 next_index)
+{
+	struct sk_buff *msg;
+	void *hdr;
+
+	msg = genlmsg_new(NLMSG_DEFAULT_SIZE, GFP_KERNEL);
+	if (!msg)
+		return -ENOMEM;
+	hdr = genlmsg_put_reply(msg, info, &omci_genl_family, 0, command);
+	if (!hdr)
+		goto message_too_large;
+	if (nla_put_u16(msg, OMCI_ATTR_CLASS_ID, class->class_id) ||
+	    nla_put_string(msg, OMCI_ATTR_NAME, class->name) ||
+	    nla_put_u8(msg, OMCI_ATTR_CLASS_CATEGORY, class->category) ||
+	    nla_put_u8(msg, OMCI_ATTR_CLASS_SUPPORT, class->support) ||
+	    nla_put_u32(msg, OMCI_ATTR_CLASS_FLAGS, class->flags) ||
+	    nla_put_u32(msg, OMCI_ATTR_INDEX, next_index))
+		goto cancel;
+
+	genlmsg_end(msg, hdr);
+	return genlmsg_reply(msg, info);
+
+cancel:
+	genlmsg_cancel(msg, hdr);
+message_too_large:
+	nlmsg_free(msg);
+	return -EMSGSIZE;
+}
+
+static int omci_cmd_class_get(struct sk_buff *skb, struct genl_info *info)
+{
+	struct omci_me_class class;
+	u16 class_id;
+	int ret;
+
+	if (!info->attrs[OMCI_ATTR_CLASS_ID])
+		return -EINVAL;
+	class_id = nla_get_u16(info->attrs[OMCI_ATTR_CLASS_ID]);
+	ret = omci_agent_class_get(class_id, &class);
+	if (ret)
+		return ret;
+
+	return omci_reply_class(info, OMCI_CMD_CLASS_GET, &class, 0);
+}
+
+static int omci_cmd_class_next(struct sk_buff *skb, struct genl_info *info)
+{
+	struct omci_me_class class;
+	u32 index = 0;
+	u32 next_index;
+	int ret;
+
+	if (info->attrs[OMCI_ATTR_INDEX])
+		index = nla_get_u32(info->attrs[OMCI_ATTR_INDEX]);
+	ret = omci_agent_class_next(index, &class, &next_index);
+	if (ret)
+		return ret;
+
+	return omci_reply_class(info, OMCI_CMD_CLASS_NEXT, &class, next_index);
+}
+
 static int omci_cmd_agent_set(struct sk_buff *skb, struct genl_info *info)
 {
 	struct omci_device *odev;
@@ -962,6 +1027,16 @@ static const struct genl_ops omci_genl_ops[] = {
 		.cmd = OMCI_CMD_MIB_NEXT,
 		.policy = omci_policy,
 		.doit = omci_cmd_mib_next,
+	},
+	{
+		.cmd = OMCI_CMD_CLASS_GET,
+		.policy = omci_policy,
+		.doit = omci_cmd_class_get,
+	},
+	{
+		.cmd = OMCI_CMD_CLASS_NEXT,
+		.policy = omci_policy,
+		.doit = omci_cmd_class_next,
 	},
 };
 

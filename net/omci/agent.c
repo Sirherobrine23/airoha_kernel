@@ -425,12 +425,12 @@ static int omci_mib_parse_set(struct omci_mib_object *object, u16 mask,
 	}
 }
 
-struct omci_class_info {
+struct omci_class_name {
 	u16 class_id;
 	const char *name;
 };
 
-static const struct omci_class_info omci_classes[] = {
+static const struct omci_class_name omci_classes[] = {
 	{ 1, "ONT" },
 	{ 2, "ONU data" },
 	{ 3, "PON IF line cardholder" },
@@ -750,6 +750,175 @@ static const struct omci_class_info omci_classes[] = {
 	{ 452, "TWDM channel OMCI performance monitoring history data" },
 };
 
+static bool omci_class_name_contains(const char *name, const char *needle)
+{
+	return strnstr(name, needle, strlen(name));
+}
+
+static u8 omci_class_category(u16 class_id, const char *name)
+{
+	if ((class_id >= 240 && class_id <= 255) ||
+	    (class_id >= 350 && class_id <= 399) || class_id >= 65280)
+		return OMCI_CLASS_CATEGORY_VENDOR;
+	if ((class_id >= 172 && class_id <= 239) ||
+	    (class_id >= 453 && class_id <= 65279) ||
+	    omci_class_name_contains(name, "Reserved") ||
+	    omci_class_name_contains(name, "Intentionally left blank"))
+		return OMCI_CLASS_CATEGORY_RESERVED;
+	if (omci_class_name_contains(name, "performance monitoring") ||
+	    omci_class_name_contains(name, "PM history") ||
+	    omci_class_name_contains(name, "monitoring history"))
+		return OMCI_CLASS_CATEGORY_PERFORMANCE;
+	if (omci_class_name_contains(name, "xDSL") ||
+	    omci_class_name_contains(name, "VDSL") ||
+	    omci_class_name_contains(name, "FAST") ||
+	    omci_class_name_contains(name, "EFM bonding"))
+		return OMCI_CLASS_CATEGORY_XDSL;
+	if (omci_class_name_contains(name, "VoIP") ||
+	    omci_class_name_contains(name, "SIP") ||
+	    omci_class_name_contains(name, "MGC") ||
+	    omci_class_name_contains(name, "RTP") ||
+	    omci_class_name_contains(name, "Voice") ||
+	    omci_class_name_contains(name, "POTS"))
+		return OMCI_CLASS_CATEGORY_VOICE;
+	if (omci_class_name_contains(name, "Multicast"))
+		return OMCI_CLASS_CATEGORY_MULTICAST;
+	if (omci_class_name_contains(name, "security") ||
+	    omci_class_name_contains(name, "Authentication") ||
+	    omci_class_name_contains(name, "Dot1X") ||
+	    omci_class_name_contains(name, "Radius"))
+		return OMCI_CLASS_CATEGORY_SECURITY;
+	if (omci_class_name_contains(name, "IP ") ||
+	    omci_class_name_contains(name, "TCP/UDP") ||
+	    omci_class_name_contains(name, "ARP") ||
+	    omci_class_name_contains(name, "ICMP") ||
+	    omci_class_name_contains(name, "TR-069") ||
+	    omci_class_name_contains(name, "SNMP") ||
+	    omci_class_name_contains(name, "Network address"))
+		return OMCI_CLASS_CATEGORY_LAYER3;
+	if (omci_class_name_contains(name, "VLAN") ||
+	    omci_class_name_contains(name, "MAC bridge") ||
+	    omci_class_name_contains(name, "Ethernet") ||
+	    omci_class_name_contains(name, "802.1p") ||
+	    omci_class_name_contains(name, "Dot1ag") ||
+	    omci_class_name_contains(name, "OpenFlow"))
+		return OMCI_CLASS_CATEGORY_LAYER2;
+	if (omci_class_name_contains(name, "UNI"))
+		return OMCI_CLASS_CATEGORY_UNI;
+	if (omci_class_name_contains(name, "ANI") ||
+	    omci_class_name_contains(name, "GEM") ||
+	    omci_class_name_contains(name, "T-CONT") ||
+	    omci_class_name_contains(name, "PON") ||
+	    omci_class_name_contains(name, "Traffic scheduler") ||
+	    omci_class_name_contains(name, "Priority queue"))
+		return OMCI_CLASS_CATEGORY_ANI;
+	if (class_id <= 7 || class_id == 133 || class_id == 159 ||
+	    class_id == 160 || class_id == 256 || class_id == 257 ||
+	    class_id == 297 || class_id == 331 || class_id == 336 ||
+	    class_id == 441)
+		return OMCI_CLASS_CATEGORY_EQUIPMENT;
+	if (class_id == 137 || class_id == 157 || class_id == 158 ||
+	    class_id == 287 || class_id == 288 || class_id == 289 ||
+	    class_id == 307 || class_id == 308 || class_id == 318 ||
+	    class_id == 330 || class_id == 440)
+		return OMCI_CLASS_CATEGORY_MANAGEMENT;
+	if (class_id < 256)
+		return OMCI_CLASS_CATEGORY_LEGACY;
+
+	return OMCI_CLASS_CATEGORY_OTHER;
+}
+
+static u8 omci_class_support(u16 class_id)
+{
+	switch (class_id) {
+	case OMCI_CLASS_VLAN_TAGGING_FILTER_DATA:
+	case OMCI_CLASS_OLT_G:
+	case OMCI_CLASS_EXTENDED_VLAN:
+		return OMCI_CLASS_SUPPORT_PARSED;
+	case OMCI_CLASS_PPTP_ETHERNET_UNI:
+	case OMCI_CLASS_TCONT:
+	case OMCI_CLASS_GEM_PORT_CTP:
+	case OMCI_CLASS_VEIP:
+		return OMCI_CLASS_SUPPORT_PROVISIONED;
+	case OMCI_CLASS_ONU_DATA:
+	case OMCI_CLASS_SOFTWARE_IMAGE:
+	case OMCI_CLASS_ONU_G:
+	case OMCI_CLASS_ONU2_G:
+	case OMCI_CLASS_ANI_G:
+	case OMCI_CLASS_PRIORITY_QUEUE:
+	case OMCI_CLASS_TRAFFIC_SCHEDULER:
+		return OMCI_CLASS_SUPPORT_NATIVE;
+	default:
+		return OMCI_CLASS_SUPPORT_SHADOW;
+	}
+}
+
+static u32 omci_class_flags(u16 class_id, const char *name)
+{
+	u32 flags = OMCI_CLASS_F_STANDARD;
+
+	if (omci_class_name_contains(name, "deprecated") ||
+	    omci_class_name_contains(name, "obsolete"))
+		flags |= OMCI_CLASS_F_DEPRECATED;
+	if (omci_class_category(class_id, name) == OMCI_CLASS_CATEGORY_RESERVED)
+		flags |= OMCI_CLASS_F_RESERVED;
+	if (omci_class_category(class_id, name) == OMCI_CLASS_CATEGORY_VENDOR)
+		flags |= OMCI_CLASS_F_VENDOR_SPECIFIC;
+	if (omci_class_category(class_id, name) == OMCI_CLASS_CATEGORY_PERFORMANCE)
+		flags |= OMCI_CLASS_F_PERFORMANCE;
+	if (omci_class_name_contains(name, "table") || class_id == 84 ||
+	    class_id == 145 || class_id == 171)
+		flags |= OMCI_CLASS_F_TABLE;
+	switch (class_id) {
+	case OMCI_CLASS_PPTP_ETHERNET_UNI:
+	case OMCI_CLASS_MAC_BRIDGE_SERVICE_PROFILE:
+	case OMCI_CLASS_MAC_BRIDGE_CONFIG_DATA:
+	case OMCI_CLASS_MAC_BRIDGE_PORT_CONFIG_DATA:
+	case OMCI_CLASS_VLAN_TAGGING_FILTER_DATA:
+	case 130:
+	case OMCI_CLASS_EXTENDED_VLAN:
+	case OMCI_CLASS_TCONT:
+	case OMCI_CLASS_GEM_IWTP:
+	case OMCI_CLASS_GEM_PORT_CTP:
+	case OMCI_CLASS_VEIP:
+		flags |= OMCI_CLASS_F_DATAPATH;
+		break;
+	default:
+		break;
+	}
+
+	return flags;
+}
+
+int omci_agent_class_get(u16 class_id, struct omci_me_class *class)
+{
+	const char *name;
+
+	if (!class)
+		return -EINVAL;
+	name = omci_agent_class_name(class_id);
+	class->class_id = class_id;
+	class->category = omci_class_category(class_id, name);
+	class->support = omci_class_support(class_id);
+	class->flags = omci_class_flags(class_id, name);
+	class->name = name;
+
+	return 0;
+}
+
+int omci_agent_class_next(u32 index, struct omci_me_class *class,
+			  u32 *next_index)
+{
+	if (!class || !next_index)
+		return -EINVAL;
+	if (index >= ARRAY_SIZE(omci_classes))
+		return -ENOENT;
+
+	omci_agent_class_get(omci_classes[index].class_id, class);
+	*next_index = index + 1;
+	return 0;
+}
+
 const char *omci_agent_class_name(u16 class_id)
 {
 	unsigned int i;
@@ -775,17 +944,6 @@ const char *omci_agent_class_name(u16 class_id)
 static unsigned long omci_mib_key(u16 class_id, u16 entity_id)
 {
 	return ((unsigned long)class_id << 16) | entity_id;
-}
-
-const char *omci_agent_class_name(u16 class_id)
-{
-	unsigned int i;
-
-	for (i = 0; i < ARRAY_SIZE(omci_classes); i++)
-		if (omci_classes[i].class_id == class_id)
-			return omci_classes[i].name;
-
-	return "Dynamic managed entity";
 }
 
 static struct omci_mib_object *
