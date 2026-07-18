@@ -139,5 +139,8 @@ int omci_agent_mib_next(struct omci_device *odev, u32 index,
 			struct omci_mib_object *object, u32 *next_index,
 			const char **name);
 const char *omci_agent_class_name(u16 class_id);
+int omci_agent_class_get(u16 class_id, struct omci_me_class *class);
+int omci_agent_class_next(u32 index, struct omci_me_class *class,
+			  u32 *next_index);
 
 #endif /* _NET_OMCI_INTERNAL_H */
