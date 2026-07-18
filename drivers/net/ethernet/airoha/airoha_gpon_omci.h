@@ -34,7 +34,7 @@ int airoha_gpon_omci_hw_set_tcont(void *hw_priv, u16 entity_id,
 				  u16 alloc_id, bool valid);
 int airoha_gpon_omci_hw_set_gem_port(void *hw_priv, u16 entity_id,
 				     u16 gem_port_id, u16 tcont_entity_id,
-				     bool valid, bool encrypted);
+				     u8 direction, bool valid, bool encrypted);
 int airoha_gpon_omci_hw_set_uni(void *hw_priv, u16 entity_id, bool enable);
 int airoha_gpon_omci_hw_get_telemetry(void *hw_priv,
 				      struct omci_telemetry *telemetry);
