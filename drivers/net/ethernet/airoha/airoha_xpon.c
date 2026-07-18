@@ -619,6 +619,7 @@ struct gpon_priv {
 
 	u8			sn[8];
 	u8			passwd[10];
+	struct omci_identity	identity;
 	u8			aes_key[16];
 
 	/*
@@ -860,65 +861,40 @@ static int gpon_dev_init(struct gpon_priv *priv)
 	return 0;
 }
 
-
-static int gpon_read_dt_bytes(struct gpon_priv *priv, const char *name,
-			      u8 *data, size_t expected_len)
-{
-	struct device_node *np = priv->dev->of_node;
-	int len, ret;
-
-	if (!of_find_property(np, name, &len))
-		return -ENOENT;
-
-	if (len != expected_len)
-		return dev_err_probe(priv->dev, -EINVAL,
-				     "%s must contain exactly %zu bytes, got %d\n",
-				     name, expected_len, len);
-
-	ret = of_property_read_u8_array(np, name, data, expected_len);
-	if (ret)
-		return dev_err_probe(priv->dev, ret,
-				     "failed to read %s\n", name);
-
-	return 0;
-}
-
 static int gpon_load_credentials(struct gpon_priv *priv)
 {
 	static const u8 default_sn[8] = {
 		'M', 'T', 'K', 'G', 0x00, 0x00, 0x00, 0x01
 	};
+	struct omci_identity *identity = &priv->identity;
 	int ret;
 
-	memcpy(priv->sn, default_sn, sizeof(priv->sn));
-	memset(priv->passwd, 0, sizeof(priv->passwd));
-
-	ret = gpon_read_dt_bytes(priv, "airoha,gpon-serial-number",
-				 priv->sn, sizeof(priv->sn));
-	if (ret == -ENOENT) {
+	ret = omci_identity_load(priv->dev, identity);
+	if (ret)
+		return ret;
+	if (!(identity->valid & OMCI_IDENTITY_F_SERIAL_NUMBER)) {
+		memcpy(identity->serial_number, default_sn,
+		       sizeof(identity->serial_number));
+		memcpy(identity->vendor_id, default_sn,
+		       sizeof(identity->vendor_id));
+		identity->valid |= OMCI_IDENTITY_F_SERIAL_NUMBER |
+				   OMCI_IDENTITY_F_VENDOR_ID;
+		identity->serial_source = OMCI_CONFIG_SOURCE_DEFAULT;
+		identity->vendor_source = OMCI_CONFIG_SOURCE_DEFAULT;
 		dev_warn(priv->dev,
-			 "GPON serial number missing; using development serial %8phN\n",
-			 priv->sn);
-	} else if (ret) {
-		return ret;
-	} else {
-		dev_info(priv->dev,
-			 "loaded GPON serial number %8phN from Device Tree\n",
-			 priv->sn);
+			 "GPON serial number missing; using development default\n");
+	}
+	if (!(identity->valid & OMCI_IDENTITY_F_PASSWORD)) {
+		memset(identity->password, 0, sizeof(identity->password));
+		identity->valid |= OMCI_IDENTITY_F_PASSWORD;
+		identity->password_source = OMCI_CONFIG_SOURCE_DEFAULT;
 	}
 
-	ret = gpon_read_dt_bytes(priv, "airoha,gpon-password",
-				 priv->passwd, sizeof(priv->passwd));
-	if (ret == -ENOENT) {
-		dev_info(priv->dev,
-			 "GPON password not provided; using an all-zero password\n");
-	} else if (ret) {
-		return ret;
-	} else {
-		/* Never print the password contents. */
-		dev_info(priv->dev, "loaded GPON password from Device Tree\n");
-	}
-
+	memcpy(priv->sn, identity->serial_number, sizeof(priv->sn));
+	memcpy(priv->passwd, identity->password, sizeof(priv->passwd));
+	dev_info(priv->dev,
+		 "loaded normalized GPON identity (serial source %u, password source %u)\n",
+		 identity->serial_source, identity->password_source);
 	return 0;
 }
 
@@ -2517,9 +2493,8 @@ static int gpon_probe(struct platform_device *pdev)
 	if (ret)
 		goto err_put_sfp;
 
-
-	ret = airoha_gpon_omci_register(&priv->omci, dev, priv->gdm_dev, priv, priv->sn,
-					priv->passwd);
+	ret = airoha_gpon_omci_register(&priv->omci, dev, priv->gdm_dev,
+					priv, &priv->identity);
 	if (ret)
 		goto err_put_gdm;
 
@@ -3535,7 +3510,6 @@ static int epon_probe(struct platform_device *pdev)
 	ret = sfp_bus_add_upstream(priv->sfp_bus, priv, &epon_sfp_ops);
 	if (ret)
 		goto err_put_sfp;
-
 
 	ret = airoha_eth_register_xpon(priv->gdm_dev, AIROHA_XPON_MODE_EPON,
 				       &epon_link_ops, priv);

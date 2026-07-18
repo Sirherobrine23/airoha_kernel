@@ -54,6 +54,7 @@ static const struct nla_policy omci_policy[OMCI_ATTR_MAX + 1] = {
 	[OMCI_ATTR_CLASS_CATEGORY] = { .type = NLA_U8 },
 	[OMCI_ATTR_CLASS_SUPPORT] = { .type = NLA_U8 },
 	[OMCI_ATTR_CLASS_FLAGS] = { .type = NLA_U32 },
+	[OMCI_ATTR_CONFIG_SOURCE] = { .type = NLA_U8 },
 };
 
 static struct omci_device *omci_find_locked(u32 id)
@@ -758,6 +759,7 @@ static int omci_cmd_config_get(struct sk_buff *skb, struct genl_info *info)
 	struct sk_buff *msg;
 	size_t len = sizeof(value);
 	u16 key;
+	u8 source = OMCI_CONFIG_SOURCE_UNSPEC;
 	void *hdr;
 	int ret;
 
@@ -774,6 +776,7 @@ static int omci_cmd_config_get(struct sk_buff *skb, struct genl_info *info)
 	ret = omci_agent_config_get(odev, key, value, &len);
 	if (ret)
 		goto out_unlock;
+	omci_agent_config_source_get(odev, key, &source);
 
 	msg = genlmsg_new(NLMSG_DEFAULT_SIZE + len, GFP_KERNEL);
 	if (!msg) {
@@ -784,7 +787,8 @@ static int omci_cmd_config_get(struct sk_buff *skb, struct genl_info *info)
 				OMCI_CMD_CONFIG_GET);
 	if (!hdr || nla_put_u32(msg, OMCI_ATTR_DEV_ID, odev->id) ||
 	    nla_put_u16(msg, OMCI_ATTR_CONFIG_KEY, key) ||
-	    nla_put(msg, OMCI_ATTR_CONFIG_VALUE, len, value)) {
+	    nla_put(msg, OMCI_ATTR_CONFIG_VALUE, len, value) ||
+	    nla_put_u8(msg, OMCI_ATTR_CONFIG_SOURCE, source)) {
 		nlmsg_free(msg);
 		ret = -EMSGSIZE;
 		goto out_unlock;
@@ -991,6 +995,7 @@ static const struct genl_ops omci_genl_ops[] = {
 	},
 	{
 		.cmd = OMCI_CMD_CONFIG_GET,
+		.flags = GENL_ADMIN_PERM,
 		.policy = omci_policy,
 		.doit = omci_cmd_config_get,
 	},
@@ -1240,9 +1245,13 @@ omci_device_register(struct device *parent, u32 ifindex, u32 capabilities,
 	odev->gem_port_id = 0xffff;
 	odev->id = atomic_inc_return(&omci_next_id) - 1;
 
-	if (omci_agent_init(odev)) {
-		kfree(odev);
-		return ERR_PTR(-ENOMEM);
+	{
+		int ret = omci_agent_init(odev);
+
+		if (ret) {
+			kfree(odev);
+			return ERR_PTR(ret);
+		}
 	}
 
 	mutex_lock(&omci_devices_lock);
@@ -1292,18 +1301,61 @@ u32 omci_device_id(const struct omci_device *odev)
 }
 EXPORT_SYMBOL_GPL(omci_device_id);
 
+void omci_device_set_identity_info(struct omci_device *odev,
+				   const struct omci_identity *identity)
+{
+	if (!odev || !identity)
+		return;
+	if (identity->valid & OMCI_IDENTITY_F_SERIAL_NUMBER)
+		omci_agent_config_set_source(odev, OMCI_CONFIG_SERIAL_NUMBER,
+					     identity->serial_number,
+					     sizeof(identity->serial_number),
+					     identity->serial_source);
+	if (identity->valid & OMCI_IDENTITY_F_VENDOR_ID)
+		omci_agent_config_set_source(odev, OMCI_CONFIG_VENDOR_ID,
+					     identity->vendor_id,
+					     sizeof(identity->vendor_id),
+					     identity->vendor_source);
+	if (identity->valid & OMCI_IDENTITY_F_PASSWORD)
+		omci_agent_config_set_source(odev, OMCI_CONFIG_PASSWORD,
+					     identity->password,
+					     sizeof(identity->password),
+					     identity->password_source);
+	if (identity->valid & OMCI_IDENTITY_F_VERSION)
+		omci_agent_config_set_source(odev, OMCI_CONFIG_VERSION,
+					     identity->version,
+					     sizeof(identity->version),
+					     identity->version_source);
+	if (identity->valid & OMCI_IDENTITY_F_EQUIPMENT_ID)
+		omci_agent_config_set_source(odev, OMCI_CONFIG_EQUIPMENT_ID,
+					     identity->equipment_id,
+					     sizeof(identity->equipment_id),
+					     identity->equipment_source);
+}
+EXPORT_SYMBOL_GPL(omci_device_set_identity_info);
+
 void omci_device_set_identity(struct omci_device *odev,
 			      const u8 serial_number[8],
 			      const u8 password[10])
 {
+	struct omci_identity identity = {};
+
 	if (serial_number) {
-		omci_agent_config_set(odev, OMCI_CONFIG_SERIAL_NUMBER,
-				      serial_number, 8);
-		omci_agent_config_set(odev, OMCI_CONFIG_VENDOR_ID,
-				      serial_number, 4);
+		memcpy(identity.serial_number, serial_number,
+		       sizeof(identity.serial_number));
+		memcpy(identity.vendor_id, serial_number,
+		       sizeof(identity.vendor_id));
+		identity.valid |= OMCI_IDENTITY_F_SERIAL_NUMBER |
+				  OMCI_IDENTITY_F_VENDOR_ID;
+		identity.serial_source = OMCI_CONFIG_SOURCE_DRIVER;
+		identity.vendor_source = OMCI_CONFIG_SOURCE_DRIVER;
 	}
-	if (password)
-		omci_agent_config_set(odev, OMCI_CONFIG_PASSWORD, password, 10);
+	if (password) {
+		memcpy(identity.password, password, sizeof(identity.password));
+		identity.valid |= OMCI_IDENTITY_F_PASSWORD;
+		identity.password_source = OMCI_CONFIG_SOURCE_DRIVER;
+	}
+	omci_device_set_identity_info(odev, &identity);
 }
 EXPORT_SYMBOL_GPL(omci_device_set_identity);
 
