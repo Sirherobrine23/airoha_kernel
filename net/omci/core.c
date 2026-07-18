@@ -830,7 +830,7 @@ out:
 
 static int omci_cmd_mib_get(struct sk_buff *skb, struct genl_info *info)
 {
-	struct omci_mib_object object;
+	struct omci_mib_object *object;
 	struct omci_device *odev;
 	u16 class_id;
 	u16 entity_id;
@@ -842,40 +842,48 @@ static int omci_cmd_mib_get(struct sk_buff *skb, struct genl_info *info)
 	class_id = nla_get_u16(info->attrs[OMCI_ATTR_CLASS_ID]);
 	entity_id = nla_get_u16(info->attrs[OMCI_ATTR_ENTITY_ID]);
 
+	object = kzalloc(sizeof(*object), GFP_KERNEL);
+	if (!object)
+		return -ENOMEM;
+
 	mutex_lock(&omci_devices_lock);
 	odev = omci_get_from_info(info);
 	if (!odev) {
 		ret = -ENODEV;
 		goto out;
 	}
-	ret = omci_agent_mib_get(odev, class_id, entity_id, &object);
+	ret = omci_agent_mib_get(odev, class_id, entity_id, object);
 	if (!ret)
-		ret = omci_reply_mib(info, OMCI_CMD_MIB_GET, odev, &object,
+		ret = omci_reply_mib(info, OMCI_CMD_MIB_GET, odev, object,
 				     0, omci_agent_class_name(class_id));
 out:
 	mutex_unlock(&omci_devices_lock);
+	kfree(object);
 	return ret;
 }
 
 static int omci_cmd_mib_set(struct sk_buff *skb, struct genl_info *info)
 {
 	struct nlattr *data = info->attrs[OMCI_ATTR_ATTR_DATA];
-	struct omci_mib_object object = {
-		.origin = OMCI_MIB_ORIGIN_LOCAL,
-	};
+	struct omci_mib_object *object;
 	struct omci_device *odev;
 	int ret;
 
 	if (!info->attrs[OMCI_ATTR_CLASS_ID] ||
 	    !info->attrs[OMCI_ATTR_ENTITY_ID])
 		return -EINVAL;
-	object.class_id = nla_get_u16(info->attrs[OMCI_ATTR_CLASS_ID]);
-	object.entity_id = nla_get_u16(info->attrs[OMCI_ATTR_ENTITY_ID]);
-	object.attr_mask = info->attrs[OMCI_ATTR_ATTR_MASK] ?
+
+	object = kzalloc(sizeof(*object), GFP_KERNEL);
+	if (!object)
+		return -ENOMEM;
+	object->origin = OMCI_MIB_ORIGIN_LOCAL;
+	object->class_id = nla_get_u16(info->attrs[OMCI_ATTR_CLASS_ID]);
+	object->entity_id = nla_get_u16(info->attrs[OMCI_ATTR_ENTITY_ID]);
+	object->attr_mask = info->attrs[OMCI_ATTR_ATTR_MASK] ?
 		nla_get_u16(info->attrs[OMCI_ATTR_ATTR_MASK]) : 0xffff;
 	if (data)
-		memcpy(object.data, nla_data(data),
-		       min_t(size_t, nla_len(data), sizeof(object.data)));
+		memcpy(object->data, nla_data(data),
+		       min_t(size_t, nla_len(data), sizeof(object->data)));
 
 	mutex_lock(&omci_devices_lock);
 	odev = omci_get_from_info(info);
@@ -883,11 +891,12 @@ static int omci_cmd_mib_set(struct sk_buff *skb, struct genl_info *info)
 		ret = -ENODEV;
 		goto out;
 	}
-	ret = omci_agent_mib_set(odev, &object);
+	ret = omci_agent_mib_set(odev, object);
 	if (!ret)
 		omci_device_notify(odev, OMCI_EVENT_MIB_CHANGE);
 out:
 	mutex_unlock(&omci_devices_lock);
+	kfree(object);
 	return ret;
 }
 
@@ -938,7 +947,7 @@ out:
 
 static int omci_cmd_mib_next(struct sk_buff *skb, struct genl_info *info)
 {
-	struct omci_mib_object object;
+	struct omci_mib_object *object;
 	struct omci_device *odev;
 	const char *name = NULL;
 	u32 index = 0;
@@ -948,18 +957,23 @@ static int omci_cmd_mib_next(struct sk_buff *skb, struct genl_info *info)
 	if (info->attrs[OMCI_ATTR_INDEX])
 		index = nla_get_u32(info->attrs[OMCI_ATTR_INDEX]);
 
+	object = kzalloc(sizeof(*object), GFP_KERNEL);
+	if (!object)
+		return -ENOMEM;
+
 	mutex_lock(&omci_devices_lock);
 	odev = omci_get_from_info(info);
 	if (!odev) {
 		ret = -ENODEV;
 		goto out;
 	}
-	ret = omci_agent_mib_next(odev, index, &object, &next_index, &name);
+	ret = omci_agent_mib_next(odev, index, object, &next_index, &name);
 	if (!ret)
-		ret = omci_reply_mib(info, OMCI_CMD_MIB_NEXT, odev, &object,
+		ret = omci_reply_mib(info, OMCI_CMD_MIB_NEXT, odev, object,
 				     next_index, name);
 out:
 	mutex_unlock(&omci_devices_lock);
+	kfree(object);
 	return ret;
 }
 
