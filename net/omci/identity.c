@@ -17,6 +17,8 @@
 
 #define OMCI_IDENTITY_MAX_INPUT_LEN	64
 
+static const u8 default_vendor_id[4] = { 'G', 'P', 'O', 'N' };
+
 static bool omci_source_can_replace(u8 current_source, u8 source)
 {
 	return source >= current_source;
@@ -365,13 +367,7 @@ static int omci_identity_load_properties(struct device *dev,
 		const char *name;
 		omci_identity_setter_t setter;
 	} properties[] = {
-		{ "airoha,gpon-serial-number", omci_identity_set_serial },
-		{ "airoha,gpon-password", omci_identity_set_password },
-		{ "omci-serial-number", omci_identity_set_serial },
 		{ "omci-vendor-id", omci_identity_set_vendor },
-		{ "omci-password", omci_identity_set_password },
-		{ "omci-version", omci_identity_set_version },
-		{ "omci-equipment-id", omci_identity_set_equipment },
 	};
 	unsigned int i;
 	int ret;
@@ -396,10 +392,7 @@ static int omci_identity_load_nvmem(struct device *dev,
 		omci_identity_setter_t setter;
 	} cells[] = {
 		{ "gpon-serial-number", omci_identity_set_serial },
-		{ "omci-vendor-id", omci_identity_set_vendor },
 		{ "gpon-password", omci_identity_set_password },
-		{ "omci-version", omci_identity_set_version },
-		{ "omci-equipment-id", omci_identity_set_equipment },
 	};
 	unsigned int i;
 	int ret;
@@ -426,6 +419,36 @@ int omci_identity_load(struct device *dev, struct omci_identity *identity)
 	ret = omci_identity_load_properties(dev, identity);
 	if (ret)
 		return ret;
+
 	return omci_identity_load_nvmem(dev, identity);
 }
 EXPORT_SYMBOL_GPL(omci_identity_load);
+
+void gpon_random_serial_number(const u8 vendor[4], struct omci_identity *identity)
+{
+	u32 serial;
+
+	/*
+	 * GPON serial numbers contain a four-byte vendor identifier followed by
+	 * a four-byte vendor-specific value. Keep a configured vendor identifier
+	 * when available and randomize only the vendor-specific part.
+	 */
+	if (!(identity->valid & OMCI_IDENTITY_F_VENDOR_ID)) {
+		memcpy(identity->vendor_id,
+		       (vendor == (u8[4]){0,0,0,0}) ? default_vendor_id : vendor,
+		       sizeof(identity->vendor_id));
+		identity->valid |= OMCI_IDENTITY_F_VENDOR_ID;
+		identity->vendor_source = OMCI_CONFIG_SOURCE_DEFAULT;
+	}
+
+	do {
+		serial = get_random_u32();
+	} while (!serial || serial == U32_MAX);
+
+	memcpy(identity->serial_number, identity->vendor_id,
+	       sizeof(identity->vendor_id));
+	put_unaligned_be32(serial, identity->serial_number + 4);
+	identity->valid |= OMCI_IDENTITY_F_SERIAL_NUMBER;
+	identity->serial_source = OMCI_CONFIG_SOURCE_DRIVER;
+}
+EXPORT_SYMBOL_GPL(gpon_random_serial_number);
