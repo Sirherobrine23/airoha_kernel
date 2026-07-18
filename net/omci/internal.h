@@ -64,15 +64,18 @@ struct omci_agent {
 	u16 mib_sync;
 	bool enabled;
 	bool permissive;
+	bool fake_omci;
 
 	u8 last_request[OMCI_BASELINE_LEN_NO_MIC];
 	u8 last_response[OMCI_BASELINE_LEN_NO_MIC];
 	u8 last_request_len;
 	u8 last_response_len;
+	bool last_response_fake;
 
 	atomic64_t responses;
 	atomic64_t duplicates;
 	atomic64_t unsupported;
+	atomic64_t fake_responses;
 };
 
 struct omci_device {
