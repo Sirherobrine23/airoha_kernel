@@ -13,13 +13,13 @@
 #include <linux/slab.h>
 #include <linux/string.h>
 
-#include <net/omci.h>
+#include "internal.h"
 
 #define OMCI_IDENTITY_MAX_INPUT_LEN	64
 
-static bool omci_source_can_replace(u8 current, u8 source)
+static bool omci_source_can_replace(u8 current_source, u8 source)
 {
-	return source >= current;
+	return source >= current_source;
 }
 
 static size_t omci_trim_input(const u8 **data, size_t len)
