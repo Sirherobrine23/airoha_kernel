@@ -16,6 +16,26 @@ enum omci_gem_port_direction {
 };
 
 /**
+ * struct omci_olt_g - parsed OLT-G identification attributes
+ * @vendor_id: four-character OLT vendor identifier
+ * @equipment_id: OLT equipment or model identifier
+ * @version: OLT software or hardware version identifier
+ * @vendor_id_valid: @vendor_id has been received from the OLT
+ * @equipment_id_valid: @equipment_id has been received from the OLT
+ * @version_valid: @version has been received from the OLT
+ * @valid: at least one identification attribute is available
+ */
+struct omci_olt_g {
+	char vendor_id[OMCI_OLT_VENDOR_ID_LEN + 1];
+	char equipment_id[OMCI_OLT_EQUIPMENT_ID_LEN + 1];
+	char version[OMCI_OLT_VERSION_LEN + 1];
+	bool vendor_id_valid;
+	bool equipment_id_valid;
+	bool version_valid;
+	bool valid;
+};
+
+/**
  * struct omci_vlan_filter_entry - parsed VLAN tagging filter entry
  * @tci: original VLAN tag control information value
  * @vid: VLAN identifier
