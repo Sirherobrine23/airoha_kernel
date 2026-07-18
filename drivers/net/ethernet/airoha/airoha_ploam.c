@@ -9,8 +9,8 @@
  *
  * Includes the EN7521 PLOAM deduplication filter: every 3rd consecutive
  * identical message is passed through; intermediate duplicates are
- * suppressed.  For RANGING_TIME only the first 5 content bytes are
- * compared (delay bytes excluded) per ref driver behaviour.
+ * suppressed. For RANGING_TIME the ONU-ID, message type and first five
+ * content bytes are compared, matching the seven-byte vendor comparison.
  */
 
 #include <linux/slab.h>
@@ -95,8 +95,8 @@ static void ploam_pack(struct ploam_msg *msg, u8 onu_id, u8 type,
  * EN7521 downstream PLOAM deduplication filter
  *
  * Every 3rd consecutive identical message is passed through; duplicates
- * 1 and 2 are suppressed.  For RANGING_TIME only the first 5 content
- * bytes (excluding the 4-byte delay field) are compared.
+ * 1 and 2 are suppressed. For RANGING_TIME the first seven wire bytes
+ * are compared: ONU-ID, message type and content[0..4].
  * -------------------------------------------------------------------- */
 
 static bool ploam_filter_suppress(struct ploam_priv *pp,
@@ -112,10 +112,12 @@ static bool ploam_filter_suppress(struct ploam_priv *pp,
 	}
 
 	if (type == PLOAM_DOWN_RANGING_TIME) {
-		/* Compare only ONU-ID + type + content[0..4] (5 bytes);
-		 * ignore content[1..4] = delay field which may legitimately change */
-		same = (msg->value[0] == pp->dedup_prev.value[0]) &&
-		       ((msg->value[1] >> 16) == (pp->dedup_prev.value[1] >> 16));
+		/* Match the vendor seven-byte memcmp without depending on
+		 * struct layout or host endianness.
+		 */
+		same = msg->value[0] == pp->dedup_prev.value[0] &&
+		       (msg->value[1] >> 8) ==
+		       (pp->dedup_prev.value[1] >> 8);
 	} else {
 		same = (msg->value[0] == pp->dedup_prev.value[0]) &&
 		       (msg->value[1] == pp->dedup_prev.value[1]) &&
