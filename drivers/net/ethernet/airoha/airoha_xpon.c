@@ -2564,6 +2564,12 @@ static int gpon_probe(struct platform_device *pdev)
 	if (ret)
 		goto err_put_gdm;
 
+	/*
+	 * The OMCI device is zero-initialized. Publish O1 before the
+	 * deferred PHY synchronization path can leave the MAC uninitialized.
+	 */
+	airoha_gpon_omci_set_state(&priv->omci, GPON_O1_INITIAL);
+
 	priv->omci_handler.rx = airoha_gpon_omci_receive;
 	priv->omci_handler.priv = &priv->omci;
 	ret = airoha_eth_register_xpon_oam(priv->gdm_dev,
