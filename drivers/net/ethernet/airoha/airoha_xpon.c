@@ -428,7 +428,7 @@ static void airoha_xpon_phy_stop(struct device *dev, struct phy *phy,
 #define INT_RANGING_REQ_RECV	BIT(4)
 #define INT_SN_ONU_SEND_O4	BIT(5)
 #define INT_SN_REQ_CRS		BIT(6)
-#define INT_LOS_GEM_DEL		BIT(7)
+#define INT_LOSS_GEM_DEL	BIT(7)
 #define INT_AES_KEY_SWITCH_DONE	BIT(8)
 #define INT_TOD_UPDATE_DONE	BIT(9)
 #define INT_TOD_1PPS		BIT(10)
@@ -459,7 +459,7 @@ static void airoha_xpon_phy_stop(struct device *dev, struct phy *phy,
 #define GPON_INT_ACTIVATION_MASK	(INT_PLOAMD_RECV | INT_SN_REQ_RECV | \
 				 INT_SN_ONU_SEND_O3 | INT_RANGING_REQ_RECV | \
 				 INT_SN_ONU_SEND_O4 | INT_SN_REQ_CRS | \
-				 INT_LOS_GEM_DEL | INT_AES_KEY_SWITCH_DONE | \
+				 INT_LOSS_GEM_DEL | INT_AES_KEY_SWITCH_DONE | \
 				 INT_DYING_GASP | INT_CAL_GNT_SIZE_DONE)
 /*
  * The EN7523 vendor driver enables only the common receive/burst errors.
@@ -2159,10 +2159,9 @@ static void gpon_irq_work_fn(struct work_struct *work)
 			ploam_notify_dying_gasp(priv->ploam);
 		}
 
-		if (active & INT_LOS_GEM_DEL) {
-			dev_warn(priv->dev, "GPON LOS/GEM-delete interrupt\n");
-			ploam_notify_los(priv->ploam);
-		}
+		if (active & INT_LOSS_GEM_DEL)
+			dev_warn_ratelimited(priv->dev,
+					     "GPON loss of GEM delineation interrupt\n");
 
 		if (active & GPON_INT_ERROR_MASK)
 			gpon_dump_error_counters(priv, active &
