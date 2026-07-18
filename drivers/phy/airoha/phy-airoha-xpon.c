@@ -166,6 +166,25 @@ static int airoha_xpon_phy_get_active_gpon(
 	return 0;
 }
 
+int airoha_xpon_phy_get_link_status(struct phy *phy, bool *ready, bool *los)
+{
+	struct airoha_xpon_phy *priv;
+	int ret;
+
+	if (!ready || !los)
+		return -EINVAL;
+
+	ret = airoha_xpon_phy_get_active_gpon(phy, &priv);
+	if (ret)
+		return ret;
+
+	*ready = airoha_xpon_phy_ready(priv);
+	*los = airoha_xpon_phy_los(priv);
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(airoha_xpon_phy_get_link_status);
+
 int airoha_xpon_phy_get_gpon_tx_counters(struct phy *phy,
 					 u32 *frame_count,
 					 u32 *burst_count)
