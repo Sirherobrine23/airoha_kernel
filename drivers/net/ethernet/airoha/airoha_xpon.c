@@ -563,6 +563,7 @@ static void airoha_xpon_phy_stop(struct device *dev, struct phy *phy,
 
 #define GPON_CMD_TIMEOUT_US		10000
 #define GPON_TABLE_TIMEOUT_US		100000
+#define GPON_PLOAM_TX_TIMEOUT_US	1000
 
 /*
  * Effective TX-enable guard observed on the stock RTF8225VW SDK.
@@ -1127,6 +1128,21 @@ static inline void gpon_ploam_write_word(struct gpon_priv *priv, u32 val)
 	gpon_write(priv, GPON_PLOAMu_WDATA, val);
 }
 
+static int gpon_wait_ploam_tx_space(struct gpon_priv *priv, u32 *available)
+{
+	u32 status;
+	int ret;
+
+	ret = readl_poll_timeout_atomic(priv->regs + GPON_PLOAMu_FIFO_STS,
+					status,
+					(status & PLOAMu_FIFO_AVAIL_MASK) >=
+					PLOAM_WORDS, 1,
+					GPON_PLOAM_TX_TIMEOUT_US);
+	*available = status & PLOAMu_FIFO_AVAIL_MASK;
+
+	return ret;
+}
+
 static void gpon_hw_send_ploam(struct gpon_priv *priv,
 			       const struct ploam_msg *msg, int times)
 {
@@ -1140,13 +1156,13 @@ static void gpon_hw_send_ploam(struct gpon_priv *priv,
 		 msg->value[2]);
 	for (t = 0; t < times; t++) {
 		u32 avail;
+		int ret;
 
-		avail = gpon_read(priv, GPON_PLOAMu_FIFO_STS) &
-			PLOAMu_FIFO_AVAIL_MASK;
-		if (avail < PLOAM_WORDS) {
-			dev_warn(priv->dev,
-					     "PLOAM TX FIFO full: avail=%u requested_words=%u copy=%d/%d\n",
-				avail, PLOAM_WORDS, t + 1, times);
+		ret = gpon_wait_ploam_tx_space(priv, &avail);
+		if (ret) {
+			dev_warn_ratelimited(priv->dev,
+					     "PLOAM TX FIFO timeout: avail=%u requested_words=%u copy=%d/%d\n",
+					     avail, PLOAM_WORDS, t + 1, times);
 			break;
 		}
 
