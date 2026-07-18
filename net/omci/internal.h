@@ -23,6 +23,7 @@
 #define OMCI_MIC_LEN			4
 
 #define OMCI_CLASS_VLAN_TAGGING_FILTER_DATA	84
+#define OMCI_CLASS_OLT_G			131
 #define OMCI_CLASS_EXTENDED_VLAN		171
 
 struct omci_skb_cb {
@@ -40,6 +41,7 @@ struct omci_mib_object {
 	u16 attr_mask;
 	u8 origin;
 	u8 data[OMCI_MAX_ATTR_DATA];
+	struct omci_olt_g olt_g;
 	struct omci_vlan_tagging_filter vlan_filter;
 	struct omci_extended_vlan extended_vlan;
 };
