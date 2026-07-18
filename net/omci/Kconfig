@@ -2,7 +2,6 @@
 config OMCI
 	tristate "ONU Management and Control Interface agent"
 	depends on NET
-	select GENERIC_NETLINK
 	help
 	  Provides an in-kernel baseline OMCI agent for GPON devices. The
 	  subsystem parses OMCI requests, maintains the operational managed-
