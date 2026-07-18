@@ -31,16 +31,17 @@ static int airoha_gpon_omci_set_tcont(struct omci_device *odev,
 
 static int airoha_gpon_omci_set_gem_port(struct omci_device *odev,
 					 u16 entity_id,
-					  u16 gem_port_id,
-					  u16 tcont_entity_id,
-					  bool valid,
-					  bool encrypted)
+					 u16 gem_port_id,
+					 u16 tcont_entity_id,
+					 u8 direction,
+					 bool valid,
+					 bool encrypted)
 {
 	struct airoha_gpon_omci *omci = omci_device_priv(odev);
 
 	return airoha_gpon_omci_hw_set_gem_port(omci->hw_priv, entity_id,
 						gem_port_id, tcont_entity_id,
-						valid, encrypted);
+						direction, valid, encrypted);
 }
 
 static int airoha_gpon_omci_set_uni(struct omci_device *odev,

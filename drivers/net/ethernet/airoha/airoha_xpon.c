@@ -1620,7 +1620,7 @@ int airoha_gpon_omci_hw_set_tcont(void *hw_priv, u16 entity_id,
 
 int airoha_gpon_omci_hw_set_gem_port(void *hw_priv, u16 entity_id,
 				     u16 gem_port_id, u16 tcont_entity_id,
-				     bool valid, bool encrypted)
+				     u8 direction, bool valid, bool encrypted)
 {
 	struct gpon_priv *priv = hw_priv;
 	struct airoha_xpon_service_cfg service = {
@@ -1635,20 +1635,20 @@ int airoha_gpon_omci_hw_set_gem_port(void *hw_priv, u16 entity_id,
 	if (ret)
 		return ret;
 
-	if (valid) {
+	airoha_eth_xpon_del_service(priv->gdm_dev, gem_port_id);
+
+	if (valid && direction != OMCI_GEM_PORT_DIRECTION_ANI_TO_UNI) {
 		ret = airoha_eth_xpon_add_service(priv->gdm_dev, &service);
 		if (ret) {
 			gpon_set_gem_port_hw(priv, gem_port_id, false, false);
 			return ret;
 		}
-	} else {
-		airoha_eth_xpon_del_service(priv->gdm_dev, gem_port_id);
 	}
 
 	dev_info(priv->dev,
-		 "OMCI GEM port %u %s (ME %#x T-CONT %#x channel %u)\n",
+		 "OMCI GEM port %u %s (ME %#x T-CONT %#x direction %u channel %u)\n",
 		 gem_port_id, valid ? "enabled" : "disabled", entity_id,
-		 tcont_entity_id, service.tcont);
+		 tcont_entity_id, direction, service.tcont);
 	return 0;
 }
 

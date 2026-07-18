@@ -9,6 +9,12 @@ struct device;
 struct omci_device;
 struct sk_buff;
 
+enum omci_gem_port_direction {
+	OMCI_GEM_PORT_DIRECTION_UNI_TO_ANI = 1,
+	OMCI_GEM_PORT_DIRECTION_ANI_TO_UNI = 2,
+	OMCI_GEM_PORT_DIRECTION_BIDIRECTIONAL = 3,
+};
+
 /**
  * struct omci_telemetry - current PON and optical telemetry
  * @valid: OMCI_TELEMETRY_F_* bitmap
@@ -48,7 +54,7 @@ struct omci_device_ops {
 			 u16 alloc_id, bool valid);
 	int (*set_gem_port)(struct omci_device *odev, u16 entity_id,
 			    u16 gem_port_id, u16 tcont_entity_id,
-			    bool valid, bool encrypted);
+			    u8 direction, bool valid, bool encrypted);
 	int (*set_uni)(struct omci_device *odev, u16 entity_id, bool enable);
 	int (*get_telemetry)(struct omci_device *odev,
 			     struct omci_telemetry *telemetry);

@@ -3291,6 +3291,8 @@ airoha_eth_xpon_classify(struct airoha_gdm_dev *dev, struct sk_buff *skb,
 			continue;
 		if (service->default_service)
 			fallback = service;
+		if (!service->vlan_valid && !service->pcp_valid)
+			continue;
 		if (service->vlan_valid &&
 		    (!vlan_valid || service->vlan_id != vlan_id))
 			continue;
