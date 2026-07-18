@@ -72,8 +72,7 @@ int airoha_gpon_omci_register(struct airoha_gpon_omci *omci,
 			      struct device *dev,
 			      struct net_device *gdm_dev,
 			      void *hw_priv,
-			      const u8 serial_number[8],
-			      const u8 password[10])
+			      const struct omci_identity *identity)
 {
 	omci->gdm_dev = gdm_dev;
 	omci->hw_priv = hw_priv;
@@ -83,7 +82,7 @@ int airoha_gpon_omci_register(struct airoha_gpon_omci *omci,
 	if (IS_ERR(omci->odev))
 		return PTR_ERR(omci->odev);
 
-	omci_device_set_identity(omci->odev, serial_number, password);
+	omci_device_set_identity_info(omci->odev, identity);
 	return 0;
 }
 

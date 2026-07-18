@@ -7,6 +7,7 @@
 struct device;
 struct net_device;
 struct omci_device;
+struct omci_identity;
 struct omci_telemetry;
 struct sk_buff;
 
@@ -20,8 +21,7 @@ int airoha_gpon_omci_register(struct airoha_gpon_omci *omci,
 			      struct device *dev,
 			      struct net_device *gdm_dev,
 			      void *hw_priv,
-			      const u8 serial_number[8],
-			      const u8 password[10]);
+			      const struct omci_identity *identity);
 void airoha_gpon_omci_unregister(struct airoha_gpon_omci *omci);
 void airoha_gpon_omci_set_onu_id(struct airoha_gpon_omci *omci, u16 onu_id);
 void airoha_gpon_omci_set_channel(struct airoha_gpon_omci *omci,

@@ -2,12 +2,47 @@
 #ifndef _NET_OMCI_H
 #define _NET_OMCI_H
 
+#include <linux/bits.h>
 #include <linux/types.h>
 #include <uapi/linux/omci.h>
 
 struct device;
 struct omci_device;
 struct sk_buff;
+
+#define OMCI_IDENTITY_F_SERIAL_NUMBER	BIT(0)
+#define OMCI_IDENTITY_F_VENDOR_ID	BIT(1)
+#define OMCI_IDENTITY_F_PASSWORD	BIT(2)
+#define OMCI_IDENTITY_F_VERSION	BIT(3)
+#define OMCI_IDENTITY_F_EQUIPMENT_ID	BIT(4)
+
+/**
+ * struct omci_identity - normalized ONU identity and registration data
+ * @valid: OMCI_IDENTITY_F_* bitmap
+ * @serial_number: canonical eight-byte GPON serial number
+ * @vendor_id: canonical four-byte vendor identifier
+ * @password: canonical ten-byte GPON registration password
+ * @version: ONU-G version field
+ * @equipment_id: ONU2-G equipment identifier
+ * @serial_source: enum omci_config_source for @serial_number
+ * @vendor_source: enum omci_config_source for @vendor_id
+ * @password_source: enum omci_config_source for @password
+ * @version_source: enum omci_config_source for @version
+ * @equipment_source: enum omci_config_source for @equipment_id
+ */
+struct omci_identity {
+	u32 valid;
+	u8 serial_number[8];
+	u8 vendor_id[OMCI_OLT_VENDOR_ID_LEN];
+	u8 password[10];
+	u8 version[OMCI_OLT_VERSION_LEN];
+	u8 equipment_id[OMCI_OLT_EQUIPMENT_ID_LEN];
+	u8 serial_source;
+	u8 vendor_source;
+	u8 password_source;
+	u8 version_source;
+	u8 equipment_source;
+};
 
 /**
  * struct omci_me_class - managed entity class descriptor
@@ -196,6 +231,9 @@ void omci_device_unregister(struct omci_device *odev);
 void *omci_device_priv(const struct omci_device *odev);
 u32 omci_device_id(const struct omci_device *odev);
 
+int omci_identity_load(struct device *dev, struct omci_identity *identity);
+void omci_device_set_identity_info(struct omci_device *odev,
+				   const struct omci_identity *identity);
 void omci_device_set_identity(struct omci_device *odev,
 			      const u8 serial_number[8],
 			      const u8 password[10]);

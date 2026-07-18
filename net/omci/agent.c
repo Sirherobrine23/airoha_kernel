@@ -1014,6 +1014,36 @@ static void omci_agent_refresh_identity_locked(struct omci_agent *agent)
 	}
 }
 
+static void omci_agent_apply_identity(struct omci_agent *agent,
+				      const struct omci_identity *identity)
+{
+	if (identity->valid & OMCI_IDENTITY_F_SERIAL_NUMBER) {
+		memcpy(agent->config.serial_number, identity->serial_number,
+		       sizeof(agent->config.serial_number));
+		agent->config.serial_source = identity->serial_source;
+	}
+	if (identity->valid & OMCI_IDENTITY_F_VENDOR_ID) {
+		memcpy(agent->config.vendor_id, identity->vendor_id,
+		       sizeof(agent->config.vendor_id));
+		agent->config.vendor_source = identity->vendor_source;
+	}
+	if (identity->valid & OMCI_IDENTITY_F_PASSWORD) {
+		memcpy(agent->config.password, identity->password,
+		       sizeof(agent->config.password));
+		agent->config.password_source = identity->password_source;
+	}
+	if (identity->valid & OMCI_IDENTITY_F_VERSION) {
+		memcpy(agent->config.version, identity->version,
+		       sizeof(agent->config.version));
+		agent->config.version_source = identity->version_source;
+	}
+	if (identity->valid & OMCI_IDENTITY_F_EQUIPMENT_ID) {
+		memcpy(agent->config.equipment_id, identity->equipment_id,
+		       sizeof(agent->config.equipment_id));
+		agent->config.equipment_source = identity->equipment_source;
+	}
+}
+
 static int omci_agent_populate_defaults(struct omci_agent *agent)
 {
 	u8 data[OMCI_MAX_ATTR_DATA] = {};
@@ -1090,6 +1120,7 @@ static int omci_agent_populate_defaults(struct omci_agent *agent)
 int omci_agent_init(struct omci_device *odev)
 {
 	struct omci_agent *agent = &odev->agent;
+	struct omci_identity identity;
 	int ret;
 
 	mutex_init(&agent->lock);
@@ -1105,6 +1136,16 @@ int omci_agent_init(struct omci_device *odev)
 	strscpy(agent->config.version, "OpenWrt", sizeof(agent->config.version));
 	strscpy(agent->config.equipment_id, "Airoha EN7523",
 		sizeof(agent->config.equipment_id));
+	agent->config.serial_source = OMCI_CONFIG_SOURCE_DEFAULT;
+	agent->config.vendor_source = OMCI_CONFIG_SOURCE_DEFAULT;
+	agent->config.password_source = OMCI_CONFIG_SOURCE_DEFAULT;
+	agent->config.version_source = OMCI_CONFIG_SOURCE_DEFAULT;
+	agent->config.equipment_source = OMCI_CONFIG_SOURCE_DEFAULT;
+
+	ret = omci_identity_load(odev->parent, &identity);
+	if (ret)
+		return ret;
+	omci_agent_apply_identity(agent, &identity);
 
 	mutex_lock(&agent->lock);
 	ret = omci_agent_populate_defaults(agent);
@@ -1650,12 +1691,24 @@ int omci_agent_config_get(struct omci_device *odev, u16 key,
 	return 0;
 }
 
-int omci_agent_config_set(struct omci_device *odev, u16 key,
-			  const void *value, size_t len)
+int omci_agent_config_set_source(struct omci_device *odev, u16 key,
+				 const void *value, size_t len, u8 source)
 {
 	struct omci_agent *agent = &odev->agent;
+	u8 normalized[OMCI_MAX_CONFIG_VALUE];
+	size_t normalized_len = sizeof(normalized);
 	u8 scalar;
 	int ret = 0;
+
+	if (key >= OMCI_CONFIG_SERIAL_NUMBER &&
+	    key <= OMCI_CONFIG_PASSWORD) {
+		ret = omci_identity_normalize_config(key, value, len,
+						     normalized, &normalized_len);
+		if (ret)
+			return ret;
+		value = normalized;
+		len = normalized_len;
+	}
 
 	mutex_lock(&agent->lock);
 	switch (key) {
@@ -1665,6 +1718,10 @@ int omci_agent_config_set(struct omci_device *odev, u16 key,
 			break;
 		}
 		memcpy(agent->config.serial_number, value, len);
+		agent->config.serial_source = source;
+		memcpy(agent->config.vendor_id, value,
+		       sizeof(agent->config.vendor_id));
+		agent->config.vendor_source = source;
 		break;
 	case OMCI_CONFIG_VENDOR_ID:
 		if (len != sizeof(agent->config.vendor_id)) {
@@ -1672,23 +1729,30 @@ int omci_agent_config_set(struct omci_device *odev, u16 key,
 			break;
 		}
 		memcpy(agent->config.vendor_id, value, len);
+		agent->config.vendor_source = source;
+		memcpy(agent->config.serial_number, value,
+		       sizeof(agent->config.vendor_id));
+		agent->config.serial_source = max(agent->config.serial_source,
+						  source);
 		break;
 	case OMCI_CONFIG_VERSION:
-		if (!len || len >= sizeof(agent->config.version)) {
+		if (!len || len > sizeof(agent->config.version)) {
 			ret = -EINVAL;
 			break;
 		}
 		memset(agent->config.version, 0, sizeof(agent->config.version));
 		memcpy(agent->config.version, value, len);
+		agent->config.version_source = source;
 		break;
 	case OMCI_CONFIG_EQUIPMENT_ID:
-		if (!len || len >= sizeof(agent->config.equipment_id)) {
+		if (!len || len > sizeof(agent->config.equipment_id)) {
 			ret = -EINVAL;
 			break;
 		}
 		memset(agent->config.equipment_id, 0,
 		       sizeof(agent->config.equipment_id));
 		memcpy(agent->config.equipment_id, value, len);
+		agent->config.equipment_source = source;
 		break;
 	case OMCI_CONFIG_PASSWORD:
 		if (len != sizeof(agent->config.password)) {
@@ -1696,6 +1760,7 @@ int omci_agent_config_set(struct omci_device *odev, u16 key,
 			break;
 		}
 		memcpy(agent->config.password, value, len);
+		agent->config.password_source = source;
 		break;
 	case OMCI_CONFIG_TRAFFIC_MGMT_OPTION:
 	case OMCI_CONFIG_ONU_TYPE:
@@ -1731,6 +1796,46 @@ int omci_agent_config_set(struct omci_device *odev, u16 key,
 	if (!ret) {
 		omci_agent_refresh_identity_locked(agent);
 		agent->mib_sync++;
+	}
+	mutex_unlock(&agent->lock);
+	return ret;
+}
+
+int omci_agent_config_set(struct omci_device *odev, u16 key,
+			  const void *value, size_t len)
+{
+	return omci_agent_config_set_source(odev, key, value, len,
+					    OMCI_CONFIG_SOURCE_NETLINK);
+}
+
+int omci_agent_config_source_get(struct omci_device *odev, u16 key, u8 *source)
+{
+	struct omci_agent *agent = &odev->agent;
+	int ret = 0;
+
+	if (!source)
+		return -EINVAL;
+	mutex_lock(&agent->lock);
+	switch (key) {
+	case OMCI_CONFIG_SERIAL_NUMBER:
+		*source = agent->config.serial_source;
+		break;
+	case OMCI_CONFIG_VENDOR_ID:
+		*source = agent->config.vendor_source;
+		break;
+	case OMCI_CONFIG_VERSION:
+		*source = agent->config.version_source;
+		break;
+	case OMCI_CONFIG_EQUIPMENT_ID:
+		*source = agent->config.equipment_source;
+		break;
+	case OMCI_CONFIG_PASSWORD:
+		*source = agent->config.password_source;
+		break;
+	default:
+		*source = OMCI_CONFIG_SOURCE_UNSPEC;
+		ret = -ENOENT;
+		break;
 	}
 	mutex_unlock(&agent->lock);
 	return ret;
