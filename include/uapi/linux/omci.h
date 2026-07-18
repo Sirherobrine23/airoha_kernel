@@ -3,13 +3,16 @@
 #define _UAPI_LINUX_OMCI_H
 
 #define OMCI_GENL_NAME		"omci"
-#define OMCI_GENL_VERSION	5
+#define OMCI_GENL_VERSION	6
 #define OMCI_MAX_PDU_LEN	1980
 #define OMCI_MAX_ATTR_DATA	32
 #define OMCI_MAX_CONFIG_VALUE	64
 #define OMCI_VLAN_FILTER_MAX_ENTRIES	12
 #define OMCI_EXT_VLAN_MAX_RULES	32
 #define OMCI_EXT_VLAN_RULE_LEN	16
+#define OMCI_OLT_VENDOR_ID_LEN	4
+#define OMCI_OLT_EQUIPMENT_ID_LEN	20
+#define OMCI_OLT_VERSION_LEN	14
 
 /**
  * enum omci_cmd - Generic Netlink commands
@@ -91,6 +94,7 @@ enum omci_attr {
 	OMCI_ATTR_BOSA_ALARMS,
 	OMCI_ATTR_VLAN_TAGGING_FILTER,
 	OMCI_ATTR_EXTENDED_VLAN,
+	OMCI_ATTR_OLT_G,
 	OMCI_ATTR_AGENT_FAKE_OMCI,
 	OMCI_ATTR_AGENT_FAKE_RESPONSES,
 
@@ -177,6 +181,20 @@ enum omci_extended_vlan_rule_attr {
 
 #define OMCI_EXT_VLAN_RULE_ATTR_MAX \
 	(__OMCI_EXT_VLAN_RULE_ATTR_MAX - 1)
+
+/**
+ * enum omci_olt_g_attr - parsed OLT-G identification attributes
+ */
+enum omci_olt_g_attr {
+	OMCI_OLT_G_ATTR_UNSPEC,
+	OMCI_OLT_G_ATTR_VENDOR_ID,
+	OMCI_OLT_G_ATTR_EQUIPMENT_ID,
+	OMCI_OLT_G_ATTR_VERSION,
+
+	__OMCI_OLT_G_ATTR_MAX,
+};
+
+#define OMCI_OLT_G_ATTR_MAX (__OMCI_OLT_G_ATTR_MAX - 1)
 
 enum omci_event {
 	OMCI_EVENT_UNSPEC,

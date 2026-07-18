@@ -67,7 +67,6 @@ static bool omci_agent_result_can_be_faked(u8 result)
 #define OMCI_CLASS_MAC_BRIDGE_SERVICE_PROFILE 45
 #define OMCI_CLASS_MAC_BRIDGE_CONFIG_DATA 46
 #define OMCI_CLASS_MAC_BRIDGE_PORT_CONFIG_DATA 47
-#define OMCI_CLASS_OLT_G		131
 #define OMCI_CLASS_NETWORK_ADDRESS	137
 #define OMCI_CLASS_AUTH_METHOD		148
 #define OMCI_CLASS_ONU_G		256
@@ -93,6 +92,80 @@ static bool omci_agent_result_can_be_faked(u8 result)
 #define OMCI_EXT_VLAN_TABLE_MASK	0x0400
 #define OMCI_EXT_VLAN_ASSOC_PTR_MASK	0x0200
 #define OMCI_EXT_VLAN_DSCP_MAP_MASK	0x0100
+
+#define OMCI_OLT_G_VENDOR_ID_MASK	0x8000
+#define OMCI_OLT_G_EQUIPMENT_ID_MASK	0x4000
+#define OMCI_OLT_G_VERSION_MASK	0x2000
+#define OMCI_OLT_G_TIME_OF_DAY_MASK	0x1000
+#define OMCI_OLT_G_TIME_OF_DAY_LEN	14
+
+static const u8 *omci_olt_g_consume(const u8 **data, size_t *len,
+				    size_t size)
+{
+	const u8 *value;
+
+	if (*len < size)
+		return NULL;
+	value = *data;
+	*data += size;
+	*len -= size;
+
+	return value;
+}
+
+static void omci_olt_g_copy_string(char *dest, size_t dest_len,
+				   const u8 *source, size_t source_len)
+{
+	size_t len = min(source_len, dest_len - 1);
+
+	memcpy(dest, source, len);
+	dest[len] = '\0';
+}
+
+static int omci_olt_g_parse_set(struct omci_mib_object *object, u16 mask,
+				const u8 *data, size_t len)
+{
+	struct omci_olt_g *olt = &object->olt_g;
+	const u8 *value;
+
+	if (mask & OMCI_OLT_G_VENDOR_ID_MASK) {
+		value = omci_olt_g_consume(&data, &len,
+					   OMCI_OLT_VENDOR_ID_LEN);
+		if (!value)
+			return -EINVAL;
+		omci_olt_g_copy_string(olt->vendor_id, sizeof(olt->vendor_id),
+				       value, OMCI_OLT_VENDOR_ID_LEN);
+		olt->vendor_id_valid = true;
+	}
+	if (mask & OMCI_OLT_G_EQUIPMENT_ID_MASK) {
+		value = omci_olt_g_consume(&data, &len,
+					   OMCI_OLT_EQUIPMENT_ID_LEN);
+		if (!value)
+			return -EINVAL;
+		omci_olt_g_copy_string(olt->equipment_id,
+				       sizeof(olt->equipment_id), value,
+				       OMCI_OLT_EQUIPMENT_ID_LEN);
+		olt->equipment_id_valid = true;
+	}
+	if (mask & OMCI_OLT_G_VERSION_MASK) {
+		value = omci_olt_g_consume(&data, &len, OMCI_OLT_VERSION_LEN);
+		if (!value)
+			return -EINVAL;
+		omci_olt_g_copy_string(olt->version, sizeof(olt->version),
+				       value, OMCI_OLT_VERSION_LEN);
+		olt->version_valid = true;
+	}
+	if (mask & OMCI_OLT_G_TIME_OF_DAY_MASK) {
+		value = omci_olt_g_consume(&data, &len,
+					   OMCI_OLT_G_TIME_OF_DAY_LEN);
+		if (!value)
+			return -EINVAL;
+	}
+	olt->valid = olt->vendor_id_valid || olt->equipment_id_valid ||
+		     olt->version_valid;
+
+	return 0;
+}
 
 static void omci_vlan_filter_parse_entries(struct omci_vlan_tagging_filter *filter,
 					   const u8 *data)
@@ -320,8 +393,8 @@ static int omci_ext_vlan_parse_set(struct omci_mib_object *object, u16 mask,
 	return 0;
 }
 
-static int omci_vlan_parse_create(struct omci_mib_object *object,
-				  const u8 *content)
+static int omci_mib_parse_create(struct omci_mib_object *object,
+				 const u8 *content)
 {
 	switch (object->class_id) {
 	case OMCI_CLASS_VLAN_TAGGING_FILTER_DATA:
@@ -337,10 +410,12 @@ static int omci_vlan_parse_create(struct omci_mib_object *object,
 	return 0;
 }
 
-static int omci_vlan_parse_set(struct omci_mib_object *object, u16 mask,
-			       const u8 *data, size_t len)
+static int omci_mib_parse_set(struct omci_mib_object *object, u16 mask,
+			      const u8 *data, size_t len)
 {
 	switch (object->class_id) {
+	case OMCI_CLASS_OLT_G:
+		return omci_olt_g_parse_set(object, mask, data, len);
 	case OMCI_CLASS_VLAN_TAGGING_FILTER_DATA:
 		return omci_vlan_filter_parse_set(object, mask, data, len);
 	case OMCI_CLASS_EXTENDED_VLAN:
@@ -685,7 +760,7 @@ static u8 omci_agent_create_locked(struct omci_device *odev,
 	if (omci_mib_lookup(agent, class_id, entity_id))
 		return OMCI_RESULT_INSTANCE_EXISTS;
 	memcpy(object.data, content, sizeof(object.data));
-	ret = omci_vlan_parse_create(&object, content);
+	ret = omci_mib_parse_create(&object, content);
 	if (ret)
 		return OMCI_RESULT_PARAMETER_ERROR;
 	ret = omci_agent_hw_update(odev, &object, OMCI_MSG_TYPE_CREATE,
@@ -715,8 +790,8 @@ static u8 omci_agent_set_locked(struct omci_device *odev, u16 class_id,
 			OMCI_RESULT_DEVICE_BUSY : OMCI_RESULT_UNKNOWN_INSTANCE;
 	object->attr_mask |= mask;
 	memcpy(object->data, content + 2, sizeof(object->data) - 2);
-	ret = omci_vlan_parse_set(object, mask, content + 2,
-				  sizeof(object->data) - 2);
+	ret = omci_mib_parse_set(object, mask, content + 2,
+				 sizeof(object->data) - 2);
 	if (ret)
 		return ret == -ENOSPC ? OMCI_RESULT_DEVICE_BUSY :
 					 OMCI_RESULT_PARAMETER_ERROR;
@@ -1210,7 +1285,12 @@ int omci_agent_mib_set(struct omci_device *odev,
 	int ret;
 
 	local.origin = OMCI_MIB_ORIGIN_LOCAL;
-	if (local.class_id == OMCI_CLASS_VLAN_TAGGING_FILTER_DATA) {
+	if (local.class_id == OMCI_CLASS_OLT_G) {
+		ret = omci_olt_g_parse_set(&local, local.attr_mask, local.data,
+					   sizeof(local.data));
+		if (ret)
+			return ret;
+	} else if (local.class_id == OMCI_CLASS_VLAN_TAGGING_FILTER_DATA) {
 		omci_vlan_filter_parse_create(&local, local.data);
 	} else if (local.class_id == OMCI_CLASS_EXTENDED_VLAN) {
 		local.extended_vlan.max_table_size = OMCI_EXT_VLAN_MAX_RULES;
