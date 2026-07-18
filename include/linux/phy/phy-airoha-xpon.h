@@ -24,6 +24,7 @@ enum airoha_xpon_phy_gpon_oper_state {
 	AIROHA_XPON_PHY_GPON_OPER_OPERATION = 3,
 };
 
+int airoha_xpon_phy_get_link_status(struct phy *phy, bool *ready, bool *los);
 int airoha_xpon_phy_get_gpon_tx_counters(struct phy *phy,
 					 u32 *frame_count,
 					 u32 *burst_count);
