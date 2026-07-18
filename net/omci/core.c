@@ -423,6 +423,33 @@ out_unlock_devices:
 	return ret;
 }
 
+static int omci_put_olt_g(struct sk_buff *msg,
+			  const struct omci_mib_object *object)
+{
+	const struct omci_olt_g *olt = &object->olt_g;
+	struct nlattr *nested;
+
+	if (object->class_id != OMCI_CLASS_OLT_G || !olt->valid)
+		return 0;
+
+	nested = nla_nest_start(msg, OMCI_ATTR_OLT_G);
+	if (!nested)
+		return -EMSGSIZE;
+	if ((olt->vendor_id_valid &&
+	     nla_put_string(msg, OMCI_OLT_G_ATTR_VENDOR_ID, olt->vendor_id)) ||
+	    (olt->equipment_id_valid &&
+	     nla_put_string(msg, OMCI_OLT_G_ATTR_EQUIPMENT_ID,
+			    olt->equipment_id)) ||
+	    (olt->version_valid &&
+	     nla_put_string(msg, OMCI_OLT_G_ATTR_VERSION, olt->version))) {
+		nla_nest_cancel(msg, nested);
+		return -EMSGSIZE;
+	}
+	nla_nest_end(msg, nested);
+
+	return 0;
+}
+
 static int omci_put_vlan_filter(struct sk_buff *msg,
 				const struct omci_mib_object *object)
 {
@@ -581,7 +608,8 @@ static int omci_put_mib_object(struct sk_buff *msg,
 	    nla_put_u32(msg, OMCI_ATTR_INDEX, next_index) ||
 	    (name && nla_put_string(msg, OMCI_ATTR_NAME, name)))
 		return -EMSGSIZE;
-	if (omci_put_vlan_filter(msg, object) ||
+	if (omci_put_olt_g(msg, object) ||
+	    omci_put_vlan_filter(msg, object) ||
 	    omci_put_extended_vlan(msg, object))
 		return -EMSGSIZE;
 	return 0;
