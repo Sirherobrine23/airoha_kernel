@@ -34,6 +34,7 @@ static const struct nla_policy omci_policy[OMCI_ATTR_MAX + 1] = {
 	},
 	[OMCI_ATTR_AGENT_ENABLED] = { .type = NLA_U8 },
 	[OMCI_ATTR_AGENT_PERMISSIVE] = { .type = NLA_U8 },
+	[OMCI_ATTR_AGENT_FAKE_OMCI] = { .type = NLA_U8 },
 	[OMCI_ATTR_CLASS_ID] = { .type = NLA_U16 },
 	[OMCI_ATTR_ENTITY_ID] = { .type = NLA_U16 },
 	[OMCI_ATTR_ATTR_MASK] = { .type = NLA_U16 },
@@ -641,6 +642,13 @@ static int omci_cmd_agent_set(struct sk_buff *skb, struct genl_info *info)
 	if (info->attrs[OMCI_ATTR_AGENT_PERMISSIVE]) {
 		value = nla_get_u8(info->attrs[OMCI_ATTR_AGENT_PERMISSIVE]);
 		ret = omci_agent_config_set(odev, OMCI_CONFIG_AGENT_PERMISSIVE,
+					    &value, sizeof(value));
+		if (ret)
+			goto out;
+	}
+	if (info->attrs[OMCI_ATTR_AGENT_FAKE_OMCI]) {
+		value = nla_get_u8(info->attrs[OMCI_ATTR_AGENT_FAKE_OMCI]);
+		ret = omci_agent_config_set(odev, OMCI_CONFIG_AGENT_FAKE_OMCI,
 					    &value, sizeof(value));
 	}
 	if (!ret)
