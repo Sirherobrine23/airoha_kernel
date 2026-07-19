@@ -221,8 +221,9 @@ static int omci_identity_set_password(struct omci_identity *identity,
 	return 0;
 }
 
-static int omci_identity_set_version(struct omci_identity *identity,
-				     const u8 *data, size_t len, u8 source)
+static int __maybe_unused omci_identity_set_version(struct omci_identity *identity,
+						    const u8 *data,
+						    size_t len, u8 source)
 {
 	u8 version[OMCI_OLT_VERSION_LEN];
 	int ret;
@@ -239,8 +240,9 @@ static int omci_identity_set_version(struct omci_identity *identity,
 	return 0;
 }
 
-static int omci_identity_set_equipment(struct omci_identity *identity,
-				       const u8 *data, size_t len, u8 source)
+static int __maybe_unused omci_identity_set_equipment(struct omci_identity *identity,
+						      const u8 *data,
+						      size_t len, u8 source)
 {
 	u8 equipment[OMCI_OLT_EQUIPMENT_ID_LEN];
 	int ret;
