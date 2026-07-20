@@ -3729,7 +3729,7 @@ airoha_ethtool_get_link_ksettings(struct net_device *netdev,
 
 	cmd->base.speed = state.speed;
 	cmd->base.duplex = state.duplex;
-	cmd->base.autoneg = state.autoneg;
+	cmd->base.autoneg = AUTONEG_DISABLE;
 	cmd->base.port = state.port;
 	cmd->base.phy_address = 0xff;
 
