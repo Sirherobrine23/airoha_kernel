@@ -157,6 +157,7 @@ enum airoha_gdm_index {
 enum airoha_xpon_mode {
 	AIROHA_XPON_MODE_GPON,
 	AIROHA_XPON_MODE_EPON,
+	AIROHA_XPON_MODE_XGSPON,
 };
 
 enum {
