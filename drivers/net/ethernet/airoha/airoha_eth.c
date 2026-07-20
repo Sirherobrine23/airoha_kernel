@@ -2841,10 +2841,17 @@ static int airoha_dev_open(struct net_device *netdev)
 		return -EBUSY;
 	}
 
-	err = phylink_of_phy_connect(dev->phylink, netdev->dev.of_node, 0);
-	if (err) {
-		netdev_err(netdev, "could not attach PHY: %d\n", err);
-		return err;
+	/* xPON owns the optical PHY and reports carrier independently.
+	 * A managed GDM2 port therefore has neither a phy-handle nor a
+	 * fixed-link and must not be connected through phylink.
+	 */
+	if (!(dev->flags & AIROHA_PRIV_F_XPON_MANAGED)) {
+		err = phylink_of_phy_connect(dev->phylink,
+					     netdev->dev.of_node, 0);
+		if (err) {
+			netdev_err(netdev, "could not attach PHY: %d\n", err);
+			return err;
+		}
 	}
 
 	phylink_start(dev->phylink);
