@@ -17,6 +17,7 @@
 #include <linux/bitfield.h>
 #include <linux/delay.h>
 #include <linux/etherdevice.h>
+#include <linux/ethtool.h>
 #include <linux/export.h>
 #include <linux/interrupt.h>
 #include <linux/i2c.h>
@@ -139,6 +140,36 @@ static const char *airoha_xpon_mode_name(enum airoha_xpon_mode mode)
 	default:
 		return "unknown";
 	}
+}
+
+static void airoha_xpon_update_netdev_link(struct net_device *netdev,
+					   enum airoha_xpon_mode mode,
+					   bool link)
+{
+	struct airoha_xpon_link_state state = {
+		.mode = mode,
+		.link = link,
+		.duplex = DUPLEX_FULL,
+		.autoneg = AUTONEG_DISABLE,
+		.port = PORT_FIBRE,
+	};
+
+	switch (mode) {
+	case AIROHA_XPON_MODE_GPON:
+		state.speed = SPEED_2500;
+		state.rx_line_rate_bps = 2488320000ULL;
+		state.tx_line_rate_bps = 1244160000ULL;
+		break;
+	case AIROHA_XPON_MODE_EPON:
+		state.speed = SPEED_1000;
+		state.rx_line_rate_bps = 1000000000ULL;
+		state.tx_line_rate_bps = 1000000000ULL;
+		break;
+	default:
+		return;
+	}
+
+	airoha_eth_xpon_update_link(netdev, &state);
 }
 
 static int airoha_xpon_get_mode(struct device *dev,
@@ -1926,24 +1957,28 @@ static void gpon_cb_state_changed(void *hw_priv, enum gpon_state state)
 		cancel_delayed_work(&priv->to1_work);
 		dev_info(priv->dev, "GPON O5: operational, ONU-ID=%u\n",
 			 ploam_get_onu_id(priv->ploam));
-		airoha_eth_xpon_set_carrier(priv->gdm_dev, true);
+		airoha_xpon_update_netdev_link(priv->gdm_dev,
+					       AIROHA_XPON_MODE_GPON, true);
 		break;
 	case GPON_O6_POPUP:
 		/* Cancel TO1, start TO2 */
 		cancel_delayed_work(&priv->to1_work);
 		mod_delayed_work(priv->fsm_wq, &priv->to2_work,
 				 msecs_to_jiffies(GPON_TO2_MS));
-		airoha_eth_xpon_set_carrier(priv->gdm_dev, false);
+		airoha_xpon_update_netdev_link(priv->gdm_dev,
+					       AIROHA_XPON_MODE_GPON, false);
 		break;
 	case GPON_O7_EMERGENCY_STOP:
 		cancel_delayed_work(&priv->to1_work);
 		cancel_delayed_work(&priv->to2_work);
-		airoha_eth_xpon_set_carrier(priv->gdm_dev, false);
+		airoha_xpon_update_netdev_link(priv->gdm_dev,
+					       AIROHA_XPON_MODE_GPON, false);
 		break;
 	case GPON_O1_INITIAL:
 		cancel_delayed_work(&priv->to1_work);
 		cancel_delayed_work(&priv->to2_work);
-		airoha_eth_xpon_set_carrier(priv->gdm_dev, false);
+		airoha_xpon_update_netdev_link(priv->gdm_dev,
+					       AIROHA_XPON_MODE_GPON, false);
 		break;
 	default:
 		break;
@@ -2143,7 +2178,8 @@ static void gpon_disable(struct gpon_priv *priv)
 
 	ploam_reset(priv->ploam);
 	airoha_gpon_omci_set_state(&priv->omci, GPON_O1_INITIAL);
-	airoha_eth_xpon_set_carrier(priv->gdm_dev, false);
+	airoha_xpon_update_netdev_link(priv->gdm_dev,
+				       AIROHA_XPON_MODE_GPON, false);
 	dev_info(priv->dev, "GPON MAC stopped, state reset to %s\n",
 		 gpon_state_name(ploam_get_state(priv->ploam)));
 }
@@ -2475,7 +2511,8 @@ static int gpon_link_start(void *data)
 		return 0;
 
 	WRITE_ONCE(priv->started, true);
-	airoha_eth_xpon_set_carrier(priv->gdm_dev, false);
+	airoha_xpon_update_netdev_link(priv->gdm_dev,
+				       AIROHA_XPON_MODE_GPON, false);
 	if (priv->sfp_bus)
 		sfp_upstream_start(priv->sfp_bus);
 
@@ -2491,7 +2528,8 @@ static void gpon_link_stop(void *data)
 
 	WRITE_ONCE(priv->started, false);
 	cancel_delayed_work_sync(&priv->restart_work);
-	airoha_eth_xpon_set_carrier(priv->gdm_dev, false);
+	airoha_xpon_update_netdev_link(priv->gdm_dev,
+				       AIROHA_XPON_MODE_GPON, false);
 	if (priv->sfp_bus)
 		sfp_upstream_stop(priv->sfp_bus);
 }
@@ -2677,6 +2715,8 @@ static int gpon_probe(struct platform_device *pdev)
 				       &gpon_link_ops, priv);
 	if (ret)
 		goto err_unregister_oam;
+	airoha_xpon_update_netdev_link(priv->gdm_dev,
+				       AIROHA_XPON_MODE_GPON, false);
 
 	platform_set_drvdata(pdev, priv);
 	dev_info(dev,
@@ -3211,7 +3251,8 @@ static irqreturn_t epon_isr(int irq, void *data)
 		}
 		epon_write(priv, EPON_RPT_MPCP_TIMEOUT, tmout & 0x0000FF00);
 		if (!priv->registered_llids)
-			airoha_eth_xpon_set_carrier(priv->gdm_dev, false);
+			airoha_xpon_update_netdev_link(priv->gdm_dev,
+						       AIROHA_XPON_MODE_EPON, false);
 	}
 
 	/*
@@ -3283,7 +3324,8 @@ static irqreturn_t epon_isr(int irq, void *data)
 			priv->registered_llids++;
 			dev_info(priv->dev, "EPON LLID%d registered: 0x%04X\n",
 				 idx, priv->llid[idx].value);
-			airoha_eth_xpon_set_carrier(priv->gdm_dev, true);
+			airoha_xpon_update_netdev_link(priv->gdm_dev,
+						       AIROHA_XPON_MODE_EPON, true);
 			break;
 
 		case MPCP_REG_NACK:
@@ -3300,7 +3342,8 @@ static irqreturn_t epon_isr(int irq, void *data)
 			}
 			priv->llid[idx].state = LLID_STATE_REGISTERING;
 			if (!priv->registered_llids)
-				airoha_eth_xpon_set_carrier(priv->gdm_dev, false);
+				airoha_xpon_update_netdev_link(priv->gdm_dev,
+							       AIROHA_XPON_MODE_EPON, false);
 			break;
 
 		case MPCP_REG_RE_REGISTER:
@@ -3433,7 +3476,8 @@ static void epon_disable(struct epon_priv *priv)
 		priv->llid[idx].valid = false;
 	}
 	priv->registered_llids = 0;
-	airoha_eth_xpon_set_carrier(priv->gdm_dev, false);
+	airoha_xpon_update_netdev_link(priv->gdm_dev,
+				       AIROHA_XPON_MODE_EPON, false);
 	dev_info(priv->dev, "EPON MAC stopped: glb_cfg=%#08x\n",
 		 epon_read(priv, EPON_GLB_CFG));
 }
@@ -3498,7 +3542,8 @@ static void epon_sfp_link_down(void *upstream)
 	struct epon_priv *priv = upstream;
 
 	dev_warn(priv->dev, "EPON optical link down / LOS\n");
-	airoha_eth_xpon_set_carrier(priv->gdm_dev, false);
+	airoha_xpon_update_netdev_link(priv->gdm_dev,
+				       AIROHA_XPON_MODE_EPON, false);
 }
 
 static void epon_sfp_link_up(void *upstream)
@@ -3528,7 +3573,8 @@ static int epon_link_start(void *data)
 	if (READ_ONCE(priv->started))
 		return 0;
 	WRITE_ONCE(priv->started, true);
-	airoha_eth_xpon_set_carrier(priv->gdm_dev, false);
+	airoha_xpon_update_netdev_link(priv->gdm_dev,
+				       AIROHA_XPON_MODE_EPON, false);
 	if (priv->sfp_bus)
 		sfp_upstream_start(priv->sfp_bus);
 
@@ -3542,7 +3588,8 @@ static void epon_link_stop(void *data)
 	if (!READ_ONCE(priv->started))
 		return;
 	WRITE_ONCE(priv->started, false);
-	airoha_eth_xpon_set_carrier(priv->gdm_dev, false);
+	airoha_xpon_update_netdev_link(priv->gdm_dev,
+				       AIROHA_XPON_MODE_EPON, false);
 	if (priv->sfp_bus)
 		sfp_upstream_stop(priv->sfp_bus);
 }
@@ -3683,6 +3730,8 @@ static int epon_probe(struct platform_device *pdev)
 				       &epon_link_ops, priv);
 	if (ret)
 		goto err_del_upstream;
+	airoha_xpon_update_netdev_link(priv->gdm_dev,
+				       AIROHA_XPON_MODE_EPON, false);
 
 	platform_set_drvdata(pdev, priv);
 	dev_info(dev, "EPON probe complete: datapath=%s irq=%d\n",
