@@ -298,6 +298,7 @@ int airoha_eth_register_xpon(struct net_device *netdev,
 			     void *priv)
 {
 	struct airoha_gdm_dev *dev;
+	unsigned long flags;
 	int ret;
 
 	if (!ops || !ops->start || !ops->stop)
@@ -317,6 +318,10 @@ int airoha_eth_register_xpon(struct net_device *netdev,
 	dev->xpon_priv = priv;
 	dev->xpon_mode = mode;
 	dev->flags |= AIROHA_PRIV_F_XPON_MANAGED;
+	spin_lock_irqsave(&dev->xpon_state_lock, flags);
+	memset(&dev->xpon_link, 0, sizeof(dev->xpon_link));
+	dev->xpon_link.mode = mode;
+	spin_unlock_irqrestore(&dev->xpon_state_lock, flags);
 	netif_carrier_off(netdev);
 out:
 	mutex_unlock(&dev->xpon_lock);
@@ -335,6 +340,7 @@ void airoha_eth_unregister_xpon(struct net_device *netdev,
 				void *priv)
 {
 	struct airoha_gdm_dev *dev;
+	unsigned long flags;
 
 	if (airoha_eth_get_xpon_gdm2(netdev, &dev))
 		return;
@@ -346,25 +352,42 @@ void airoha_eth_unregister_xpon(struct net_device *netdev,
 		dev->xpon_priv = NULL;
 	}
 	mutex_unlock(&dev->xpon_lock);
+	spin_lock_irqsave(&dev->xpon_state_lock, flags);
+	memset(&dev->xpon_link, 0, sizeof(dev->xpon_link));
+	spin_unlock_irqrestore(&dev->xpon_state_lock, flags);
 	netif_carrier_off(netdev);
 }
 EXPORT_SYMBOL_GPL(airoha_eth_unregister_xpon);
 
-void airoha_eth_xpon_set_carrier(struct net_device *netdev, bool up)
+void airoha_eth_xpon_update_link(struct net_device *netdev,
+				 const struct airoha_xpon_link_state *state)
 {
+	struct airoha_xpon_link_state new_state;
 	struct airoha_gdm_dev *dev;
+	unsigned long flags;
 
+	if (!state)
+		return;
 	if (airoha_eth_get_xpon_gdm2(netdev, &dev))
 		return;
 	if (!(dev->flags & AIROHA_PRIV_F_XPON_MANAGED))
 		return;
+	if (state->mode != READ_ONCE(dev->xpon_mode))
+		return;
 
-	if (up && netif_running(netdev))
+	new_state = *state;
+	new_state.valid = true;
+
+	spin_lock_irqsave(&dev->xpon_state_lock, flags);
+	dev->xpon_link = new_state;
+	spin_unlock_irqrestore(&dev->xpon_state_lock, flags);
+
+	if (new_state.link && netif_running(netdev))
 		netif_carrier_on(netdev);
 	else
 		netif_carrier_off(netdev);
 }
-EXPORT_SYMBOL_GPL(airoha_eth_xpon_set_carrier);
+EXPORT_SYMBOL_GPL(airoha_eth_xpon_update_link);
 
 static void airoha_eth_xpon_dump_rx_desc(struct net_device *netdev,
 					 struct airoha_queue *q,
@@ -3689,8 +3712,28 @@ airoha_ethtool_get_link_ksettings(struct net_device *netdev,
 				  struct ethtool_link_ksettings *cmd)
 {
 	struct airoha_gdm_dev *dev = netdev_priv(netdev);
+	struct airoha_xpon_link_state state;
+	unsigned long flags;
+	int ret;
 
-	return phylink_ethtool_ksettings_get(dev->phylink, cmd);
+	ret = phylink_ethtool_ksettings_get(dev->phylink, cmd);
+	if (ret || !(dev->flags & AIROHA_PRIV_F_XPON_MANAGED))
+		return ret;
+
+	spin_lock_irqsave(&dev->xpon_state_lock, flags);
+	state = dev->xpon_link;
+	spin_unlock_irqrestore(&dev->xpon_state_lock, flags);
+
+	if (!state.valid)
+		return 0;
+
+	cmd->base.speed = state.speed;
+	cmd->base.duplex = state.duplex;
+	cmd->base.autoneg = state.autoneg;
+	cmd->base.port = state.port;
+	cmd->base.phy_address = 0xff;
+
+	return 0;
 }
 
 static int
@@ -3698,6 +3741,9 @@ airoha_ethtool_set_link_ksettings(struct net_device *netdev,
 				  const struct ethtool_link_ksettings *cmd)
 {
 	struct airoha_gdm_dev *dev = netdev_priv(netdev);
+
+	if (dev->flags & AIROHA_PRIV_F_XPON_MANAGED)
+		return -EOPNOTSUPP;
 
 	return phylink_ethtool_ksettings_set(dev->phylink, cmd);
 }
@@ -4715,7 +4761,8 @@ static int airoha_setup_phylink(struct net_device *netdev)
 					   MAC_10000FD;
 		if (port->id == AIROHA_GDM2_IDX)
 			config->mac_capabilities = MAC_ASYM_PAUSE | MAC_SYM_PAUSE |
-						   MAC_2500FD | MAC_10000FD;
+						   MAC_1000FD | MAC_2500FD |
+						   MAC_10000FD;
 
 		__set_bit(PHY_INTERFACE_MODE_INTERNAL,
 			  config->supported_interfaces);
@@ -4825,6 +4872,7 @@ static int airoha_alloc_gdm_device(struct airoha_eth *eth,
 	dev->eth = eth;
 	dev->nbq = nbq;
 	mutex_init(&dev->xpon_lock);
+	spin_lock_init(&dev->xpon_state_lock);
 	spin_lock_init(&dev->xpon_service_lock);
 	if (of_property_read_bool(np, "airoha,xpon-managed"))
 		dev->flags |= AIROHA_PRIV_F_XPON_MANAGED;
