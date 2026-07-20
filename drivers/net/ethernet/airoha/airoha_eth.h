@@ -608,6 +608,34 @@ struct airoha_xpon_link_ops {
 	void (*stop)(void *priv);
 };
 
+/**
+ * struct airoha_xpon_link_state - xPON link state exposed by GDM2
+ * @mode: active xPON protocol
+ * @valid: true after the provider has published its first state
+ * @link: true when the protocol is operational
+ * @speed: ethtool-compatible nominal downstream speed
+ * @duplex: ethtool duplex mode
+ * @autoneg: ethtool autonegotiation mode
+ * @port: ethtool port type
+ * @rx_line_rate_bps: exact downstream line rate in bits per second
+ * @tx_line_rate_bps: exact upstream line rate in bits per second
+ *
+ * GPON has asymmetric line rates, while ethtool exposes a single speed.
+ * Keep the exact rates in the provider snapshot and use @speed for the
+ * conventional netdev representation.
+ */
+struct airoha_xpon_link_state {
+	enum airoha_xpon_mode mode;
+	bool valid;
+	bool link;
+	u32 speed;
+	u8 duplex;
+	u8 autoneg;
+	u8 port;
+	u64 rx_line_rate_bps;
+	u64 tx_line_rate_bps;
+};
+
 struct airoha_xpon_service_cfg {
 	u16 gem_port_id;
 	u16 vlan_id;
@@ -655,6 +683,9 @@ struct airoha_gdm_dev {
 	void *xpon_priv;
 	enum airoha_xpon_mode xpon_mode;
 	bool xpon_started;
+	/* Protects the xPON state consumed by netdev and ethtool callbacks. */
+	spinlock_t xpon_state_lock;
+	struct airoha_xpon_link_state xpon_link;
 
 	/* Protects GPON GEM/T-CONT service classification. */
 	spinlock_t xpon_service_lock;
@@ -841,7 +872,8 @@ int airoha_eth_register_xpon(struct net_device *netdev,
 void airoha_eth_unregister_xpon(struct net_device *netdev,
 				const struct airoha_xpon_link_ops *ops,
 				void *priv);
-void airoha_eth_xpon_set_carrier(struct net_device *netdev, bool up);
+void airoha_eth_xpon_update_link(struct net_device *netdev,
+				 const struct airoha_xpon_link_state *state);
 void airoha_eth_xpon_dump_oam_rx_state(struct net_device *netdev);
 int airoha_eth_register_xpon_oam(struct net_device *netdev,
 				 struct airoha_xpon_oam_handler *handler);
