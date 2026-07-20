@@ -599,8 +599,8 @@ struct ploam_priv *ploam_alloc(const struct ploam_ops *ops, void *hw_priv,
 	pp->state   = GPON_O1_INITIAL;
 	pp->onu_id  = PLOAM_ONU_UNASSIGNED;
 
-	memcpy(pp->sn,     sn,     8);
-	memcpy(pp->passwd, passwd, 10);
+	memcpy(pp->sn, sn, sizeof(pp->sn));
+	memcpy(pp->passwd, passwd, sizeof(pp->passwd));
 
 	return pp;
 }
