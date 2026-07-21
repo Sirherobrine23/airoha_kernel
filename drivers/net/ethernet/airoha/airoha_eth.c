@@ -10,12 +10,14 @@
 #include <linux/platform_device.h>
 #include <linux/printk.h>
 #include <linux/ratelimit.h>
+#include <linux/rtnetlink.h>
 #include <linux/tcp.h>
 #include <linux/if_vlan.h>
 #include <linux/pcs/pcs.h>
 #include <linux/u64_stats_sync.h>
 #include <net/dst_metadata.h>
 #include <net/ip6_checksum.h>
+#include <net/net_namespace.h>
 #include <net/page_pool/helpers.h>
 #include <net/pkt_cls.h>
 #include <net/tcp.h>
@@ -153,8 +155,8 @@ static int airoha_set_macaddr(struct airoha_gdm_dev *dev, const u8 *addr)
 	return 0;
 }
 
-static int airoha_eth_get_xpon_gdm2(struct net_device *netdev,
-				    struct airoha_gdm_dev **gdm)
+static int airoha_eth_validate_xpon_gdm2(struct net_device *netdev,
+					 struct airoha_gdm_dev **gdm)
 {
 	struct airoha_gdm_dev *dev;
 	struct airoha_eth *eth;
@@ -174,13 +176,33 @@ static int airoha_eth_get_xpon_gdm2(struct net_device *netdev,
 	return 0;
 }
 
+struct net_device *airoha_eth_get_xpon_netdev(void)
+{
+	struct net_device *netdev, *found = NULL;
+	struct airoha_gdm_dev *dev;
+
+	rtnl_lock();
+	for_each_netdev(&init_net, netdev) {
+		if (airoha_eth_validate_xpon_gdm2(netdev, &dev))
+			continue;
+
+		dev_hold(netdev);
+		found = netdev;
+		break;
+	}
+	rtnl_unlock();
+
+	return found;
+}
+EXPORT_SYMBOL_GPL(airoha_eth_get_xpon_netdev);
+
 int airoha_eth_set_xpon_mode(struct net_device *netdev,
 			      enum airoha_xpon_mode mode)
 {
 	struct airoha_gdm_dev *dev;
 	int ret;
 
-	ret = airoha_eth_get_xpon_gdm2(netdev, &dev);
+	ret = airoha_eth_validate_xpon_gdm2(netdev, &dev);
 	if (ret)
 		return ret;
 	if (mode != AIROHA_XPON_MODE_GPON &&
@@ -209,7 +231,7 @@ int airoha_eth_set_xpon_datapath(struct net_device *netdev,
 	struct airoha_gdm_dev *dev;
 	int ret;
 
-	ret = airoha_eth_get_xpon_gdm2(netdev, &dev);
+	ret = airoha_eth_validate_xpon_gdm2(netdev, &dev);
 	if (ret)
 		return ret;
 
@@ -253,7 +275,7 @@ int airoha_eth_set_xpon_tcont_channel(struct net_device *netdev,
 	u32 mask;
 	int ret;
 
-	ret = airoha_eth_get_xpon_gdm2(netdev, &dev);
+	ret = airoha_eth_validate_xpon_gdm2(netdev, &dev);
 	if (ret)
 		return ret;
 	if (channel >= 32)
@@ -306,7 +328,7 @@ int airoha_eth_register_xpon(struct net_device *netdev,
 	if (!ops || !ops->start || !ops->stop)
 		return -EINVAL;
 
-	ret = airoha_eth_get_xpon_gdm2(netdev, &dev);
+	ret = airoha_eth_validate_xpon_gdm2(netdev, &dev);
 	if (ret)
 		return ret;
 
@@ -344,7 +366,7 @@ void airoha_eth_unregister_xpon(struct net_device *netdev,
 	struct airoha_gdm_dev *dev;
 	unsigned long flags;
 
-	if (airoha_eth_get_xpon_gdm2(netdev, &dev))
+	if (airoha_eth_validate_xpon_gdm2(netdev, &dev))
 		return;
 
 	airoha_eth_xpon_stop(dev);
@@ -370,7 +392,7 @@ void airoha_eth_xpon_update_link(struct net_device *netdev,
 
 	if (!state)
 		return;
-	if (airoha_eth_get_xpon_gdm2(netdev, &dev))
+	if (airoha_eth_validate_xpon_gdm2(netdev, &dev))
 		return;
 	if (!(dev->flags & AIROHA_PRIV_F_XPON_MANAGED))
 		return;
@@ -434,7 +456,7 @@ void airoha_eth_xpon_dump_oam_rx_state(struct net_device *netdev)
 	unsigned int head, tail;
 	int ret;
 
-	ret = airoha_eth_get_xpon_gdm2(netdev, &dev);
+	ret = airoha_eth_validate_xpon_gdm2(netdev, &dev);
 	if (ret)
 		return;
 
@@ -501,7 +523,7 @@ int airoha_eth_register_xpon_oam(struct net_device *netdev,
 	if (!handler || !handler->rx)
 		return -EINVAL;
 
-	ret = airoha_eth_get_xpon_gdm2(netdev, &dev);
+	ret = airoha_eth_validate_xpon_gdm2(netdev, &dev);
 	if (ret)
 		return ret;
 	if (rcu_access_pointer(dev->xpon_oam))
@@ -517,7 +539,7 @@ void airoha_eth_unregister_xpon_oam(struct net_device *netdev,
 {
 	struct airoha_gdm_dev *dev;
 
-	if (airoha_eth_get_xpon_gdm2(netdev, &dev))
+	if (airoha_eth_validate_xpon_gdm2(netdev, &dev))
 		return;
 	if (rcu_access_pointer(dev->xpon_oam) != handler)
 		return;
@@ -3412,7 +3434,7 @@ int airoha_eth_xpon_add_service(struct net_device *netdev,
 	    cfg->tcont >= 32 || cfg->queue >= AIROHA_NUM_QOS_QUEUES)
 		return -EINVAL;
 
-	ret = airoha_eth_get_xpon_gdm2(netdev, &dev);
+	ret = airoha_eth_validate_xpon_gdm2(netdev, &dev);
 	if (ret)
 		return ret;
 
@@ -3446,7 +3468,7 @@ void airoha_eth_xpon_del_service(struct net_device *netdev, u16 gem_port_id)
 	struct airoha_gdm_dev *dev;
 	int i;
 
-	if (airoha_eth_get_xpon_gdm2(netdev, &dev))
+	if (airoha_eth_validate_xpon_gdm2(netdev, &dev))
 		return;
 
 	spin_lock_bh(&dev->xpon_service_lock);
@@ -3463,7 +3485,7 @@ void airoha_eth_xpon_flush_services(struct net_device *netdev)
 {
 	struct airoha_gdm_dev *dev;
 
-	if (airoha_eth_get_xpon_gdm2(netdev, &dev))
+	if (airoha_eth_validate_xpon_gdm2(netdev, &dev))
 		return;
 
 	spin_lock_bh(&dev->xpon_service_lock);
@@ -3683,7 +3705,7 @@ int airoha_eth_xmit_xpon_oam(struct net_device *netdev, struct sk_buff *skb,
 	netdev_tx_t ret;
 	int err;
 
-	err = airoha_eth_get_xpon_gdm2(netdev, &dev);
+	err = airoha_eth_validate_xpon_gdm2(netdev, &dev);
 	if (err)
 		return err;
 	if (!skb || gem_port_id > FIELD_MAX(QDMA_ETH_TXMSG_SP_TAG_MASK))
