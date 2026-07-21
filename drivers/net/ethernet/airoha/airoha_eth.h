@@ -867,6 +867,7 @@ static inline bool airoha_qdma_is_lro_queue(struct airoha_queue *q)
 	}
 }
 
+struct net_device *airoha_eth_get_xpon_netdev(void);
 int airoha_eth_register_xpon(struct net_device *netdev,
 			     enum airoha_xpon_mode mode,
 			     const struct airoha_xpon_link_ops *ops,
