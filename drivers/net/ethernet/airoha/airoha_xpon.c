@@ -2420,8 +2420,15 @@ static void gpon_irq_work_fn(struct work_struct *work)
 		}
 
 		if (active & INT_DYING_GASP) {
+			int ret;
+
 			dev_warn(priv->dev, "GPON dying-gasp interrupt\n");
 			ploam_notify_dying_gasp(priv->ploam);
+			ret = airoha_gpon_omci_send_dying_gasp(&priv->omci);
+			if (ret && ret != -EOPNOTSUPP && ret != -ENOLINK)
+				dev_warn(priv->dev,
+					 "failed to send OMCI dying gasp: %d\n",
+					 ret);
 		}
 
 		if (active & INT_LOSS_GEM_DEL)
