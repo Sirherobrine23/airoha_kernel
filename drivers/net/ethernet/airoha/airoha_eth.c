@@ -2890,22 +2890,22 @@ static int airoha_dev_open(struct net_device *netdev)
 		return -EBUSY;
 	}
 
-	/* xPON owns the optical PHY and reports carrier independently.
-	 * A managed GDM2 port therefore has neither a phy-handle nor a
-	 * fixed-link and must not be connected through phylink.
+	/* xPON owns both the optical PHY and the public link state.
+	 * Do not start phylink without a PHY or fixed-link, otherwise its
+	 * resolver can overwrite the carrier state reported by xPON.
 	 */
-	if (!(dev->flags & AIROHA_PRIV_F_XPON_MANAGED)) {
+	if (dev->flags & AIROHA_PRIV_F_XPON_MANAGED) {
+		netif_carrier_off(netdev);
+	} else {
 		err = phylink_of_phy_connect(dev->phylink,
 					     netdev->dev.of_node, 0);
 		if (err) {
 			netdev_err(netdev, "could not attach PHY: %d\n", err);
 			return err;
 		}
-	}
 
-	phylink_start(dev->phylink);
-	if (dev->flags & AIROHA_PRIV_F_XPON_MANAGED)
-		netif_carrier_off(netdev);
+		phylink_start(dev->phylink);
+	}
 
 	netif_tx_start_all_queues(netdev);
 	err = airoha_set_vip_for_gdm_port(dev, true);
@@ -2970,8 +2970,10 @@ static int airoha_dev_stop(struct net_device *netdev)
 	airoha_qdma_stop(qdma);
 	airoha_update_netdev_features(dev);
 
-	phylink_stop(dev->phylink);
-	phylink_disconnect_phy(dev->phylink);
+	if (!(dev->flags & AIROHA_PRIV_F_XPON_MANAGED)) {
+		phylink_stop(dev->phylink);
+		phylink_disconnect_phy(dev->phylink);
+	}
 
 	return 0;
 }
