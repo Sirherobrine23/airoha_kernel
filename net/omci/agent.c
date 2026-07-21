@@ -994,6 +994,105 @@ static int omci_mib_store_locked(struct omci_agent *agent,
 	return 0;
 }
 
+static struct omci_olt_g *omci_agent_olt_g_locked(struct omci_agent *agent)
+{
+	struct omci_mib_object *object;
+
+	object = omci_mib_lookup(agent, OMCI_CLASS_OLT_G, 0);
+	if (!object || !object->olt_g.valid)
+		return NULL;
+
+	return &object->olt_g;
+}
+
+static void
+omci_agent_profile_state_locked(struct omci_agent *agent,
+				const struct omci_olt_g *olt,
+				struct omci_olt_profile_state *state)
+{
+	u8 effective;
+
+	memset(state, 0, sizeof(*state));
+	state->configured = agent->config.olt_profile;
+	state->forced = agent->config.olt_profile_force;
+
+	if (state->forced != OMCI_OLT_PROFILE_UNSPEC)
+		effective = state->forced;
+	else if (state->configured == OMCI_OLT_PROFILE_AUTO)
+		effective = omci_profile_detect(olt);
+	else
+		effective = state->configured;
+
+	if (effective == OMCI_OLT_PROFILE_UNSPEC ||
+	    effective == OMCI_OLT_PROFILE_AUTO)
+		effective = OMCI_OLT_PROFILE_GENERIC;
+
+	state->effective = effective;
+	state->quirks = omci_profile_quirks(effective);
+	if (olt)
+		state->olt = *olt;
+}
+
+static int
+omci_agent_profile_refresh_locked(struct omci_device *odev,
+				  struct omci_olt_g *olt,
+				  bool *profile_changed)
+{
+	struct omci_agent *agent = &odev->agent;
+	struct omci_olt_profile_state state;
+	bool changed;
+	int ret;
+
+	omci_agent_profile_state_locked(agent, olt, &state);
+	omci_profile_sanitize_olt_g(olt, state.quirks);
+	if (olt)
+		state.olt = *olt;
+
+	changed = agent->profile_effective != state.effective ||
+		  agent->profile_quirks != state.quirks;
+
+	if (odev->ops->set_olt_profile) {
+		ret = odev->ops->set_olt_profile(odev, &state);
+		if (ret)
+			return ret;
+	}
+
+	agent->profile_effective = state.effective;
+	agent->profile_quirks = state.quirks;
+	if (profile_changed)
+		*profile_changed = changed;
+
+	if (changed)
+		dev_info(odev->parent,
+			 "OMCI OLT profile: configured=%s effective=%s forced=%s quirks=%#x\n",
+			 omci_olt_profile_name(state.configured),
+			 omci_olt_profile_name(state.effective),
+			 omci_olt_profile_name(state.forced), state.quirks);
+
+	return 0;
+}
+
+static bool
+omci_agent_profile_has_quirk(const struct omci_agent *agent, u32 quirk)
+{
+	return agent->profile_quirks & quirk;
+}
+
+static bool
+omci_agent_fakes_unsupported(const struct omci_agent *agent)
+{
+	return agent->fake_omci ||
+	       omci_agent_profile_has_quirk(agent,
+					    OMCI_OLT_QUIRK_FAKE_UNSUPPORTED_SUCCESS);
+}
+
+static bool
+omci_agent_should_fake_result(const struct omci_agent *agent, u8 result)
+{
+	return omci_agent_fakes_unsupported(agent) &&
+	       omci_agent_result_can_be_faked(result);
+}
+
 static int omci_mib_add_default(struct omci_agent *agent, u16 class_id,
 				u16 entity_id, const void *data, size_t len)
 {
@@ -1161,6 +1260,10 @@ int omci_agent_init(struct omci_device *odev)
 	agent->config.uni_count = 4;
 	agent->config.onu_type = 2;
 	agent->config.traffic_mgmt_option = 0;
+	agent->config.olt_profile = OMCI_OLT_PROFILE_GENERIC;
+	agent->config.olt_profile_force = OMCI_OLT_PROFILE_UNSPEC;
+	agent->config.olt_profile_source = OMCI_CONFIG_SOURCE_DEFAULT;
+	agent->config.olt_profile_force_source = OMCI_CONFIG_SOURCE_DEFAULT;
 	memcpy(agent->config.serial_number, "OPEN0001", 8);
 	memcpy(agent->config.vendor_id, "OPEN", 4);
 	strscpy(agent->config.version, "OpenWrt", sizeof(agent->config.version));
@@ -1179,6 +1282,8 @@ int omci_agent_init(struct omci_device *odev)
 
 	mutex_lock(&agent->lock);
 	ret = omci_agent_populate_defaults(agent);
+	if (!ret)
+		ret = omci_agent_profile_refresh_locked(odev, NULL, NULL);
 	mutex_unlock(&agent->lock);
 	return ret;
 }
@@ -1229,7 +1334,9 @@ static int omci_agent_hw_update(struct omci_device *odev,
 				u8 action, const u8 *content)
 {
 	const struct omci_device_ops *ops = odev->ops;
+	bool ignore_unsupported_uni;
 	u16 value;
+	int ret;
 
 	switch (object->class_id) {
 	case OMCI_CLASS_TCONT:
@@ -1254,8 +1361,13 @@ static int omci_agent_hw_update(struct omci_device *odev,
 	case OMCI_CLASS_VEIP:
 		if (!ops->set_uni)
 			return 0;
-		return ops->set_uni(odev, object->entity_id,
-				    action != OMCI_MSG_TYPE_DELETE);
+		ret = ops->set_uni(odev, object->entity_id,
+				   action != OMCI_MSG_TYPE_DELETE);
+		ignore_unsupported_uni = odev->agent.profile_quirks &
+					 OMCI_OLT_QUIRK_IGNORE_UNSUPPORTED_UNI;
+		if (ret == -EOPNOTSUPP && ignore_unsupported_uni)
+			return 0;
+		return ret;
 	default:
 		return 0;
 	}
@@ -1342,19 +1454,22 @@ out:
 }
 
 static u8 omci_agent_set_locked(struct omci_device *odev, u16 class_id,
-				u16 entity_id, const u8 *content)
+				u16 entity_id, const u8 *content,
+				bool *profile_changed)
 {
 	struct omci_agent *agent = &odev->agent;
 	struct omci_mib_object *object;
 	u16 mask = get_unaligned_be16(content);
+	bool allow_create;
 	int ret;
 
+	allow_create = agent->permissive || agent->fake_omci ||
+		omci_agent_profile_has_quirk(agent, OMCI_OLT_QUIRK_ALLOW_SET_CREATE);
 	object = omci_get_or_create_locked(agent, class_id, entity_id,
-					   agent->permissive ||
-					   agent->fake_omci);
+					  allow_create);
 	if (!object)
-		return agent->permissive || agent->fake_omci ?
-			OMCI_RESULT_DEVICE_BUSY : OMCI_RESULT_UNKNOWN_INSTANCE;
+		return allow_create ? OMCI_RESULT_DEVICE_BUSY :
+				      OMCI_RESULT_UNKNOWN_INSTANCE;
 	object->attr_mask |= mask;
 	memcpy(object->data, content + 2, sizeof(object->data) - 2);
 	ret = omci_mib_parse_set(object, mask, content + 2,
@@ -1363,6 +1478,11 @@ static u8 omci_agent_set_locked(struct omci_device *odev, u16 class_id,
 		return ret == -ENOSPC ? OMCI_RESULT_DEVICE_BUSY :
 					 OMCI_RESULT_PARAMETER_ERROR;
 	object->origin = OMCI_MIB_ORIGIN_OLT;
+	if (class_id == OMCI_CLASS_OLT_G) {
+		ret = omci_agent_profile_refresh_locked(odev, &object->olt_g, profile_changed);
+		if (ret)
+			return OMCI_RESULT_PROCESSING_ERROR;
+	}
 	ret = omci_agent_hw_update(odev, object, OMCI_MSG_TYPE_SET, content);
 	if (ret)
 		return OMCI_RESULT_PROCESSING_ERROR;
@@ -1371,7 +1491,7 @@ static u8 omci_agent_set_locked(struct omci_device *odev, u16 class_id,
 }
 
 static u8 omci_agent_delete_locked(struct omci_device *odev, u16 class_id,
-				   u16 entity_id)
+				   u16 entity_id, bool *profile_changed)
 {
 	struct omci_agent *agent = &odev->agent;
 	struct omci_mib_object *object;
@@ -1388,6 +1508,11 @@ static u8 omci_agent_delete_locked(struct omci_device *odev, u16 class_id,
 		return OMCI_RESULT_PROCESSING_ERROR;
 	xa_erase(&agent->mib, omci_mib_key(class_id, entity_id));
 	kfree(object);
+	if (class_id == OMCI_CLASS_OLT_G) {
+		ret = omci_agent_profile_refresh_locked(odev, NULL, profile_changed);
+		if (ret)
+			return OMCI_RESULT_PROCESSING_ERROR;
+	}
 	agent->mib_sync++;
 	return OMCI_RESULT_SUCCESS;
 }
@@ -1652,7 +1777,8 @@ static bool omci_agent_build_response_locked(struct omci_device *odev,
 					     const u8 *request,
 					     u8 *response,
 					     bool *unsupported,
-					     bool *fake)
+					     bool *fake,
+					     bool *profile_changed)
 {
 	struct omci_agent *agent = &odev->agent;
 	u8 *content = response + 8;
@@ -1667,20 +1793,21 @@ static bool omci_agent_build_response_locked(struct omci_device *odev,
 	shadow_missing = !omci_mib_lookup(agent, class_id, entity_id);
 	*unsupported = false;
 	*fake = false;
+	*profile_changed = false;
 
 	switch (action) {
 	case OMCI_MSG_TYPE_CREATE:
 		result = omci_agent_create_locked(odev, class_id, entity_id,
 						  request + 8);
-		if (agent->fake_omci && omci_agent_result_can_be_faked(result)) {
+		if (omci_agent_should_fake_result(agent, result)) {
 			result = OMCI_RESULT_SUCCESS;
 			*fake = true;
 		}
 		content[0] = result;
 		break;
 	case OMCI_MSG_TYPE_DELETE:
-		result = omci_agent_delete_locked(odev, class_id, entity_id);
-		if (agent->fake_omci && omci_agent_result_can_be_faked(result)) {
+		result = omci_agent_delete_locked(odev, class_id, entity_id, profile_changed);
+		if (omci_agent_should_fake_result(agent, result)) {
 			result = OMCI_RESULT_SUCCESS;
 			*fake = true;
 		}
@@ -1689,12 +1816,12 @@ static bool omci_agent_build_response_locked(struct omci_device *odev,
 	case OMCI_MSG_TYPE_SET:
 	case OMCI_MSG_TYPE_SET_TABLE:
 		result = omci_agent_set_locked(odev, class_id, entity_id,
-					       request + 8);
-		if (agent->fake_omci && omci_agent_result_can_be_faked(result)) {
+					       request + 8, profile_changed);
+		if (omci_agent_should_fake_result(agent, result)) {
 			result = OMCI_RESULT_SUCCESS;
 			*fake = true;
-		} else if (!result && agent->fake_omci && !agent->permissive &&
-			   shadow_missing) {
+		} else if (!result && omci_agent_fakes_unsupported(agent) &&
+			   !agent->permissive && shadow_missing) {
 			*fake = true;
 		}
 		content[0] = result;
@@ -1707,11 +1834,11 @@ static bool omci_agent_build_response_locked(struct omci_device *odev,
 	case OMCI_MSG_TYPE_GET_CURRENT_DATA:
 		result = omci_agent_get_locked(odev, class_id, entity_id,
 					       request + 8, content);
-		if (agent->fake_omci && omci_agent_result_can_be_faked(result)) {
+		if (omci_agent_should_fake_result(agent, result)) {
 			result = OMCI_RESULT_SUCCESS;
 			*fake = true;
-		} else if (!result && agent->fake_omci && !agent->permissive &&
-			   shadow_missing) {
+		} else if (!result && omci_agent_fakes_unsupported(agent) &&
+			   !agent->permissive && shadow_missing) {
 			*fake = true;
 		}
 		if (result)
@@ -1734,7 +1861,11 @@ static bool omci_agent_build_response_locked(struct omci_device *odev,
 		break;
 	case OMCI_MSG_TYPE_MIB_RESET:
 		omci_agent_reset_olt_objects_locked(agent);
-		content[0] = OMCI_RESULT_SUCCESS;
+		if (omci_agent_profile_refresh_locked(odev, NULL,
+						      profile_changed))
+			content[0] = OMCI_RESULT_PROCESSING_ERROR;
+		else
+			content[0] = OMCI_RESULT_SUCCESS;
 		break;
 	case OMCI_MSG_TYPE_SYNC_TIME:
 	case OMCI_MSG_TYPE_REBOOT:
@@ -1747,7 +1878,7 @@ static bool omci_agent_build_response_locked(struct omci_device *odev,
 	case OMCI_MSG_TYPE_ACTIVATE_SW:
 	case OMCI_MSG_TYPE_COMMIT_SW:
 	default:
-		if (agent->fake_omci) {
+		if (omci_agent_fakes_unsupported(agent)) {
 			content[0] = OMCI_RESULT_SUCCESS;
 			*fake = true;
 		} else {
@@ -1767,6 +1898,7 @@ void omci_agent_receive(struct omci_device *odev, const struct sk_buff *skb)
 	bool unsupported = false;
 	bool duplicate = false;
 	bool fake = false;
+	bool profile_changed = false;
 	bool ani_g_test;
 	int ret;
 
@@ -1794,7 +1926,8 @@ void omci_agent_receive(struct omci_device *odev, const struct sk_buff *skb)
 		duplicate = true;
 	} else {
 		omci_agent_build_response_locked(odev, skb->data, response,
-						 &unsupported, &fake);
+						 &unsupported, &fake,
+						 &profile_changed);
 		memcpy(agent->last_request, skb->data,
 		       OMCI_BASELINE_LEN_NO_MIC);
 		memcpy(agent->last_response, response, sizeof(response));
@@ -1825,6 +1958,8 @@ void omci_agent_receive(struct omci_device *odev, const struct sk_buff *skb)
 	}
 	if (fake)
 		atomic64_inc(&agent->fake_responses);
+	if (profile_changed)
+		omci_device_notify(odev, OMCI_EVENT_PROFILE_CHANGE);
 }
 
 void omci_agent_channel_changed(struct omci_device *odev, bool valid)
@@ -1843,7 +1978,11 @@ int omci_agent_put_status(struct sk_buff *msg, struct omci_device *odev)
 {
 	struct omci_agent *agent = &odev->agent;
 	u32 count;
+	u32 profile_quirks;
 	u16 sync;
+	u8 profile_configured;
+	u8 profile_effective;
+	u8 profile_forced;
 	bool enabled;
 	bool permissive;
 	bool fake_omci;
@@ -1854,11 +1993,21 @@ int omci_agent_put_status(struct sk_buff *msg, struct omci_device *odev)
 	enabled = agent->enabled;
 	permissive = agent->permissive;
 	fake_omci = agent->fake_omci;
+	profile_configured = agent->config.olt_profile;
+	profile_effective = agent->profile_effective;
+	profile_forced = agent->config.olt_profile_force;
+	profile_quirks = agent->profile_quirks;
 	mutex_unlock(&agent->lock);
 
 	if (nla_put_u8(msg, OMCI_ATTR_AGENT_ENABLED, enabled) ||
 	    nla_put_u8(msg, OMCI_ATTR_AGENT_PERMISSIVE, permissive) ||
 	    nla_put_u8(msg, OMCI_ATTR_AGENT_FAKE_OMCI, fake_omci) ||
+	    nla_put_u8(msg, OMCI_ATTR_OLT_PROFILE_CONFIGURED,
+		       profile_configured) ||
+	    nla_put_u8(msg, OMCI_ATTR_OLT_PROFILE_EFFECTIVE,
+		       profile_effective) ||
+	    nla_put_u8(msg, OMCI_ATTR_OLT_PROFILE_FORCED, profile_forced) ||
+	    nla_put_u32(msg, OMCI_ATTR_OLT_PROFILE_QUIRKS, profile_quirks) ||
 	    nla_put_u16(msg, OMCI_ATTR_MIB_SYNC, sync) ||
 	    nla_put_u32(msg, OMCI_ATTR_MIB_OBJECTS, count) ||
 	    nla_put_u64_64bit(msg, OMCI_ATTR_AGENT_RESPONSES,
@@ -1935,6 +2084,16 @@ int omci_agent_config_get(struct omci_device *odev, u16 key,
 		source = &scalar;
 		source_len = sizeof(scalar);
 		break;
+	case OMCI_CONFIG_OLT_PROFILE:
+		scalar = agent->config.olt_profile;
+		source = &scalar;
+		source_len = sizeof(scalar);
+		break;
+	case OMCI_CONFIG_OLT_PROFILE_FORCE:
+		scalar = agent->config.olt_profile_force;
+		source = &scalar;
+		source_len = sizeof(scalar);
+		break;
 	default:
 		mutex_unlock(&agent->lock);
 		return -EINVAL;
@@ -1955,9 +2114,15 @@ int omci_agent_config_set_source(struct omci_device *odev, u16 key,
 				 const void *value, size_t len, u8 source)
 {
 	struct omci_agent *agent = &odev->agent;
+	struct omci_olt_g *olt;
 	u8 normalized[OMCI_MAX_CONFIG_VALUE];
 	size_t normalized_len = sizeof(normalized);
+	u8 old_profile_source;
+	u8 old_force_source;
+	u8 old_profile;
+	u8 old_force;
 	u8 scalar;
+	bool profile_key = false;
 	int ret = 0;
 
 	if (key >= OMCI_CONFIG_SERIAL_NUMBER &&
@@ -1971,6 +2136,10 @@ int omci_agent_config_set_source(struct omci_device *odev, u16 key,
 	}
 
 	mutex_lock(&agent->lock);
+	old_profile = agent->config.olt_profile;
+	old_force = agent->config.olt_profile_force;
+	old_profile_source = agent->config.olt_profile_source;
+	old_force_source = agent->config.olt_profile_force_source;
 	switch (key) {
 	case OMCI_CONFIG_SERIAL_NUMBER:
 		if (len != sizeof(agent->config.serial_number)) {
@@ -2022,6 +2191,34 @@ int omci_agent_config_set_source(struct omci_device *odev, u16 key,
 		memcpy(agent->config.password, value, len);
 		agent->config.password_source = source;
 		break;
+	case OMCI_CONFIG_OLT_PROFILE:
+		if (len != sizeof(scalar)) {
+			ret = -EINVAL;
+			break;
+		}
+		scalar = *(const u8 *)value;
+		if (!omci_profile_valid(scalar)) {
+			ret = -EINVAL;
+			break;
+		}
+		agent->config.olt_profile = scalar;
+		agent->config.olt_profile_source = source;
+		profile_key = true;
+		break;
+	case OMCI_CONFIG_OLT_PROFILE_FORCE:
+		if (len != sizeof(scalar)) {
+			ret = -EINVAL;
+			break;
+		}
+		scalar = *(const u8 *)value;
+		if (!omci_profile_forceable(scalar)) {
+			ret = -EINVAL;
+			break;
+		}
+		agent->config.olt_profile_force = scalar;
+		agent->config.olt_profile_force_source = source;
+		profile_key = true;
+		break;
 	case OMCI_CONFIG_TRAFFIC_MGMT_OPTION:
 	case OMCI_CONFIG_ONU_TYPE:
 	case OMCI_CONFIG_UNI_COUNT:
@@ -2053,8 +2250,22 @@ int omci_agent_config_set_source(struct omci_device *odev, u16 key,
 		ret = -EINVAL;
 		break;
 	}
+	if (!ret && profile_key) {
+		olt = omci_agent_olt_g_locked(agent);
+		ret = omci_agent_profile_refresh_locked(odev, olt, NULL);
+		if (ret) {
+			agent->config.olt_profile = old_profile;
+			agent->config.olt_profile_force = old_force;
+			agent->config.olt_profile_source = old_profile_source;
+			agent->config.olt_profile_force_source = old_force_source;
+		}
+	}
 	if (!ret) {
-		omci_agent_refresh_identity_locked(agent);
+		if (!profile_key)
+			omci_agent_refresh_identity_locked(agent);
+		agent->last_request_len = 0;
+		agent->last_response_len = 0;
+		agent->last_response_fake = false;
 		agent->mib_sync++;
 	}
 	mutex_unlock(&agent->lock);
@@ -2092,6 +2303,12 @@ int omci_agent_config_source_get(struct omci_device *odev, u16 key, u8 *source)
 	case OMCI_CONFIG_PASSWORD:
 		*source = agent->config.password_source;
 		break;
+	case OMCI_CONFIG_OLT_PROFILE:
+		*source = agent->config.olt_profile_source;
+		break;
+	case OMCI_CONFIG_OLT_PROFILE_FORCE:
+		*source = agent->config.olt_profile_force_source;
+		break;
 	default:
 		*source = OMCI_CONFIG_SOURCE_UNSPEC;
 		ret = -ENOENT;
@@ -2122,6 +2339,7 @@ int omci_agent_mib_set(struct omci_device *odev,
 		       const struct omci_mib_object *object)
 {
 	struct omci_agent *agent = &odev->agent;
+	struct omci_mib_object *stored;
 	struct omci_mib_object *local;
 	int ret;
 
@@ -2146,6 +2364,10 @@ int omci_agent_mib_set(struct omci_device *odev,
 	}
 	mutex_lock(&agent->lock);
 	ret = omci_mib_store_locked(agent, local);
+	if (!ret && local->class_id == OMCI_CLASS_OLT_G) {
+		stored = omci_mib_lookup(agent, local->class_id, local->entity_id);
+		ret = omci_agent_profile_refresh_locked(odev, &stored->olt_g, NULL);
+	}
 	if (!ret)
 		agent->mib_sync++;
 	mutex_unlock(&agent->lock);
@@ -2162,6 +2384,8 @@ int omci_agent_mib_delete(struct omci_device *odev, u16 class_id,
 
 	mutex_lock(&agent->lock);
 	object = xa_erase(&agent->mib, omci_mib_key(class_id, entity_id));
+	if (object && class_id == OMCI_CLASS_OLT_G)
+		omci_agent_profile_refresh_locked(odev, NULL, NULL);
 	if (object)
 		agent->mib_sync++;
 	mutex_unlock(&agent->lock);
@@ -2178,6 +2402,7 @@ void omci_agent_mib_reset(struct omci_device *odev, bool all)
 	mutex_lock(&agent->lock);
 	if (!all) {
 		omci_agent_reset_olt_objects_locked(agent);
+		omci_agent_profile_refresh_locked(odev, NULL, NULL);
 		mutex_unlock(&agent->lock);
 		return;
 	}
@@ -2188,6 +2413,7 @@ void omci_agent_mib_reset(struct omci_device *odev, bool all)
 	agent->mib_sync = 0;
 	agent->upload_index = 0;
 	omci_agent_populate_defaults(agent);
+	omci_agent_profile_refresh_locked(odev, NULL, NULL);
 	mutex_unlock(&agent->lock);
 }
 

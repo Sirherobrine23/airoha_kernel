@@ -87,6 +87,22 @@ struct omci_olt_g {
 };
 
 /**
+ * struct omci_olt_profile_state - resolved OLT interoperability policy
+ * @configured: user-selected profile, including auto
+ * @effective: active concrete profile
+ * @forced: forced concrete profile, or OMCI_OLT_PROFILE_UNSPEC
+ * @quirks: OMCI_OLT_QUIRK_* bitmap for @effective
+ * @olt: latest parsed OLT-G identity
+ */
+struct omci_olt_profile_state {
+	u8 configured;
+	u8 effective;
+	u8 forced;
+	u32 quirks;
+	struct omci_olt_g olt;
+};
+
+/**
  * struct omci_vlan_filter_entry - parsed VLAN tagging filter entry
  * @tci: original VLAN tag control information value
  * @vid: VLAN identifier
@@ -209,6 +225,7 @@ struct omci_telemetry {
  * @set_gem_port: configure a GEM port
  * @set_uni: enable or disable a UNI
  * @get_telemetry: refresh PON FEC and optical telemetry
+ * @set_olt_profile: apply a resolved OLT interoperability profile
  */
 struct omci_device_ops {
 	int (*xmit)(struct omci_device *odev, struct sk_buff *skb,
@@ -221,6 +238,8 @@ struct omci_device_ops {
 	int (*set_uni)(struct omci_device *odev, u16 entity_id, bool enable);
 	int (*get_telemetry)(struct omci_device *odev,
 			     struct omci_telemetry *telemetry);
+	int (*set_olt_profile)(struct omci_device *odev,
+			       const struct omci_olt_profile_state *state);
 };
 
 struct omci_device *
@@ -230,6 +249,7 @@ void omci_device_unregister(struct omci_device *odev);
 
 void *omci_device_priv(const struct omci_device *odev);
 u32 omci_device_id(const struct omci_device *odev);
+const char *omci_olt_profile_name(u8 profile);
 
 int omci_identity_load(struct device *dev, struct omci_identity *identity);
 void gpon_random_serial_number(const u8 vendor[4], struct omci_identity *identity);
