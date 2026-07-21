@@ -53,7 +53,8 @@ properties:
   ethernet:
     $ref: /schemas/types.yaml#/definitions/phandle
     description:
-      Phandle to the airoha,eth-mac GDM2 child used as the xPON datapath.
+      Optional phandle to the airoha,eth-mac GDM2 child used as the xPON
+      datapath. When omitted, the driver discovers the EN7523 GDM2 netdev.
 
   airoha,scu:
     $ref: /schemas/types.yaml#/definitions/phandle
@@ -100,7 +101,6 @@ required:
   - compatible
   - reg
   - interrupts
-  - ethernet
   - airoha,scu
   - sfp
 
@@ -137,7 +137,6 @@ examples:
         reg-names = "mac";
         interrupts = <GIC_SPI 42 IRQ_TYPE_LEVEL_HIGH>;
         interrupt-names = "mac";
-        ethernet = <&gdm2>;
         airoha,scu = <&scuclk>;
         airoha,pon-mode = "gpon";
         airoha,gpon-serial-number = [49 4e 56 50 71 43 86 02];
