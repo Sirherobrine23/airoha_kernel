@@ -55,6 +55,8 @@ static const struct nla_policy omci_policy[OMCI_ATTR_MAX + 1] = {
 	[OMCI_ATTR_CLASS_SUPPORT] = { .type = NLA_U8 },
 	[OMCI_ATTR_CLASS_FLAGS] = { .type = NLA_U32 },
 	[OMCI_ATTR_CONFIG_SOURCE] = { .type = NLA_U8 },
+	[OMCI_ATTR_OLT_PROFILE_CONFIGURED] = { .type = NLA_U8 },
+	[OMCI_ATTR_OLT_PROFILE_FORCED] = { .type = NLA_U8 },
 };
 
 static struct omci_device *omci_find_locked(u32 id)
@@ -717,6 +719,7 @@ static int omci_cmd_class_next(struct sk_buff *skb, struct genl_info *info)
 static int omci_cmd_agent_set(struct sk_buff *skb, struct genl_info *info)
 {
 	struct omci_device *odev;
+	bool profile_changed = false;
 	u8 value;
 	int ret = 0;
 
@@ -744,9 +747,29 @@ static int omci_cmd_agent_set(struct sk_buff *skb, struct genl_info *info)
 		value = nla_get_u8(info->attrs[OMCI_ATTR_AGENT_FAKE_OMCI]);
 		ret = omci_agent_config_set(odev, OMCI_CONFIG_AGENT_FAKE_OMCI,
 					    &value, sizeof(value));
+		if (ret)
+			goto out;
+	}
+	if (info->attrs[OMCI_ATTR_OLT_PROFILE_CONFIGURED]) {
+		value = nla_get_u8(info->attrs[OMCI_ATTR_OLT_PROFILE_CONFIGURED]);
+		ret = omci_agent_config_set(odev, OMCI_CONFIG_OLT_PROFILE,
+					    &value, sizeof(value));
+		if (ret)
+			goto out;
+		profile_changed = true;
+	}
+	if (info->attrs[OMCI_ATTR_OLT_PROFILE_FORCED]) {
+		value = nla_get_u8(info->attrs[OMCI_ATTR_OLT_PROFILE_FORCED]);
+		ret = omci_agent_config_set(odev, OMCI_CONFIG_OLT_PROFILE_FORCE,
+					    &value, sizeof(value));
+		if (ret)
+			goto out;
+		profile_changed = true;
 	}
 	if (!ret)
-		omci_device_notify(odev, OMCI_EVENT_CONFIG_CHANGE);
+		omci_device_notify(odev, profile_changed ?
+				   OMCI_EVENT_PROFILE_CHANGE :
+				   OMCI_EVENT_CONFIG_CHANGE);
 out:
 	mutex_unlock(&omci_devices_lock);
 	return ret;
@@ -821,8 +844,14 @@ static int omci_cmd_config_set(struct sk_buff *skb, struct genl_info *info)
 	}
 	ret = omci_agent_config_set(odev, key, nla_data(value),
 				    nla_len(value));
-	if (!ret)
-		omci_device_notify(odev, OMCI_EVENT_CONFIG_CHANGE);
+	if (!ret) {
+		u8 event = OMCI_EVENT_CONFIG_CHANGE;
+
+		if (key == OMCI_CONFIG_OLT_PROFILE ||
+		    key == OMCI_CONFIG_OLT_PROFILE_FORCE)
+			event = OMCI_EVENT_PROFILE_CHANGE;
+		omci_device_notify(odev, event);
+	}
 out:
 	mutex_unlock(&omci_devices_lock);
 	return ret;
