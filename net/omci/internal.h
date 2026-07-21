@@ -76,6 +76,7 @@ struct omci_agent {
 	bool enabled;
 	bool permissive;
 	bool fake_omci;
+	bool operational;
 	u8 profile_effective;
 	u32 profile_quirks;
 

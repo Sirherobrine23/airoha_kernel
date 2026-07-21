@@ -15,6 +15,7 @@
  */
 
 #include <linux/bitfield.h>
+#include <linux/bitmap.h>
 #include <linux/delay.h>
 #include <linux/etherdevice.h>
 #include <linux/ethtool.h>
@@ -693,6 +694,13 @@ struct xpon_priv {
 	/* Protects the active OMCI OLT interoperability policy. */
 	struct mutex		omci_profile_lock;
 	struct omci_olt_profile_state omci_profile;
+
+	/* Protects the GPON carrier readiness inputs. */
+	struct mutex		link_state_lock;
+	DECLARE_BITMAP(service_gems, GPON_MAX_GEM_ID);
+	bool			gpon_o5;
+	bool			omci_operational;
+	bool			netdev_link;
 	u16			tcont_alloc_id[GPON_MAX_TCONT];
 	u16			tcont_entity_id[GPON_MAX_TCONT];
 
@@ -701,6 +709,30 @@ struct xpon_priv {
 	u32			bit_delay;
 
 };
+
+static void gpon_refresh_netdev_link(struct xpon_priv *priv, bool force)
+{
+	bool started, o5, omci, service, link, changed;
+
+	mutex_lock(&priv->link_state_lock);
+	started = READ_ONCE(priv->started);
+	o5 = priv->gpon_o5;
+	omci = priv->omci_operational;
+	service = !bitmap_empty(priv->service_gems, GPON_MAX_GEM_ID);
+	link = started && o5 && omci && service;
+	changed = force || priv->netdev_link != link;
+	priv->netdev_link = link;
+	mutex_unlock(&priv->link_state_lock);
+
+	if (!changed)
+		return;
+
+	dev_info(priv->dev,
+		 "GPON netdev link %s: O5=%u OMCI=%u service=%u started=%u\n",
+		 link ? "ready" : "not-ready", o5, omci, service, started);
+	airoha_xpon_update_netdev_link(priv->gdm_dev,
+				       AIROHA_XPON_MODE_GPON, link);
+}
 
 /* -----------------------------------------------------------------------
  * Register accessors
@@ -1781,6 +1813,17 @@ int airoha_gpon_omci_hw_set_olt_profile(void *hw_priv,
 	return 0;
 }
 
+void airoha_gpon_omci_hw_set_operational(void *hw_priv, bool operational)
+{
+	struct xpon_priv *priv = hw_priv;
+
+	mutex_lock(&priv->link_state_lock);
+	priv->omci_operational = operational;
+	mutex_unlock(&priv->link_state_lock);
+
+	gpon_refresh_netdev_link(priv, false);
+}
+
 int airoha_gpon_omci_hw_set_tcont(void *hw_priv, u16 entity_id,
 				  u16 alloc_id, bool valid)
 {
@@ -1823,6 +1866,9 @@ int airoha_gpon_omci_hw_set_gem_port(void *hw_priv, u16 entity_id,
 		return ret;
 
 	airoha_eth_xpon_del_service(priv->gdm_dev, gem_port_id);
+	mutex_lock(&priv->link_state_lock);
+	__clear_bit(gem_port_id, priv->service_gems);
+	mutex_unlock(&priv->link_state_lock);
 
 	if (valid && direction != OMCI_GEM_PORT_DIRECTION_ANI_TO_UNI) {
 		ret = gpon_tcont_entity_to_index(priv, tcont_entity_id,
@@ -1834,8 +1880,13 @@ int airoha_gpon_omci_hw_set_gem_port(void *hw_priv, u16 entity_id,
 		ret = airoha_eth_xpon_add_service(priv->gdm_dev, &service);
 		if (ret)
 			goto err_disable_gem;
+
+		mutex_lock(&priv->link_state_lock);
+		__set_bit(gem_port_id, priv->service_gems);
+		mutex_unlock(&priv->link_state_lock);
 	}
 
+	gpon_refresh_netdev_link(priv, false);
 	dev_info(priv->dev,
 		 "OMCI GEM port %u %s (ME %#x T-CONT %#x direction %u channel %u)\n",
 		 gem_port_id, valid ? "enabled" : "disabled", entity_id,
@@ -1844,6 +1895,7 @@ int airoha_gpon_omci_hw_set_gem_port(void *hw_priv, u16 entity_id,
 
 err_disable_gem:
 	gpon_set_gem_port_hw(priv, gem_port_id, false, false);
+	gpon_refresh_netdev_link(priv, false);
 	return ret;
 }
 
@@ -1975,6 +2027,11 @@ static void gpon_cb_state_changed(void *hw_priv, enum gpon_state state)
 	if (state == GPON_O4_RANGING || state == GPON_O5_OPERATION)
 		gpon_dump_activation_regs(priv, "state transition");
 
+	mutex_lock(&priv->link_state_lock);
+	priv->gpon_o5 = state == GPON_O5_OPERATION;
+	mutex_unlock(&priv->link_state_lock);
+	gpon_refresh_netdev_link(priv, false);
+
 	switch (state) {
 	case GPON_O2_STANDBY:
 		/*
@@ -1997,28 +2054,20 @@ static void gpon_cb_state_changed(void *hw_priv, enum gpon_state state)
 		cancel_delayed_work(&priv->to1_work);
 		dev_info(priv->dev, "GPON O5: operational, ONU-ID=%u\n",
 			 ploam_get_onu_id(priv->ploam));
-		airoha_xpon_update_netdev_link(priv->gdm_dev,
-					       AIROHA_XPON_MODE_GPON, true);
 		break;
 	case GPON_O6_POPUP:
 		/* Cancel TO1, start TO2 */
 		cancel_delayed_work(&priv->to1_work);
 		mod_delayed_work(priv->fsm_wq, &priv->to2_work,
 				 msecs_to_jiffies(GPON_TO2_MS));
-		airoha_xpon_update_netdev_link(priv->gdm_dev,
-					       AIROHA_XPON_MODE_GPON, false);
 		break;
 	case GPON_O7_EMERGENCY_STOP:
 		cancel_delayed_work(&priv->to1_work);
 		cancel_delayed_work(&priv->to2_work);
-		airoha_xpon_update_netdev_link(priv->gdm_dev,
-					       AIROHA_XPON_MODE_GPON, false);
 		break;
 	case GPON_O1_INITIAL:
 		cancel_delayed_work(&priv->to1_work);
 		cancel_delayed_work(&priv->to2_work);
-		airoha_xpon_update_netdev_link(priv->gdm_dev,
-					       AIROHA_XPON_MODE_GPON, false);
 		break;
 	default:
 		break;
@@ -2218,8 +2267,12 @@ static void gpon_disable(struct xpon_priv *priv)
 
 	ploam_reset(priv->ploam);
 	airoha_gpon_omci_set_state(&priv->omci, GPON_O1_INITIAL);
-	airoha_xpon_update_netdev_link(priv->gdm_dev,
-				       AIROHA_XPON_MODE_GPON, false);
+	mutex_lock(&priv->link_state_lock);
+	priv->gpon_o5 = false;
+	priv->omci_operational = false;
+	bitmap_zero(priv->service_gems, GPON_MAX_GEM_ID);
+	mutex_unlock(&priv->link_state_lock);
+	gpon_refresh_netdev_link(priv, true);
 	dev_info(priv->dev, "GPON MAC stopped, state reset to %s\n",
 		 gpon_state_name(ploam_get_state(priv->ploam)));
 }
@@ -2551,8 +2604,7 @@ static int gpon_link_start(void *data)
 		return 0;
 
 	WRITE_ONCE(priv->started, true);
-	airoha_xpon_update_netdev_link(priv->gdm_dev,
-				       AIROHA_XPON_MODE_GPON, false);
+	gpon_refresh_netdev_link(priv, true);
 	if (priv->sfp_bus)
 		sfp_upstream_start(priv->sfp_bus);
 
@@ -2568,8 +2620,7 @@ static void gpon_link_stop(void *data)
 
 	WRITE_ONCE(priv->started, false);
 	cancel_delayed_work_sync(&priv->restart_work);
-	airoha_xpon_update_netdev_link(priv->gdm_dev,
-				       AIROHA_XPON_MODE_GPON, false);
+	gpon_refresh_netdev_link(priv, true);
 	if (priv->sfp_bus)
 		sfp_upstream_stop(priv->sfp_bus);
 }
@@ -3437,6 +3488,8 @@ static int airoha_xpon_init_gpon(struct platform_device *pdev,
 
 	mutex_init(&priv->tcont_lock);
 	mutex_init(&priv->omci_profile_lock);
+	mutex_init(&priv->link_state_lock);
+	bitmap_zero(priv->service_gems, GPON_MAX_GEM_ID);
 	memset(priv->tcont_alloc_id, 0xff, sizeof(priv->tcont_alloc_id));
 	memset(priv->tcont_entity_id, 0xff, sizeof(priv->tcont_entity_id));
 
