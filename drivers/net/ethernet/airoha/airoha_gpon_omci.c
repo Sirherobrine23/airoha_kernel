@@ -5,7 +5,6 @@
 
 #include <linux/err.h>
 #include <linux/netdevice.h>
-#include <linux/property.h>
 #include <linux/skbuff.h>
 #include <net/omci.h>
 
@@ -78,6 +77,15 @@ static void airoha_gpon_omci_set_operational(struct omci_device *odev,
 	airoha_gpon_omci_hw_set_operational(omci->hw_priv, operational);
 }
 
+static void
+airoha_gpon_omci_config_changed(struct omci_device *odev, u16 key,
+				const struct omci_identity *identity)
+{
+	struct airoha_gpon_omci *omci = omci_device_priv(odev);
+
+	airoha_gpon_omci_hw_config_changed(omci->hw_priv, key, identity);
+}
+
 static const struct omci_device_ops airoha_gpon_omci_ops = {
 	.xmit = airoha_gpon_omci_xmit,
 	.set_tcont = airoha_gpon_omci_set_tcont,
@@ -86,6 +94,7 @@ static const struct omci_device_ops airoha_gpon_omci_ops = {
 	.get_telemetry = airoha_gpon_omci_get_telemetry,
 	.set_olt_profile = airoha_gpon_omci_set_olt_profile,
 	.set_operational = airoha_gpon_omci_set_operational,
+	.config_changed = airoha_gpon_omci_config_changed,
 };
 
 int airoha_gpon_omci_register(struct airoha_gpon_omci *omci,
@@ -94,6 +103,8 @@ int airoha_gpon_omci_register(struct airoha_gpon_omci *omci,
 			      void *hw_priv,
 			      const struct omci_identity *identity)
 {
+	int ret;
+
 	omci->gdm_dev = gdm_dev;
 	omci->hw_priv = hw_priv;
 	omci->odev = omci_device_register(dev, gdm_dev->ifindex,
@@ -103,19 +114,14 @@ int airoha_gpon_omci_register(struct airoha_gpon_omci *omci,
 		return PTR_ERR(omci->odev);
 
 	omci_device_set_identity_info(omci->odev, identity);
-	if (device_property_read_bool(dev, "omci-dying-gasp")) {
-		int ret;
-
-		ret = omci_device_set_dying_gasp_enabled(omci->odev, true,
-							 OMCI_CONFIG_SOURCE_DEVICE_TREE);
-		if (ret) {
-			omci_device_unregister(omci->odev);
-			omci->odev = NULL;
-			return ret;
-		}
+	ret = omci_device_set_dying_gasp_enabled(omci->odev, true,
+						 OMCI_CONFIG_SOURCE_DRIVER);
+	if (ret) {
+		omci_device_unregister(omci->odev);
+		omci->odev = NULL;
 	}
 
-	return 0;
+	return ret;
 }
 
 void airoha_gpon_omci_unregister(struct airoha_gpon_omci *omci)
