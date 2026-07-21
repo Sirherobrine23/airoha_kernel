@@ -144,6 +144,30 @@ static bool airoha_xpon_phy_los(struct airoha_xpon_phy *priv)
 		XPON_TRANS_STATUS_LOS;
 }
 
+int airoha_xpon_phy_get_link_state(struct phy *phy, bool *ready, bool *los)
+{
+	struct airoha_xpon_phy *priv;
+
+	if (!phy || !ready || !los)
+		return -EINVAL;
+
+	priv = phy_get_drvdata(phy);
+	if (!priv)
+		return -ENODEV;
+
+	if (!READ_ONCE(priv->powered)) {
+		*ready = false;
+		*los = true;
+		return 0;
+	}
+
+	*ready = airoha_xpon_phy_ready(priv);
+	*los = airoha_xpon_phy_los(priv);
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(airoha_xpon_phy_get_link_state);
+
 static int airoha_xpon_phy_get_active_gpon(
 	struct phy *phy, struct airoha_xpon_phy **privp)
 {
