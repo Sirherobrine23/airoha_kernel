@@ -5,6 +5,7 @@
 
 #include <linux/err.h>
 #include <linux/netdevice.h>
+#include <linux/property.h>
 #include <linux/skbuff.h>
 #include <net/omci.h>
 
@@ -102,6 +103,18 @@ int airoha_gpon_omci_register(struct airoha_gpon_omci *omci,
 		return PTR_ERR(omci->odev);
 
 	omci_device_set_identity_info(omci->odev, identity);
+	if (device_property_read_bool(dev, "omci-dying-gasp")) {
+		int ret;
+
+		ret = omci_device_set_dying_gasp_enabled(omci->odev, true,
+							 OMCI_CONFIG_SOURCE_DEVICE_TREE);
+		if (ret) {
+			omci_device_unregister(omci->odev);
+			omci->odev = NULL;
+			return ret;
+		}
+	}
+
 	return 0;
 }
 
@@ -127,6 +140,11 @@ void airoha_gpon_omci_set_channel(struct airoha_gpon_omci *omci,
 void airoha_gpon_omci_set_state(struct airoha_gpon_omci *omci, u8 state)
 {
 	omci_device_set_state(omci->odev, state);
+}
+
+int airoha_gpon_omci_send_dying_gasp(struct airoha_gpon_omci *omci)
+{
+	return omci_device_send_dying_gasp(omci->odev);
 }
 
 bool airoha_gpon_omci_receive(void *data, struct sk_buff *skb,

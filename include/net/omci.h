@@ -264,6 +264,9 @@ void omci_device_set_onu_id(struct omci_device *odev, u16 onu_id);
 void omci_device_set_channel(struct omci_device *odev, u16 gem_port_id,
 			     bool valid);
 void omci_device_set_state(struct omci_device *odev, u8 state);
+int omci_device_set_dying_gasp_enabled(struct omci_device *odev,
+				       bool enabled, u8 source);
+int omci_device_send_dying_gasp(struct omci_device *odev);
 void omci_device_receive(struct omci_device *odev, struct sk_buff *skb,
 			 u16 gem_port_id, u32 flags);
 
