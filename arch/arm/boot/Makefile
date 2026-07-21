@@ -21,7 +21,7 @@ endif
 PHYS_OFFSET := $(CONFIG_PHYS_OFFSET)
 export ZRELADDR PARAMS_PHYS PHYS_OFFSET
 
-targets := Image zImage xipImage bootpImage uImage
+targets := Image zImage xipImage bootpImage uImage vmlinuz
 
 ifeq ($(CONFIG_XIP_KERNEL),y)
 
@@ -58,6 +58,9 @@ $(obj)/compressed/vmlinux: $(obj)/Image FORCE
 
 $(obj)/zImage:	$(obj)/compressed/vmlinux FORCE
 	$(call if_changed,objcopy)
+
+$(obj)/vmlinuz:	$(obj)/compressed/vmlinux FORCE
+	$(call if_changed,copy)
 
 endif
 
