@@ -28,6 +28,7 @@ void airoha_gpon_omci_set_onu_id(struct airoha_gpon_omci *omci, u16 onu_id);
 void airoha_gpon_omci_set_channel(struct airoha_gpon_omci *omci,
 				  u16 gem_port_id, bool valid);
 void airoha_gpon_omci_set_state(struct airoha_gpon_omci *omci, u8 state);
+int airoha_gpon_omci_send_dying_gasp(struct airoha_gpon_omci *omci);
 bool airoha_gpon_omci_receive(void *data, struct sk_buff *skb,
 			      u16 gem_port_id, u32 flags);
 

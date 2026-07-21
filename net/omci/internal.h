@@ -64,6 +64,7 @@ struct omci_agent_config {
 	u8 olt_profile_force;
 	u8 olt_profile_source;
 	u8 olt_profile_force_source;
+	u8 dying_gasp_source;
 };
 
 struct omci_agent {
@@ -76,7 +77,9 @@ struct omci_agent {
 	bool enabled;
 	bool permissive;
 	bool fake_omci;
+	bool dying_gasp;
 	bool operational;
+	u8 alarm_sequence;
 	u8 profile_effective;
 	u32 profile_quirks;
 
@@ -135,6 +138,7 @@ int omci_agent_init(struct omci_device *odev);
 void omci_agent_cleanup(struct omci_device *odev);
 void omci_agent_receive(struct omci_device *odev, const struct sk_buff *skb);
 void omci_agent_channel_changed(struct omci_device *odev, bool valid);
+int omci_agent_send_dying_gasp(struct omci_device *odev);
 int omci_agent_put_status(struct sk_buff *msg, struct omci_device *odev);
 int omci_agent_config_get(struct omci_device *odev, u16 key,
 			  void *value, size_t *len);
