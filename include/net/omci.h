@@ -227,6 +227,7 @@ struct omci_telemetry {
  * @get_telemetry: refresh PON FEC and optical telemetry
  * @set_olt_profile: apply a resolved OLT interoperability profile
  * @set_operational: report whether the in-kernel OMCI agent is operational
+ * @config_changed: report a normalized runtime OMCI configuration change
  */
 struct omci_device_ops {
 	int (*xmit)(struct omci_device *odev, struct sk_buff *skb,
@@ -242,6 +243,8 @@ struct omci_device_ops {
 	int (*set_olt_profile)(struct omci_device *odev,
 			       const struct omci_olt_profile_state *state);
 	void (*set_operational)(struct omci_device *odev, bool operational);
+	void (*config_changed)(struct omci_device *odev, u16 key,
+			       const struct omci_identity *identity);
 };
 
 struct omci_device *
