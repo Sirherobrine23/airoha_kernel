@@ -1891,6 +1891,14 @@ static bool omci_agent_build_response_locked(struct omci_device *odev,
 	return true;
 }
 
+static void
+omci_agent_report_operational(struct omci_device *odev, bool operational)
+{
+	if (odev->ops->set_operational)
+		odev->ops->set_operational(odev, operational);
+	omci_device_notify(odev, OMCI_EVENT_OPERATIONAL_CHANGE);
+}
+
 void omci_agent_receive(struct omci_device *odev, const struct sk_buff *skb)
 {
 	struct omci_agent *agent = &odev->agent;
@@ -1899,6 +1907,8 @@ void omci_agent_receive(struct omci_device *odev, const struct sk_buff *skb)
 	bool duplicate = false;
 	bool fake = false;
 	bool profile_changed = false;
+	bool operational_changed = false;
+	bool channel_up;
 	bool ani_g_test;
 	int ret;
 
@@ -1941,6 +1951,19 @@ void omci_agent_receive(struct omci_device *odev, const struct sk_buff *skb)
 	ret = omci_device_xmit(odev, response, sizeof(response));
 	if (!ret) {
 		atomic64_inc(&agent->responses);
+		if (!duplicate && !fake && !unsupported) {
+			spin_lock_bh(&odev->state_lock);
+			channel_up = odev->channel_up;
+			spin_unlock_bh(&odev->state_lock);
+
+			mutex_lock(&agent->lock);
+			if (channel_up && agent->enabled &&
+			    !agent->operational) {
+				agent->operational = true;
+				operational_changed = true;
+			}
+			mutex_unlock(&agent->lock);
+		}
 		if (ani_g_test) {
 			ret = omci_agent_send_ani_g_test_result(odev,
 								skb->data);
@@ -1960,18 +1983,26 @@ void omci_agent_receive(struct omci_device *odev, const struct sk_buff *skb)
 		atomic64_inc(&agent->fake_responses);
 	if (profile_changed)
 		omci_device_notify(odev, OMCI_EVENT_PROFILE_CHANGE);
+	if (operational_changed)
+		omci_agent_report_operational(odev, true);
 }
 
 void omci_agent_channel_changed(struct omci_device *odev, bool valid)
 {
 	struct omci_agent *agent = &odev->agent;
+	bool operational_changed;
 
 	mutex_lock(&agent->lock);
+	operational_changed = agent->operational;
+	agent->operational = false;
 	agent->last_request_len = 0;
 	agent->last_response_len = 0;
 	agent->last_response_fake = false;
 	agent->upload_index = 0;
 	mutex_unlock(&agent->lock);
+
+	if (operational_changed)
+		omci_agent_report_operational(odev, false);
 }
 
 int omci_agent_put_status(struct sk_buff *msg, struct omci_device *odev)
@@ -1986,6 +2017,7 @@ int omci_agent_put_status(struct sk_buff *msg, struct omci_device *odev)
 	bool enabled;
 	bool permissive;
 	bool fake_omci;
+	bool operational;
 
 	mutex_lock(&agent->lock);
 	count = omci_mib_count_locked(agent);
@@ -1993,6 +2025,7 @@ int omci_agent_put_status(struct sk_buff *msg, struct omci_device *odev)
 	enabled = agent->enabled;
 	permissive = agent->permissive;
 	fake_omci = agent->fake_omci;
+	operational = agent->operational;
 	profile_configured = agent->config.olt_profile;
 	profile_effective = agent->profile_effective;
 	profile_forced = agent->config.olt_profile_force;
@@ -2000,6 +2033,7 @@ int omci_agent_put_status(struct sk_buff *msg, struct omci_device *odev)
 	mutex_unlock(&agent->lock);
 
 	if (nla_put_u8(msg, OMCI_ATTR_AGENT_ENABLED, enabled) ||
+	    nla_put_u8(msg, OMCI_ATTR_AGENT_OPERATIONAL, operational) ||
 	    nla_put_u8(msg, OMCI_ATTR_AGENT_PERMISSIVE, permissive) ||
 	    nla_put_u8(msg, OMCI_ATTR_AGENT_FAKE_OMCI, fake_omci) ||
 	    nla_put_u8(msg, OMCI_ATTR_OLT_PROFILE_CONFIGURED,
@@ -2123,6 +2157,7 @@ int omci_agent_config_set_source(struct omci_device *odev, u16 key,
 	u8 old_force;
 	u8 scalar;
 	bool profile_key = false;
+	bool operational_changed = false;
 	int ret = 0;
 
 	if (key >= OMCI_CONFIG_SERIAL_NUMBER &&
@@ -2236,8 +2271,13 @@ int omci_agent_config_set_source(struct omci_device *odev, u16 key,
 			agent->config.onu_type = scalar;
 		else if (key == OMCI_CONFIG_UNI_COUNT)
 			agent->config.uni_count = clamp_t(u8, scalar, 1, 16);
-		else if (key == OMCI_CONFIG_AGENT_ENABLED)
+		else if (key == OMCI_CONFIG_AGENT_ENABLED) {
 			agent->enabled = !!scalar;
+			if (!agent->enabled && agent->operational) {
+				agent->operational = false;
+				operational_changed = true;
+			}
+		}
 		else if (key == OMCI_CONFIG_AGENT_PERMISSIVE)
 			agent->permissive = !!scalar;
 		else
@@ -2269,6 +2309,8 @@ int omci_agent_config_set_source(struct omci_device *odev, u16 key,
 		agent->mib_sync++;
 	}
 	mutex_unlock(&agent->lock);
+	if (operational_changed)
+		omci_agent_report_operational(odev, false);
 	return ret;
 }
 

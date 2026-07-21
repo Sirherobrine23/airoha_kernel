@@ -69,6 +69,14 @@ airoha_gpon_omci_set_olt_profile(struct omci_device *odev,
 	return airoha_gpon_omci_hw_set_olt_profile(omci->hw_priv, state);
 }
 
+static void airoha_gpon_omci_set_operational(struct omci_device *odev,
+					     bool operational)
+{
+	struct airoha_gpon_omci *omci = omci_device_priv(odev);
+
+	airoha_gpon_omci_hw_set_operational(omci->hw_priv, operational);
+}
+
 static const struct omci_device_ops airoha_gpon_omci_ops = {
 	.xmit = airoha_gpon_omci_xmit,
 	.set_tcont = airoha_gpon_omci_set_tcont,
@@ -76,6 +84,7 @@ static const struct omci_device_ops airoha_gpon_omci_ops = {
 	.set_uni = airoha_gpon_omci_set_uni,
 	.get_telemetry = airoha_gpon_omci_get_telemetry,
 	.set_olt_profile = airoha_gpon_omci_set_olt_profile,
+	.set_operational = airoha_gpon_omci_set_operational,
 };
 
 int airoha_gpon_omci_register(struct airoha_gpon_omci *omci,

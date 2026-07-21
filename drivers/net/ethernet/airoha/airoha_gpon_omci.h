@@ -41,5 +41,6 @@ int airoha_gpon_omci_hw_get_telemetry(void *hw_priv,
 				      struct omci_telemetry *telemetry);
 int airoha_gpon_omci_hw_set_olt_profile(void *hw_priv,
 					const struct omci_olt_profile_state *state);
+void airoha_gpon_omci_hw_set_operational(void *hw_priv, bool operational);
 
 #endif /* _AIROHA_GPON_OMCI_H */
