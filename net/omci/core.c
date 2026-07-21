@@ -35,6 +35,7 @@ static const struct nla_policy omci_policy[OMCI_ATTR_MAX + 1] = {
 	[OMCI_ATTR_AGENT_ENABLED] = { .type = NLA_U8 },
 	[OMCI_ATTR_AGENT_PERMISSIVE] = { .type = NLA_U8 },
 	[OMCI_ATTR_AGENT_FAKE_OMCI] = { .type = NLA_U8 },
+	[OMCI_ATTR_AGENT_DYING_GASP] = { .type = NLA_U8 },
 	[OMCI_ATTR_CLASS_ID] = { .type = NLA_U16 },
 	[OMCI_ATTR_ENTITY_ID] = { .type = NLA_U16 },
 	[OMCI_ATTR_ATTR_MASK] = { .type = NLA_U16 },
@@ -750,6 +751,14 @@ static int omci_cmd_agent_set(struct sk_buff *skb, struct genl_info *info)
 		if (ret)
 			goto out;
 	}
+	if (info->attrs[OMCI_ATTR_AGENT_DYING_GASP]) {
+		value = nla_get_u8(info->attrs[OMCI_ATTR_AGENT_DYING_GASP]);
+		ret = omci_agent_config_set(odev,
+					    OMCI_CONFIG_AGENT_DYING_GASP,
+					    &value, sizeof(value));
+		if (ret)
+			goto out;
+	}
 	if (info->attrs[OMCI_ATTR_OLT_PROFILE_CONFIGURED]) {
 		value = nla_get_u8(info->attrs[OMCI_ATTR_OLT_PROFILE_CONFIGURED]);
 		ret = omci_agent_config_set(odev, OMCI_CONFIG_OLT_PROFILE,
@@ -1401,6 +1410,29 @@ void omci_device_set_identity(struct omci_device *odev,
 	omci_device_set_identity_info(odev, &identity);
 }
 EXPORT_SYMBOL_GPL(omci_device_set_identity);
+
+int omci_device_set_dying_gasp_enabled(struct omci_device *odev,
+				       bool enabled, u8 source)
+{
+	u8 value = enabled;
+
+	if (!odev || source > OMCI_CONFIG_SOURCE_NETLINK)
+		return -EINVAL;
+
+	return omci_agent_config_set_source(odev,
+					    OMCI_CONFIG_AGENT_DYING_GASP,
+					    &value, sizeof(value), source);
+}
+EXPORT_SYMBOL_GPL(omci_device_set_dying_gasp_enabled);
+
+int omci_device_send_dying_gasp(struct omci_device *odev)
+{
+	if (!odev)
+		return -EINVAL;
+
+	return omci_agent_send_dying_gasp(odev);
+}
+EXPORT_SYMBOL_GPL(omci_device_send_dying_gasp);
 
 void omci_device_set_onu_id(struct omci_device *odev, u16 onu_id)
 {
