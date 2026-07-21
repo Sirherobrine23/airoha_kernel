@@ -1588,7 +1588,7 @@ config ARCH_DEFAULT_CRASH_DUMP
 
 config AUTO_ZRELADDR
 	bool "Auto calculation of the decompressed kernel image address" if !ARCH_MULTIPLATFORM
-	default !(ARCH_FOOTBRIDGE || ARCH_RPC || ARCH_SA1100)
+	default !(ARCH_FOOTBRIDGE || ARCH_RPC || ARCH_SA1100 || ARCH_AIROHA)
 	help
 	  ZRELADDR is the physical address where the decompressed kernel
 	  image will be placed. If AUTO_ZRELADDR is selected, the address
