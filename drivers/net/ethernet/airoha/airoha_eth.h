@@ -695,6 +695,7 @@ struct airoha_gdm_dev {
 
 	struct phylink *phylink;
 	struct phylink_config phylink_config;
+	bool phylink_started;
 };
 
 struct airoha_gdm_port {
