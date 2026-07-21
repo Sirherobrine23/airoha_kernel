@@ -84,11 +84,5 @@ properties:
         minItems: 1
         maxItems: 20
 
-  omci-dying-gasp:
-    type: boolean
-    description:
-      Enable a best-effort ONU-G dying-gasp alarm notification over OMCI in
-      addition to the GPON PLOAM dying-gasp message. Disabled by default.
-
 additionalProperties: true
 ...
