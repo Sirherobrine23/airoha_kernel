@@ -139,6 +139,8 @@ struct ploam_priv;
 struct ploam_priv *ploam_alloc(const struct ploam_ops *ops, void *hw_priv,
 			       const u8 sn[8], const u8 passwd[10]);
 void ploam_free(struct ploam_priv *pp);
+void ploam_set_identity(struct ploam_priv *pp, const u8 sn[8],
+			const u8 passwd[10]);
 void ploam_reset(struct ploam_priv *pp);
 void ploam_start(struct ploam_priv *pp);
 
