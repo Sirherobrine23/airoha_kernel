@@ -610,6 +610,13 @@ void ploam_free(struct ploam_priv *pp)
 	kfree(pp);
 }
 
+void ploam_set_identity(struct ploam_priv *pp, const u8 sn[8],
+			const u8 passwd[10])
+{
+	memcpy(pp->sn, sn, sizeof(pp->sn));
+	memcpy(pp->passwd, passwd, sizeof(pp->passwd));
+}
+
 void ploam_reset(struct ploam_priv *pp)
 {
 	pp->state                = GPON_O1_INITIAL;
