@@ -60,6 +60,10 @@ struct omci_agent_config {
 	u8 traffic_mgmt_option;
 	u8 onu_type;
 	u8 uni_count;
+	u8 olt_profile;
+	u8 olt_profile_force;
+	u8 olt_profile_source;
+	u8 olt_profile_force_source;
 };
 
 struct omci_agent {
@@ -72,6 +76,8 @@ struct omci_agent {
 	bool enabled;
 	bool permissive;
 	bool fake_omci;
+	u8 profile_effective;
+	u32 profile_quirks;
 
 	u8 last_request[OMCI_BASELINE_LEN_NO_MIC];
 	u8 last_response[OMCI_BASELINE_LEN_NO_MIC];
@@ -152,5 +158,11 @@ const char *omci_agent_class_name(u16 class_id);
 int omci_agent_class_get(u16 class_id, struct omci_me_class *class);
 int omci_agent_class_next(u32 index, struct omci_me_class *class,
 			  u32 *next_index);
+
+bool omci_profile_valid(u8 profile);
+bool omci_profile_forceable(u8 profile);
+u8 omci_profile_detect(const struct omci_olt_g *olt);
+u32 omci_profile_quirks(u8 profile);
+void omci_profile_sanitize_olt_g(struct omci_olt_g *olt, u32 quirks);
 
 #endif /* _NET_OMCI_INTERNAL_H */

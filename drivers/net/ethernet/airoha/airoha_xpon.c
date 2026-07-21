@@ -689,6 +689,10 @@ struct xpon_priv {
 
 	/* Protects the hardware T-CONT table and its software allocation maps. */
 	struct mutex		tcont_lock;
+
+	/* Protects the active OMCI OLT interoperability policy. */
+	struct mutex		omci_profile_lock;
+	struct omci_olt_profile_state omci_profile;
 	u16			tcont_alloc_id[GPON_MAX_TCONT];
 	u16			tcont_entity_id[GPON_MAX_TCONT];
 
@@ -1751,6 +1755,32 @@ static void gpon_cb_set_alloc_id(void *hw_priv, u16 alloc_id, bool allocate)
 			allocate ? "assign" : "remove", alloc_id, ret);
 }
 
+int airoha_gpon_omci_hw_set_olt_profile(void *hw_priv,
+					const struct omci_olt_profile_state *state)
+{
+	struct xpon_priv *priv = hw_priv;
+
+	if (!state || state->effective == OMCI_OLT_PROFILE_UNSPEC ||
+	    state->effective == OMCI_OLT_PROFILE_AUTO)
+		return -EINVAL;
+
+	mutex_lock(&priv->omci_profile_lock);
+	priv->omci_profile = *state;
+	mutex_unlock(&priv->omci_profile_lock);
+
+	dev_info(priv->dev,
+		 "OMCI OLT profile applied: configured=%s effective=%s forced=%s quirks=%#x\n",
+		 omci_olt_profile_name(state->configured),
+		 omci_olt_profile_name(state->effective),
+		 omci_olt_profile_name(state->forced), state->quirks);
+	dev_info(priv->dev, "OMCI OLT identity: vendor=%s equipment=%s\n",
+		 state->olt.vendor_id_valid ? state->olt.vendor_id : "unknown",
+		 state->olt.equipment_id_valid ?
+		 state->olt.equipment_id : "unknown");
+
+	return 0;
+}
+
 int airoha_gpon_omci_hw_set_tcont(void *hw_priv, u16 entity_id,
 				  u16 alloc_id, bool valid)
 {
@@ -1820,9 +1850,20 @@ err_disable_gem:
 int airoha_gpon_omci_hw_set_uni(void *hw_priv, u16 entity_id, bool enable)
 {
 	struct xpon_priv *priv = hw_priv;
+	u32 quirks;
+	u16 port_id;
 
-	dev_dbg(priv->dev, "OMCI UNI %#x requested %s\n", entity_id,
-		enable ? "enabled" : "disabled");
+	mutex_lock(&priv->omci_profile_lock);
+	quirks = priv->omci_profile.quirks;
+	mutex_unlock(&priv->omci_profile_lock);
+
+	port_id = quirks & OMCI_OLT_QUIRK_FULL_UNI_ENTITY_ID ?
+		  entity_id : entity_id & 0xff;
+	dev_dbg(priv->dev,
+		"OMCI UNI %#x (port %#x) requested %s with quirks %#x\n",
+		entity_id, port_id, enable ? "enabled" : "disabled", quirks);
+
+	/* The EN7523 switch UNI state is managed by DSA. */
 	return 0;
 }
 
@@ -3395,6 +3436,7 @@ static int airoha_xpon_init_gpon(struct platform_device *pdev,
 		return -ENOMEM;
 
 	mutex_init(&priv->tcont_lock);
+	mutex_init(&priv->omci_profile_lock);
 	memset(priv->tcont_alloc_id, 0xff, sizeof(priv->tcont_alloc_id));
 	memset(priv->tcont_entity_id, 0xff, sizeof(priv->tcont_entity_id));
 

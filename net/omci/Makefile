@@ -1,3 +1,3 @@
 # SPDX-License-Identifier: GPL-2.0-only
 obj-$(CONFIG_OMCI) += omci.o
-omci-y := core.o agent.o identity.o
+omci-y := core.o agent.o identity.o profiles.o

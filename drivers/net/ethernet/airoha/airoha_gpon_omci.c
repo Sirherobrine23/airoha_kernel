@@ -60,12 +60,22 @@ static int airoha_gpon_omci_get_telemetry(struct omci_device *odev,
 	return airoha_gpon_omci_hw_get_telemetry(omci->hw_priv, telemetry);
 }
 
+static int
+airoha_gpon_omci_set_olt_profile(struct omci_device *odev,
+				 const struct omci_olt_profile_state *state)
+{
+	struct airoha_gpon_omci *omci = omci_device_priv(odev);
+
+	return airoha_gpon_omci_hw_set_olt_profile(omci->hw_priv, state);
+}
+
 static const struct omci_device_ops airoha_gpon_omci_ops = {
 	.xmit = airoha_gpon_omci_xmit,
 	.set_tcont = airoha_gpon_omci_set_tcont,
 	.set_gem_port = airoha_gpon_omci_set_gem_port,
 	.set_uni = airoha_gpon_omci_set_uni,
 	.get_telemetry = airoha_gpon_omci_get_telemetry,
+	.set_olt_profile = airoha_gpon_omci_set_olt_profile,
 };
 
 int airoha_gpon_omci_register(struct airoha_gpon_omci *omci,
