@@ -219,8 +219,37 @@ struct omci_telemetry {
 };
 
 /**
+ * struct omci_ani_topology - pre-existing upstream traffic resources
+ * @tcont_base: first T-CONT managed entity ID
+ * @scheduler_base: first Traffic Scheduler managed entity ID
+ * @queue_base: first Priority Queue managed entity ID
+ * @maximum_queue_size: maximum queue size reported in 2048-byte blocks
+ * @allocated_queue_size: initial allocated queue size in 2048-byte blocks
+ * @tcont_count: number of upstream T-CONT resources
+ * @queues_per_tcont: number of upstream priority queues per T-CONT
+ * @queue_config_option: Priority Queue configuration option
+ * @scheduler_policy: initial Traffic Scheduler policy
+ *
+ * The OMCI agent uses this description to seed complete Priority Queue and
+ * Traffic Scheduler managed entities before the first MIB upload. Entity IDs
+ * are allocated contiguously. Queue entity IDs are grouped by T-CONT.
+ */
+struct omci_ani_topology {
+	u16 tcont_base;
+	u16 scheduler_base;
+	u16 queue_base;
+	u16 maximum_queue_size;
+	u16 allocated_queue_size;
+	u8 tcont_count;
+	u8 queues_per_tcont;
+	u8 queue_config_option;
+	u8 scheduler_policy;
+};
+
+/**
  * struct omci_device_ops - hardware transport and provisioning operations
  * @xmit: transmit an OMCI PDU; consumes @skb only on success
+ * @get_ani_topology: describe pre-existing ANI scheduling resources
  * @set_tcont: configure a T-CONT mapping
  * @set_gem_port: configure a GEM port
  * @set_uni: enable or disable a UNI
@@ -232,6 +261,8 @@ struct omci_telemetry {
 struct omci_device_ops {
 	int (*xmit)(struct omci_device *odev, struct sk_buff *skb,
 		    u16 gem_port_id);
+	int (*get_ani_topology)(struct omci_device *odev,
+				struct omci_ani_topology *topology);
 	int (*set_tcont)(struct omci_device *odev, u16 entity_id,
 			 u16 alloc_id, bool valid);
 	int (*set_gem_port)(struct omci_device *odev, u16 entity_id,
