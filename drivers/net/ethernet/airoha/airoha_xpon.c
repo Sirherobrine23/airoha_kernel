@@ -1850,6 +1850,33 @@ void airoha_gpon_omci_hw_config_changed(void *hw_priv, u16 key,
 	mod_delayed_work(priv->fsm_wq, &priv->restart_work, 0);
 }
 
+int airoha_gpon_omci_hw_get_ani_topology(void *hw_priv,
+					 struct omci_ani_topology *topology)
+{
+	struct xpon_priv *priv = hw_priv;
+
+	if (!topology)
+		return -EINVAL;
+
+	*topology = (struct omci_ani_topology) {
+		.tcont_base = 0x8000,
+		.scheduler_base = 0x8000,
+		.queue_base = 0x8000,
+		.maximum_queue_size = 0xffff,
+		.allocated_queue_size = 4,
+		.tcont_count = GPON_MAX_TCONT - 1,
+		.queues_per_tcont = AIROHA_NUM_QOS_QUEUES,
+		.queue_config_option = 1,
+		.scheduler_policy = 1,
+	};
+
+	dev_dbg(priv->dev,
+		"OMCI ANI topology: %u T-CONTs, %u queues per T-CONT\n",
+		topology->tcont_count, topology->queues_per_tcont);
+
+	return 0;
+}
+
 int airoha_gpon_omci_hw_set_tcont(void *hw_priv, u16 entity_id,
 				  u16 alloc_id, bool valid)
 {
