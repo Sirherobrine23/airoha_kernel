@@ -19,6 +19,15 @@ static int airoha_gpon_omci_xmit(struct omci_device *odev,
 	return airoha_eth_xmit_xpon_oam(omci->gdm_dev, skb, gem_port_id);
 }
 
+static int
+airoha_gpon_omci_get_ani_topology(struct omci_device *odev,
+				  struct omci_ani_topology *topology)
+{
+	struct airoha_gpon_omci *omci = omci_device_priv(odev);
+
+	return airoha_gpon_omci_hw_get_ani_topology(omci->hw_priv, topology);
+}
+
 static int airoha_gpon_omci_set_tcont(struct omci_device *odev,
 				      u16 entity_id, u16 alloc_id,
 				       bool valid)
@@ -88,6 +97,7 @@ airoha_gpon_omci_config_changed(struct omci_device *odev, u16 key,
 
 static const struct omci_device_ops airoha_gpon_omci_ops = {
 	.xmit = airoha_gpon_omci_xmit,
+	.get_ani_topology = airoha_gpon_omci_get_ani_topology,
 	.set_tcont = airoha_gpon_omci_set_tcont,
 	.set_gem_port = airoha_gpon_omci_set_gem_port,
 	.set_uni = airoha_gpon_omci_set_uni,

@@ -8,6 +8,7 @@ struct device;
 struct net_device;
 struct omci_device;
 struct omci_identity;
+struct omci_ani_topology;
 struct omci_telemetry;
 struct omci_olt_profile_state;
 struct sk_buff;
@@ -32,6 +33,8 @@ int airoha_gpon_omci_send_dying_gasp(struct airoha_gpon_omci *omci);
 bool airoha_gpon_omci_receive(void *data, struct sk_buff *skb,
 			      u16 gem_port_id, u32 flags);
 
+int airoha_gpon_omci_hw_get_ani_topology(void *hw_priv,
+					 struct omci_ani_topology *topology);
 int airoha_gpon_omci_hw_set_tcont(void *hw_priv, u16 entity_id,
 				  u16 alloc_id, bool valid);
 int airoha_gpon_omci_hw_set_gem_port(void *hw_priv, u16 entity_id,
