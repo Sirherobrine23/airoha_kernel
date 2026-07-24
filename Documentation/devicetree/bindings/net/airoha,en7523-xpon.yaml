@@ -89,6 +89,15 @@ properties:
       Ten-byte GPON registration password. The driver must not expose the
       password through kernel logs.
 
+  airoha,gpon-serial-from-mac:
+    type: boolean
+    description: |
+      Derive the four-byte vendor-specific part of the GPON serial number
+      from the last four octets of the GDM2 MAC address. The vendor prefix
+      is supplied by omci-vendor-id. This is intended for boards whose stock
+      firmware derives the optical serial number from the factory Ethernet
+      address instead of storing a dedicated GPON serial number.
+
   phys:
     maxItems: 1
     description: Phandle to the EN7523 digital xPON PHY.
@@ -106,6 +115,10 @@ required:
   - interrupts
   - airoha,scu
   - sfp
+
+dependencies:
+  airoha,gpon-serial-from-mac:
+    - omci-vendor-id
 
 allOf:
   - $ref: /schemas/net/omci.yaml#
