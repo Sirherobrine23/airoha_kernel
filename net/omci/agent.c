@@ -156,13 +156,13 @@ static bool omci_agent_result_can_be_faked(u8 result)
 
 #define OMCI_ATTR_VALUE_ZERO		U8_MAX
 
-struct omci_attr_layout {
+struct omci_get_attr_layout {
 	u16 mask;
 	u8 offset;
 	u8 len;
 };
 
-static const struct omci_attr_layout omci_onu_g_attr_layout[] = {
+static const struct omci_get_attr_layout omci_onu_g_attr_layout[] = {
 	{ BIT(15), 0, 4 },		/* Vendor ID */
 	{ BIT(14), 4, 14 },		/* Version */
 	{ BIT(13), 18, 8 },		/* Serial number */
@@ -178,7 +178,7 @@ static const struct omci_attr_layout omci_onu_g_attr_layout[] = {
 	{ BIT(3), OMCI_ATTR_VALUE_ZERO, 1 },	/* Extended TC layer */
 };
 
-static const struct omci_attr_layout omci_onu2_g_attr_layout[] = {
+static const struct omci_get_attr_layout omci_onu2_g_attr_layout[] = {
 	{ BIT(15), 0, 20 },		/* Equipment ID */
 	{ BIT(14), 20, 1 },		/* OMCC version */
 	{ BIT(13), 21, 2 },		/* Vendor product code */
@@ -1967,7 +1967,7 @@ static bool omci_agent_get_uses_ani_g_telemetry(u16 class_id, u16 entity_id,
 }
 
 static u8 omci_agent_get_masked_object(const struct omci_mib_object *object,
-				       const struct omci_attr_layout *layout,
+				       const struct omci_get_attr_layout *layout,
 				       size_t layout_len, u16 supported_mask,
 				       u16 mask, u8 *response_content)
 {
@@ -1980,7 +1980,7 @@ static u8 omci_agent_get_masked_object(const struct omci_mib_object *object,
 		goto attribute_failed;
 
 	for (i = 0; i < layout_len; i++) {
-		const struct omci_attr_layout *attr = &layout[i];
+		const struct omci_get_attr_layout *attr = &layout[i];
 
 		if (!(mask & attr->mask))
 			continue;
