@@ -87,10 +87,17 @@
 		};
 	};
 
-	scu: system-controller@1fa20000 {
-		compatible = "airoha,en7523-scu";
-		reg = <0x1fa20000 0x400>,
-		      <0x1fb00000 0x1000>;
+	chip_scu: syscon@1fa20000 {
+		compatible = "airoha,chip-scu", "syscon";
+		reg = <0x1fa20000 0x400>;
+	};
+
+	scuclk: system-controller@1fb00000 {
+		compatible = "airoha,en7523-scu", "airoha,scuclk", "syscon";
+		reg = <0x1fb00000 0x1000>,
+		      <0x1efbe000 0x800>;
+		reg-names = "np-scu", "mcucfg";
+		airoha,chip-scu = <&chip_scu>;
 		#clock-cells = <1>;
 		#reset-cells = <1>;
 	};
