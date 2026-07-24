@@ -1379,18 +1379,16 @@ static int en7523_reset_update(struct reset_controller_dev *rcdev,
 {
 	struct en_rst_data *rst_data = container_of(rcdev, struct en_rst_data, rcdev);
 	u32 addr = rst_data->bank_ofs[id / RST_NR_PER_BANK];
+	u32 mask = BIT(id % RST_NR_PER_BANK);
 	u32 val;
 
-	/* For PCIC reset logic is inverted, 0:assert 1:deassert*/
+	/* For PCIC reset logic is inverted, 0:assert 1:deassert. */
 	if (addr == REG_NP_SCU_PCIC)
-		val |= assert ? 0 : BIT(id % RST_NR_PER_BANK);
+		val = assert ? 0 : mask;
 	else
-		val |= assert ? BIT(id % RST_NR_PER_BANK) : 0;
+		val = assert ? mask : 0;
 
-	regmap_update_bits(rst_data->map, addr, BIT(id % RST_NR_PER_BANK),
-			   val);
-
-	return 0;
+	return regmap_update_bits(rst_data->map, addr, mask, val);
 }
 
 static int en7523_reset_assert(struct reset_controller_dev *rcdev,
@@ -1403,6 +1401,30 @@ static int en7523_reset_deassert(struct reset_controller_dev *rcdev,
 				 unsigned long id)
 {
 	return en7523_reset_update(rcdev, id, false);
+}
+
+static bool en7523_reset_needs_long_pulse(unsigned long id)
+{
+	return id == RST_NR_PER_BANK + 0 ||
+	       id == RST_NR_PER_BANK + 4 ||
+	       id == RST_NR_PER_BANK + 17;
+}
+
+static int en7523_reset_reset(struct reset_controller_dev *rcdev,
+			      unsigned long id)
+{
+	int err;
+
+	err = en7523_reset_assert(rcdev, id);
+	if (err)
+		return err;
+
+	if (en7523_reset_needs_long_pulse(id))
+		usleep_range(5000, 6000);
+	else
+		usleep_range(10, 50);
+
+	return en7523_reset_deassert(rcdev, id);
 }
 
 static int en7523_reset_status(struct reset_controller_dev *rcdev,
@@ -1436,6 +1458,7 @@ static int en7523_reset_xlate(struct reset_controller_dev *rcdev,
 static const struct reset_control_ops en7581_reset_ops = {
 	.assert = en7523_reset_assert,
 	.deassert = en7523_reset_deassert,
+	.reset = en7523_reset_reset,
 	.status = en7523_reset_status,
 };
 
