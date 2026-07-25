@@ -158,6 +158,11 @@ void airoha_gpon_omci_set_state(struct airoha_gpon_omci *omci, u8 state)
 	omci_device_set_state(omci->odev, state);
 }
 
+void airoha_gpon_omci_reset_session(struct airoha_gpon_omci *omci)
+{
+	omci_device_reset_session(omci->odev);
+}
+
 int airoha_gpon_omci_send_dying_gasp(struct airoha_gpon_omci *omci)
 {
 	return omci_device_send_dying_gasp(omci->odev);

@@ -446,8 +446,8 @@ static void airoha_xpon_phy_stop(struct device *dev, struct phy *phy,
 #define GPON_INT_ACTIVATION_MASK	(INT_PLOAMD_RECV | INT_SN_REQ_RECV | \
 				 INT_SN_ONU_SEND_O3 | INT_RANGING_REQ_RECV | \
 				 INT_SN_ONU_SEND_O4 | INT_SN_REQ_CRS | \
-				 INT_LOSS_GEM_DEL | INT_AES_KEY_SWITCH_DONE | \
-				 INT_DYING_GASP | INT_CAL_GNT_SIZE_DONE)
+				 INT_AES_KEY_SWITCH_DONE | INT_DYING_GASP | \
+				 INT_CAL_GNT_SIZE_DONE)
 /*
  * The EN7523 vendor driver enables only the common receive/burst errors.
  * The interleave, BWM FIFO and BWM timing interrupts are EN7521-only and
@@ -457,7 +457,7 @@ static void airoha_xpon_phy_stop(struct device *dev, struct phy *phy,
 				 INT_BST_SGL_DIFF | INT_TX_LATE_START | \
 				 INT_RX_EOF_ERR)
 #define GPON_INT_DEFAULT_MASK		(GPON_INT_ACTIVATION_MASK | \
-				 GPON_INT_ERROR_MASK)
+				 INT_TX_LATE_START)
 
 /* G_GEM_PORT_CFG */
 #define GEM_CMD_WRITE		BIT(31)
@@ -2169,7 +2169,8 @@ static void gpon_cb_deactivate(void *hw_priv)
 	 * downstream FIFO. Defer the stop/restart sequence until that worker
 	 * has returned; gpon_disable() may cancel work and power down the PHY.
 	 */
-	if (READ_ONCE(priv->optical_active))
+	if (READ_ONCE(priv->started) &&
+	    READ_ONCE(priv->optical_active))
 		mod_delayed_work(priv->fsm_wq, &priv->restart_work, 0);
 }
 
@@ -2203,6 +2204,9 @@ static int gpon_enable(struct xpon_priv *priv)
 	if (READ_ONCE(priv->mac_enabled))
 		return 0;
 
+	if (!READ_ONCE(priv->started) || !READ_ONCE(priv->optical_active))
+		return -ENETDOWN;
+
 	dev_info(priv->dev, "starting GPON MAC from state %s\n",
 		 gpon_state_name(ploam_get_state(priv->ploam)));
 
@@ -2216,30 +2220,25 @@ static int gpon_enable(struct xpon_priv *priv)
 	ret = gpon_prepare_hardware(priv);
 	if (ret) {
 		dev_err(priv->dev, "failed to prepare GPON hardware: %d\n", ret);
-		airoha_xpon_phy_stop(priv->dev, priv->phy,
-				     AIROHA_XPON_MODE_GPON,
-				     &priv->phy_initialized,
-				     &priv->phy_powered);
-		return ret;
+		goto err_stop_phy;
 	}
 
 	ret = gpon_dev_init(priv);
 	if (ret) {
 		gpon_set_fe_datapath(priv, false);
-		airoha_xpon_phy_stop(priv->dev, priv->phy,
-				     AIROHA_XPON_MODE_GPON,
-				     &priv->phy_initialized,
-				     &priv->phy_powered);
 		dev_err(priv->dev, "GPON hardware init failed: %d\n", ret);
-		return ret;
+		goto err_stop_phy;
 	}
 
 	gpon_set_serial_number_regs(priv);
 	gpon_load_aes_shadow(priv, priv->aes_key, 0);
 
-	/* Inspect the events accumulated while the digital PHY was locking.
-	 * Known activation/error bits help distinguish CDR lock from valid GPON
-	 * frame alignment; unknown bits are retained in the log for decoding.
+	/*
+	 * Inspect events accumulated while the digital PHY was locking. Known
+	 * activation bits help distinguish CDR lock from valid GPON framing.
+	 * Error-only interrupts remain masked because the EN7523 can assert
+	 * them continuously while GEM delineation is being acquired; counters
+	 * remain available through the diagnostic paths.
 	 */
 	irq_mask = GPON_INT_DEFAULT_MASK;
 	if (priv->dying_gasp_irq >= 0)
@@ -2283,14 +2282,23 @@ static int gpon_enable(struct xpon_priv *priv)
 		 gpon_read(priv, GPON_INT_ENABLE));
 
 	return 0;
+
+err_stop_phy:
+	airoha_xpon_phy_stop(priv->dev, priv->phy,
+			     AIROHA_XPON_MODE_GPON,
+			     &priv->phy_initialized,
+			     &priv->phy_powered);
+	return ret;
 }
 
 static void gpon_disable(struct xpon_priv *priv)
 {
+	bool mac_enabled = READ_ONCE(priv->mac_enabled);
+	bool phy_active = priv->phy_initialized || priv->phy_powered;
 	int ret;
 
-	if (!READ_ONCE(priv->mac_enabled))
-		return;
+	if (!mac_enabled && !phy_active)
+		goto reset_session;
 
 	dev_info(priv->dev,
 		 "stopping GPON MAC: state=%s mbi=%#08x int_status=%#08x\n",
@@ -2303,9 +2311,11 @@ static void gpon_disable(struct xpon_priv *priv)
 	 * remains enabled so no activation edge is lost across a restart.
 	 */
 	WRITE_ONCE(priv->mac_enabled, false);
-	gpon_write(priv, GPON_INT_ENABLE, 0);
-	gpon_write(priv, GPON_INT_STATUS, ~0U);
-	synchronize_irq(priv->irq);
+	if (mac_enabled) {
+		gpon_write(priv, GPON_INT_ENABLE, 0);
+		gpon_write(priv, GPON_INT_STATUS, ~0U);
+		synchronize_irq(priv->irq);
+	}
 
 	atomic_set(&priv->pending_irqs, 0);
 	if (current_work() != &priv->irq_work)
@@ -2323,44 +2333,47 @@ static void gpon_disable(struct xpon_priv *priv)
 		cancel_delayed_work_sync(&priv->to2_work);
 
 	timer_delete_sync(&priv->ber_timer);
-	cancel_delayed_work_sync(&priv->phy_link_work);
+	if (current_work() == &priv->phy_link_work.work)
+		cancel_delayed_work(&priv->phy_link_work);
+	else
+		cancel_delayed_work_sync(&priv->phy_link_work);
 	WRITE_ONCE(priv->phy_link_known, false);
 	WRITE_ONCE(priv->phy_link_up, false);
 
-	/* Match the vendor shutdown path: mask and clear MAC interrupts,
-	 * invalidate the runtime identities, disconnect GDM2, then stop the
-	 * GPON/PSE MBI. Do not sweep all 4096 GEM entries here. sfp_upstream_stop()
-	 * can call us after the optical path has already started shutting down,
-	 * at which point the indirect GEM/T-CONT command engine no longer
-	 * acknowledges requests.
-	 */
-	gpon_reset_activation_context(priv);
-	gpon_write(priv, GPON_OMCI_ID, 0);
+	if (mac_enabled) {
+		/*
+		 * Match the vendor shutdown path: invalidate the runtime
+		 * identities, disconnect GDM2, then stop the GPON/PSE MBI.
+		 */
+		gpon_reset_activation_context(priv);
+		gpon_write(priv, GPON_OMCI_ID, 0);
 
-	airoha_gpon_omci_set_channel(&priv->omci, 0xffff, false);
-	airoha_gpon_omci_set_onu_id(&priv->omci, 0xffff);
+		ret = gpon_set_fe_datapath(priv, false);
+		if (ret)
+			dev_warn(priv->dev,
+				 "failed to disable GPON FE datapath: %d\n", ret);
+		airoha_eth_xpon_flush_services(priv->gdm_dev);
+		ret = airoha_eth_set_xpon_mode(priv->gdm_dev,
+					       AIROHA_XPON_MODE_GPON);
+		if (ret)
+			dev_warn(priv->dev,
+				 "failed to quiesce GPON FE channels: %d\n", ret);
 
-	ret = gpon_set_fe_datapath(priv, false);
-	if (ret)
-		dev_warn(priv->dev,
-			 "failed to disable GPON FE datapath: %d\n", ret);
-	airoha_eth_xpon_flush_services(priv->gdm_dev);
-	ret = airoha_eth_set_xpon_mode(priv->gdm_dev,
-				       AIROHA_XPON_MODE_GPON);
-	if (ret)
-		dev_warn(priv->dev,
-			 "failed to quiesce GPON FE channels: %d\n", ret);
+		gpon_set_bits(priv, GPON_MBI_MPI_STOP,
+			      MBI_RX_STOP | MBI_TX_STOP);
+		dev_info(priv->dev, "GPON MBI stopped: %#08x\n",
+			 gpon_read(priv, GPON_MBI_MPI_STOP));
+	}
 
-	gpon_set_bits(priv, GPON_MBI_MPI_STOP, MBI_RX_STOP | MBI_TX_STOP);
-	dev_info(priv->dev, "GPON MBI stopped: %#08x\n",
-		 gpon_read(priv, GPON_MBI_MPI_STOP));
+	if (phy_active)
+		airoha_xpon_phy_stop(priv->dev, priv->phy,
+				     AIROHA_XPON_MODE_GPON,
+				     &priv->phy_initialized,
+				     &priv->phy_powered);
 
-	airoha_xpon_phy_stop(priv->dev, priv->phy,
-			      AIROHA_XPON_MODE_GPON,
-			      &priv->phy_initialized,
-			      &priv->phy_powered);
-
+reset_session:
 	ploam_reset(priv->ploam);
+	airoha_gpon_omci_reset_session(&priv->omci);
 	airoha_gpon_omci_set_state(&priv->omci, GPON_O1_INITIAL);
 	mutex_lock(&priv->link_state_lock);
 	priv->gpon_o5 = false;
@@ -2472,6 +2485,10 @@ static void gpon_to2_work_fn(struct work_struct *work)
 	if (ploam_get_state(priv->ploam) == GPON_O6_POPUP) {
 		dev_warn(priv->dev, "GPON TO2 expired in O6, resetting\n");
 		gpon_disable(priv);
+		if (READ_ONCE(priv->started) &&
+		    READ_ONCE(priv->optical_active))
+			mod_delayed_work(priv->fsm_wq, &priv->restart_work,
+					 msecs_to_jiffies(GPON_DEACTIVATE_RESTART_MS));
 	}
 }
 
@@ -2520,7 +2537,7 @@ static void gpon_restart_work_fn(struct work_struct *work)
 	int ret;
 
 	config_restart = gpon_take_pending_identity(priv, &identity, &key);
-	if (!READ_ONCE(priv->optical_active)) {
+	if (!READ_ONCE(priv->started) || !READ_ONCE(priv->optical_active)) {
 		if (config_restart)
 			gpon_apply_runtime_identity(priv, &identity);
 		return;
@@ -2544,7 +2561,8 @@ static void gpon_restart_work_fn(struct work_struct *work)
 
 	if (stopped) {
 		msleep(GPON_DEACTIVATE_RESTART_MS);
-		if (!READ_ONCE(priv->optical_active))
+		if (!READ_ONCE(priv->started) ||
+		    !READ_ONCE(priv->optical_active))
 			return;
 	}
 
@@ -2553,8 +2571,10 @@ static void gpon_restart_work_fn(struct work_struct *work)
 		dev_warn(priv->dev,
 			 "retrying optical transmitter rearm in %u ms\n",
 			 GPON_REARM_RETRY_MS);
-		mod_delayed_work(priv->fsm_wq, &priv->restart_work,
-				 msecs_to_jiffies(GPON_REARM_RETRY_MS));
+		if (READ_ONCE(priv->started) &&
+		    READ_ONCE(priv->optical_active))
+			mod_delayed_work(priv->fsm_wq, &priv->restart_work,
+					 msecs_to_jiffies(GPON_REARM_RETRY_MS));
 		return;
 	}
 
@@ -2757,19 +2777,24 @@ static int gpon_sfp_module_start(void *upstream)
 	state = ploam_get_state(priv->ploam);
 	dev_info(priv->dev, "GPON SFP module start: state=%s\n",
 		 gpon_state_name(state));
+	WRITE_ONCE(priv->optical_active, true);
 
 	/* PHY ready: if we were in emergency stop, stay there. */
 	if (state == GPON_O1_INITIAL) {
 		ret = airoha_xpon_tx_rearm(priv->dev, priv->lddla_dev);
 		if (ret)
-			return ret;
+			goto err_inactive;
 
 		ret = gpon_enable(priv);
 	}
 
-	if (!ret)
-		WRITE_ONCE(priv->optical_active, true);
+	if (ret)
+		goto err_inactive;
 
+	return 0;
+
+err_inactive:
+	WRITE_ONCE(priv->optical_active, false);
 	return ret;
 }
 
@@ -2796,6 +2821,10 @@ static void gpon_sfp_link_up(void *upstream)
 	struct xpon_priv *priv = upstream;
 
 	dev_info(priv->dev, "GPON optical link up\n");
+	if (READ_ONCE(priv->started) &&
+	    READ_ONCE(priv->optical_active) &&
+	    !READ_ONCE(priv->mac_enabled))
+		mod_delayed_work(priv->fsm_wq, &priv->restart_work, 0);
 }
 
 static const struct sfp_upstream_ops gpon_sfp_ops = {
@@ -2816,16 +2845,26 @@ static const struct sfp_upstream_ops gpon_sfp_ops = {
 static int gpon_link_start(void *data)
 {
 	struct xpon_priv *priv = data;
+	int ret = 0;
 
 	if (READ_ONCE(priv->started))
 		return 0;
 
 	WRITE_ONCE(priv->started, true);
 	gpon_refresh_netdev_link(priv, true);
-	if (priv->sfp_bus && !READ_ONCE(priv->optical_active))
-		sfp_upstream_start(priv->sfp_bus);
+	if (priv->sfp_bus) {
+		if (!READ_ONCE(priv->optical_active))
+			sfp_upstream_start(priv->sfp_bus);
+	} else {
+		WRITE_ONCE(priv->optical_active, true);
+		ret = gpon_enable(priv);
+		if (ret)
+			WRITE_ONCE(priv->optical_active, false);
+	}
 
-	return 0;
+	if (ret)
+		WRITE_ONCE(priv->started, false);
+	return ret;
 }
 
 static void gpon_link_stop(void *data)
@@ -2835,8 +2874,14 @@ static void gpon_link_stop(void *data)
 	if (!READ_ONCE(priv->started))
 		return;
 
-	/* Keep optical activation alive while userspace cycles pon0. */
 	WRITE_ONCE(priv->started, false);
+	cancel_delayed_work_sync(&priv->restart_work);
+	if (priv->sfp_bus && READ_ONCE(priv->optical_active)) {
+		sfp_upstream_stop(priv->sfp_bus);
+	} else {
+		WRITE_ONCE(priv->optical_active, false);
+		gpon_disable(priv);
+	}
 	gpon_refresh_netdev_link(priv, true);
 }
 
@@ -4065,11 +4110,12 @@ static void airoha_xpon_remove(struct platform_device *pdev)
 	if (priv->sfp_bus && READ_ONCE(priv->optical_active))
 		sfp_upstream_stop(priv->sfp_bus);
 
-	if (READ_ONCE(priv->mac_enabled)) {
-		if (airoha_xpon_is_gpon(priv))
-			gpon_disable(priv);
-		else
-			epon_disable(priv);
+	if (airoha_xpon_is_gpon(priv) &&
+	    (READ_ONCE(priv->mac_enabled) || priv->phy_powered)) {
+		gpon_disable(priv);
+	} else if (!airoha_xpon_is_gpon(priv) &&
+		   READ_ONCE(priv->mac_enabled)) {
+		epon_disable(priv);
 	} else if (airoha_xpon_is_gpon(priv)) {
 		cancel_work_sync(&priv->irq_work);
 		cancel_delayed_work_sync(&priv->to1_work);
