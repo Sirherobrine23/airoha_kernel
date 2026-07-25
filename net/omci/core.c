@@ -1485,6 +1485,14 @@ void omci_device_reset_session(struct omci_device *odev)
 	if (!odev)
 		return;
 
+	/*
+	 * Finish requests already accepted on the old OMCC before changing
+	 * the generation. A Deactivate_ONU-ID PLOAM can race with an OMCI
+	 * request carried by the same downstream frame.
+	 */
+	if (current_work() != &odev->rx_work)
+		flush_work(&odev->rx_work);
+
 	spin_lock_bh(&odev->state_lock);
 	odev->generation++;
 	odev->onu_id = 0xffff;
@@ -1495,7 +1503,7 @@ void omci_device_reset_session(struct omci_device *odev)
 	if (current_work() != &odev->rx_work)
 		cancel_work_sync(&odev->rx_work);
 	skb_queue_purge(&odev->rx_queue);
-	omci_agent_session_reset(odev);
+	omci_agent_channel_changed(odev, false);
 	omci_device_notify(odev, OMCI_EVENT_CHANNEL_DOWN);
 }
 EXPORT_SYMBOL_GPL(omci_device_reset_session);
