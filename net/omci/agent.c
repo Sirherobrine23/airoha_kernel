@@ -2479,6 +2479,27 @@ void omci_agent_channel_changed(struct omci_device *odev, bool valid)
 		omci_agent_report_operational(odev, false);
 }
 
+void omci_agent_session_reset(struct omci_device *odev)
+{
+	struct omci_agent *agent = &odev->agent;
+	bool operational_changed;
+
+	mutex_lock(&agent->lock);
+	operational_changed = agent->operational;
+	agent->operational = false;
+	agent->last_request_len = 0;
+	agent->last_response_len = 0;
+	agent->last_response_fake = false;
+	agent->upload_index = 0;
+	agent->alarm_sequence = 0;
+	omci_agent_reset_olt_objects_locked(agent);
+	omci_agent_profile_refresh_locked(odev, NULL, NULL);
+	mutex_unlock(&agent->lock);
+
+	if (operational_changed)
+		omci_agent_report_operational(odev, false);
+}
+
 int omci_agent_put_status(struct sk_buff *msg, struct omci_device *odev)
 {
 	struct omci_agent *agent = &odev->agent;
