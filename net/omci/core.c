@@ -1480,6 +1480,26 @@ void omci_device_set_state(struct omci_device *odev, u8 state)
 }
 EXPORT_SYMBOL_GPL(omci_device_set_state);
 
+void omci_device_reset_session(struct omci_device *odev)
+{
+	if (!odev)
+		return;
+
+	spin_lock_bh(&odev->state_lock);
+	odev->generation++;
+	odev->onu_id = 0xffff;
+	odev->gem_port_id = 0xffff;
+	odev->channel_up = false;
+	spin_unlock_bh(&odev->state_lock);
+
+	if (current_work() != &odev->rx_work)
+		cancel_work_sync(&odev->rx_work);
+	skb_queue_purge(&odev->rx_queue);
+	omci_agent_session_reset(odev);
+	omci_device_notify(odev, OMCI_EVENT_CHANNEL_DOWN);
+}
+EXPORT_SYMBOL_GPL(omci_device_reset_session);
+
 void omci_device_receive(struct omci_device *odev, struct sk_buff *skb,
 			 u16 gem_port_id, u32 flags)
 {
