@@ -446,8 +446,8 @@ static void airoha_xpon_phy_stop(struct device *dev, struct phy *phy,
 #define GPON_INT_ACTIVATION_MASK	(INT_PLOAMD_RECV | INT_SN_REQ_RECV | \
 				 INT_SN_ONU_SEND_O3 | INT_RANGING_REQ_RECV | \
 				 INT_SN_ONU_SEND_O4 | INT_SN_REQ_CRS | \
-				 INT_AES_KEY_SWITCH_DONE | INT_DYING_GASP | \
-				 INT_CAL_GNT_SIZE_DONE)
+				 INT_LOSS_GEM_DEL | INT_AES_KEY_SWITCH_DONE | \
+				 INT_DYING_GASP | INT_CAL_GNT_SIZE_DONE)
 /*
  * The EN7523 vendor driver enables only the common receive/burst errors.
  * The interleave, BWM FIFO and BWM timing interrupts are EN7521-only and
@@ -2295,6 +2295,7 @@ static void gpon_disable(struct xpon_priv *priv)
 {
 	bool mac_enabled = READ_ONCE(priv->mac_enabled);
 	bool phy_active = priv->phy_initialized || priv->phy_powered;
+	bool omci_reset = false;
 	int ret;
 
 	if (!mac_enabled && !phy_active)
@@ -2342,6 +2343,14 @@ static void gpon_disable(struct xpon_priv *priv)
 
 	if (mac_enabled) {
 		/*
+		 * Drain OMCI before disconnecting GDM2. Deactivate_ONU-ID can
+		 * share a downstream frame with the last OMCI request, and the
+		 * response must reach QDMA before the datapath is disabled.
+		 */
+		airoha_gpon_omci_reset_session(&priv->omci);
+		omci_reset = true;
+
+		/*
 		 * Match the vendor shutdown path: invalidate the runtime
 		 * identities, disconnect GDM2, then stop the GPON/PSE MBI.
 		 */
@@ -2373,7 +2382,8 @@ static void gpon_disable(struct xpon_priv *priv)
 
 reset_session:
 	ploam_reset(priv->ploam);
-	airoha_gpon_omci_reset_session(&priv->omci);
+	if (!omci_reset)
+		airoha_gpon_omci_reset_session(&priv->omci);
 	airoha_gpon_omci_set_state(&priv->omci, GPON_O1_INITIAL);
 	mutex_lock(&priv->link_state_lock);
 	priv->gpon_o5 = false;
