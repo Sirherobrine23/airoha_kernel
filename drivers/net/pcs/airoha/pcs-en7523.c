@@ -541,8 +541,23 @@ static int en7523_pcs_config(struct phylink_pcs *pcs, unsigned int neg_mode,
 			AIROHA_PCS_RX_CLK_ENA |
 			AIROHA_PCS_GMII_TXCLK_ENA);
 
-	if (port->priv->data->type == EN7523_PCS_USB)
+	switch (port->priv->data->type) {
+	case EN7523_PCS_PCIE:
+		/*
+		 * The vendor SGMII and HSGMII sequences both pulse the XSI
+		 * clock-domain reset after programming PHYA, rate-adapt, AN
+		 * and PCS control. Without this reset, PCIe-backed SerDes lanes
+		 * can remain out of sync when no PCIe root port initialized them.
+		 */
+		en7523_pcs_xsi_serdes_init(port,
+					   port->index ? 0x24000 : 0x12000);
+		break;
+	case EN7523_PCS_USB:
 		en7523_pcs_usb_serdes_reset(port);
+		break;
+	default:
+		break;
+	}
 
 	if (interface == PHY_INTERFACE_MODE_2500BASEX) {
 		regmap_clear_bits(port->an, AIROHA_PCS_HSGMII_AN_SGMII_REG_AN_0,
@@ -555,17 +570,8 @@ static int en7523_pcs_config(struct phylink_pcs *pcs, unsigned int neg_mode,
 				   AIROHA_PCS_HSGMII_PCS_FORCE_RATEADAPT_VAL,
 				   0);
 
-		switch (port->priv->data->type) {
-		case EN7523_PCS_USB:
+		if (port->priv->data->type == EN7523_PCS_USB)
 			en7523_pcs_xsi_serdes_init(port, 0x48000);
-			break;
-		case EN7523_PCS_PCIE:
-			en7523_pcs_xsi_serdes_init(port,
-						   port->index ? 0x24000 : 0x12000);
-			break;
-		default:
-			break;
-		}
 
 		port->interface = interface;
 		return 0;
