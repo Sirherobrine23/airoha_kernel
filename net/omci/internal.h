@@ -93,6 +93,12 @@ struct omci_agent {
 	struct sk_buff *last_response;
 	u32 last_request_hash;
 	bool last_response_fake;
+	u8 *table_snapshot;
+	size_t table_snapshot_len;
+	unsigned long table_snapshot_jiffies;
+	u16 table_snapshot_class_id;
+	u16 table_snapshot_entity_id;
+	u16 table_snapshot_mask;
 
 	atomic64_t responses;
 	atomic64_t duplicates;
