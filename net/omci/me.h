@@ -32,6 +32,8 @@ struct omci_mib_object;
 #define OMCI_CLASS_PRIORITY_QUEUE	277
 #define OMCI_CLASS_TRAFFIC_SCHEDULER	278
 #define OMCI_CLASS_OMCI		287
+#define OMCI_CLASS_MANAGED_ENTITY	288
+#define OMCI_CLASS_ATTRIBUTE		289
 #define OMCI_CLASS_VEIP		329
 
 #define OMCI_CLASS_HUAWEI_FLOW_MAPPING	350
@@ -121,5 +123,12 @@ int omci_me_class_get(struct omci_device *odev, u16 class_id,
 		      struct omci_me_class *class);
 int omci_me_class_next(struct omci_device *odev, u32 index,
 		       struct omci_me_class *class, u32 *next_index);
+int omci_me_attr_id(const struct omci_agent *agent, u16 class_id,
+		    unsigned int attr_index, u16 *attr_id);
+int omci_me_attr_get(const struct omci_agent *agent, u16 attr_id,
+		     u16 *class_id, unsigned int *attr_index,
+		     const struct omci_me_desc **desc,
+		     const struct omci_attr_desc **attr);
+unsigned int omci_me_attr_count(const struct omci_agent *agent);
 
 #endif /* _NET_OMCI_ME_H */
