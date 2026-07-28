@@ -539,6 +539,29 @@ static const struct omci_attr_desc omci_omci_attrs[] = {
 	OMCI_ATTR(14, 4, 4, OMCI_R),
 };
 
+static const struct omci_attr_desc omci_managed_entity_attrs[] = {
+	OMCI_ATTR(15, 0, 25, OMCI_R),
+	OMCI_ATTR(14, 25, 4, OMCI_R),
+	OMCI_ATTR(13, 29, 1, OMCI_R),
+	OMCI_ATTR(12, 30, 4, OMCI_R),
+	OMCI_ATTR(11, 34, 4, OMCI_R),
+	OMCI_ATTR(10, 38, 4, OMCI_R),
+	OMCI_ATTR(9, 42, 4, OMCI_R),
+	OMCI_ATTR(8, 46, 1, OMCI_R),
+};
+
+static const struct omci_attr_desc omci_attribute_attrs[] = {
+	OMCI_ATTR(15, 0, 25, OMCI_R),
+	OMCI_ATTR(14, 25, 2, OMCI_R),
+	OMCI_ATTR(13, 27, 1, OMCI_R),
+	OMCI_ATTR(12, 28, 1, OMCI_R),
+	OMCI_ATTR(11, 29, 4, OMCI_R),
+	OMCI_ATTR(10, 33, 4, OMCI_R),
+	OMCI_ATTR(9, 37, 4, OMCI_R),
+	OMCI_ATTR(8, 41, 4, OMCI_R),
+	OMCI_ATTR(7, 45, 1, OMCI_R),
+};
+
 #define STANDARD_ACTIONS (OMCI_ME_ACTION_GET | OMCI_ME_ACTION_SET)
 #define OLT_CREATED_ACTIONS (OMCI_ME_ACTION_CREATE | OMCI_ME_ACTION_DELETE | \
 			     OMCI_ME_ACTION_GET | OMCI_ME_ACTION_SET)
@@ -608,6 +631,18 @@ static const struct omci_me_desc omci_me_descs[] = {
 		      GENMASK(15, 14), 0, 8,
 		      OMCI_CLASS_CATEGORY_MANAGEMENT, OMCI_CLASS_SUPPORT_NATIVE,
 		      omci_omci_attrs),
+	STANDARD_DESC(OMCI_CLASS_MANAGED_ENTITY, "Managed entity",
+		      OMCI_ME_ACTION_GET | OMCI_ME_ACTION_GET_NEXT,
+		      OMCI_ME_F_ONU_CREATED | OMCI_ME_F_NO_MIB_UPLOAD,
+		      GENMASK(15, 8), 0, 47,
+		      OMCI_CLASS_CATEGORY_MANAGEMENT, OMCI_CLASS_SUPPORT_NATIVE,
+		      omci_managed_entity_attrs),
+	STANDARD_DESC(OMCI_CLASS_ATTRIBUTE, "Attribute",
+		      OMCI_ME_ACTION_GET | OMCI_ME_ACTION_GET_NEXT,
+		      OMCI_ME_F_ONU_CREATED | OMCI_ME_F_NO_MIB_UPLOAD,
+		      GENMASK(15, 7), 0, 46,
+		      OMCI_CLASS_CATEGORY_MANAGEMENT, OMCI_CLASS_SUPPORT_NATIVE,
+		      omci_attribute_attrs),
 	STANDARD_DESC(OMCI_CLASS_VEIP, "Virtual Ethernet interface point",
 		      STANDARD_ACTIONS, OMCI_ME_F_ONU_CREATED | OMCI_ME_F_DATAPATH,
 		      GENMASK(15, 11), GENMASK(15, 11), 31,
@@ -938,6 +973,89 @@ int omci_me_encode_attributes(const struct omci_me_desc *desc,
 		*encoded_len = used;
 
 	return encoded ? 0 : -ENOSPC;
+}
+
+unsigned int omci_me_attr_count(const struct omci_agent *agent)
+{
+	unsigned int count = 0;
+	unsigned int i;
+
+	for (i = 0; i < ARRAY_SIZE(omci_me_descs); i++) {
+		const struct omci_me_desc *desc = &omci_me_descs[i];
+
+		if (omci_me_lookup(agent, desc->class_id) != desc)
+			continue;
+		count += desc->num_attrs;
+	}
+
+	return count;
+}
+
+int omci_me_attr_id(const struct omci_agent *agent, u16 class_id,
+		    unsigned int attr_index, u16 *attr_id)
+{
+	unsigned int next_id = 1;
+	unsigned int i;
+
+	if (!agent || !attr_id)
+		return -EINVAL;
+
+	for (i = 0; i < ARRAY_SIZE(omci_me_descs); i++) {
+		const struct omci_me_desc *desc = &omci_me_descs[i];
+
+		if (omci_me_lookup(agent, desc->class_id) != desc)
+			continue;
+		if (desc->class_id == class_id) {
+			if (attr_index >= desc->num_attrs)
+				return -ENOENT;
+			if (next_id + attr_index > U16_MAX)
+				return -EOVERFLOW;
+			*attr_id = next_id + attr_index;
+			return 0;
+		}
+		if (next_id + desc->num_attrs > U16_MAX)
+			return -EOVERFLOW;
+		next_id += desc->num_attrs;
+	}
+
+	return -ENOENT;
+}
+
+int omci_me_attr_get(const struct omci_agent *agent, u16 attr_id,
+		     u16 *class_id, unsigned int *attr_index,
+		     const struct omci_me_desc **me_desc,
+		     const struct omci_attr_desc **me_attr)
+{
+	unsigned int next_id = 1;
+	unsigned int i;
+
+	if (!agent || !attr_id)
+		return -EINVAL;
+
+	for (i = 0; i < ARRAY_SIZE(omci_me_descs); i++) {
+		const struct omci_me_desc *desc = &omci_me_descs[i];
+		unsigned int index;
+
+		if (omci_me_lookup(agent, desc->class_id) != desc)
+			continue;
+		if (attr_id < next_id || attr_id >= next_id + desc->num_attrs) {
+			next_id += desc->num_attrs;
+			continue;
+		}
+
+		index = attr_id - next_id;
+		if (class_id)
+			*class_id = desc->class_id;
+		if (attr_index)
+			*attr_index = index;
+		if (me_desc)
+			*me_desc = desc;
+		if (me_attr)
+			*me_attr = &desc->attrs[index];
+		return 0;
+	}
+
+	return -ENOENT;
 }
 
 const char *omci_me_class_name(u16 class_id)
