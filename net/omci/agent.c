@@ -148,6 +148,7 @@ static bool omci_agent_result_can_be_faked(u8 result)
 #define OMCI_OLT_G_VENDOR_ID_MASK	0x8000
 #define OMCI_OLT_G_EQUIPMENT_ID_MASK	0x4000
 #define OMCI_OLT_G_VERSION_MASK	0x2000
+#define OMCI_OMCC_VERSION_G988_2010_BASELINE	0xa0
 #define OMCI_OLT_G_TIME_OF_DAY_MASK	0x1000
 #define OMCI_OLT_G_TIME_OF_DAY_LEN	14
 
@@ -1361,7 +1362,7 @@ static void omci_agent_refresh_identity_locked(struct omci_agent *agent)
 		memcpy(object->data, agent->config.equipment_id,
 		       min(sizeof(agent->config.equipment_id),
 			   sizeof(object->data)));
-		object->data[20] = 0xa0; /* Baseline and extended OMCI capability. */
+		object->data[20] = OMCI_OMCC_VERSION_G988_2010_BASELINE;
 		queues = omci_mib_count_class(agent, OMCI_CLASS_PRIORITY_QUEUE);
 		put_unaligned_be16(queues, object->data + 25);
 		schedulers = omci_mib_count_class(agent,
