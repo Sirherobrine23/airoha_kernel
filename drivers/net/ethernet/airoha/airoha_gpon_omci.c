@@ -61,6 +61,23 @@ static int airoha_gpon_omci_set_uni(struct omci_device *odev,
 	return airoha_gpon_omci_hw_set_uni(omci->hw_priv, entity_id, enable);
 }
 
+static int
+airoha_gpon_omci_replace_service(struct omci_device *odev,
+				 const struct omci_service_config *service)
+{
+	struct airoha_gpon_omci *omci = omci_device_priv(odev);
+
+	return airoha_gpon_omci_hw_replace_service(omci->hw_priv, service);
+}
+
+static int airoha_gpon_omci_delete_service(struct omci_device *odev,
+					   u32 cookie)
+{
+	struct airoha_gpon_omci *omci = omci_device_priv(odev);
+
+	return airoha_gpon_omci_hw_delete_service(omci->hw_priv, cookie);
+}
+
 static int airoha_gpon_omci_get_telemetry(struct omci_device *odev,
 					  struct omci_telemetry *telemetry)
 {
@@ -101,6 +118,8 @@ static const struct omci_device_ops airoha_gpon_omci_ops = {
 	.set_tcont = airoha_gpon_omci_set_tcont,
 	.set_gem_port = airoha_gpon_omci_set_gem_port,
 	.set_uni = airoha_gpon_omci_set_uni,
+	.replace_service = airoha_gpon_omci_replace_service,
+	.delete_service = airoha_gpon_omci_delete_service,
 	.get_telemetry = airoha_gpon_omci_get_telemetry,
 	.set_olt_profile = airoha_gpon_omci_set_olt_profile,
 	.set_operational = airoha_gpon_omci_set_operational,
