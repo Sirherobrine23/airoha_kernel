@@ -234,6 +234,46 @@ struct omci_telemetry {
  * Traffic Scheduler managed entities before the first MIB upload. Entity IDs
  * are allocated contiguously. Queue entity IDs are grouped by T-CONT.
  */
+/**
+ * struct omci_service_config - normalized upstream OMCI service
+ * @cookie: stable identifier used to replace or delete one service rule
+ * @uni_entity_id: normalized PPTP Ethernet UNI or VEIP entity
+ * @gem_ctp_entity_id: GEM port network CTP managed entity
+ * @gem_port_id: GEM port identifier programmed in the GPON MAC
+ * @tcont_entity_id: T-CONT managed entity associated with the GEM port
+ * @vlan_id: VLAN identifier used for upstream classification
+ * @pcp: IEEE 802.1p priority used for classification and queue selection
+ * @queue: hardware upstream queue
+ * @direction: enum omci_gem_port_direction
+ * @vlan_treatment: raw class 171 treatment words for the backend
+ * @multicast_ani_entity_id: Dasan WAN bridge port used as multicast ANI
+ * @vlan_valid: @vlan_id participates in classification
+ * @pcp_valid: @pcp participates in classification
+ * @vlan_treatment_valid: @vlan_treatment requires backend processing
+ * @multicast_ani_valid: @multicast_ani_entity_id was profile-resolved
+ * @multicast: service represents a multicast GEM path
+ * @default_service: fallback service when no VLAN/PCP rule matches
+ */
+struct omci_service_config {
+	u32 cookie;
+	u16 uni_entity_id;
+	u16 gem_ctp_entity_id;
+	u16 gem_port_id;
+	u16 tcont_entity_id;
+	u16 vlan_id;
+	u8 pcp;
+	u8 queue;
+	u8 direction;
+	u8 vlan_treatment[8];
+	u16 multicast_ani_entity_id;
+	bool vlan_valid;
+	bool pcp_valid;
+	bool vlan_treatment_valid;
+	bool multicast_ani_valid;
+	bool multicast;
+	bool default_service;
+};
+
 struct omci_ani_topology {
 	u16 tcont_base;
 	u16 scheduler_base;
@@ -253,6 +293,8 @@ struct omci_ani_topology {
  * @set_tcont: configure a T-CONT mapping
  * @set_gem_port: configure a GEM port
  * @set_uni: enable or disable a UNI
+ * @replace_service: atomically add or replace a normalized upstream service
+ * @delete_service: remove a normalized upstream service by cookie
  * @get_telemetry: refresh PON FEC and optical telemetry
  * @set_olt_profile: apply a resolved OLT interoperability profile
  * @set_operational: report whether the in-kernel OMCI agent is operational
@@ -269,6 +311,9 @@ struct omci_device_ops {
 			    u16 gem_port_id, u16 tcont_entity_id,
 			    u8 direction, bool valid, bool encrypted);
 	int (*set_uni)(struct omci_device *odev, u16 entity_id, bool enable);
+	int (*replace_service)(struct omci_device *odev,
+			       const struct omci_service_config *service);
+	int (*delete_service)(struct omci_device *odev, u32 cookie);
 	int (*get_telemetry)(struct omci_device *odev,
 			     struct omci_telemetry *telemetry);
 	int (*set_olt_profile)(struct omci_device *odev,
