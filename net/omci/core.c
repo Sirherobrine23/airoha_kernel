@@ -688,33 +688,52 @@ message_too_large:
 static int omci_cmd_class_get(struct sk_buff *skb, struct genl_info *info)
 {
 	struct omci_me_class class;
+	struct omci_device *odev;
 	u16 class_id;
 	int ret;
 
 	if (!info->attrs[OMCI_ATTR_CLASS_ID])
 		return -EINVAL;
 	class_id = nla_get_u16(info->attrs[OMCI_ATTR_CLASS_ID]);
-	ret = omci_agent_class_get(class_id, &class);
-	if (ret)
-		return ret;
 
-	return omci_reply_class(info, OMCI_CMD_CLASS_GET, &class, 0);
+	mutex_lock(&omci_devices_lock);
+	odev = omci_get_from_info(info);
+	if (!odev) {
+		ret = -ENODEV;
+		goto out;
+	}
+	ret = omci_me_class_get(odev, class_id, &class);
+	if (!ret)
+		ret = omci_reply_class(info, OMCI_CMD_CLASS_GET, &class, 0);
+out:
+	mutex_unlock(&omci_devices_lock);
+	return ret;
 }
 
 static int omci_cmd_class_next(struct sk_buff *skb, struct genl_info *info)
 {
 	struct omci_me_class class;
+	struct omci_device *odev;
 	u32 index = 0;
 	u32 next_index;
 	int ret;
 
 	if (info->attrs[OMCI_ATTR_INDEX])
 		index = nla_get_u32(info->attrs[OMCI_ATTR_INDEX]);
-	ret = omci_agent_class_next(index, &class, &next_index);
-	if (ret)
-		return ret;
 
-	return omci_reply_class(info, OMCI_CMD_CLASS_NEXT, &class, next_index);
+	mutex_lock(&omci_devices_lock);
+	odev = omci_get_from_info(info);
+	if (!odev) {
+		ret = -ENODEV;
+		goto out;
+	}
+	ret = omci_me_class_next(odev, index, &class, &next_index);
+	if (!ret)
+		ret = omci_reply_class(info, OMCI_CMD_CLASS_NEXT, &class,
+				       next_index);
+out:
+	mutex_unlock(&omci_devices_lock);
+	return ret;
 }
 
 static int omci_cmd_agent_set(struct sk_buff *skb, struct genl_info *info)
@@ -893,7 +912,7 @@ static int omci_cmd_mib_get(struct sk_buff *skb, struct genl_info *info)
 	ret = omci_agent_mib_get(odev, class_id, entity_id, object);
 	if (!ret)
 		ret = omci_reply_mib(info, OMCI_CMD_MIB_GET, odev, object,
-				     0, omci_agent_class_name(class_id));
+				     0, omci_me_class_name(class_id));
 out:
 	mutex_unlock(&omci_devices_lock);
 	kfree(object);
@@ -919,9 +938,11 @@ static int omci_cmd_mib_set(struct sk_buff *skb, struct genl_info *info)
 	object->entity_id = nla_get_u16(info->attrs[OMCI_ATTR_ENTITY_ID]);
 	object->attr_mask = info->attrs[OMCI_ATTR_ATTR_MASK] ?
 		nla_get_u16(info->attrs[OMCI_ATTR_ATTR_MASK]) : 0xffff;
-	if (data)
-		memcpy(object->data, nla_data(data),
-		       min_t(size_t, nla_len(data), sizeof(object->data)));
+	if (data) {
+		object->data_len = min_t(size_t, nla_len(data),
+					 sizeof(object->data));
+		memcpy(object->data, nla_data(data), object->data_len);
+	}
 
 	mutex_lock(&omci_devices_lock);
 	odev = omci_get_from_info(info);

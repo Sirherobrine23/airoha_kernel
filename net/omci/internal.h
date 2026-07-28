@@ -14,6 +14,8 @@
 #include <net/net_namespace.h>
 #include <net/omci.h>
 
+#include "me.h"
+
 #define OMCI_RX_QUEUE_LEN		256
 #define OMCI_BASELINE_DEV_ID		0x0a
 #define OMCI_EXTENDED_DEV_ID		0x0b
@@ -21,10 +23,6 @@
 #define OMCI_BASELINE_LEN_NO_MIC	44
 #define OMCI_EXTENDED_HEADER_LEN	10
 #define OMCI_MIC_LEN			4
-
-#define OMCI_CLASS_VLAN_TAGGING_FILTER_DATA	84
-#define OMCI_CLASS_OLT_G			131
-#define OMCI_CLASS_EXTENDED_VLAN		171
 
 struct omci_skb_cb {
 	u64 sequence;
@@ -40,10 +38,17 @@ struct omci_mib_object {
 	u16 entity_id;
 	u16 attr_mask;
 	u8 origin;
+	u8 owner_profile;
+	u8 data_len;
+	bool pending_delete;
 	u8 data[OMCI_MAX_ATTR_DATA];
 	struct omci_olt_g olt_g;
 	struct omci_vlan_tagging_filter vlan_filter;
 	struct omci_extended_vlan extended_vlan;
+};
+
+struct omci_service_state {
+	struct omci_service_config config;
 };
 
 struct omci_agent_config {
@@ -71,6 +76,7 @@ struct omci_agent {
 	/* Serializes configuration, MIB and transaction state. */
 	struct mutex lock;
 	struct xarray mib;
+	struct xarray services;
 	struct omci_agent_config config;
 	u32 upload_index;
 	u16 mib_sync;
@@ -83,10 +89,9 @@ struct omci_agent {
 	u8 profile_effective;
 	u32 profile_quirks;
 
-	u8 last_request[OMCI_BASELINE_LEN_NO_MIC];
-	u8 last_response[OMCI_BASELINE_LEN_NO_MIC];
-	u8 last_request_len;
-	u8 last_response_len;
+	struct sk_buff *last_request;
+	struct sk_buff *last_response;
+	u32 last_request_hash;
 	bool last_response_fake;
 
 	atomic64_t responses;
@@ -159,15 +164,17 @@ void omci_agent_mib_reset(struct omci_device *odev, bool all);
 int omci_agent_mib_next(struct omci_device *odev, u32 index,
 			struct omci_mib_object *object, u32 *next_index,
 			const char **name);
-const char *omci_agent_class_name(u16 class_id);
-int omci_agent_class_get(u16 class_id, struct omci_me_class *class);
-int omci_agent_class_next(u32 index, struct omci_me_class *class,
-			  u32 *next_index);
 
 bool omci_profile_valid(u8 profile);
 bool omci_profile_forceable(u8 profile);
 u8 omci_profile_detect(const struct omci_olt_g *olt);
 u32 omci_profile_quirks(u8 profile);
 void omci_profile_sanitize_olt_g(struct omci_olt_g *olt, u32 quirks);
+u16 omci_profile_normalize_uni_entity(u8 profile, u16 entity_id);
+void omci_profile_normalize_vlan_rule(u8 profile,
+				      struct omci_extended_vlan_rule *rule);
+int omci_profile_resolve_multicast_ani(u8 profile,
+				       u16 bridge_port_entity_id,
+				       u16 *ani_entity_id);
 
 #endif /* _NET_OMCI_INTERNAL_H */

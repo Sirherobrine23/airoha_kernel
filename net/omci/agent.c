@@ -10,6 +10,8 @@
 
 #include <linux/errno.h>
 #include <linux/int_log.h>
+#include <linux/jhash.h>
+#include <linux/if_vlan.h>
 #include <linux/kernel.h>
 #include <linux/math.h>
 #include <linux/math64.h>
@@ -19,6 +21,8 @@
 #include <net/netlink.h>
 
 #include "internal.h"
+#include "me.h"
+#include "wire.h"
 
 #define OMCI_MSG_TYPE_CREATE		4
 #define OMCI_MSG_TYPE_DELETE		6
@@ -53,6 +57,12 @@
 #define OMCI_RESULT_INSTANCE_EXISTS	7
 #define OMCI_RESULT_ATTRIBUTE_FAILED	9
 
+#define OMCI_BRIDGE_TP_PPTP_ETH_UNI	1
+#define OMCI_BRIDGE_TP_8021P_MAPPER	3
+#define OMCI_BRIDGE_TP_GEM_IWTP	5
+#define OMCI_BRIDGE_TP_MULTICAST_GEM_IWTP	6
+#define OMCI_BRIDGE_TP_VEIP		11
+
 static bool omci_agent_result_can_be_faked(u8 result)
 {
 	switch (result) {
@@ -65,25 +75,6 @@ static bool omci_agent_result_can_be_faked(u8 result)
 		return false;
 	}
 }
-
-#define OMCI_CLASS_ONU_DATA		2
-#define OMCI_CLASS_SOFTWARE_IMAGE	7
-#define OMCI_CLASS_PPTP_ETHERNET_UNI	11
-#define OMCI_CLASS_MAC_BRIDGE_SERVICE_PROFILE 45
-#define OMCI_CLASS_MAC_BRIDGE_CONFIG_DATA 46
-#define OMCI_CLASS_MAC_BRIDGE_PORT_CONFIG_DATA 47
-#define OMCI_CLASS_NETWORK_ADDRESS	137
-#define OMCI_CLASS_AUTH_METHOD		148
-#define OMCI_CLASS_ONU_G		256
-#define OMCI_CLASS_ONU2_G		257
-#define OMCI_CLASS_TCONT		262
-#define OMCI_CLASS_ANI_G		263
-#define OMCI_CLASS_GEM_IWTP		266
-#define OMCI_CLASS_GEM_PORT_CTP	268
-#define OMCI_CLASS_GAL_ETHERNET_PROFILE 272
-#define OMCI_CLASS_PRIORITY_QUEUE	277
-#define OMCI_CLASS_TRAFFIC_SCHEDULER	278
-#define OMCI_CLASS_VEIP		329
 
 #define OMCI_PRIORITY_QUEUE_ATTR_MASK		0xfff0
 #define OMCI_TRAFFIC_SCHEDULER_ATTR_MASK	0xf000
@@ -400,7 +391,7 @@ static void omci_ext_vlan_parse_create(struct omci_mib_object *object,
 	struct omci_extended_vlan *vlan = &object->extended_vlan;
 
 	vlan->association_type = content[0];
-	vlan->associated_me = get_unaligned_be16(content + 1);
+	vlan->associated_me = get_unaligned_be16(content + 24);
 	vlan->max_table_size = OMCI_EXT_VLAN_MAX_RULES;
 	vlan->valid = true;
 }
@@ -543,10 +534,11 @@ static int omci_attr_parse_set(struct omci_mib_object *object, u16 mask,
 }
 
 static int omci_attr_serialize(const struct omci_mib_object *object, u16 mask,
-			       u8 *data, size_t len,
+			       u8 *data, size_t len, size_t *encoded_len,
 			       const struct omci_attr_layout *layout,
 			       size_t layout_count, u16 supported_mask)
 {
+	size_t used = 0;
 	size_t i;
 
 	if (mask & ~supported_mask)
@@ -555,22 +547,23 @@ static int omci_attr_serialize(const struct omci_mib_object *object, u16 mask,
 	for (i = 0; i < layout_count; i++) {
 		if (!(mask & layout[i].mask))
 			continue;
-		if (len < layout[i].length)
+		if (len - used < layout[i].length)
 			return -ENOSPC;
-		memcpy(data, object->data + layout[i].offset,
+		memcpy(data + used, object->data + layout[i].offset,
 		       layout[i].length);
-		data += layout[i].length;
-		len -= layout[i].length;
+		used += layout[i].length;
 	}
 
+	*encoded_len = used;
 	return 0;
 }
 
 static int
 omci_priority_queue_serialize(const struct omci_mib_object *object,
-			      u16 mask, u8 *data, size_t len)
+			      u16 mask, u8 *data, size_t len,
+			      size_t *encoded_len)
 {
-	return omci_attr_serialize(object, mask, data, len,
+	return omci_attr_serialize(object, mask, data, len, encoded_len,
 				   omci_priority_queue_layout,
 				   ARRAY_SIZE(omci_priority_queue_layout),
 				   OMCI_PRIORITY_QUEUE_ATTR_MASK);
@@ -578,9 +571,10 @@ omci_priority_queue_serialize(const struct omci_mib_object *object,
 
 static int
 omci_traffic_scheduler_serialize(const struct omci_mib_object *object,
-				 u16 mask, u8 *data, size_t len)
+				 u16 mask, u8 *data, size_t len,
+				 size_t *encoded_len)
 {
-	return omci_attr_serialize(object, mask, data, len,
+	return omci_attr_serialize(object, mask, data, len, encoded_len,
 				   omci_traffic_scheduler_layout,
 				   ARRAY_SIZE(omci_traffic_scheduler_layout),
 				   OMCI_TRAFFIC_SCHEDULER_ATTR_MASK);
@@ -628,522 +622,6 @@ static int omci_mib_parse_set(struct omci_mib_object *object, u16 mask,
 	}
 }
 
-struct omci_class_name {
-	u16 class_id;
-	const char *name;
-};
-
-static const struct omci_class_name omci_classes[] = {
-	{ 1, "ONT" },
-	{ 2, "ONU data" },
-	{ 3, "PON IF line cardholder" },
-	{ 4, "PON IF line card" },
-	{ 5, "Cardholder" },
-	{ 6, "Circuit pack" },
-	{ 7, "Software image" },
-	{ 8, "UNI" },
-	{ 9, "TC adapter" },
-	{ 10, "Physical path termination point ATM UNI" },
-	{ 11, "Physical path termination point Ethernet UNI" },
-	{ 12, "Physical path termination point CES UNI" },
-	{ 13, "Logical N x 64 kbit/s sub-port connection termination point (CTP)" },
-	{ 14, "Interworking VCC termination point" },
-	{ 15, "AAL 1 profile" },
-	{ 16, "AAL 5 profile" },
-	{ 17, "AAL 1 protocol monitoring history data" },
-	{ 18, "AAL 5 performance monitoring history data" },
-	{ 19, "AAL 2 profile" },
-	{ 20, "Intentionally left blank" },
-	{ 21, "CES service profile" },
-	{ 22, "Reserved" },
-	{ 23, "CES physical interface performance monitoring history data" },
-	{ 24, "Ethernet performance monitoring history data" },
-	{ 25, "VP network CTP" },
-	{ 26, "ATM VP cross-connection" },
-	{ 27, "Priority queue" },
-	{ 28, "DBR/CBR traffic descriptor" },
-	{ 29, "UBR traffic descriptor" },
-	{ 30, "SBR1/VBR1 traffic descriptor" },
-	{ 31, "SBR2/VBR2 traffic descriptor" },
-	{ 32, "SBR3/VBR3 traffic descriptor" },
-	{ 33, "ABR traffic descriptor" },
-	{ 34, "GFR traffic descriptor" },
-	{ 35, "ABT/DT/IT traffic descriptor" },
-	{ 36, "UPC disagreement monitoring history data" },
-	{ 37, "Intentionally left blank" },
-	{ 38, "ANI" },
-	{ 39, "PON TC adapter" },
-	{ 40, "PON physical path termination point" },
-	{ 41, "TC adapter protocol monitoring history data" },
-	{ 42, "Threshold data" },
-	{ 43, "Operator specific" },
-	{ 44, "Vendor specific" },
-	{ 45, "MAC bridge service profile" },
-	{ 46, "MAC bridge configuration data" },
-	{ 47, "MAC bridge port configuration data" },
-	{ 48, "MAC bridge port designation data" },
-	{ 49, "MAC bridge port filter table data" },
-	{ 50, "MAC bridge port bridge table data" },
-	{ 51, "MAC bridge performance monitoring history data" },
-	{ 52, "MAC bridge port performance monitoring history data" },
-	{ 53, "Physical path termination point POTS UNI" },
-	{ 54, "Voice CTP" },
-	{ 55, "Voice PM history data" },
-	{ 56, "AAL2 PVC profile" },
-	{ 57, "AAL2 CPS protocol monitoring history data" },
-	{ 58, "Voice service profile" },
-	{ 59, "LES service profile" },
-	{ 60, "AAL2 SSCS parameter profile 1" },
-	{ 61, "AAL2 SSCS parameter profile 2" },
-	{ 62, "VP performance monitoring history data" },
-	{ 63, "Traffic scheduler" },
-	{ 64, "T-CONT buffer" },
-	{ 65, "UBR+ traffic descriptor" },
-	{ 66, "AAL2 SSCS protocol monitoring history data" },
-	{ 67, "IP port configuration data" },
-	{ 68, "IP router service profile" },
-	{ 69, "IP router configuration data" },
-	{ 70, "IP router performance monitoring history data 1" },
-	{ 71, "IP router performance monitoring history data 2" },
-	{ 72, "ICMP performance monitoring history data 1" },
-	{ 73, "ICMP performance monitoring history data 2" },
-	{ 74, "IP route table" },
-	{ 75, "IP static routes" },
-	{ 76, "ARP service profile" },
-	{ 77, "ARP configuration data" },
-	{ 78, "VLAN tagging operation configuration data" },
-	{ 79, "MAC bridge port filter pre-assign table" },
-	{ 80, "Physical path termination point ISDN UNI" },
-	{ 81, "Reserved" },
-	{ 82, "Physical path termination point video UNI" },
-	{ 83, "Physical path termination point LCT UNI" },
-	{ 84, "VLAN tagging filter data" },
-	{ 85, "ONU" },
-	{ 86, "ATM VC cross-connection" },
-	{ 87, "VC network CTP" },
-	{ 88, "VC PM history data" },
-	{ 89, "Ethernet performance monitoring history data 2" },
-	{ 90, "Physical path termination point video ANI" },
-	{ 91, "Physical path termination point IEEE 802.11 UNI" },
-	{ 92, "IEEE 802.11 station management data 1" },
-	{ 93, "IEEE 802.11 station management data 2" },
-	{ 94, "IEEE 802.11 general purpose object" },
-	{ 95, "IEEE 802.11 MAC and PHY operation and antenna data" },
-	{ 96, "IEEE 802.11 performance monitoring history data" },
-	{ 97, "IEEE 802.11 PHY FHSS DSSS IR tables" },
-	{ 98, "Physical path termination point xDSL UNI part 1" },
-	{ 99, "Physical path termination point xDSL UNI part 2" },
-	{ 100, "xDSL line inventory and status data part 1" },
-	{ 101, "xDSL line inventory and status data part 2" },
-	{ 102, "xDSL channel downstream status data" },
-	{ 103, "xDSL channel upstream status data" },
-	{ 104, "xDSL line configuration profile part 1" },
-	{ 105, "xDSL line configuration profile part 2" },
-	{ 106, "xDSL line configuration profile part 3" },
-	{ 107, "xDSL channel configuration profile" },
-	{ 108, "xDSL subcarrier masking downstream profile" },
-	{ 109, "xDSL subcarrier masking upstream profile" },
-	{ 110, "xDSL PSD mask profile" },
-	{ 111, "xDSL downstream radio frequency interference (RFI) bands profile" },
-	{ 112, "xDSL xTU-C performance monitoring history data" },
-	{ 113, "xDSL xTU-R performance monitoring history data" },
-	{ 114, "xDSL xTU-C channel performance monitoring history data" },
-	{ 115, "xDSL xTU-R channel performance monitoring history data" },
-	{ 116, "TC adaptor performance monitoring history data xDSL" },
-	{ 117, "Physical path termination point VDSL UNI (ITU-T G.993.1 VDSL1)" },
-	{ 118, "VDSL VTU-O physical data" },
-	{ 119, "VDSL VTU-R physical data" },
-	{ 120, "VDSL channel data" },
-	{ 121, "VDSL line configuration profile" },
-	{ 122, "VDSL channel configuration profile" },
-	{ 123, "VDSL band plan configuration profile" },
-	{ 124, "VDSL VTU-O physical interface monitoring history data" },
-	{ 125, "VDSL VTU-R physical interface monitoring history data" },
-	{ 126, "VDSL VTU-O channel performance monitoring history data" },
-	{ 127, "VDSL VTU-R channel performance monitoring history data" },
-	{ 128, "Video return path service profile" },
-	{ 129, "Video return path performance monitoring history data" },
-	{ 130, "IEEE 802.1p mapper service profile" },
-	{ 131, "OLT-G" },
-	{ 132, "Multicast interworking VCC termination point" },
-	{ 133, "ONU power shedding" },
-	{ 134, "IP host config data" },
-	{ 135, "IP host performance monitoring history data" },
-	{ 136, "TCP/UDP config data" },
-	{ 137, "Network address" },
-	{ 138, "VoIP config data" },
-	{ 139, "VoIP voice CTP" },
-	{ 140, "Call control performance monitoring history data" },
-	{ 141, "VoIP line status" },
-	{ 142, "VoIP media profile" },
-	{ 143, "RTP profile data" },
-	{ 144, "RTP performance monitoring history data" },
-	{ 145, "Network dial plan table" },
-	{ 146, "VoIP application service profile" },
-	{ 147, "VoIP feature access codes" },
-	{ 148, "Authentication security method" },
-	{ 149, "SIP config portal" },
-	{ 150, "SIP agent config data" },
-	{ 151, "SIP agent performance monitoring history data" },
-	{ 152, "SIP call initiation performance monitoring history data" },
-	{ 153, "SIP user data" },
-	{ 154, "MGC config portal" },
-	{ 155, "MGC config data" },
-	{ 156, "MGC performance monitoring history data" },
-	{ 157, "Large string" },
-	{ 158, "ONU remote debug" },
-	{ 159, "Equipment protection profile" },
-	{ 160, "Equipment extension package" },
-	{ 161, "Port-mapping package (legacy B-PON)" },
-	{ 162, "Physical path termination point MoCA UNI" },
-	{ 163, "MoCA Ethernet performance monitoring history data" },
-	{ 164, "MoCA interface performance monitoring history data" },
-	{ 165, "VDSL2 line configuration extensions" },
-	{ 166, "xDSL line inventory and status data part 3" },
-	{ 167, "xDSL line inventory and status data part 4" },
-	{ 168, "VDSL2 line inventory and status data part 1" },
-	{ 169, "VDSL2 line inventory and status data part 2" },
-	{ 170, "VDSL2 line inventory and status data part 3" },
-	{ 171, "Extended VLAN tagging operation configuration data" },
-	{ 256, "ONU-G" },
-	{ 257, "ONU2-G" },
-	{ 258, "ONU-G (deprecated)" },
-	{ 259, "ONU2-G (deprecated)" },
-	{ 260, "PON IF line card-G" },
-	{ 261, "PON TC adapter-G" },
-	{ 262, "T-CONT" },
-	{ 263, "ANI-G" },
-	{ 264, "UNI-G" },
-	{ 265, "ATM interworking VCC termination point" },
-	{ 266, "GEM interworking termination point" },
-	{ 267, "GEM port performance monitoring history data (obsolete)" },
-	{ 268, "GEM port network CTP" },
-	{ 269, "VP network CTP" },
-	{ 270, "VC network CTP-G" },
-	{ 271, "GAL TDM profile (deprecated)" },
-	{ 272, "GAL Ethernet profile" },
-	{ 273, "Threshold data 1" },
-	{ 274, "Threshold data 2" },
-	{ 275, "GAL TDM performance monitoring history data (deprecated)" },
-	{ 276, "GAL Ethernet performance monitoring history data" },
-	{ 277, "Priority queue" },
-	{ 278, "Traffic scheduler" },
-	{ 279, "Protection data" },
-	{ 280, "Traffic descriptor" },
-	{ 281, "Multicast GEM interworking termination point" },
-	{ 282, "Pseudowire termination point" },
-	{ 283, "RTP pseudowire parameters" },
-	{ 284, "Pseudowire maintenance profile" },
-	{ 285, "Pseudowire performance monitoring history data" },
-	{ 286, "Ethernet flow termination point" },
-	{ 287, "OMCI" },
-	{ 288, "Managed entity" },
-	{ 289, "Attribute" },
-	{ 290, "Dot1X port extension package" },
-	{ 291, "Dot1X configuration profile" },
-	{ 292, "Dot1X performance monitoring history data" },
-	{ 293, "Radius performance monitoring history data" },
-	{ 294, "TU CTP" },
-	{ 295, "TU performance monitoring history data" },
-	{ 296, "Ethernet performance monitoring history data 3" },
-	{ 297, "Port-mapping package" },
-	{ 298, "Dot1 rate limiter" },
-	{ 299, "Dot1ag maintenance domain" },
-	{ 300, "Dot1ag maintenance association" },
-	{ 301, "Dot1ag default MD level" },
-	{ 302, "Dot1ag MEP" },
-	{ 303, "Dot1ag MEP status" },
-	{ 304, "Dot1ag MEP CCM database" },
-	{ 305, "Dot1ag CFM stack" },
-	{ 306, "Dot1ag chassis - management info" },
-	{ 307, "Octet string" },
-	{ 308, "General purpose buffer" },
-	{ 309, "Multicast operations profile" },
-	{ 310, "Multicast subscriber config info" },
-	{ 311, "Multicast subscriber monitor" },
-	{ 312, "FEC performance monitoring history data" },
-	{ 313, "RE ANI-G" },
-	{ 314, "Physical path termination point RE UNI" },
-	{ 315, "RE upstream amplifier" },
-	{ 316, "RE downstream amplifier" },
-	{ 317, "RE config portal" },
-	{ 318, "File transfer controller" },
-	{ 319, "CES physical interface performance monitoring history data 2" },
-	{ 320, "CES physical interface performance monitoring history data 3" },
-	{ 321, "Ethernet frame performance monitoring history data downstream" },
-	{ 322, "Ethernet frame performance monitoring history data upstream" },
-	{ 323, "VDSL2 line configuration extensions 2" },
-	{ 324, "xDSL impulse noise monitor performance monitoring history data" },
-	{ 325, "xDSL line inventory and status data part 5" },
-	{ 326, "xDSL line inventory and status data part 6" },
-	{ 327, "xDSL line inventory and status data part 7" },
-	{ 328, "RE common amplifier parameters" },
-	{ 329, "Virtual Ethernet interface point" },
-	{ 330, "Generic status portal" },
-	{ 331, "ONU-E" },
-	{ 332, "Enhanced security control" },
-	{ 333, "MPLS pseudowire termination point" },
-	{ 334, "Ethernet frame extended PM" },
-	{ 335, "Simple network management protocol (SNMP) configuration data" },
-	{ 336, "ONU dynamic power management control" },
-	{ 337, "PW ATM configuration data" },
-	{ 338, "PW ATM performance monitoring history data" },
-	{ 339, "PW Ethernet configuration data" },
-	{ 340, "BBF TR-069 management server" },
-	{ 341, "GEM port network CTP performance monitoring history data" },
-	{ 342, "TCP/UDP performance monitoring history data" },
-	{ 343, "Energy consumption performance monitoring history data" },
-	{ 344, "XG-PON TC performance monitoring history data" },
-	{ 345, "XG-PON downstream management performance monitoring history data" },
-	{ 346, "XG-PON upstream management performance monitoring history data" },
-	{ 347, "IPv6 host config data" },
-	{ 348, "MAC bridge port ICMPv6 process pre-assign table" },
-	{ 349, "Power over Ethernet (PoE) control" },
-	{ 400, "Ethernet pseudowire parameters" },
-	{ 401, "Physical path termination point RS232/RS485 UNI" },
-	{ 402, "RS232/RS485 port operation configuration data" },
-	{ 403, "RS232/RS485 performance monitoring history data" },
-	{ 404, "L2 multicast GEM interworking termination point" },
-	{ 405, "ANI-E" },
-	{ 406, "EPON downstream performance monitoring configuration" },
-	{ 407, "SIP agent config data 2" },
-	{ 408, "xDSL xTU-C performance monitoring history data part 2" },
-	{ 409, "PTM performance monitoring history data xDSL" },
-	{ 410, "VDSL2 line configuration extensions 3" },
-	{ 411, "Vectoring line configuration extensions" },
-	{ 412, "xDSL channel configuration profile part 2" },
-	{ 413, "xTU data gathering configuration" },
-	{ 414, "xDSL line inventory and status data part 8" },
-	{ 415, "VDSL2 line inventory and status data part 4" },
-	{ 416, "Vectoring line inventory and status data" },
-	{ 417, "Data gathering line test, diagnostic and status" },
-	{ 419, "EFM bonding group" },
-	{ 420, "EFM bonding link" },
-	{ 421, "EFM bonding group performance monitoring history data" },
-	{ 422, "EFM bonding group performance monitoring history data part 2" },
-	{ 423, "EFM bonding link performance monitoring history data" },
-	{ 424, "EFM bonding port performance monitoring history data" },
-	{ 425, "EFM bonding port performance monitoring history data part 2" },
-	{ 426, "Ethernet frame extended PM 64 bit" },
-	{ 427, "Physical path termination point xDSL UNI part 3" },
-	{ 428, "FAST line configuration profile part 1" },
-	{ 429, "FAST line configuration profile part 2" },
-	{ 430, "FAST line configuration profile part 3" },
-	{ 431, "FAST line configuration profile part 4" },
-	{ 432, "FAST channel configuration profile" },
-	{ 433, "FAST data path configuration profile" },
-	{ 434, "FAST vectoring line configuration extensions" },
-	{ 435, "FAST line inventory and status data" },
-	{ 436, "FAST line inventory and status data part 2" },
-	{ 437, "FAST xTU-C performance monitoring history data" },
-	{ 438, "FAST xTU-R performance monitoring history data" },
-	{ 439, "OpenFlow config data" },
-	{ 440, "Time Status Message" },
-	{ 441, "ONU3-G" },
-	{ 442, "TWDM System Profile managed entity" },
-	{ 443, "TWDM channel managed entity" },
-	{ 444, "TWDM channel PHY/LODS performance monitoring history data" },
-	{ 445, "TWDM channel XGEM performance monitoring history data" },
-	{ 446, "TWDM channel PLOAM performance monitoring history data part 1" },
-	{ 447, "TWDM channel PLOAM performance monitoring history data part 2" },
-	{ 448, "TWDM channel PLOAM performance monitoring history data part 3" },
-	{ 449, "TWDM channel tuning performance monitoring history data part 1" },
-	{ 450, "TWDM channel tuning performance monitoring history data part 2" },
-	{ 451, "TWDM channel tuning performance monitoring history data part 3" },
-	{ 452, "TWDM channel OMCI performance monitoring history data" },
-};
-
-static bool omci_class_name_contains(const char *name, const char *needle)
-{
-	return strnstr(name, needle, strlen(name));
-}
-
-static u8 omci_class_category(u16 class_id, const char *name)
-{
-	if ((class_id >= 240 && class_id <= 255) ||
-	    (class_id >= 350 && class_id <= 399) || class_id >= 65280)
-		return OMCI_CLASS_CATEGORY_VENDOR;
-	if ((class_id >= 172 && class_id <= 239) ||
-	    (class_id >= 453 && class_id <= 65279) ||
-	    omci_class_name_contains(name, "Reserved") ||
-	    omci_class_name_contains(name, "Intentionally left blank"))
-		return OMCI_CLASS_CATEGORY_RESERVED;
-	if (omci_class_name_contains(name, "performance monitoring") ||
-	    omci_class_name_contains(name, "PM history") ||
-	    omci_class_name_contains(name, "monitoring history"))
-		return OMCI_CLASS_CATEGORY_PERFORMANCE;
-	if (omci_class_name_contains(name, "xDSL") ||
-	    omci_class_name_contains(name, "VDSL") ||
-	    omci_class_name_contains(name, "FAST") ||
-	    omci_class_name_contains(name, "EFM bonding"))
-		return OMCI_CLASS_CATEGORY_XDSL;
-	if (omci_class_name_contains(name, "VoIP") ||
-	    omci_class_name_contains(name, "SIP") ||
-	    omci_class_name_contains(name, "MGC") ||
-	    omci_class_name_contains(name, "RTP") ||
-	    omci_class_name_contains(name, "Voice") ||
-	    omci_class_name_contains(name, "POTS"))
-		return OMCI_CLASS_CATEGORY_VOICE;
-	if (omci_class_name_contains(name, "Multicast"))
-		return OMCI_CLASS_CATEGORY_MULTICAST;
-	if (omci_class_name_contains(name, "security") ||
-	    omci_class_name_contains(name, "Authentication") ||
-	    omci_class_name_contains(name, "Dot1X") ||
-	    omci_class_name_contains(name, "Radius"))
-		return OMCI_CLASS_CATEGORY_SECURITY;
-	if (omci_class_name_contains(name, "IP ") ||
-	    omci_class_name_contains(name, "TCP/UDP") ||
-	    omci_class_name_contains(name, "ARP") ||
-	    omci_class_name_contains(name, "ICMP") ||
-	    omci_class_name_contains(name, "TR-069") ||
-	    omci_class_name_contains(name, "SNMP") ||
-	    omci_class_name_contains(name, "Network address"))
-		return OMCI_CLASS_CATEGORY_LAYER3;
-	if (omci_class_name_contains(name, "VLAN") ||
-	    omci_class_name_contains(name, "MAC bridge") ||
-	    omci_class_name_contains(name, "Ethernet") ||
-	    omci_class_name_contains(name, "802.1p") ||
-	    omci_class_name_contains(name, "Dot1ag") ||
-	    omci_class_name_contains(name, "OpenFlow"))
-		return OMCI_CLASS_CATEGORY_LAYER2;
-	if (omci_class_name_contains(name, "UNI"))
-		return OMCI_CLASS_CATEGORY_UNI;
-	if (omci_class_name_contains(name, "ANI") ||
-	    omci_class_name_contains(name, "GEM") ||
-	    omci_class_name_contains(name, "T-CONT") ||
-	    omci_class_name_contains(name, "PON") ||
-	    omci_class_name_contains(name, "Traffic scheduler") ||
-	    omci_class_name_contains(name, "Priority queue"))
-		return OMCI_CLASS_CATEGORY_ANI;
-	if (class_id <= 7 || class_id == 133 || class_id == 159 ||
-	    class_id == 160 || class_id == 256 || class_id == 257 ||
-	    class_id == 297 || class_id == 331 || class_id == 336 ||
-	    class_id == 441)
-		return OMCI_CLASS_CATEGORY_EQUIPMENT;
-	if (class_id == 137 || class_id == 157 || class_id == 158 ||
-	    class_id == 287 || class_id == 288 || class_id == 289 ||
-	    class_id == 307 || class_id == 308 || class_id == 318 ||
-	    class_id == 330 || class_id == 440)
-		return OMCI_CLASS_CATEGORY_MANAGEMENT;
-	if (class_id < 256)
-		return OMCI_CLASS_CATEGORY_LEGACY;
-
-	return OMCI_CLASS_CATEGORY_OTHER;
-}
-
-static u8 omci_class_support(u16 class_id)
-{
-	switch (class_id) {
-	case OMCI_CLASS_VLAN_TAGGING_FILTER_DATA:
-	case OMCI_CLASS_OLT_G:
-	case OMCI_CLASS_EXTENDED_VLAN:
-		return OMCI_CLASS_SUPPORT_PARSED;
-	case OMCI_CLASS_PPTP_ETHERNET_UNI:
-	case OMCI_CLASS_TCONT:
-	case OMCI_CLASS_GEM_PORT_CTP:
-	case OMCI_CLASS_VEIP:
-		return OMCI_CLASS_SUPPORT_PROVISIONED;
-	case OMCI_CLASS_ONU_DATA:
-	case OMCI_CLASS_SOFTWARE_IMAGE:
-	case OMCI_CLASS_ONU_G:
-	case OMCI_CLASS_ONU2_G:
-	case OMCI_CLASS_ANI_G:
-	case OMCI_CLASS_PRIORITY_QUEUE:
-	case OMCI_CLASS_TRAFFIC_SCHEDULER:
-		return OMCI_CLASS_SUPPORT_NATIVE;
-	default:
-		return OMCI_CLASS_SUPPORT_SHADOW;
-	}
-}
-
-static u32 omci_class_flags(u16 class_id, const char *name)
-{
-	u32 flags = OMCI_CLASS_F_STANDARD;
-
-	if (omci_class_name_contains(name, "deprecated") ||
-	    omci_class_name_contains(name, "obsolete"))
-		flags |= OMCI_CLASS_F_DEPRECATED;
-	if (omci_class_category(class_id, name) == OMCI_CLASS_CATEGORY_RESERVED)
-		flags |= OMCI_CLASS_F_RESERVED;
-	if (omci_class_category(class_id, name) == OMCI_CLASS_CATEGORY_VENDOR)
-		flags |= OMCI_CLASS_F_VENDOR_SPECIFIC;
-	if (omci_class_category(class_id, name) == OMCI_CLASS_CATEGORY_PERFORMANCE)
-		flags |= OMCI_CLASS_F_PERFORMANCE;
-	if (omci_class_name_contains(name, "table") || class_id == 84 ||
-	    class_id == 145 || class_id == 171)
-		flags |= OMCI_CLASS_F_TABLE;
-	switch (class_id) {
-	case OMCI_CLASS_PPTP_ETHERNET_UNI:
-	case OMCI_CLASS_MAC_BRIDGE_SERVICE_PROFILE:
-	case OMCI_CLASS_MAC_BRIDGE_CONFIG_DATA:
-	case OMCI_CLASS_MAC_BRIDGE_PORT_CONFIG_DATA:
-	case OMCI_CLASS_VLAN_TAGGING_FILTER_DATA:
-	case 130:
-	case OMCI_CLASS_EXTENDED_VLAN:
-	case OMCI_CLASS_TCONT:
-	case OMCI_CLASS_GEM_IWTP:
-	case OMCI_CLASS_GEM_PORT_CTP:
-	case OMCI_CLASS_VEIP:
-		flags |= OMCI_CLASS_F_DATAPATH;
-		break;
-	default:
-		break;
-	}
-
-	return flags;
-}
-
-int omci_agent_class_get(u16 class_id, struct omci_me_class *class)
-{
-	const char *name;
-
-	if (!class)
-		return -EINVAL;
-	name = omci_agent_class_name(class_id);
-	class->class_id = class_id;
-	class->category = omci_class_category(class_id, name);
-	class->support = omci_class_support(class_id);
-	class->flags = omci_class_flags(class_id, name);
-	class->name = name;
-
-	return 0;
-}
-
-int omci_agent_class_next(u32 index, struct omci_me_class *class,
-			  u32 *next_index)
-{
-	if (!class || !next_index)
-		return -EINVAL;
-	if (index >= ARRAY_SIZE(omci_classes))
-		return -ENOENT;
-
-	omci_agent_class_get(omci_classes[index].class_id, class);
-	*next_index = index + 1;
-	return 0;
-}
-
-const char *omci_agent_class_name(u16 class_id)
-{
-	unsigned int i;
-
-	for (i = 0; i < ARRAY_SIZE(omci_classes); i++)
-		if (omci_classes[i].class_id == class_id)
-			return omci_classes[i].name;
-
-	if (class_id >= 172 && class_id <= 239)
-		return "Reserved for future managed entities";
-	if (class_id >= 240 && class_id <= 255)
-		return "Reserved for vendor-specific managed entities";
-	if (class_id >= 350 && class_id <= 399)
-		return "Vendor-specific managed entity";
-	if (class_id >= 453 && class_id <= 65279)
-		return "Reserved for future standardization";
-	if (class_id >= 65280)
-		return "Vendor-specific managed entity";
-
-	return "Unassigned managed entity";
-}
-
 static unsigned long omci_mib_key(u16 class_id, u16 entity_id)
 {
 	return ((unsigned long)class_id << 16) | entity_id;
@@ -1152,7 +630,13 @@ static unsigned long omci_mib_key(u16 class_id, u16 entity_id)
 static struct omci_mib_object *
 omci_mib_lookup(struct omci_agent *agent, u16 class_id, u16 entity_id)
 {
-	return xa_load(&agent->mib, omci_mib_key(class_id, entity_id));
+	struct omci_mib_object *object;
+
+	object = xa_load(&agent->mib, omci_mib_key(class_id, entity_id));
+	if (object && object->pending_delete)
+		return NULL;
+
+	return object;
 }
 
 static int omci_mib_store_locked(struct omci_agent *agent,
@@ -1216,12 +700,88 @@ omci_agent_profile_state_locked(struct omci_agent *agent,
 }
 
 static int
+omci_agent_profile_reconcile_locked(struct omci_device *odev,
+				    u8 old_profile, u8 new_profile);
+static int omci_agent_clear_services_locked(struct omci_device *odev);
+static int omci_agent_reconcile_services_locked(struct omci_device *odev);
+static void omci_agent_reset_duplicate_locked(struct omci_agent *agent);
+
+static void omci_agent_free_object_array(struct xarray *objects)
+{
+	struct omci_mib_object *object;
+	unsigned long index;
+
+	xa_for_each(objects, index, object) {
+		xa_erase(objects, index);
+		kfree(object);
+	}
+}
+
+static int omci_agent_snapshot_vendor_objects_locked(struct omci_agent *agent,
+						      struct xarray *snapshot)
+{
+	struct omci_mib_object *object;
+	struct omci_mib_object *copy;
+	unsigned long index;
+	void *old;
+
+	xa_for_each(&agent->mib, index, object) {
+		if (!object->owner_profile)
+			continue;
+		copy = kmemdup(object, sizeof(*copy), GFP_KERNEL);
+		if (!copy)
+			return -ENOMEM;
+		old = xa_store(snapshot, index, copy, GFP_KERNEL);
+		if (xa_is_err(old)) {
+			kfree(copy);
+			return xa_err(old);
+		}
+		kfree(old);
+	}
+
+	return 0;
+}
+
+static int omci_agent_restore_vendor_objects_locked(struct omci_agent *agent,
+						     struct xarray *snapshot)
+{
+	struct omci_mib_object *object;
+	unsigned long index;
+	void *old;
+	int ret = 0;
+
+	xa_for_each(&agent->mib, index, object) {
+		if (!object->owner_profile)
+			continue;
+		xa_erase(&agent->mib, index);
+		kfree(object);
+	}
+	xa_for_each(snapshot, index, object) {
+		xa_erase(snapshot, index);
+		old = xa_store(&agent->mib, index, object, GFP_KERNEL);
+		if (xa_is_err(old)) {
+			kfree(object);
+			if (!ret)
+				ret = xa_err(old);
+			continue;
+		}
+		kfree(old);
+	}
+
+	return ret;
+}
+
+static int
 omci_agent_profile_refresh_locked(struct omci_device *odev,
 				  struct omci_olt_g *olt,
 				  bool *profile_changed)
 {
 	struct omci_agent *agent = &odev->agent;
+	struct omci_olt_profile_state old_state;
 	struct omci_olt_profile_state state;
+	struct xarray snapshot;
+	u32 old_quirks = agent->profile_quirks;
+	u8 old_profile = agent->profile_effective;
 	bool changed;
 	int ret;
 
@@ -1230,11 +790,24 @@ omci_agent_profile_refresh_locked(struct omci_device *odev,
 	if (olt)
 		state.olt = *olt;
 
-	changed = agent->profile_effective != state.effective ||
-		  agent->profile_quirks != state.quirks;
+	changed = old_profile != state.effective || old_quirks != state.quirks;
+	if (!changed)
+		goto apply_profile;
 
+	xa_init(&snapshot);
+	ret = omci_agent_snapshot_vendor_objects_locked(agent, &snapshot);
+	if (ret)
+		goto destroy_snapshot;
+	ret = omci_agent_profile_reconcile_locked(odev, old_profile,
+						  state.effective);
+	if (ret)
+		goto rollback;
+
+apply_profile:
 	if (odev->ops->set_olt_profile) {
 		ret = odev->ops->set_olt_profile(odev, &state);
+		if (ret && changed)
+			goto rollback;
 		if (ret)
 			return ret;
 	}
@@ -1244,14 +817,36 @@ omci_agent_profile_refresh_locked(struct omci_device *odev,
 	if (profile_changed)
 		*profile_changed = changed;
 
-	if (changed)
+	if (changed) {
+		agent->upload_index = 0;
+		agent->mib_sync++;
+		omci_agent_free_object_array(&snapshot);
+		xa_destroy(&snapshot);
 		dev_info(odev->parent,
 			 "OMCI OLT profile: configured=%s effective=%s forced=%s quirks=%#x\n",
 			 omci_olt_profile_name(state.configured),
 			 omci_olt_profile_name(state.effective),
 			 omci_olt_profile_name(state.forced), state.quirks);
+	}
 
 	return 0;
+
+rollback:
+	omci_agent_restore_vendor_objects_locked(agent, &snapshot);
+	agent->profile_effective = old_profile;
+	agent->profile_quirks = old_quirks;
+	omci_agent_reconcile_services_locked(odev);
+	if (odev->ops->set_olt_profile) {
+		old_state = state;
+		old_state.effective = old_profile;
+		old_state.quirks = old_quirks;
+		odev->ops->set_olt_profile(odev, &old_state);
+	}
+	omci_agent_free_object_array(&snapshot);
+
+destroy_snapshot:
+	xa_destroy(&snapshot);
+	return ret;
 }
 
 static bool
@@ -1269,19 +864,29 @@ omci_agent_fakes_unsupported(const struct omci_agent *agent)
 }
 
 static bool
-omci_agent_should_fake_result(const struct omci_agent *agent, u8 result)
+omci_agent_should_fake_result(const struct omci_agent *agent, u16 class_id,
+			      u8 result)
 {
+	const struct omci_me_desc *desc = omci_me_lookup(agent, class_id);
+
+	if (desc && (desc->flags & OMCI_ME_F_DATAPATH))
+		return false;
+
 	return omci_agent_fakes_unsupported(agent) &&
 	       omci_agent_result_can_be_faked(result);
 }
 
-static int omci_mib_add_default_mask(struct omci_agent *agent, u16 class_id,
-				     u16 entity_id, u16 attr_mask,
-				     const void *data, size_t len)
+static int
+omci_mib_add_default_profile_mask(struct omci_agent *agent, u8 profile,
+				  u16 class_id, u16 entity_id,
+				  u16 attr_mask, const void *data,
+				  size_t len)
 {
+	const struct omci_me_desc *desc;
 	struct omci_mib_object *object;
 	int ret;
 
+	desc = omci_me_lookup_profile(profile, class_id);
 	object = kzalloc(sizeof(*object), GFP_KERNEL);
 	if (!object)
 		return -ENOMEM;
@@ -1290,6 +895,10 @@ static int omci_mib_add_default_mask(struct omci_agent *agent, u16 class_id,
 	object->entity_id = entity_id;
 	object->attr_mask = attr_mask;
 	object->origin = OMCI_MIB_ORIGIN_DEFAULT;
+	object->owner_profile = desc && (desc->flags & OMCI_ME_F_VENDOR) ?
+		profile : OMCI_OLT_PROFILE_UNSPEC;
+	object->data_len = desc ? desc->data_len :
+		min_t(size_t, len, sizeof(object->data));
 	if (data)
 		memcpy(object->data, data, min(len, sizeof(object->data)));
 
@@ -1298,11 +907,168 @@ static int omci_mib_add_default_mask(struct omci_agent *agent, u16 class_id,
 	return ret;
 }
 
+static int omci_mib_add_default_mask(struct omci_agent *agent, u16 class_id,
+				     u16 entity_id, u16 attr_mask,
+				     const void *data, size_t len)
+{
+	u8 profile = agent->profile_effective;
+
+	if (!profile)
+		profile = OMCI_OLT_PROFILE_GENERIC;
+
+	return omci_mib_add_default_profile_mask(agent, profile, class_id,
+					 entity_id, attr_mask, data, len);
+}
+
 static int omci_mib_add_default(struct omci_agent *agent, u16 class_id,
 				u16 entity_id, const void *data, size_t len)
 {
 	return omci_mib_add_default_mask(agent, class_id, entity_id, 0xffff,
 					 data, len);
+}
+
+static int
+omci_agent_seed_huawei_locked(struct omci_device *odev, u8 profile)
+{
+	struct omci_agent *agent = &odev->agent;
+	u8 data[OMCI_MAX_ATTR_DATA] = {};
+	int ret;
+
+	data[1] = agent->config.traffic_mgmt_option;
+	ret = omci_mib_add_default_profile_mask(agent, profile,
+			OMCI_CLASS_HUAWEI_FLOW_MAPPING, 0, GENMASK(15, 7),
+			data, sizeof(data));
+	if (ret)
+		return ret;
+
+	memset(data, 0, sizeof(data));
+	memcpy(data, agent->config.version, min_t(size_t, 14,
+						 sizeof(agent->config.version)));
+	data[14] = 1;
+	data[15] = 1;
+	data[16] = 1;
+	ret = omci_mib_add_default_profile_mask(agent, profile,
+			OMCI_CLASS_HUAWEI_SW_IMAGE_EXT, 0, GENMASK(15, 11),
+			data, sizeof(data));
+	if (ret)
+		return ret;
+
+	memset(data, 0, sizeof(data));
+	ret = omci_mib_add_default_profile_mask(agent, profile,
+			OMCI_CLASS_HUAWEI_MULTICAST_367, 0, GENMASK(15, 11),
+			data, sizeof(data));
+	if (ret)
+		return ret;
+	ret = omci_mib_add_default_profile_mask(agent, profile,
+			OMCI_CLASS_HUAWEI_MULTICAST_370, 0x0101,
+			GENMASK(15, 11), data, sizeof(data));
+	if (ret)
+		return ret;
+	ret = omci_mib_add_default_profile_mask(agent, profile,
+			OMCI_CLASS_HUAWEI_MULTICAST_373, 0, GENMASK(15, 11),
+			data, sizeof(data));
+	if (ret)
+		return ret;
+	ret = omci_mib_add_default_profile_mask(agent, profile,
+			OMCI_CLASS_HUAWEI_MULTICAST_65408, 0, GENMASK(15, 11),
+			data, sizeof(data));
+	if (ret)
+		return ret;
+	ret = omci_mib_add_default_profile_mask(agent, profile,
+			OMCI_CLASS_HUAWEI_MULTICAST_65414, 0, GENMASK(15, 11),
+			data, sizeof(data));
+	if (ret)
+		return ret;
+
+	return omci_mib_add_default_profile_mask(agent, profile,
+			OMCI_CLASS_HUAWEI_MULTICAST_65425, 0, GENMASK(15, 11),
+			data, sizeof(data));
+}
+
+static int
+omci_agent_seed_nokia_locked(struct omci_device *odev, u8 profile)
+{
+	struct omci_agent *agent = &odev->agent;
+	u8 data[OMCI_MAX_ATTR_DATA] = {};
+	unsigned int i;
+	int ret;
+
+	data[0] = 1;
+	data[3] = 1;
+	data[6] = 1;
+	data[9] = 1;
+	data[12] = 1;
+	ret = omci_mib_add_default_profile_mask(agent, profile,
+			OMCI_CLASS_NOKIA_OPTICAL_SUPERVISION, 0x0101,
+			GENMASK(15, 6), data, sizeof(data));
+	if (ret)
+		return ret;
+
+	memset(data, 0, sizeof(data));
+	memcpy(data + 15, agent->config.vendor_id,
+	       sizeof(agent->config.vendor_id));
+	memcpy(data + 19, agent->config.serial_number,
+	       sizeof(agent->config.serial_number));
+	ret = omci_mib_add_default_profile_mask(agent, profile,
+			OMCI_CLASS_NOKIA_ONT_GENERIC_V2, 0,
+			GENMASK(15, 4), data, sizeof(data));
+	if (ret)
+		return ret;
+
+	for (i = 0; i < agent->config.uni_count; i++) {
+		memset(data, 0, sizeof(data));
+		ret = omci_mib_add_default_profile_mask(agent, profile,
+				OMCI_CLASS_NOKIA_UNI_SUPPLEMENTAL_V2, i + 1,
+				GENMASK(15, 9), data, sizeof(data));
+		if (ret)
+			return ret;
+	}
+
+	return 0;
+}
+
+static int
+omci_agent_seed_profile_locked(struct omci_device *odev, u8 profile)
+{
+	switch (profile) {
+	case OMCI_OLT_PROFILE_HUAWEI:
+		return omci_agent_seed_huawei_locked(odev, profile);
+	case OMCI_OLT_PROFILE_NOKIA_ALCL:
+		return omci_agent_seed_nokia_locked(odev, profile);
+	default:
+		return 0;
+	}
+}
+
+static int
+omci_agent_profile_reconcile_locked(struct omci_device *odev,
+				    u8 old_profile, u8 new_profile)
+{
+	struct omci_agent *agent = &odev->agent;
+	struct omci_mib_object *object;
+	unsigned long index;
+	int ret;
+
+	if (old_profile == new_profile)
+		return 0;
+
+	xa_for_each(&agent->mib, index, object) {
+		if (!object->owner_profile || object->owner_profile == new_profile)
+			continue;
+		xa_erase(&agent->mib, index);
+		kfree(object);
+	}
+
+	ret = omci_agent_seed_profile_locked(odev, new_profile);
+	if (ret)
+		return ret;
+	agent->profile_effective = new_profile;
+	ret = omci_agent_reconcile_services_locked(odev);
+	agent->profile_effective = old_profile;
+	if (ret && ret != -EOPNOTSUPP)
+		return ret;
+
+	return 0;
 }
 
 static int
@@ -1369,6 +1135,19 @@ static void omci_agent_refresh_identity_locked(struct omci_agent *agent)
 						  OMCI_CLASS_TRAFFIC_SCHEDULER);
 		object->data[27] = min_t(u16, schedulers, U8_MAX);
 		put_unaligned_be16(32, object->data + 29);
+	}
+
+	object = omci_mib_lookup(agent, OMCI_CLASS_HUAWEI_SW_IMAGE_EXT, 0);
+	if (object)
+		memcpy(object->data, agent->config.version,
+		       min_t(size_t, 14, sizeof(agent->config.version)));
+
+	object = omci_mib_lookup(agent, OMCI_CLASS_NOKIA_ONT_GENERIC_V2, 0);
+	if (object) {
+		memcpy(object->data + 15, agent->config.vendor_id,
+		       sizeof(agent->config.vendor_id));
+		memcpy(object->data + 19, agent->config.serial_number,
+		       sizeof(agent->config.serial_number));
 	}
 }
 
@@ -1545,7 +1324,7 @@ static int omci_agent_populate_defaults(struct omci_device *odev)
 
 	for (i = 0; i < agent->config.uni_count; i++) {
 		memset(data, 0, sizeof(data));
-		data[0] = 1; /* Administrative state unlocked. */
+		data[4] = 0; /* Administrative state unlocked. */
 		ret = omci_mib_add_default(agent, OMCI_CLASS_PPTP_ETHERNET_UNI,
 					   i + 1, data, sizeof(data));
 		if (ret)
@@ -1553,7 +1332,7 @@ static int omci_agent_populate_defaults(struct omci_device *odev)
 	}
 
 	memset(data, 0, sizeof(data));
-	data[0] = 1;
+	data[0] = 0; /* Administrative state unlocked. */
 	ret = omci_mib_add_default(agent, OMCI_CLASS_VEIP, 1, data,
 				   sizeof(data));
 	if (ret)
@@ -1598,8 +1377,9 @@ int omci_agent_init(struct omci_device *odev)
 
 	mutex_init(&agent->lock);
 	xa_init(&agent->mib);
+	xa_init(&agent->services);
 	agent->enabled = true;
-	agent->permissive = true;
+	agent->permissive = false;
 	agent->fake_omci = false;
 	agent->dying_gasp = false;
 	agent->config.dying_gasp_source = OMCI_CONFIG_SOURCE_DEFAULT;
@@ -1641,12 +1421,39 @@ void omci_agent_cleanup(struct omci_device *odev)
 	unsigned long index;
 
 	mutex_lock(&agent->lock);
+	omci_agent_reset_duplicate_locked(agent);
+	omci_agent_clear_services_locked(odev);
 	xa_for_each(&agent->mib, index, object) {
 		xa_erase(&agent->mib, index);
 		kfree(object);
 	}
 	mutex_unlock(&agent->lock);
+	xa_destroy(&agent->services);
 	xa_destroy(&agent->mib);
+}
+
+static bool omci_mib_object_active(const struct omci_agent *agent,
+				   const struct omci_mib_object *object)
+{
+	if (object->pending_delete)
+		return false;
+	if (object->owner_profile &&
+	    object->owner_profile != agent->profile_effective)
+		return false;
+
+	return omci_me_active(agent, object->class_id);
+}
+
+static bool omci_mib_object_uploadable(const struct omci_agent *agent,
+				       const struct omci_mib_object *object)
+{
+	const struct omci_me_desc *desc;
+
+	if (!omci_mib_object_active(agent, object))
+		return false;
+	desc = omci_me_lookup(agent, object->class_id);
+
+	return !desc || !(desc->flags & OMCI_ME_F_NO_MIB_UPLOAD);
 }
 
 static unsigned int omci_mib_count_locked(struct omci_agent *agent)
@@ -1656,7 +1463,8 @@ static unsigned int omci_mib_count_locked(struct omci_agent *agent)
 	unsigned int count = 0;
 
 	xa_for_each(&agent->mib, index, object)
-		count++;
+		if (omci_mib_object_uploadable(agent, object))
+			count++;
 	return count;
 }
 
@@ -1680,9 +1488,18 @@ static int omci_agent_hw_update(struct omci_device *odev,
 				u8 action, const u8 *content)
 {
 	const struct omci_device_ops *ops = odev->ops;
+	const struct omci_me_desc *desc;
 	bool ignore_unsupported_uni;
+	bool enable;
+	u16 entity_id;
 	u16 value;
 	int ret;
+
+	desc = omci_me_lookup(&odev->agent, object->class_id);
+	if (action != OMCI_MSG_TYPE_DELETE && desc &&
+	    (desc->flags & OMCI_ME_F_DATAPATH) &&
+	    desc->support == OMCI_CLASS_SUPPORT_SHADOW)
+		return -EOPNOTSUPP;
 
 	switch (object->class_id) {
 	case OMCI_CLASS_TCONT:
@@ -1691,9 +1508,7 @@ static int omci_agent_hw_update(struct omci_device *odev,
 		if (action == OMCI_MSG_TYPE_DELETE)
 			return ops->set_tcont(odev, object->entity_id, 0xffff,
 					      false);
-		value = action == OMCI_MSG_TYPE_SET ?
-			get_unaligned_be16(content + 2) :
-			get_unaligned_be16(content);
+		value = get_unaligned_be16(object->data);
 		return ops->set_tcont(odev, object->entity_id, value, true);
 	case OMCI_CLASS_GEM_PORT_CTP:
 		if (!ops->set_gem_port)
@@ -1707,8 +1522,15 @@ static int omci_agent_hw_update(struct omci_device *odev,
 	case OMCI_CLASS_VEIP:
 		if (!ops->set_uni)
 			return 0;
-		ret = ops->set_uni(odev, object->entity_id,
-				   action != OMCI_MSG_TYPE_DELETE);
+		if (action == OMCI_MSG_TYPE_DELETE)
+			enable = false;
+		else if (object->class_id == OMCI_CLASS_PPTP_ETHERNET_UNI)
+			enable = object->data[4] == 0;
+		else
+			enable = object->data[0] == 0;
+		entity_id = omci_profile_normalize_uni_entity(
+			odev->agent.profile_effective, object->entity_id);
+		ret = ops->set_uni(odev, entity_id, enable);
 		ignore_unsupported_uni = odev->agent.profile_quirks &
 					 OMCI_OLT_QUIRK_IGNORE_UNSUPPORTED_UNI;
 		if (ret == -EOPNOTSUPP && ignore_unsupported_uni)
@@ -1719,14 +1541,444 @@ static int omci_agent_hw_update(struct omci_device *odev,
 	}
 }
 
-static void omci_response_init(u8 *response, const u8 *request, u8 action)
+static bool
+omci_agent_datapath_class(const struct omci_agent *agent, u16 class_id)
 {
-	memset(response, 0, OMCI_BASELINE_LEN_NO_MIC);
-	memcpy(response, request, 2);
-	response[2] = (request[2] & 0x80) | 0x20 | action;
-	response[3] = OMCI_BASELINE_DEV_ID;
-	memcpy(response + 4, request + 4, 4);
-	put_unaligned_be32(40, response + 40);
+	const struct omci_me_desc *desc = omci_me_lookup(agent, class_id);
+
+	return desc && (desc->flags & OMCI_ME_F_DATAPATH);
+}
+
+static void omci_agent_free_service_array(struct xarray *services)
+{
+	struct omci_service_state *state;
+	unsigned long index;
+
+	xa_for_each(services, index, state) {
+		xa_erase(services, index);
+		kfree(state);
+	}
+}
+
+static int omci_agent_clear_services_locked(struct omci_device *odev)
+{
+	struct omci_agent *agent = &odev->agent;
+	struct omci_service_state *state;
+	unsigned long index;
+	int first_error = 0;
+	int ret;
+
+	xa_for_each(&agent->services, index, state) {
+		if (odev->ops->delete_service) {
+			ret = odev->ops->delete_service(odev, state->config.cookie);
+			if (ret && ret != -ENOENT && !first_error)
+				first_error = ret;
+		}
+		xa_erase(&agent->services, index);
+		kfree(state);
+	}
+
+	return first_error;
+}
+
+static int omci_agent_stage_service(struct xarray *services,
+				    const struct omci_service_config *service)
+{
+	struct omci_service_state *state;
+	void *old;
+
+	state = kmalloc(sizeof(*state), GFP_KERNEL);
+	if (!state)
+		return -ENOMEM;
+	state->config = *service;
+
+	old = xa_store(services, service->cookie, state, GFP_KERNEL);
+	if (xa_is_err(old)) {
+		kfree(state);
+		return xa_err(old);
+	}
+	kfree(old);
+	return 0;
+}
+
+static int omci_agent_apply_services_locked(struct omci_device *odev,
+					    struct xarray *desired)
+{
+	struct omci_agent *agent = &odev->agent;
+	struct omci_service_state *state;
+	struct omci_service_state *old_state;
+	unsigned long index;
+	int ret = 0;
+
+	if (!xa_empty(desired) && !odev->ops->replace_service)
+		return -EOPNOTSUPP;
+
+	/* Reserve all new cookies before changing hardware state. */
+	xa_for_each(desired, index, state) {
+		if (xa_load(&agent->services, index))
+			continue;
+		ret = xa_reserve(&agent->services, index, GFP_KERNEL);
+		if (ret)
+			goto release_reservations;
+	}
+
+	/* Add or replace all desired rules while the previous set remains live. */
+	xa_for_each(desired, index, state) {
+		ret = odev->ops->replace_service(odev, &state->config);
+		if (ret)
+			goto rollback_hardware;
+	}
+
+	/* Delete rules that are no longer part of the resolved service graph. */
+	xa_for_each(&agent->services, index, old_state) {
+		if (xa_load(desired, index))
+			continue;
+		if (!odev->ops->delete_service)
+			continue;
+		ret = odev->ops->delete_service(odev, old_state->config.cookie);
+		if (ret && ret != -ENOENT)
+			goto rollback_hardware;
+	}
+
+	/* Hardware is consistent; replace the software snapshot. */
+	omci_agent_free_service_array(&agent->services);
+	xa_for_each(desired, index, state) {
+		void *entry;
+
+		xa_erase(desired, index);
+		entry = xa_store(&agent->services, index, state, GFP_KERNEL);
+		if (WARN_ON(xa_is_err(entry))) {
+			kfree(state);
+			continue;
+		}
+		kfree(entry);
+	}
+	return 0;
+
+rollback_hardware:
+	/* Restore every old rule, including rules deleted before a failure. */
+	if (odev->ops->replace_service)
+		xa_for_each(&agent->services, index, old_state)
+			odev->ops->replace_service(odev, &old_state->config);
+
+	/* Remove newly introduced cookies that were not in the old snapshot. */
+	if (odev->ops->delete_service)
+		xa_for_each(desired, index, state)
+			if (!xa_load(&agent->services, index))
+				odev->ops->delete_service(odev,
+						  state->config.cookie);
+
+release_reservations:
+	xa_for_each(desired, index, state)
+		if (!xa_load(&agent->services, index))
+			xa_release(&agent->services, index);
+	return ret;
+}
+
+static bool omci_agent_uni_enabled(struct omci_agent *agent, u8 tp_type,
+				   u16 entity_id)
+{
+	struct omci_mib_object *object;
+
+	if (tp_type == OMCI_BRIDGE_TP_PPTP_ETH_UNI) {
+		object = omci_mib_lookup(agent, OMCI_CLASS_PPTP_ETHERNET_UNI,
+					 entity_id);
+		return object && object->data[4] == 0;
+	}
+	if (tp_type == OMCI_BRIDGE_TP_VEIP) {
+		object = omci_mib_lookup(agent, OMCI_CLASS_VEIP, entity_id);
+		return object && object->data[0] == 0;
+	}
+
+	return false;
+}
+
+static u32 omci_agent_service_cookie(u16 lan_port, u16 gem_ctp,
+				     u16 gem_port, u16 selector)
+{
+	u32 cookie;
+
+	cookie = jhash_3words(((u32)lan_port << 16) | gem_ctp,
+			      ((u32)gem_port << 16) | selector,
+			      0x4f4d4349, 0);
+
+	return cookie ?: 1;
+}
+
+static int
+omci_agent_stage_service_rule_locked(struct omci_device *odev,
+				     struct xarray *services,
+				     u16 lan_port_entity,
+				     u16 uni_entity, u16 gem_iwtp_entity,
+				     u8 mapper_pcp, bool mapper_pcp_valid,
+				     const struct omci_vlan_filter_entry *filter,
+				     const struct omci_extended_vlan_rule *ext_rule,
+				     u16 selector, bool *default_installed,
+				     bool multicast, u16 ani_entity_id,
+				     bool ani_valid)
+{
+	struct omci_agent *agent = &odev->agent;
+	struct omci_mib_object *iwtp;
+	struct omci_mib_object *gem;
+	struct omci_mib_object *tcont;
+	struct omci_service_config service = {};
+	u16 gem_ctp_entity;
+
+	iwtp = omci_mib_lookup(agent, OMCI_CLASS_GEM_IWTP, gem_iwtp_entity);
+	if (!iwtp)
+		return -ENOENT;
+	gem_ctp_entity = get_unaligned_be16(iwtp->data);
+	gem = omci_mib_lookup(agent, OMCI_CLASS_GEM_PORT_CTP, gem_ctp_entity);
+	if (!gem)
+		return -ENOENT;
+	if (gem->data[4] == OMCI_GEM_PORT_DIRECTION_ANI_TO_UNI)
+		return 0;
+
+	service.uni_entity_id = omci_profile_normalize_uni_entity(
+		agent->profile_effective, uni_entity);
+	service.gem_ctp_entity_id = gem_ctp_entity;
+	service.gem_port_id = get_unaligned_be16(gem->data);
+	service.tcont_entity_id = get_unaligned_be16(gem->data + 2);
+	tcont = omci_mib_lookup(agent, OMCI_CLASS_TCONT,
+				 service.tcont_entity_id);
+	if (!tcont || get_unaligned_be16(tcont->data) == 0xffff)
+		return -ENOENT;
+	service.direction = gem->data[4];
+	service.multicast = multicast;
+	service.multicast_ani_entity_id = ani_entity_id;
+	service.multicast_ani_valid = ani_valid;
+	if (mapper_pcp_valid) {
+		service.pcp = mapper_pcp;
+		service.pcp_valid = true;
+		service.queue = mapper_pcp;
+	}
+	if (filter) {
+		service.vlan_id = filter->vid;
+		service.vlan_valid = filter->vid <= VLAN_VID_MASK;
+		service.pcp = filter->pbit;
+		service.pcp_valid = true;
+		service.queue = filter->pbit;
+	}
+	if (ext_rule) {
+		struct omci_extended_vlan_rule rule = *ext_rule;
+
+		omci_profile_normalize_vlan_rule(agent->profile_effective, &rule);
+		memcpy(service.vlan_treatment, rule.raw + 8,
+		       sizeof(service.vlan_treatment));
+		service.vlan_treatment_valid = rule.tags_to_remove ||
+			rule.treat_outer_pbit != 15 ||
+			rule.treat_inner_pbit != 15;
+		if (rule.filter_inner_vid <= VLAN_VID_MASK) {
+			service.vlan_id = rule.filter_inner_vid;
+			service.vlan_valid = true;
+		} else if (rule.filter_outer_vid <= VLAN_VID_MASK) {
+			service.vlan_id = rule.filter_outer_vid;
+			service.vlan_valid = true;
+		}
+		if (rule.filter_inner_pbit <= 7) {
+			service.pcp = rule.filter_inner_pbit;
+			service.pcp_valid = true;
+			service.queue = rule.filter_inner_pbit;
+		} else if (rule.filter_outer_pbit <= 7) {
+			service.pcp = rule.filter_outer_pbit;
+			service.pcp_valid = true;
+			service.queue = rule.filter_outer_pbit;
+		}
+	}
+	if (!service.vlan_valid && !service.pcp_valid && !*default_installed) {
+		service.default_service = true;
+		*default_installed = true;
+	}
+	service.cookie = omci_agent_service_cookie(lan_port_entity,
+			gem_ctp_entity, service.gem_port_id, selector);
+
+	return omci_agent_stage_service(services, &service);
+}
+
+static bool
+omci_agent_vlan_associated(const struct omci_mib_object *object,
+			   u16 lan_port_entity, u16 uni_entity)
+{
+	if (object->class_id == OMCI_CLASS_VLAN_TAGGING_FILTER_DATA)
+		return object->entity_id == lan_port_entity ||
+		       object->entity_id == uni_entity;
+	if (object->class_id == OMCI_CLASS_EXTENDED_VLAN)
+		return object->extended_vlan.valid &&
+		       (object->extended_vlan.associated_me == lan_port_entity ||
+			object->extended_vlan.associated_me == uni_entity ||
+			object->entity_id == lan_port_entity);
+
+	return false;
+}
+
+static int
+omci_agent_stage_path_locked(struct omci_device *odev,
+			     struct xarray *services,
+			     const struct omci_mib_object *lan_port,
+			     u16 uni_entity, u16 gem_iwtp_entity,
+			     u8 pcp, bool pcp_valid, bool multicast,
+			     u16 ani_entity_id, bool ani_valid,
+			     bool *default_installed)
+{
+	struct omci_agent *agent = &odev->agent;
+	struct omci_mib_object *object;
+	unsigned long index;
+	u16 selector = pcp_valid ? 0x100 | pcp : 0;
+	bool installed = false;
+	int ret;
+
+	xa_for_each(&agent->mib, index, object) {
+		unsigned int i;
+
+		if (!omci_mib_object_active(agent, object) ||
+		    !omci_agent_vlan_associated(object, lan_port->entity_id,
+						 uni_entity))
+			continue;
+		if (object->class_id == OMCI_CLASS_VLAN_TAGGING_FILTER_DATA &&
+		    object->vlan_filter.valid) {
+			for (i = 0; i < object->vlan_filter.num_entries; i++) {
+				ret = omci_agent_stage_service_rule_locked(
+					odev, services, lan_port->entity_id,
+					uni_entity, gem_iwtp_entity, pcp, pcp_valid,
+					&object->vlan_filter.entries[i], NULL,
+					selector + i + 1, default_installed,
+					multicast, ani_entity_id, ani_valid);
+				if (ret)
+					return ret;
+				installed = true;
+			}
+		} else if (object->class_id == OMCI_CLASS_EXTENDED_VLAN &&
+			   object->extended_vlan.valid) {
+			for (i = 0; i < object->extended_vlan.rule_count; i++) {
+				ret = omci_agent_stage_service_rule_locked(
+					odev, services, lan_port->entity_id,
+					uni_entity, gem_iwtp_entity, pcp, pcp_valid,
+					NULL, &object->extended_vlan.rules[i],
+					selector + i + 0x20, default_installed,
+					multicast, ani_entity_id, ani_valid);
+				if (ret)
+					return ret;
+				installed = true;
+			}
+		}
+	}
+
+	if (installed)
+		return 0;
+
+	return omci_agent_stage_service_rule_locked(
+		odev, services, lan_port->entity_id, uni_entity, gem_iwtp_entity,
+		pcp, pcp_valid, NULL, NULL, selector, default_installed,
+		multicast, ani_entity_id, ani_valid);
+}
+
+static int
+omci_agent_resolve_bridge_locked(struct omci_device *odev,
+				 struct xarray *services,
+				 const struct omci_mib_object *lan_port,
+				 bool *default_installed)
+{
+	struct omci_agent *agent = &odev->agent;
+	struct omci_mib_object *wan_port;
+	struct omci_mib_object *mapper;
+	unsigned long index;
+	u16 bridge_id = get_unaligned_be16(lan_port->data);
+	u16 uni_entity = get_unaligned_be16(lan_port->data + 4);
+	u8 lan_type = lan_port->data[3];
+	int ret;
+
+	if (!omci_agent_uni_enabled(agent, lan_type, uni_entity))
+		return 0;
+
+	xa_for_each(&agent->mib, index, wan_port) {
+		u16 mapper_entity;
+		u16 gem_iwtp_entity;
+		u8 wan_type;
+		unsigned int pcp;
+
+		if (wan_port->class_id !=
+		    OMCI_CLASS_MAC_BRIDGE_PORT_CONFIG_DATA ||
+		    wan_port == lan_port ||
+		    get_unaligned_be16(wan_port->data) != bridge_id)
+			continue;
+		wan_type = wan_port->data[3];
+		if (wan_type == OMCI_BRIDGE_TP_GEM_IWTP ||
+		    wan_type == OMCI_BRIDGE_TP_MULTICAST_GEM_IWTP) {
+			bool multicast =
+				wan_type == OMCI_BRIDGE_TP_MULTICAST_GEM_IWTP;
+			bool ani_valid = false;
+			u16 ani_entity_id = 0;
+
+			gem_iwtp_entity = get_unaligned_be16(wan_port->data + 4);
+			if (multicast &&
+			    !omci_profile_resolve_multicast_ani(
+				agent->profile_effective, wan_port->entity_id,
+				&ani_entity_id))
+				ani_valid = true;
+			ret = omci_agent_stage_path_locked(
+				odev, services, lan_port, uni_entity,
+				gem_iwtp_entity, 0, false, multicast,
+				ani_entity_id, ani_valid, default_installed);
+			if (ret && ret != -ENOENT)
+				return ret;
+			continue;
+		}
+		if (wan_type != OMCI_BRIDGE_TP_8021P_MAPPER)
+			continue;
+		mapper_entity = get_unaligned_be16(wan_port->data + 4);
+		mapper = omci_mib_lookup(agent, OMCI_CLASS_8021P_MAPPER,
+					 mapper_entity);
+		if (!mapper)
+			continue;
+		for (pcp = 0; pcp < 8; pcp++) {
+			gem_iwtp_entity = get_unaligned_be16(mapper->data + 2 +
+							 pcp * 2);
+			if (!gem_iwtp_entity || gem_iwtp_entity == 0xffff)
+				continue;
+			ret = omci_agent_stage_path_locked(
+				odev, services, lan_port, uni_entity,
+				gem_iwtp_entity, pcp, true, false, 0, false,
+				default_installed);
+			if (ret && ret != -ENOENT)
+				return ret;
+		}
+	}
+
+	return 0;
+}
+
+static int omci_agent_reconcile_services_locked(struct omci_device *odev)
+{
+	struct omci_agent *agent = &odev->agent;
+	struct omci_mib_object *object;
+	struct xarray desired;
+	unsigned long index;
+	bool default_installed = false;
+	int ret;
+
+	xa_init(&desired);
+	xa_for_each(&agent->mib, index, object) {
+		u8 tp_type;
+
+		if (!omci_mib_object_active(agent, object) ||
+		    object->class_id != OMCI_CLASS_MAC_BRIDGE_PORT_CONFIG_DATA)
+			continue;
+		tp_type = object->data[3];
+		if (tp_type != OMCI_BRIDGE_TP_PPTP_ETH_UNI &&
+		    tp_type != OMCI_BRIDGE_TP_VEIP)
+			continue;
+		ret = omci_agent_resolve_bridge_locked(
+			odev, &desired, object, &default_installed);
+		if (ret)
+			goto out;
+	}
+
+	ret = omci_agent_apply_services_locked(odev, &desired);
+
+out:
+	omci_agent_free_service_array(&desired);
+	xa_destroy(&desired);
+	return ret;
 }
 
 static struct omci_mib_object *
@@ -1758,26 +2010,48 @@ omci_get_or_create_locked(struct omci_agent *agent, u16 class_id,
 
 static u8 omci_agent_create_locked(struct omci_device *odev,
 				   u16 class_id, u16 entity_id,
-				   const u8 *content)
+				   const u8 *content, size_t content_len)
 {
 	struct omci_agent *agent = &odev->agent;
+	const struct omci_me_desc *desc;
+	struct omci_mib_object *stored = NULL;
 	struct omci_mib_object *object;
 	u8 result = OMCI_RESULT_SUCCESS;
+	bool hardware_applied = false;
 	int ret;
 
+	if (!omci_me_active(agent, class_id))
+		return OMCI_RESULT_UNKNOWN_ME;
+	if (!omci_me_action_allowed(agent, class_id, OMCI_MSG_TYPE_CREATE))
+		return OMCI_RESULT_NOT_SUPPORTED;
 	if (omci_mib_lookup(agent, class_id, entity_id))
 		return OMCI_RESULT_INSTANCE_EXISTS;
 
+	desc = omci_me_lookup(agent, class_id);
 	object = kzalloc(sizeof(*object), GFP_KERNEL);
 	if (!object)
 		return OMCI_RESULT_DEVICE_BUSY;
 	object->class_id = class_id;
 	object->entity_id = entity_id;
-	object->attr_mask = 0xffff;
 	object->origin = OMCI_MIB_ORIGIN_OLT;
-	memcpy(object->data, content, sizeof(object->data));
+	object->owner_profile = desc && (desc->flags & OMCI_ME_F_VENDOR) ?
+		agent->profile_effective : OMCI_OLT_PROFILE_UNSPEC;
+	object->data_len = desc ? desc->data_len :
+		min_t(size_t, content_len, sizeof(object->data));
 
-	ret = omci_mib_parse_create(object, content);
+	if (desc) {
+		ret = omci_me_decode_create(desc, object, content, content_len);
+	} else {
+		memcpy(object->data, content,
+		       min_t(size_t, content_len, sizeof(object->data)));
+		object->attr_mask = 0xffff;
+		ret = 0;
+	}
+	if (ret) {
+		result = OMCI_RESULT_PARAMETER_ERROR;
+		goto out;
+	}
+	ret = omci_mib_parse_create(object, object->data);
 	if (ret) {
 		result = OMCI_RESULT_PARAMETER_ERROR;
 		goto out;
@@ -1788,85 +2062,202 @@ static u8 omci_agent_create_locked(struct omci_device *odev,
 		result = OMCI_RESULT_PROCESSING_ERROR;
 		goto out;
 	}
+	hardware_applied = true;
 	ret = omci_mib_store_locked(agent, object);
 	if (ret) {
 		result = OMCI_RESULT_DEVICE_BUSY;
-		goto out;
+		goto rollback;
+	}
+	stored = omci_mib_lookup(agent, class_id, entity_id);
+	if (omci_agent_datapath_class(agent, class_id)) {
+		ret = omci_agent_reconcile_services_locked(odev);
+		if (ret) {
+			result = OMCI_RESULT_PROCESSING_ERROR;
+			goto rollback;
+		}
 	}
 	agent->mib_sync++;
+	goto out;
+
+rollback:
+	if (stored) {
+		xa_erase(&agent->mib, omci_mib_key(class_id, entity_id));
+		kfree(stored);
+	}
+	if (hardware_applied)
+		omci_agent_hw_update(odev, object, OMCI_MSG_TYPE_DELETE,
+				     object->data);
 out:
 	kfree(object);
 	return result;
 }
 
 static u8 omci_agent_set_locked(struct omci_device *odev, u16 class_id,
-				u16 entity_id, const u8 *content,
-				bool *profile_changed)
+				u16 entity_id, u8 action, const u8 *content,
+				size_t content_len, bool *profile_changed)
 {
 	struct omci_agent *agent = &odev->agent;
+	const struct omci_me_desc *desc;
+	struct omci_mib_object previous;
 	struct omci_mib_object *object;
-	u16 mask = get_unaligned_be16(content);
+	struct omci_mib_object *existing;
+	bool hardware_applied = false;
 	bool allow_create;
+	bool existed;
+	u16 mask;
 	int ret;
 
+	if (content_len < 2)
+		return OMCI_RESULT_PARAMETER_ERROR;
+	if (!omci_me_active(agent, class_id))
+		return OMCI_RESULT_UNKNOWN_ME;
+	if (!omci_me_action_allowed(agent, class_id, action))
+		return OMCI_RESULT_NOT_SUPPORTED;
+
+	mask = get_unaligned_be16(content);
+	desc = omci_me_lookup(agent, class_id);
 	allow_create = agent->permissive || agent->fake_omci ||
-		omci_agent_profile_has_quirk(agent, OMCI_OLT_QUIRK_ALLOW_SET_CREATE);
+		omci_agent_profile_has_quirk(agent,
+					     OMCI_OLT_QUIRK_ALLOW_SET_CREATE);
+	existing = omci_mib_lookup(agent, class_id, entity_id);
+	existed = !!existing;
+	if (existing)
+		previous = *existing;
 	object = omci_get_or_create_locked(agent, class_id, entity_id,
 					  allow_create);
 	if (!object)
 		return allow_create ? OMCI_RESULT_DEVICE_BUSY :
 				      OMCI_RESULT_UNKNOWN_INSTANCE;
-	if (class_id == OMCI_CLASS_PRIORITY_QUEUE ||
-	    class_id == OMCI_CLASS_TRAFFIC_SCHEDULER) {
+	if (!object->data_len)
+		object->data_len = desc ? desc->data_len : sizeof(object->data);
+	if (!object->owner_profile && desc && (desc->flags & OMCI_ME_F_VENDOR))
+		object->owner_profile = agent->profile_effective;
+
+	if (desc) {
+		ret = omci_me_decode_set(desc, object, mask, content + 2,
+					 content_len - 2);
+	} else if (class_id == OMCI_CLASS_PRIORITY_QUEUE ||
+		   class_id == OMCI_CLASS_TRAFFIC_SCHEDULER) {
 		ret = omci_mib_parse_set(object, mask, content + 2,
-					 sizeof(object->data) - 2);
+					 content_len - 2);
 	} else {
-		memcpy(object->data, content + 2, sizeof(object->data) - 2);
-		ret = omci_mib_parse_set(object, mask, content + 2,
-					 sizeof(object->data) - 2);
+		memcpy(object->data, content + 2,
+		       min_t(size_t, content_len - 2, sizeof(object->data)));
+		object->attr_mask |= mask;
+		ret = 0;
 	}
+	if (!ret && desc && (class_id == OMCI_CLASS_OLT_G ||
+				     class_id == OMCI_CLASS_VLAN_TAGGING_FILTER_DATA ||
+				     class_id == OMCI_CLASS_EXTENDED_VLAN))
+		ret = omci_mib_parse_set(object, mask, content + 2,
+					 content_len - 2);
+	if (!ret && !desc && class_id == OMCI_CLASS_OLT_G)
+		ret = omci_mib_parse_set(object, mask, content + 2,
+					 content_len - 2);
 	if (ret)
-		return ret == -ENOSPC ? OMCI_RESULT_DEVICE_BUSY :
-					 OMCI_RESULT_PARAMETER_ERROR;
-	object->attr_mask |= mask;
+		goto rollback_parameter;
+
 	object->origin = OMCI_MIB_ORIGIN_OLT;
 	if (class_id == OMCI_CLASS_OLT_G) {
-		ret = omci_agent_profile_refresh_locked(odev, &object->olt_g, profile_changed);
+		ret = omci_agent_profile_refresh_locked(odev, &object->olt_g,
+							profile_changed);
 		if (ret)
-			return OMCI_RESULT_PROCESSING_ERROR;
+			goto rollback_processing;
 	}
-	ret = omci_agent_hw_update(odev, object, OMCI_MSG_TYPE_SET, content);
+	ret = omci_agent_hw_update(odev, object, action, content);
 	if (ret)
-		return OMCI_RESULT_PROCESSING_ERROR;
+		goto rollback_processing;
+	hardware_applied = true;
+	if (omci_agent_datapath_class(agent, class_id)) {
+		ret = omci_agent_reconcile_services_locked(odev);
+		if (ret)
+			goto rollback_processing;
+	}
 	agent->mib_sync++;
 	return OMCI_RESULT_SUCCESS;
+
+rollback_parameter:
+	if (existed) {
+		*object = previous;
+	} else {
+		xa_erase(&agent->mib, omci_mib_key(class_id, entity_id));
+		kfree(object);
+	}
+	return ret == -ENOSPC ? OMCI_RESULT_DEVICE_BUSY :
+				      OMCI_RESULT_PARAMETER_ERROR;
+
+rollback_processing:
+	if (existed) {
+		*object = previous;
+		if (hardware_applied)
+			omci_agent_hw_update(odev, object, OMCI_MSG_TYPE_SET,
+					     object->data);
+	} else {
+		xa_erase(&agent->mib, omci_mib_key(class_id, entity_id));
+		if (hardware_applied)
+			omci_agent_hw_update(odev, object, OMCI_MSG_TYPE_DELETE,
+					     object->data);
+		kfree(object);
+	}
+	return OMCI_RESULT_PROCESSING_ERROR;
 }
 
 static u8 omci_agent_delete_locked(struct omci_device *odev, u16 class_id,
 				   u16 entity_id, bool *profile_changed)
 {
 	struct omci_agent *agent = &odev->agent;
+	const struct omci_me_desc *desc;
 	struct omci_mib_object *object;
+	u8 restore_action;
 	int ret;
 
+	if (!omci_me_active(agent, class_id))
+		return OMCI_RESULT_UNKNOWN_ME;
+	if (!omci_me_action_allowed(agent, class_id, OMCI_MSG_TYPE_DELETE))
+		return OMCI_RESULT_NOT_SUPPORTED;
 	object = omci_mib_lookup(agent, class_id, entity_id);
 	if (!object)
 		return OMCI_RESULT_UNKNOWN_INSTANCE;
 	if (object->origin == OMCI_MIB_ORIGIN_DEFAULT)
 		return OMCI_RESULT_NOT_SUPPORTED;
+
+	desc = omci_me_lookup(agent, class_id);
+	restore_action = desc && (desc->flags & OMCI_ME_F_ONU_CREATED) ?
+		OMCI_MSG_TYPE_SET : OMCI_MSG_TYPE_CREATE;
+	object->pending_delete = true;
+
+	if (class_id == OMCI_CLASS_OLT_G) {
+		ret = omci_agent_profile_refresh_locked(odev, NULL,
+						profile_changed);
+		if (ret)
+			goto rollback_mib;
+	}
+	if (omci_agent_datapath_class(agent, class_id)) {
+		ret = omci_agent_reconcile_services_locked(odev);
+		if (ret)
+			goto rollback_profile;
+	}
 	ret = omci_agent_hw_update(odev, object, OMCI_MSG_TYPE_DELETE,
 				   object->data);
 	if (ret)
-		return OMCI_RESULT_PROCESSING_ERROR;
+		goto rollback_services;
+
 	xa_erase(&agent->mib, omci_mib_key(class_id, entity_id));
 	kfree(object);
-	if (class_id == OMCI_CLASS_OLT_G) {
-		ret = omci_agent_profile_refresh_locked(odev, NULL, profile_changed);
-		if (ret)
-			return OMCI_RESULT_PROCESSING_ERROR;
-	}
 	agent->mib_sync++;
 	return OMCI_RESULT_SUCCESS;
+
+rollback_services:
+	object->pending_delete = false;
+	omci_agent_hw_update(odev, object, restore_action, object->data);
+	omci_agent_reconcile_services_locked(odev);
+	return OMCI_RESULT_PROCESSING_ERROR;
+rollback_profile:
+	if (class_id == OMCI_CLASS_OLT_G)
+		omci_agent_profile_refresh_locked(odev, &object->olt_g, NULL);
+rollback_mib:
+	object->pending_delete = false;
+	return OMCI_RESULT_PROCESSING_ERROR;
 }
 
 static s16 omci_power_nw_to_0p002_db(u32 power_nw, s32 offset)
@@ -1916,46 +2307,59 @@ static u16 omci_bias_ua_to_test_level(u32 bias_ua)
 }
 
 static u8 omci_agent_get_ani_g_telemetry(struct omci_device *odev, u16 mask,
-					 u8 *response_content)
+					 u8 *response_content,
+					 size_t response_capacity,
+					 size_t *response_len)
 {
 	struct omci_telemetry telemetry = {};
 	u8 *data = response_content + 3;
+	size_t used = 3;
 	u16 level;
 	int ret;
 
-	memset(response_content, 0, OMCI_BASELINE_LEN_NO_MIC - 8 - 4);
+	if (response_capacity < 3)
+		return OMCI_RESULT_PARAMETER_ERROR;
+	memset(response_content, 0, response_capacity);
 	ret = odev->ops->get_telemetry(odev, &telemetry);
 	if (ret)
 		return OMCI_RESULT_PROCESSING_ERROR;
 
 	if ((mask & OMCI_ANI_G_RX_LEVEL_MASK) &&
-	    !(telemetry.valid & OMCI_TELEMETRY_F_BOSA_RX_POWER)) {
-		response_content[0] = OMCI_RESULT_ATTRIBUTE_FAILED;
-		put_unaligned_be16(0, response_content + 1);
-		put_unaligned_be16(mask, response_content + 3);
-		return OMCI_RESULT_ATTRIBUTE_FAILED;
-	}
+	    !(telemetry.valid & OMCI_TELEMETRY_F_BOSA_RX_POWER))
+		goto attribute_failed;
 	if ((mask & OMCI_ANI_G_TX_LEVEL_MASK) &&
-	    !(telemetry.valid & OMCI_TELEMETRY_F_BOSA_TX_POWER)) {
-		response_content[0] = OMCI_RESULT_ATTRIBUTE_FAILED;
-		put_unaligned_be16(0, response_content + 1);
-		put_unaligned_be16(mask, response_content + 3);
-		return OMCI_RESULT_ATTRIBUTE_FAILED;
-	}
+	    !(telemetry.valid & OMCI_TELEMETRY_F_BOSA_TX_POWER))
+		goto attribute_failed;
+	if (hweight16(mask & OMCI_ANI_G_OPTICAL_LEVEL_MASK) * sizeof(u16) >
+	    response_capacity - used)
+		goto attribute_failed;
 
 	response_content[0] = OMCI_RESULT_SUCCESS;
 	put_unaligned_be16(mask, response_content + 1);
 	if (mask & OMCI_ANI_G_RX_LEVEL_MASK) {
-		level = (u16)omci_power_nw_to_ani_g_level(telemetry.bosa_rx_power_nw);
+		level = (u16)omci_power_nw_to_ani_g_level(
+			telemetry.bosa_rx_power_nw);
 		put_unaligned_be16(level, data);
 		data += 2;
+		used += 2;
 	}
 	if (mask & OMCI_ANI_G_TX_LEVEL_MASK) {
-		level = (u16)omci_power_nw_to_ani_g_level(telemetry.bosa_tx_power_nw);
+		level = (u16)omci_power_nw_to_ani_g_level(
+			telemetry.bosa_tx_power_nw);
 		put_unaligned_be16(level, data);
+		used += 2;
 	}
-
+	*response_len = used;
 	return OMCI_RESULT_SUCCESS;
+
+attribute_failed:
+	if (response_capacity < 5)
+		return OMCI_RESULT_PARAMETER_ERROR;
+	response_content[0] = OMCI_RESULT_ATTRIBUTE_FAILED;
+	put_unaligned_be16(0, response_content + 1);
+	put_unaligned_be16(mask, response_content + 3);
+	*response_len = 5;
+	return OMCI_RESULT_ATTRIBUTE_FAILED;
 }
 
 static bool omci_agent_get_uses_ani_g_telemetry(u16 class_id, u16 entity_id,
@@ -1970,13 +2374,19 @@ static bool omci_agent_get_uses_ani_g_telemetry(u16 class_id, u16 entity_id,
 static u8 omci_agent_get_masked_object(const struct omci_mib_object *object,
 				       const struct omci_get_attr_layout *layout,
 				       size_t layout_len, u16 supported_mask,
-				       u16 mask, u8 *response_content)
+				       u16 mask, u8 *response_content,
+				       size_t response_capacity,
+				       size_t *response_len)
 {
 	u8 *data = response_content + 3;
-	size_t available = OMCI_BASELINE_LEN_NO_MIC - 8 - 4 - 3;
+	size_t available;
+	size_t used = 3;
 	unsigned int i;
 
-	memset(response_content, 0, OMCI_BASELINE_LEN_NO_MIC - 8 - 4);
+	if (response_capacity < 3)
+		return OMCI_RESULT_PARAMETER_ERROR;
+	memset(response_content, 0, response_capacity);
+	available = response_capacity - used;
 	if (!mask || mask & ~supported_mask)
 		goto attribute_failed;
 
@@ -1993,81 +2403,178 @@ static u8 omci_agent_get_masked_object(const struct omci_mib_object *object,
 		else
 			memcpy(data, object->data + attr->offset, attr->len);
 		data += attr->len;
+		used += attr->len;
 		available -= attr->len;
 	}
 
 	response_content[0] = OMCI_RESULT_SUCCESS;
 	put_unaligned_be16(mask, response_content + 1);
+	*response_len = used;
 	return OMCI_RESULT_SUCCESS;
 
 attribute_failed:
+	if (response_capacity < 5)
+		return OMCI_RESULT_PARAMETER_ERROR;
 	response_content[0] = OMCI_RESULT_ATTRIBUTE_FAILED;
 	put_unaligned_be16(0, response_content + 1);
 	put_unaligned_be16(mask, response_content + 3);
+	*response_len = 5;
 	return OMCI_RESULT_ATTRIBUTE_FAILED;
+}
+
+static int
+omci_agent_refresh_nokia_optical(struct omci_device *odev,
+				 struct omci_mib_object *object)
+{
+	struct omci_telemetry telemetry = {};
+	u16 value;
+	int ret;
+
+	if (!odev->ops->get_telemetry)
+		return -EOPNOTSUPP;
+	ret = odev->ops->get_telemetry(odev, &telemetry);
+	if (ret)
+		return ret;
+
+	object->data[0] = !!(telemetry.valid & OMCI_TELEMETRY_F_BOSA_VOLTAGE);
+	if (object->data[0]) {
+		value = min_t(u32, DIV_ROUND_CLOSEST(telemetry.bosa_voltage_uv,
+							  10000), U16_MAX);
+		put_unaligned_be16(value, object->data + 1);
+	}
+	object->data[3] = !!(telemetry.valid & OMCI_TELEMETRY_F_BOSA_RX_POWER);
+	if (object->data[3]) {
+		value = min_t(u32, DIV_ROUND_CLOSEST(telemetry.bosa_rx_power_nw,
+							  10000), U16_MAX);
+		put_unaligned_be16(value, object->data + 4);
+	}
+	object->data[6] = !!(telemetry.valid & OMCI_TELEMETRY_F_BOSA_TX_POWER);
+	if (object->data[6]) {
+		value = min_t(u32, DIV_ROUND_CLOSEST(telemetry.bosa_tx_power_nw,
+							  10000), U16_MAX);
+		put_unaligned_be16(value, object->data + 7);
+	}
+	object->data[9] = !!(telemetry.valid & OMCI_TELEMETRY_F_BOSA_BIAS);
+	if (object->data[9]) {
+		value = min_t(u64, DIV_ROUND_CLOSEST_ULL(
+					(u64)telemetry.bosa_bias_ua * 2, 1000000),
+			      U16_MAX);
+		put_unaligned_be16(value, object->data + 10);
+	}
+	object->data[12] = !!(telemetry.valid &
+				      OMCI_TELEMETRY_F_BOSA_TEMPERATURE);
+	if (object->data[12]) {
+		value = clamp_t(s32, DIV_S64_ROUND_CLOSEST(
+					telemetry.bosa_temperature_mc, 1000),
+				0, U16_MAX);
+		put_unaligned_be16(value, object->data + 13);
+	}
+
+	return 0;
 }
 
 static u8 omci_agent_get_locked(struct omci_device *odev, u16 class_id,
 				u16 entity_id, const u8 *content,
-				u8 *response_content)
+				size_t content_len, u8 *response_content,
+				size_t response_capacity,
+				size_t *response_len)
 {
 	struct omci_agent *agent = &odev->agent;
+	const struct omci_me_desc *desc;
 	struct omci_mib_object *object;
-	u16 mask = get_unaligned_be16(content);
+	size_t encoded_len = 0;
+	u16 encoded_mask;
+	u16 mask;
+	int ret;
+
+	if (content_len < 2 || response_capacity < 1)
+		return OMCI_RESULT_PARAMETER_ERROR;
+	mask = get_unaligned_be16(content);
+	if (!omci_me_active(agent, class_id))
+		return OMCI_RESULT_UNKNOWN_ME;
+	if (!omci_me_action_allowed(agent, class_id, OMCI_MSG_TYPE_GET))
+		return OMCI_RESULT_NOT_SUPPORTED;
 
 	if (omci_agent_get_uses_ani_g_telemetry(class_id, entity_id, mask) &&
 	    odev->ops && odev->ops->get_telemetry)
 		return omci_agent_get_ani_g_telemetry(odev, mask,
-						      response_content);
+						      response_content,
+						      response_capacity,
+						      response_len);
 
 	object = omci_get_or_create_locked(agent, class_id, entity_id,
 					   agent->permissive ||
 					   agent->fake_omci);
 	if (!object)
 		return OMCI_RESULT_UNKNOWN_INSTANCE;
+	if (class_id == OMCI_CLASS_NOKIA_OPTICAL_SUPERVISION &&
+	    omci_agent_refresh_nokia_optical(odev, object))
+		return OMCI_RESULT_PROCESSING_ERROR;
 
 	switch (class_id) {
 	case OMCI_CLASS_ONU_G:
-		return omci_agent_get_masked_object(object,
-					    omci_onu_g_attr_layout,
-					    ARRAY_SIZE(omci_onu_g_attr_layout),
-					    OMCI_ONU_G_ATTR_MASK, mask,
-					    response_content);
+		return omci_agent_get_masked_object(
+			object, omci_onu_g_attr_layout,
+			ARRAY_SIZE(omci_onu_g_attr_layout), OMCI_ONU_G_ATTR_MASK,
+			mask, response_content, response_capacity, response_len);
 	case OMCI_CLASS_ONU2_G:
-		return omci_agent_get_masked_object(object,
-					    omci_onu2_g_attr_layout,
-					    ARRAY_SIZE(omci_onu2_g_attr_layout),
-					    OMCI_ONU2_G_ATTR_MASK, mask,
-					    response_content);
+		return omci_agent_get_masked_object(
+			object, omci_onu2_g_attr_layout,
+			ARRAY_SIZE(omci_onu2_g_attr_layout), OMCI_ONU2_G_ATTR_MASK,
+			mask, response_content, response_capacity, response_len);
 	default:
 		break;
 	}
 
+	if (response_capacity < 3)
+		return OMCI_RESULT_PARAMETER_ERROR;
+	memset(response_content, 0, response_capacity);
 	response_content[0] = OMCI_RESULT_SUCCESS;
-	put_unaligned_be16(mask, response_content + 1);
 	if (class_id == OMCI_CLASS_PRIORITY_QUEUE) {
-		int ret;
-
+		put_unaligned_be16(mask, response_content + 1);
 		ret = omci_priority_queue_serialize(object, mask,
-						    response_content + 3,
-						    OMCI_BASELINE_LEN_NO_MIC -
-						    8 - 3 - 4);
+					    response_content + 3,
+					    response_capacity - 3,
+					    &encoded_len);
 		if (ret)
-			return OMCI_RESULT_PARAMETER_ERROR;
+			goto attribute_failed;
 	} else if (class_id == OMCI_CLASS_TRAFFIC_SCHEDULER) {
-		int ret;
-
+		put_unaligned_be16(mask, response_content + 1);
 		ret = omci_traffic_scheduler_serialize(object, mask,
-						       response_content + 3,
-						       OMCI_BASELINE_LEN_NO_MIC -
-						       8 - 3 - 4);
+					       response_content + 3,
+					       response_capacity - 3,
+					       &encoded_len);
 		if (ret)
-			return OMCI_RESULT_PARAMETER_ERROR;
+			goto attribute_failed;
 	} else {
-		memcpy(response_content + 3, object->data,
-		       OMCI_BASELINE_LEN_NO_MIC - 8 - 3 - 4);
+		desc = omci_me_lookup(agent, class_id);
+		if (!desc) {
+			encoded_len = min_t(size_t, object->data_len,
+					    response_capacity - 3);
+			put_unaligned_be16(mask, response_content + 1);
+			memcpy(response_content + 3, object->data, encoded_len);
+			*response_len = 3 + encoded_len;
+			return OMCI_RESULT_SUCCESS;
+		}
+		ret = omci_me_encode_attributes(desc, object, mask,
+						response_content + 3,
+						response_capacity - 3,
+						&encoded_mask, &encoded_len);
+		if (ret || encoded_mask != mask)
+			goto attribute_failed;
+		put_unaligned_be16(encoded_mask, response_content + 1);
 	}
+	*response_len = 3 + encoded_len;
 	return OMCI_RESULT_SUCCESS;
+
+attribute_failed:
+	if (response_capacity < 5)
+		return OMCI_RESULT_PARAMETER_ERROR;
+	response_content[0] = OMCI_RESULT_ATTRIBUTE_FAILED;
+	put_unaligned_be16(0, response_content + 1);
+	put_unaligned_be16(mask, response_content + 3);
+	*response_len = 5;
+	return OMCI_RESULT_ATTRIBUTE_FAILED;
 }
 
 static void omci_test_result_put(u8 *field, u8 type, u16 value)
@@ -2076,23 +2583,48 @@ static void omci_test_result_put(u8 *field, u8 type, u16 value)
 	put_unaligned_be16(value, field + 1);
 }
 
-static void omci_agent_log_baseline(struct omci_device *odev,
-				    const char *direction, const u8 *pdu);
-
-static bool omci_agent_is_ani_g_test(const u8 *request)
+static bool omci_agent_is_ani_g_test(const struct omci_wire_request *request)
 {
-	return (request[2] & 0x1f) == OMCI_MSG_TYPE_TEST &&
-	       get_unaligned_be16(request + 4) == OMCI_CLASS_ANI_G &&
-	       get_unaligned_be16(request + 6) == OMCI_ANI_G_ENTITY_ID;
+	return (request->message_type & 0x1f) == OMCI_MSG_TYPE_TEST &&
+	       request->class_id == OMCI_CLASS_ANI_G &&
+	       request->entity_id == OMCI_ANI_G_ENTITY_ID;
 }
 
-static int omci_agent_send_ani_g_test_result(struct omci_device *odev,
-					     const u8 *request)
+static void omci_agent_log_wire(struct omci_device *odev,
+				const char *direction, const void *data,
+				size_t len)
+{
+	struct omci_wire_request request;
+	u8 action;
+	u8 result = 0;
+
+	if (omci_wire_decode(data, len, &request)) {
+		dev_info(odev->parent, "OMCI %s invalid PDU: %*phN\n",
+			 direction, (int)len, data);
+		return;
+	}
+
+	action = request.message_type & 0x1f;
+	if (request.payload_len)
+		result = request.payload[0];
+	dev_info(odev->parent,
+		 "OMCI %s: tci=%#06x type=%#04x action=%u device=%#04x class=%u entity=%#06x payload=%u result=%u\n",
+		 direction, request.transaction_id, request.message_type, action,
+		 request.device_id, request.class_id, request.entity_id,
+		 request.payload_len, result);
+	dev_info(odev->parent, "OMCI %s PDU: %*phN\n",
+		 direction, (int)len, data);
+}
+
+static int
+omci_agent_send_ani_g_test_result(struct omci_device *odev,
+				  const struct omci_wire_request *request)
 {
 	struct omci_agent *agent = &odev->agent;
 	struct omci_telemetry telemetry = {};
-	u8 result[OMCI_BASELINE_LEN_NO_MIC];
-	u8 *content = result + 8;
+	u8 pdu[OMCI_MAX_PDU_LEN];
+	u8 content[17] = {};
+	size_t pdu_len;
 	u16 value;
 	int ret;
 
@@ -2103,56 +2635,56 @@ static int omci_agent_send_ani_g_test_result(struct omci_device *odev,
 	if (ret)
 		return ret;
 
-	omci_response_init(result, request, OMCI_MSG_TYPE_TEST_RESULT);
-
 	if (telemetry.valid & OMCI_TELEMETRY_F_BOSA_VOLTAGE) {
 		value = omci_voltage_uv_to_test_level(telemetry.bosa_voltage_uv);
-		omci_test_result_put(content, OMCI_TEST_TYPE_VOLTAGE,
-				     value);
+		omci_test_result_put(content, OMCI_TEST_TYPE_VOLTAGE, value);
 	} else {
 		omci_test_result_put(content, OMCI_TEST_TYPE_UNSUPPORTED, 0);
 	}
 
 	if (telemetry.valid & OMCI_TELEMETRY_F_BOSA_RX_POWER) {
-		value = (u16)omci_power_nw_to_test_level(telemetry.bosa_rx_power_nw);
+		value = (u16)omci_power_nw_to_test_level(
+			telemetry.bosa_rx_power_nw);
 		omci_test_result_put(content + 3, OMCI_TEST_TYPE_RX_POWER,
 				     value);
 	} else {
-		omci_test_result_put(content + 3, OMCI_TEST_TYPE_UNSUPPORTED,
-				     0);
+		omci_test_result_put(content + 3, OMCI_TEST_TYPE_UNSUPPORTED, 0);
 	}
 
 	if (telemetry.valid & OMCI_TELEMETRY_F_BOSA_TX_POWER) {
-		value = (u16)omci_power_nw_to_test_level(telemetry.bosa_tx_power_nw);
+		value = (u16)omci_power_nw_to_test_level(
+			telemetry.bosa_tx_power_nw);
 		omci_test_result_put(content + 6, OMCI_TEST_TYPE_TX_POWER,
 				     value);
 	} else {
-		omci_test_result_put(content + 6, OMCI_TEST_TYPE_UNSUPPORTED,
-				     0);
+		omci_test_result_put(content + 6, OMCI_TEST_TYPE_UNSUPPORTED, 0);
 	}
 
 	if (telemetry.valid & OMCI_TELEMETRY_F_BOSA_BIAS) {
 		value = omci_bias_ua_to_test_level(telemetry.bosa_bias_ua);
-		omci_test_result_put(content + 9, OMCI_TEST_TYPE_BIAS,
-				     value);
+		omci_test_result_put(content + 9, OMCI_TEST_TYPE_BIAS, value);
 	} else {
-		omci_test_result_put(content + 9, OMCI_TEST_TYPE_UNSUPPORTED,
-				     0);
+		omci_test_result_put(content + 9, OMCI_TEST_TYPE_UNSUPPORTED, 0);
 	}
 
 	if (telemetry.valid & OMCI_TELEMETRY_F_BOSA_TEMPERATURE) {
-		value = (u16)omci_temperature_mc_to_test_level(telemetry.bosa_temperature_mc);
+		value = (u16)omci_temperature_mc_to_test_level(
+			telemetry.bosa_temperature_mc);
 		omci_test_result_put(content + 12, OMCI_TEST_TYPE_TEMPERATURE,
 				     value);
 	} else {
-		omci_test_result_put(content + 12, OMCI_TEST_TYPE_UNSUPPORTED,
-				     0);
+		omci_test_result_put(content + 12, OMCI_TEST_TYPE_UNSUPPORTED, 0);
 	}
-
 	put_unaligned_be16(0, content + 15);
 
-	omci_agent_log_baseline(odev, "TX", result);
-	ret = omci_device_xmit(odev, result, sizeof(result));
+	ret = omci_wire_encode_response(request, OMCI_MSG_TYPE_TEST_RESULT,
+					content, sizeof(content), pdu,
+					sizeof(pdu), &pdu_len);
+	if (ret)
+		return ret;
+
+	omci_agent_log_wire(odev, "TX", pdu, pdu_len);
+	ret = omci_device_xmit(odev, pdu, pdu_len);
 	if (!ret)
 		atomic64_inc(&agent->responses);
 
@@ -2162,11 +2694,17 @@ static int omci_agent_send_ani_g_test_result(struct omci_device *odev,
 static int omci_agent_upload_next_locked(struct omci_agent *agent,
 					 u16 sequence, u8 *content)
 {
+	const struct omci_me_desc *desc;
 	struct omci_mib_object *object;
 	unsigned long index;
+	size_t encoded_len = 0;
+	u16 encoded_mask = 0;
 	u16 upload_pos = 0;
+	int ret;
 
 	xa_for_each(&agent->mib, index, object) {
+		if (!omci_mib_object_uploadable(agent, object))
+			continue;
 		if (upload_pos++ == sequence)
 			goto found;
 	}
@@ -2176,74 +2714,68 @@ static int omci_agent_upload_next_locked(struct omci_agent *agent,
 found:
 	put_unaligned_be16(object->class_id, content);
 	put_unaligned_be16(object->entity_id, content + 2);
-	put_unaligned_be16(object->attr_mask, content + 4);
-	memcpy(content + 6, object->data, 26);
+	desc = omci_me_lookup(agent, object->class_id);
+	if (desc) {
+		u16 mask = object->attr_mask & desc->mib_upload_mask;
+
+		ret = omci_me_encode_attributes(desc, object, mask,
+						content + 6, 26,
+						&encoded_mask, &encoded_len);
+		if (ret && mask)
+			return ret;
+	} else {
+		encoded_mask = object->attr_mask;
+		encoded_len = min_t(size_t, object->data_len ?: 26, 26);
+		memcpy(content + 6, object->data, encoded_len);
+	}
+	put_unaligned_be16(encoded_mask, content + 4);
+	if (encoded_len < 26)
+		memset(content + 6 + encoded_len, 0, 26 - encoded_len);
 	agent->upload_index = sequence + 1;
 	return 0;
 }
 
-static void omci_agent_log_baseline(struct omci_device *odev,
-				    const char *direction, const u8 *pdu)
-{
-	u8 action = pdu[2] & 0x1f;
-	u16 class_id = get_unaligned_be16(pdu + 4);
-	u16 entity_id = get_unaligned_be16(pdu + 6);
-
-	if (action == OMCI_MSG_TYPE_TEST_RESULT)
-		dev_info(odev->parent,
-			 "OMCI %s: tci=%#06x type=%#04x action=%u class=%u entity=%#06x test_type=%u\n",
-			 direction, get_unaligned_be16(pdu), pdu[2], action,
-			 class_id, entity_id, pdu[8]);
-	else if (action == OMCI_MSG_TYPE_ALARM_NOTIFICATION)
-		dev_info(odev->parent,
-			 "OMCI %s: tci=%#06x type=%#04x action=%u class=%u entity=%#06x alarm_sequence=%u\n",
-			 direction, get_unaligned_be16(pdu), pdu[2], action,
-			 class_id, entity_id,
-			 pdu[OMCI_ALARM_SEQUENCE_OFFSET]);
-	else
-		dev_info(odev->parent,
-			 "OMCI %s: tci=%#06x type=%#04x action=%u class=%u entity=%#06x result=%u\n",
-			 direction, get_unaligned_be16(pdu), pdu[2], action,
-			 class_id, entity_id, pdu[8]);
-	dev_info(odev->parent, "OMCI %s PDU: %*phN\n",
-		 direction, OMCI_BASELINE_LEN_NO_MIC, pdu);
-}
-
-static bool omci_agent_build_response_locked(struct omci_device *odev,
-					     const u8 *request,
-					     u8 *response,
-					     bool *unsupported,
-					     bool *fake,
-					     bool *profile_changed)
+static int
+omci_agent_build_response_locked(struct omci_device *odev,
+				 const struct omci_wire_request *request,
+				 u8 *content, size_t capacity,
+				 size_t *content_len, bool *unsupported,
+				 bool *fake, bool *profile_changed)
 {
 	struct omci_agent *agent = &odev->agent;
-	u8 *content = response + 8;
-	u8 action = request[2] & 0x1f;
-	u16 class_id = get_unaligned_be16(request + 4);
-	u16 entity_id = get_unaligned_be16(request + 6);
+	u8 action = request->message_type & 0x1f;
+	u16 class_id = request->class_id;
+	u16 entity_id = request->entity_id;
 	bool shadow_missing;
 	u16 sequence;
+	u16 mask = 0;
 	u8 result = OMCI_RESULT_SUCCESS;
+	int ret;
 
-	omci_response_init(response, request, action);
+	if (!capacity)
+		return -EMSGSIZE;
+	memset(content, 0, capacity);
 	shadow_missing = !omci_mib_lookup(agent, class_id, entity_id);
 	*unsupported = false;
 	*fake = false;
 	*profile_changed = false;
+	*content_len = 1;
 
 	switch (action) {
 	case OMCI_MSG_TYPE_CREATE:
 		result = omci_agent_create_locked(odev, class_id, entity_id,
-						  request + 8);
-		if (omci_agent_should_fake_result(agent, result)) {
+						 request->payload,
+						 request->payload_len);
+		if (omci_agent_should_fake_result(agent, class_id, result)) {
 			result = OMCI_RESULT_SUCCESS;
 			*fake = true;
 		}
 		content[0] = result;
 		break;
 	case OMCI_MSG_TYPE_DELETE:
-		result = omci_agent_delete_locked(odev, class_id, entity_id, profile_changed);
-		if (omci_agent_should_fake_result(agent, result)) {
+		result = omci_agent_delete_locked(odev, class_id, entity_id,
+						 profile_changed);
+		if (omci_agent_should_fake_result(agent, class_id, result)) {
 			result = OMCI_RESULT_SUCCESS;
 			*fake = true;
 		}
@@ -2251,49 +2783,71 @@ static bool omci_agent_build_response_locked(struct omci_device *odev,
 		break;
 	case OMCI_MSG_TYPE_SET:
 	case OMCI_MSG_TYPE_SET_TABLE:
-		result = omci_agent_set_locked(odev, class_id, entity_id,
-					       request + 8, profile_changed);
-		if (omci_agent_should_fake_result(agent, result)) {
+		result = omci_agent_set_locked(odev, class_id, entity_id, action,
+					      request->payload,
+					      request->payload_len,
+					      profile_changed);
+		if (omci_agent_should_fake_result(agent, class_id, result)) {
 			result = OMCI_RESULT_SUCCESS;
 			*fake = true;
 		} else if (!result && omci_agent_fakes_unsupported(agent) &&
 			   !agent->permissive && shadow_missing) {
 			*fake = true;
 		}
+		if (request->payload_len >= 2)
+			mask = get_unaligned_be16(request->payload);
+		if (capacity < 5)
+			return -EMSGSIZE;
 		content[0] = result;
 		put_unaligned_be16(0, content + 1);
-		put_unaligned_be16(result ? get_unaligned_be16(request + 8) : 0,
-				   content + 3);
+		put_unaligned_be16(result ? mask : 0, content + 3);
+		*content_len = 5;
 		break;
 	case OMCI_MSG_TYPE_GET:
 	case OMCI_MSG_TYPE_GET_NEXT:
 	case OMCI_MSG_TYPE_GET_CURRENT_DATA:
 		result = omci_agent_get_locked(odev, class_id, entity_id,
-					       request + 8, content);
-		if (omci_agent_should_fake_result(agent, result)) {
-			result = OMCI_RESULT_SUCCESS;
+					      request->payload,
+					      request->payload_len, content,
+					      capacity, content_len);
+		if (omci_agent_should_fake_result(agent, class_id, result)) {
+			content[0] = OMCI_RESULT_SUCCESS;
+			*content_len = 1;
 			*fake = true;
 		} else if (!result && omci_agent_fakes_unsupported(agent) &&
 			   !agent->permissive && shadow_missing) {
 			*fake = true;
 		}
-		if (result)
+		if (result && !*fake) {
 			content[0] = result;
+			*content_len = 1;
+		}
 		break;
 	case OMCI_MSG_TYPE_GET_ALL_ALARMS:
+		if (capacity < 3)
+			return -EMSGSIZE;
 		content[0] = OMCI_RESULT_SUCCESS;
 		put_unaligned_be16(0, content + 1);
+		*content_len = 3;
 		break;
 	case OMCI_MSG_TYPE_GET_ALL_ALARMS_NEXT:
 		content[0] = OMCI_RESULT_UNKNOWN_INSTANCE;
 		break;
 	case OMCI_MSG_TYPE_MIB_UPLOAD:
+		if (capacity < 2)
+			return -EMSGSIZE;
 		agent->upload_index = 0;
 		put_unaligned_be16(omci_mib_count_locked(agent), content);
+		*content_len = 2;
 		break;
 	case OMCI_MSG_TYPE_MIB_UPLOAD_NEXT:
-		sequence = get_unaligned_be16(request + 8);
-		omci_agent_upload_next_locked(agent, sequence, content);
+		if (request->payload_len < 2 || capacity < 32)
+			return -EMSGSIZE;
+		sequence = get_unaligned_be16(request->payload);
+		ret = omci_agent_upload_next_locked(agent, sequence, content);
+		if (ret)
+			memset(content, 0, 32);
+		*content_len = 32;
 		break;
 	case OMCI_MSG_TYPE_MIB_RESET:
 		omci_agent_reset_olt_objects_locked(agent);
@@ -2324,7 +2878,45 @@ static bool omci_agent_build_response_locked(struct omci_device *odev,
 		break;
 	}
 
-	return true;
+	return 0;
+}
+
+static void omci_agent_reset_duplicate_locked(struct omci_agent *agent)
+{
+	dev_kfree_skb(agent->last_request);
+	dev_kfree_skb(agent->last_response);
+	agent->last_request = NULL;
+	agent->last_response = NULL;
+	agent->last_request_hash = 0;
+	agent->last_response_fake = false;
+}
+
+static int
+omci_agent_cache_exchange_locked(struct omci_agent *agent,
+				 const struct sk_buff *request,
+				 const void *response, size_t response_len,
+				 bool fake)
+{
+	struct sk_buff *cached_request;
+	struct sk_buff *cached_response;
+
+	cached_request = alloc_skb(request->len, GFP_KERNEL);
+	if (!cached_request)
+		return -ENOMEM;
+	skb_put_data(cached_request, request->data, request->len);
+	cached_response = alloc_skb(response_len, GFP_KERNEL);
+	if (!cached_response) {
+		kfree_skb(cached_request);
+		return -ENOMEM;
+	}
+	skb_put_data(cached_response, response, response_len);
+
+	omci_agent_reset_duplicate_locked(agent);
+	agent->last_request = cached_request;
+	agent->last_response = cached_response;
+	agent->last_request_hash = jhash(request->data, request->len, 0);
+	agent->last_response_fake = fake;
+	return 0;
 }
 
 static void
@@ -2338,7 +2930,13 @@ omci_agent_report_operational(struct omci_device *odev, bool operational)
 void omci_agent_receive(struct omci_device *odev, const struct sk_buff *skb)
 {
 	struct omci_agent *agent = &odev->agent;
-	u8 response[OMCI_BASELINE_LEN_NO_MIC];
+	struct omci_wire_request request;
+	u8 *response = NULL;
+	u8 *content = NULL;
+	size_t response_len = 0;
+	size_t content_len = 0;
+	size_t content_capacity;
+	u32 request_hash;
 	bool unsupported = false;
 	bool duplicate = false;
 	bool fake = false;
@@ -2348,43 +2946,54 @@ void omci_agent_receive(struct omci_device *odev, const struct sk_buff *skb)
 	bool ani_g_test;
 	int ret;
 
-	if (skb->len != OMCI_BASELINE_LEN_NO_MIC &&
-	    skb->len != OMCI_BASELINE_LEN)
+	ret = omci_wire_decode(skb->data, skb->len, &request);
+	if (ret)
 		return;
-	if (skb->data[3] != OMCI_BASELINE_DEV_ID)
-		return;
+	omci_agent_log_wire(odev, "RX", skb->data, skb->len);
+	ani_g_test = omci_agent_is_ani_g_test(&request);
+	request_hash = jhash(skb->data, skb->len, 0);
 
-	omci_agent_log_baseline(odev, "RX", skb->data);
-	ani_g_test = omci_agent_is_ani_g_test(skb->data);
+	response = kmalloc(OMCI_MAX_PDU_LEN, GFP_KERNEL);
+	content_capacity = request.device_id == OMCI_BASELINE_DEV_ID ? 32 :
+		OMCI_MAX_PDU_LEN - OMCI_EXTENDED_HEADER_LEN;
+	content = kzalloc(content_capacity, GFP_KERNEL);
+	if (!response || !content)
+		goto out;
 
 	mutex_lock(&agent->lock);
 	if (!agent->enabled) {
 		mutex_unlock(&agent->lock);
-		return;
+		goto out;
 	}
 
-	if (agent->last_request_len == OMCI_BASELINE_LEN_NO_MIC &&
-	    !memcmp(agent->last_request, skb->data,
-		    OMCI_BASELINE_LEN_NO_MIC)) {
-		memcpy(response, agent->last_response,
-		       agent->last_response_len);
+	if (agent->last_request && agent->last_response &&
+	    agent->last_request_hash == request_hash &&
+	    agent->last_request->len == skb->len &&
+	    !memcmp(agent->last_request->data, skb->data, skb->len)) {
+		response_len = agent->last_response->len;
+		memcpy(response, agent->last_response->data, response_len);
 		fake = agent->last_response_fake;
 		duplicate = true;
 	} else {
-		omci_agent_build_response_locked(odev, skb->data, response,
-						 &unsupported, &fake,
-						 &profile_changed);
-		memcpy(agent->last_request, skb->data,
-		       OMCI_BASELINE_LEN_NO_MIC);
-		memcpy(agent->last_response, response, sizeof(response));
-		agent->last_request_len = OMCI_BASELINE_LEN_NO_MIC;
-		agent->last_response_len = sizeof(response);
-		agent->last_response_fake = fake;
+		ret = omci_agent_build_response_locked(
+			odev, &request, content, content_capacity, &content_len,
+			&unsupported, &fake, &profile_changed);
+		if (!ret)
+			ret = omci_wire_encode_response(
+				&request, request.message_type & 0x1f,
+				content, content_len, response, OMCI_MAX_PDU_LEN,
+				&response_len);
+		if (ret) {
+			mutex_unlock(&agent->lock);
+			goto out;
+		}
+		omci_agent_cache_exchange_locked(agent, skb, response,
+						 response_len, fake);
 	}
 	mutex_unlock(&agent->lock);
 
-	omci_agent_log_baseline(odev, "TX", response);
-	ret = omci_device_xmit(odev, response, sizeof(response));
+	omci_agent_log_wire(odev, "TX", response, response_len);
+	ret = omci_device_xmit(odev, response, response_len);
 	if (!ret) {
 		atomic64_inc(&agent->responses);
 		if (!duplicate && !fake && !unsupported) {
@@ -2393,16 +3002,14 @@ void omci_agent_receive(struct omci_device *odev, const struct sk_buff *skb)
 			spin_unlock_bh(&odev->state_lock);
 
 			mutex_lock(&agent->lock);
-			if (channel_up && agent->enabled &&
-			    !agent->operational) {
+			if (channel_up && agent->enabled && !agent->operational) {
 				agent->operational = true;
 				operational_changed = true;
 			}
 			mutex_unlock(&agent->lock);
 		}
 		if (ani_g_test) {
-			ret = omci_agent_send_ani_g_test_result(odev,
-								skb->data);
+			ret = omci_agent_send_ani_g_test_result(odev, &request);
 			if (ret)
 				dev_dbg(odev->parent,
 					"OMCI ANI-G test result unavailable: %d\n",
@@ -2421,6 +3028,10 @@ void omci_agent_receive(struct omci_device *odev, const struct sk_buff *skb)
 		omci_device_notify(odev, OMCI_EVENT_PROFILE_CHANGE);
 	if (operational_changed)
 		omci_agent_report_operational(odev, true);
+
+out:
+	kfree(content);
+	kfree(response);
 }
 
 int omci_agent_send_dying_gasp(struct omci_device *odev)
@@ -2455,7 +3066,7 @@ int omci_agent_send_dying_gasp(struct omci_device *odev)
 	if (ret)
 		return ret;
 
-	omci_agent_log_baseline(odev, "TX", pdu);
+	omci_agent_log_wire(odev, "TX", pdu, sizeof(pdu));
 	omci_device_notify(odev, OMCI_EVENT_DYING_GASP);
 	return 0;
 }
@@ -2468,12 +3079,14 @@ void omci_agent_channel_changed(struct omci_device *odev, bool valid)
 	mutex_lock(&agent->lock);
 	operational_changed = agent->operational;
 	agent->operational = false;
-	agent->last_request_len = 0;
-	agent->last_response_len = 0;
-	agent->last_response_fake = false;
+	omci_agent_reset_duplicate_locked(agent);
 	agent->upload_index = 0;
-	if (!valid)
+	if (!valid) {
 		agent->alarm_sequence = 0;
+		omci_agent_clear_services_locked(odev);
+	} else {
+		omci_agent_reconcile_services_locked(odev);
+	}
 	mutex_unlock(&agent->lock);
 
 	if (operational_changed)
@@ -2761,9 +3374,7 @@ __omci_agent_config_set_source(struct omci_device *odev, u16 key,
 		changed = agent->dying_gasp != !!scalar;
 		agent->dying_gasp = !!scalar;
 		agent->config.dying_gasp_source = source;
-		agent->last_request_len = 0;
-		agent->last_response_len = 0;
-		agent->last_response_fake = false;
+		omci_agent_reset_duplicate_locked(agent);
 		break;
 	case OMCI_CONFIG_TRAFFIC_MGMT_OPTION:
 	case OMCI_CONFIG_ONU_TYPE:
@@ -2800,9 +3411,7 @@ __omci_agent_config_set_source(struct omci_device *odev, u16 key,
 			changed = agent->fake_omci != !!scalar;
 			agent->fake_omci = !!scalar;
 		}
-		agent->last_request_len = 0;
-		agent->last_response_len = 0;
-		agent->last_response_fake = false;
+		omci_agent_reset_duplicate_locked(agent);
 		break;
 	default:
 		ret = -EINVAL;
@@ -2821,9 +3430,7 @@ __omci_agent_config_set_source(struct omci_device *odev, u16 key,
 	if (!ret) {
 		if (!profile_key)
 			omci_agent_refresh_identity_locked(agent);
-		agent->last_request_len = 0;
-		agent->last_response_len = 0;
-		agent->last_response_fake = false;
+		omci_agent_reset_duplicate_locked(agent);
 		agent->mib_sync++;
 		if (notify && changed)
 			omci_agent_identity_state_locked(agent, &identity);
@@ -2902,7 +3509,7 @@ int omci_agent_mib_get(struct omci_device *odev, u16 class_id, u16 entity_id,
 
 	mutex_lock(&agent->lock);
 	stored = omci_mib_lookup(agent, class_id, entity_id);
-	if (!stored)
+	if (!stored || !omci_mib_object_active(agent, stored))
 		ret = -ENOENT;
 	else
 		memcpy(object, stored, sizeof(*object));
@@ -2914,20 +3521,36 @@ int omci_agent_mib_set(struct omci_device *odev,
 		       const struct omci_mib_object *object)
 {
 	struct omci_agent *agent = &odev->agent;
+	const struct omci_me_desc *desc;
 	struct omci_mib_object *stored;
 	struct omci_mib_object *local;
+	bool datapath;
 	int ret;
 
 	local = kmemdup(object, sizeof(*local), GFP_KERNEL);
 	if (!local)
 		return -ENOMEM;
 
+	mutex_lock(&agent->lock);
+	desc = omci_me_lookup(agent, local->class_id);
+	if (!omci_me_active(agent, local->class_id)) {
+		ret = -ENOENT;
+		goto unlock;
+	}
 	local->origin = OMCI_MIB_ORIGIN_LOCAL;
+	local->owner_profile = desc && (desc->flags & OMCI_ME_F_VENDOR) ?
+		agent->profile_effective : OMCI_OLT_PROFILE_UNSPEC;
+	if (!local->data_len)
+		local->data_len = desc ? desc->data_len : sizeof(local->data);
+	if (local->data_len > sizeof(local->data)) {
+		ret = -E2BIG;
+		goto unlock;
+	}
 	if (local->class_id == OMCI_CLASS_OLT_G) {
 		ret = omci_olt_g_parse_set(local, local->attr_mask, local->data,
-					   sizeof(local->data));
+					   local->data_len);
 		if (ret)
-			goto out;
+			goto unlock;
 	} else if (local->class_id == OMCI_CLASS_VLAN_TAGGING_FILTER_DATA) {
 		omci_vlan_filter_parse_create(local, local->data);
 	} else if (local->class_id == OMCI_CLASS_EXTENDED_VLAN) {
@@ -2937,16 +3560,24 @@ int omci_agent_mib_set(struct omci_device *odev,
 			omci_ext_vlan_update_rule(&local->extended_vlan,
 						  local->data);
 	}
-	mutex_lock(&agent->lock);
+
 	ret = omci_mib_store_locked(agent, local);
-	if (!ret && local->class_id == OMCI_CLASS_OLT_G) {
-		stored = omci_mib_lookup(agent, local->class_id, local->entity_id);
-		ret = omci_agent_profile_refresh_locked(odev, &stored->olt_g, NULL);
-	}
-	if (!ret)
+	if (ret)
+		goto unlock;
+	stored = omci_mib_lookup(agent, local->class_id, local->entity_id);
+	if (local->class_id == OMCI_CLASS_OLT_G)
+		ret = omci_agent_profile_refresh_locked(odev, &stored->olt_g,
+							NULL);
+	datapath = omci_agent_datapath_class(agent, local->class_id);
+	if (!ret && datapath)
+		ret = omci_agent_reconcile_services_locked(odev);
+	if (!ret) {
 		agent->mib_sync++;
+		omci_agent_reset_duplicate_locked(agent);
+	}
+
+unlock:
 	mutex_unlock(&agent->lock);
-out:
 	kfree(local);
 	return ret;
 }
@@ -2956,16 +3587,29 @@ int omci_agent_mib_delete(struct omci_device *odev, u16 class_id,
 {
 	struct omci_agent *agent = &odev->agent;
 	struct omci_mib_object *object;
+	bool datapath;
+	int ret = 0;
 
 	mutex_lock(&agent->lock);
 	object = xa_erase(&agent->mib, omci_mib_key(class_id, entity_id));
-	if (object && class_id == OMCI_CLASS_OLT_G)
-		omci_agent_profile_refresh_locked(odev, NULL, NULL);
-	if (object)
+	if (!object) {
+		ret = -ENOENT;
+		goto unlock;
+	}
+	if (class_id == OMCI_CLASS_OLT_G)
+		ret = omci_agent_profile_refresh_locked(odev, NULL, NULL);
+	datapath = omci_agent_datapath_class(agent, class_id);
+	if (!ret && datapath)
+		ret = omci_agent_reconcile_services_locked(odev);
+	if (!ret) {
 		agent->mib_sync++;
+		omci_agent_reset_duplicate_locked(agent);
+	}
+
+unlock:
 	mutex_unlock(&agent->lock);
 	kfree(object);
-	return object ? 0 : -ENOENT;
+	return ret;
 }
 
 void omci_agent_mib_reset(struct omci_device *odev, bool all)
@@ -2975,9 +3619,11 @@ void omci_agent_mib_reset(struct omci_device *odev, bool all)
 	unsigned long index;
 
 	mutex_lock(&agent->lock);
+	omci_agent_clear_services_locked(odev);
 	if (!all) {
 		omci_agent_reset_olt_objects_locked(agent);
 		omci_agent_profile_refresh_locked(odev, NULL, NULL);
+		omci_agent_reset_duplicate_locked(agent);
 		mutex_unlock(&agent->lock);
 		return;
 	}
@@ -2989,6 +3635,7 @@ void omci_agent_mib_reset(struct omci_device *odev, bool all)
 	agent->upload_index = 0;
 	omci_agent_populate_defaults(odev);
 	omci_agent_profile_refresh_locked(odev, NULL, NULL);
+	omci_agent_reset_duplicate_locked(agent);
 	mutex_unlock(&agent->lock);
 }
 
@@ -3002,13 +3649,20 @@ int omci_agent_mib_next(struct omci_device *odev, u32 index,
 	int ret = 0;
 
 	mutex_lock(&agent->lock);
-	stored = xa_find(&agent->mib, &xa_index, ULONG_MAX, XA_PRESENT);
-	if (!stored) {
-		ret = -ENOENT;
-	} else {
+	for (;;) {
+		stored = xa_find(&agent->mib, &xa_index, ULONG_MAX, XA_PRESENT);
+		if (!stored) {
+			ret = -ENOENT;
+			break;
+		}
+		if (omci_mib_object_active(agent, stored))
+			break;
+		xa_index++;
+	}
+	if (!ret) {
 		memcpy(object, stored, sizeof(*object));
 		*next_index = xa_index + 1;
-		*name = omci_agent_class_name(stored->class_id);
+		*name = omci_me_class_name(stored->class_id);
 	}
 	mutex_unlock(&agent->lock);
 	return ret;
