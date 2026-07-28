@@ -534,6 +534,11 @@ static const struct omci_attr_desc omci_nokia_65306_attrs[] = {
 	OMCI_ATTR(15, 0, 19, OMCI_RW),
 };
 
+static const struct omci_attr_desc omci_omci_attrs[] = {
+	OMCI_ATTR(15, 0, 4, OMCI_R),
+	OMCI_ATTR(14, 4, 4, OMCI_R),
+};
+
 #define STANDARD_ACTIONS (OMCI_ME_ACTION_GET | OMCI_ME_ACTION_SET)
 #define OLT_CREATED_ACTIONS (OMCI_ME_ACTION_CREATE | OMCI_ME_ACTION_DELETE | \
 			     OMCI_ME_ACTION_GET | OMCI_ME_ACTION_SET)
@@ -597,6 +602,12 @@ static const struct omci_me_desc omci_me_descs[] = {
 		      GENMASK(15, 6), GENMASK(15, 6), 17,
 		      OMCI_CLASS_CATEGORY_ANI, OMCI_CLASS_SUPPORT_PROVISIONED,
 		      omci_gem_port_ctp_attrs),
+	STANDARD_DESC(OMCI_CLASS_OMCI, "OMCI",
+		      OMCI_ME_ACTION_GET | OMCI_ME_ACTION_GET_NEXT,
+		      OMCI_ME_F_ONU_CREATED | OMCI_ME_F_NO_MIB_UPLOAD,
+		      GENMASK(15, 14), 0, 8,
+		      OMCI_CLASS_CATEGORY_MANAGEMENT, OMCI_CLASS_SUPPORT_NATIVE,
+		      omci_omci_attrs),
 	STANDARD_DESC(OMCI_CLASS_VEIP, "Virtual Ethernet interface point",
 		      STANDARD_ACTIONS, OMCI_ME_F_ONU_CREATED | OMCI_ME_F_DATAPATH,
 		      GENMASK(15, 11), GENMASK(15, 11), 31,
