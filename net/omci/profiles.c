@@ -3,8 +3,8 @@
  * OMCI OLT interoperability profiles
  *
  * Profiles describe policy deviations required by selected OLT families.
- * The generic profile remains the default. Automatic detection is opt-in
- * and uses OLT-G identification attributes only as a hint.
+ * Automatic detection is the default and uses OLT-G identification attributes
+ * only as a hint. Until OLT-G is available, the effective profile is generic.
  */
 
 #include <linux/export.h>
