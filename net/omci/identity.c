@@ -12,6 +12,7 @@
 #include <linux/property.h>
 #include <linux/slab.h>
 #include <linux/string.h>
+#include <linux/unaligned.h>
 
 #include "internal.h"
 

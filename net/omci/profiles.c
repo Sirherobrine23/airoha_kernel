@@ -177,3 +177,49 @@ void omci_profile_sanitize_olt_g(struct omci_olt_g *olt, u32 quirks)
 		if (olt->version[i] < ' ' || olt->version[i] > '~')
 			olt->version[i] = ' ';
 }
+
+u16 omci_profile_normalize_uni_entity(u8 profile, u16 entity_id)
+{
+	if (omci_profile_quirks(profile) & OMCI_OLT_QUIRK_FULL_UNI_ENTITY_ID)
+		return entity_id;
+
+	return entity_id & 0xff;
+}
+
+void omci_profile_normalize_vlan_rule(u8 profile,
+				      struct omci_extended_vlan_rule *rule)
+{
+	if (!rule || !(omci_profile_quirks(profile) &
+		       OMCI_OLT_QUIRK_ZTE_VLAN_TAG_MODE))
+		return;
+
+	/*
+	 * The vendor SDK forces a TPID and DEI when a ZTE rule produces an
+	 * untagged service. Preserve the wire rule, but normalize the treatment
+	 * consumed by the hardware-independent service resolver.
+	 */
+	if (!rule->tags_to_remove && rule->treat_outer_vid >= 4096 &&
+	    rule->treat_inner_vid >= 4096) {
+		rule->treat_inner_tpid_dei = 1;
+		rule->treat_inner_pbit = min_t(u8, rule->treat_inner_pbit, 8);
+	}
+}
+
+int omci_profile_resolve_multicast_ani(u8 profile,
+				       u16 bridge_port_entity_id,
+				       u16 *ani_entity_id)
+{
+	if (!ani_entity_id)
+		return -EINVAL;
+	if (!(omci_profile_quirks(profile) &
+	      OMCI_OLT_QUIRK_DASAN_MULTICAST_ANI))
+		return -EOPNOTSUPP;
+
+	/*
+	 * The legacy SDK associates a multicast GEM with the ANI allocated to
+	 * its WAN MAC bridge port. Keep that stable semantic identifier in the
+	 * normalized service; the hardware backend owns index allocation.
+	 */
+	*ani_entity_id = bridge_port_entity_id;
+	return 0;
+}
