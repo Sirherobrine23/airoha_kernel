@@ -3443,7 +3443,7 @@ int airoha_eth_xpon_add_service(struct net_device *netdev,
 		if (!dev->xpon_services[i].valid && empty < 0)
 			empty = i;
 		if (dev->xpon_services[i].valid &&
-		    dev->xpon_services[i].gem_port_id == cfg->gem_port_id) {
+		    dev->xpon_services[i].cookie == cfg->cookie) {
 			empty = i;
 			break;
 		}
@@ -3463,23 +3463,56 @@ int airoha_eth_xpon_add_service(struct net_device *netdev,
 }
 EXPORT_SYMBOL_GPL(airoha_eth_xpon_add_service);
 
-void airoha_eth_xpon_del_service(struct net_device *netdev, u16 gem_port_id)
+bool airoha_eth_xpon_del_service(struct net_device *netdev, u32 cookie,
+				  u16 *gem_port_id)
 {
 	struct airoha_gdm_dev *dev;
+	bool found = false;
 	int i;
 
 	if (airoha_eth_validate_xpon_gdm2(netdev, &dev))
-		return;
+		return false;
+
+	spin_lock_bh(&dev->xpon_service_lock);
+	for (i = 0; i < AIROHA_XPON_MAX_SERVICES; i++) {
+		if (!dev->xpon_services[i].valid ||
+		    dev->xpon_services[i].cookie != cookie)
+			continue;
+		if (gem_port_id)
+			*gem_port_id = dev->xpon_services[i].gem_port_id;
+		memset(&dev->xpon_services[i], 0,
+		       sizeof(dev->xpon_services[i]));
+		found = true;
+		break;
+	}
+	spin_unlock_bh(&dev->xpon_service_lock);
+
+	return found;
+}
+EXPORT_SYMBOL_GPL(airoha_eth_xpon_del_service);
+
+bool airoha_eth_xpon_has_gem_service(struct net_device *netdev,
+				     u16 gem_port_id)
+{
+	struct airoha_gdm_dev *dev;
+	bool found = false;
+	int i;
+
+	if (airoha_eth_validate_xpon_gdm2(netdev, &dev))
+		return false;
 
 	spin_lock_bh(&dev->xpon_service_lock);
 	for (i = 0; i < AIROHA_XPON_MAX_SERVICES; i++)
 		if (dev->xpon_services[i].valid &&
-		    dev->xpon_services[i].gem_port_id == gem_port_id)
-			memset(&dev->xpon_services[i], 0,
-			       sizeof(dev->xpon_services[i]));
+		    dev->xpon_services[i].gem_port_id == gem_port_id) {
+			found = true;
+			break;
+		}
 	spin_unlock_bh(&dev->xpon_service_lock);
+
+	return found;
 }
-EXPORT_SYMBOL_GPL(airoha_eth_xpon_del_service);
+EXPORT_SYMBOL_GPL(airoha_eth_xpon_has_gem_service);
 
 void airoha_eth_xpon_flush_services(struct net_device *netdev)
 {

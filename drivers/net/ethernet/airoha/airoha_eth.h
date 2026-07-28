@@ -638,6 +638,7 @@ struct airoha_xpon_link_state {
 };
 
 struct airoha_xpon_service_cfg {
+	u32 cookie;
 	u16 gem_port_id;
 	u16 vlan_id;
 	u8 tcont;
@@ -886,7 +887,10 @@ int airoha_eth_xmit_xpon_oam(struct net_device *netdev, struct sk_buff *skb,
 			     u16 gem_port_id);
 int airoha_eth_xpon_add_service(struct net_device *netdev,
 				const struct airoha_xpon_service_cfg *cfg);
-void airoha_eth_xpon_del_service(struct net_device *netdev, u16 gem_port_id);
+bool airoha_eth_xpon_del_service(struct net_device *netdev, u32 cookie,
+				  u16 *gem_port_id);
+bool airoha_eth_xpon_has_gem_service(struct net_device *netdev,
+				     u16 gem_port_id);
 void airoha_eth_xpon_flush_services(struct net_device *netdev);
 int airoha_eth_set_xpon_mode(struct net_device *netdev,
 			      enum airoha_xpon_mode mode);

@@ -1932,69 +1932,95 @@ int airoha_gpon_omci_hw_set_gem_port(void *hw_priv, u16 entity_id,
 				     u8 direction, bool valid, bool encrypted)
 {
 	struct xpon_priv *priv = hw_priv;
-	struct airoha_xpon_service_cfg service = {
-		.gem_port_id = gem_port_id,
-		.queue = 0,
-		.default_service = true,
-	};
-	unsigned int tcont_index = 0;
 	int ret;
 
 	ret = gpon_set_gem_port_hw(priv, gem_port_id, valid, encrypted);
 	if (ret)
 		return ret;
 
-	airoha_eth_xpon_del_service(priv->gdm_dev, gem_port_id);
-	mutex_lock(&priv->link_state_lock);
-	__clear_bit(gem_port_id, priv->service_gems);
-	mutex_unlock(&priv->link_state_lock);
-
-	if (valid && direction != OMCI_GEM_PORT_DIRECTION_ANI_TO_UNI) {
-		ret = gpon_tcont_entity_to_index(priv, tcont_entity_id,
-						 &tcont_index);
-		if (ret)
-			goto err_disable_gem;
-
-		service.tcont = tcont_index;
-		ret = airoha_eth_xpon_add_service(priv->gdm_dev, &service);
-		if (ret)
-			goto err_disable_gem;
-
-		mutex_lock(&priv->link_state_lock);
-		__set_bit(gem_port_id, priv->service_gems);
-		mutex_unlock(&priv->link_state_lock);
-	}
-
 	gpon_refresh_netdev_link(priv, false);
 	dev_info(priv->dev,
-		 "OMCI GEM port %u %s (ME %#x T-CONT %#x direction %u channel %u)\n",
+		 "OMCI GEM port %u %s (ME %#x T-CONT %#x direction %u)\n",
 		 gem_port_id, valid ? "enabled" : "disabled", entity_id,
-		 tcont_entity_id, direction, tcont_index);
+		 tcont_entity_id, direction);
 	return 0;
+}
 
-err_disable_gem:
-	gpon_set_gem_port_hw(priv, gem_port_id, false, false);
+int airoha_gpon_omci_hw_replace_service(void *hw_priv,
+					const struct omci_service_config *service)
+{
+	struct xpon_priv *priv = hw_priv;
+	struct airoha_xpon_service_cfg cfg;
+	unsigned int tcont_index;
+	int ret;
+
+	if (!service || service->multicast || service->vlan_treatment_valid ||
+	    service->direction == OMCI_GEM_PORT_DIRECTION_ANI_TO_UNI)
+		return -EOPNOTSUPP;
+
+	cfg = (struct airoha_xpon_service_cfg) {
+		.cookie = service->cookie,
+		.gem_port_id = service->gem_port_id,
+		.vlan_id = service->vlan_id,
+		.queue = service->queue,
+		.pcp = service->pcp,
+		.vlan_valid = service->vlan_valid,
+		.pcp_valid = service->pcp_valid,
+		.default_service = service->default_service,
+	};
+	ret = gpon_tcont_entity_to_index(priv, service->tcont_entity_id,
+					 &tcont_index);
+	if (ret)
+		return ret;
+	cfg.tcont = tcont_index;
+
+	ret = airoha_eth_xpon_add_service(priv->gdm_dev, &cfg);
+	if (ret)
+		return ret;
+
+	mutex_lock(&priv->link_state_lock);
+	__set_bit(service->gem_port_id, priv->service_gems);
+	mutex_unlock(&priv->link_state_lock);
 	gpon_refresh_netdev_link(priv, false);
-	return ret;
+	dev_dbg(priv->dev,
+		"OMCI service %#x: UNI %#x GEM %u T-CONT %#x queue %u VLAN %s%u PCP %s%u ANI %s%#x\n",
+		service->cookie, service->uni_entity_id, service->gem_port_id,
+		service->tcont_entity_id, service->queue,
+		service->vlan_valid ? "" : "any/", service->vlan_id,
+		service->pcp_valid ? "" : "any/", service->pcp,
+		service->multicast_ani_valid ? "" : "none/",
+		service->multicast_ani_entity_id);
+
+	return 0;
+}
+
+int airoha_gpon_omci_hw_delete_service(void *hw_priv, u32 cookie)
+{
+	struct xpon_priv *priv = hw_priv;
+	u16 gem_port_id;
+
+	if (!airoha_eth_xpon_del_service(priv->gdm_dev, cookie,
+					  &gem_port_id))
+		return -ENOENT;
+
+	if (!airoha_eth_xpon_has_gem_service(priv->gdm_dev, gem_port_id)) {
+		mutex_lock(&priv->link_state_lock);
+		__clear_bit(gem_port_id, priv->service_gems);
+		mutex_unlock(&priv->link_state_lock);
+	}
+	gpon_refresh_netdev_link(priv, false);
+
+	return 0;
 }
 
 int airoha_gpon_omci_hw_set_uni(void *hw_priv, u16 entity_id, bool enable)
 {
 	struct xpon_priv *priv = hw_priv;
-	u32 quirks;
-	u16 port_id;
 
-	mutex_lock(&priv->omci_profile_lock);
-	quirks = priv->omci_profile.quirks;
-	mutex_unlock(&priv->omci_profile_lock);
+	dev_dbg(priv->dev, "OMCI UNI port %#x requested %s\n", entity_id,
+		enable ? "enabled" : "disabled");
 
-	port_id = quirks & OMCI_OLT_QUIRK_FULL_UNI_ENTITY_ID ?
-		  entity_id : entity_id & 0xff;
-	dev_dbg(priv->dev,
-		"OMCI UNI %#x (port %#x) requested %s with quirks %#x\n",
-		entity_id, port_id, enable ? "enabled" : "disabled", quirks);
-
-	/* The EN7523 switch UNI state is managed by DSA. */
+	/* The EN7523 switch UNI administrative state remains owned by DSA. */
 	return 0;
 }
 
