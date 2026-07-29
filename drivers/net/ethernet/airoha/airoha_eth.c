@@ -3396,6 +3396,24 @@ airoha_eth_xpon_classify(struct airoha_gdm_dev *dev, struct sk_buff *skb,
 
 		vlan_id = tci & VLAN_VID_MASK;
 		pcp = (tci & VLAN_PRIO_MASK) >> VLAN_PRIO_SHIFT;
+	} else {
+		struct vlan_ethhdr vlan_hdr_buf;
+		const struct vlan_ethhdr *vlan_hdr;
+
+		/*
+		 * A software 802.1Q device inserts the tag in the Ethernet header
+		 * when the lower xPON netdev does not advertise VLAN TX offload.
+		 * Classify both that representation and an accelerated skb tag.
+		 */
+		vlan_hdr = skb_header_pointer(skb, 0, sizeof(vlan_hdr_buf),
+					      &vlan_hdr_buf);
+		if (vlan_hdr && eth_type_vlan(vlan_hdr->h_vlan_proto)) {
+			u16 tci = ntohs(vlan_hdr->h_vlan_TCI);
+
+			vlan_id = tci & VLAN_VID_MASK;
+			pcp = (tci & VLAN_PRIO_MASK) >> VLAN_PRIO_SHIFT;
+			vlan_valid = true;
+		}
 	}
 
 	spin_lock_bh(&dev->xpon_service_lock);
