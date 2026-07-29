@@ -1068,11 +1068,17 @@ static int airoha_fe_init(struct airoha_eth *eth)
 	airoha_fe_vip_setup(eth);
 	airoha_fe_pse_ports_init(eth);
 
-	airoha_fe_set(eth, REG_GDM_MISC_CFG,
-		      GDM2_RDM_ACK_WAIT_PREF_MASK |
-		      GDM2_CHN_VLD_MODE_MASK);
-	/* EN7523 routes PSE OAM through bits 15:12. Later SoCs use
-	 * the high queue-selection field instead.
+	/* The vendor SDK enables these GDM2 handshake modes only on the
+	 * EN7581-class FE. EN7523 uses the legacy GPON release mode alone;
+	 * enabling the EN7581 handshake there can prevent GDM2 from releasing
+	 * received frames into the PSE.
+	 */
+	if (!airoha_is(eth, en7523))
+		airoha_fe_set(eth, REG_GDM_MISC_CFG,
+			      GDM2_RDM_ACK_WAIT_PREF_MASK |
+			      GDM2_CHN_VLD_MODE_MASK);
+	/* EN7523 uses the legacy 4-bit OAM selector at bits 31:28.
+	 * EN7581-class FE revisions use the wider high selector.
 	 */
 	airoha_fe_rmw(eth, REG_CDM_FWD_CFG(2),
 		      airoha_is(eth, en7523) ? EN7523_CDM_OAM_QSEL_MASK : CDM_OAM_QSEL_MASK,
