@@ -345,6 +345,13 @@ static const struct omci_class_name omci_classes[] = {
 #define OMCI_RW		(OMCI_ATTR_ACCESS_READ | OMCI_ATTR_ACCESS_WRITE)
 #define OMCI_R		OMCI_ATTR_ACCESS_READ
 
+static const struct omci_attr_desc omci_software_image_attrs[] = {
+	OMCI_ATTR(15, 0, OMCI_SOFTWARE_VERSION_LEN, OMCI_R),
+	OMCI_ATTR(14, 14, 1, OMCI_R),
+	OMCI_ATTR(13, 15, 1, OMCI_R),
+	OMCI_ATTR(12, 16, 1, OMCI_R),
+};
+
 static const struct omci_attr_desc omci_cardholder_attrs[] = {
 	OMCI_ATTR(15, 0, 1, OMCI_R),
 	OMCI_ATTR(14, 1, 1, OMCI_RW),
@@ -616,6 +623,11 @@ static const struct omci_attr_desc omci_attribute_attrs[] = {
 	  .attrs = (_attrs), .num_attrs = ARRAY_SIZE(_attrs) }
 
 static const struct omci_me_desc omci_me_descs[] = {
+	STANDARD_DESC(OMCI_CLASS_SOFTWARE_IMAGE, "Software image",
+		      OMCI_ME_ACTION_GET, OMCI_ME_F_ONU_CREATED,
+		      GENMASK(15, 12), GENMASK(15, 12), 17,
+		      OMCI_CLASS_CATEGORY_EQUIPMENT, OMCI_CLASS_SUPPORT_NATIVE,
+		      omci_software_image_attrs),
 	STANDARD_DESC(OMCI_CLASS_CARDHOLDER, "Cardholder", STANDARD_ACTIONS,
 		      OMCI_ME_F_ONU_CREATED, GENMASK(15, 10), GENMASK(15, 10),
 		      45, OMCI_CLASS_CATEGORY_EQUIPMENT,
