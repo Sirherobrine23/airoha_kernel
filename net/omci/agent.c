@@ -147,6 +147,14 @@ static bool omci_agent_result_can_be_faked(u8 result)
 #define OMCI_ALARM_SEQUENCE_OFFSET	(8 + OMCI_ALARM_BITMAP_LEN)
 
 #define OMCI_ANI_G_ENTITY_ID		0x8001
+#define OMCI_ETHERNET_SLOT		0x01
+#define OMCI_VEIP_SLOT			0x0a
+#define OMCI_GPON_SLOT			0x80
+#define OMCI_ETHERNET_UNIT_TYPE		47
+#define OMCI_VEIP_UNIT_TYPE		48
+#define OMCI_GPON_UNIT_TYPE		248
+#define OMCI_EQUIPMENT_ENTITY_ID(_slot)	(0x0100 | (_slot))
+#define OMCI_UNI_ENTITY_ID(_slot, _port)	(((_slot) << 8) | (_port))
 #define OMCI_ANI_G_RX_LEVEL_MASK	0x0040
 #define OMCI_ANI_G_TX_LEVEL_MASK	0x0004
 #define OMCI_ANI_G_OPTICAL_LEVEL_MASK	(OMCI_ANI_G_RX_LEVEL_MASK | \
@@ -1040,7 +1048,8 @@ omci_agent_seed_nokia_locked(struct omci_device *odev, u8 profile)
 	data[9] = 1;
 	data[12] = 1;
 	ret = omci_mib_add_default_profile_mask(agent, profile,
-			OMCI_CLASS_NOKIA_OPTICAL_SUPERVISION, 0x0101,
+			OMCI_CLASS_NOKIA_OPTICAL_SUPERVISION,
+			OMCI_ANI_G_ENTITY_ID,
 			GENMASK(15, 6), data, sizeof(data));
 	if (ret)
 		return ret;
@@ -1059,7 +1068,9 @@ omci_agent_seed_nokia_locked(struct omci_device *odev, u8 profile)
 	for (i = 0; i < agent->config.uni_count; i++) {
 		memset(data, 0, sizeof(data));
 		ret = omci_mib_add_default_profile_mask(agent, profile,
-				OMCI_CLASS_NOKIA_UNI_SUPPLEMENTAL_V2, i + 1,
+				OMCI_CLASS_NOKIA_UNI_SUPPLEMENTAL_V2,
+				OMCI_UNI_ENTITY_ID(OMCI_ETHERNET_SLOT,
+						   i + 1),
 				GENMASK(15, 9), data, sizeof(data));
 		if (ret)
 			return ret;
@@ -1149,7 +1160,26 @@ static u16 omci_mib_count_class(struct omci_agent *agent, u16 class_id)
 static void omci_agent_refresh_identity_locked(struct omci_agent *agent)
 {
 	struct omci_mib_object *object;
+	unsigned long index;
 	u16 queues, schedulers;
+
+	xa_for_each(&agent->mib, index, object) {
+		if (object->class_id == OMCI_CLASS_CARDHOLDER) {
+			memcpy(object->data + 3, agent->config.equipment_id,
+			       sizeof(agent->config.equipment_id));
+			memcpy(object->data + 23, agent->config.equipment_id,
+			       sizeof(agent->config.equipment_id));
+		} else if (object->class_id == OMCI_CLASS_CIRCUIT_PACK) {
+			memcpy(object->data + 2, agent->config.serial_number,
+			       sizeof(agent->config.serial_number));
+			memcpy(object->data + 10, agent->config.version,
+			       sizeof(agent->config.version));
+			memcpy(object->data + 24, agent->config.vendor_id,
+			       sizeof(agent->config.vendor_id));
+			memcpy(object->data + 31, agent->config.equipment_id,
+			       sizeof(agent->config.equipment_id));
+		}
+	}
 
 	object = omci_mib_lookup(agent, OMCI_CLASS_ONU_G, 0);
 	if (object) {
@@ -1320,6 +1350,83 @@ omci_traffic_scheduler_default_data(const struct omci_ani_topology *topology,
 	data[4] = topology->scheduler_policy;
 }
 
+static void
+omci_cardholder_default_data(const struct omci_agent *agent, u8 unit_type,
+			     u8 port_count, u8 data[OMCI_MAX_ATTR_DATA])
+{
+	memset(data, 0, OMCI_MAX_ATTR_DATA);
+	data[0] = unit_type;
+	data[1] = unit_type;
+	data[2] = port_count;
+	memcpy(data + 3, agent->config.equipment_id,
+	       sizeof(agent->config.equipment_id));
+	memcpy(data + 23, agent->config.equipment_id,
+	       sizeof(agent->config.equipment_id));
+}
+
+static void
+omci_circuit_pack_default_data(const struct omci_agent *agent,
+			       const struct omci_ani_topology *topology,
+			       u8 unit_type, u8 port_count, bool ani,
+			       u8 data[OMCI_MAX_ATTR_DATA])
+{
+	u16 queues;
+
+	memset(data, 0, OMCI_MAX_ATTR_DATA);
+	data[0] = unit_type;
+	data[1] = port_count;
+	memcpy(data + 2, agent->config.serial_number,
+	       sizeof(agent->config.serial_number));
+	memcpy(data + 10, agent->config.version,
+	       sizeof(agent->config.version));
+	memcpy(data + 24, agent->config.vendor_id,
+	       sizeof(agent->config.vendor_id));
+	/* Administrative and operational states are enabled. */
+	data[28] = 0;
+	data[29] = 0;
+	/* The default service model is bridged rather than routed. */
+	data[30] = 0;
+	memcpy(data + 31, agent->config.equipment_id,
+	       sizeof(agent->config.equipment_id));
+	if (!ani)
+		return;
+
+	queues = topology->tcont_count * topology->queues_per_tcont;
+	data[52] = min_t(u16, topology->tcont_count, U8_MAX);
+	data[53] = min_t(u16, queues, U8_MAX);
+	data[54] = min_t(u16, topology->tcont_count, U8_MAX);
+}
+
+static int
+omci_agent_add_equipment_default(struct omci_agent *agent,
+				 const struct omci_ani_topology *topology,
+				 u8 slot, u8 unit_type, u8 port_count,
+				 bool ani, u8 data[OMCI_MAX_ATTR_DATA])
+{
+	u16 entity_id = OMCI_EQUIPMENT_ENTITY_ID(slot);
+	int ret;
+
+	omci_cardholder_default_data(agent, unit_type, port_count, data);
+	ret = omci_mib_add_default_mask(agent, OMCI_CLASS_CARDHOLDER,
+					entity_id, GENMASK(15, 10), data,
+					OMCI_MAX_ATTR_DATA);
+	if (ret)
+		return ret;
+
+	omci_circuit_pack_default_data(agent, topology, unit_type, port_count,
+				       ani, data);
+	return omci_mib_add_default_mask(agent, OMCI_CLASS_CIRCUIT_PACK,
+					 entity_id, GENMASK(15, 2), data,
+					 OMCI_MAX_ATTR_DATA);
+}
+
+static void omci_uni_g_default_data(u8 data[OMCI_MAX_ATTR_DATA])
+{
+	memset(data, 0, OMCI_MAX_ATTR_DATA);
+	/* Support both OMCI and non-OMCI management. */
+	data[3] = 2;
+}
+
 static int omci_agent_populate_defaults(struct omci_device *odev)
 {
 	struct omci_agent *agent = &odev->agent;
@@ -1348,6 +1455,23 @@ static int omci_agent_populate_defaults(struct omci_device *odev)
 			return ret;
 	}
 
+	ret = omci_agent_add_equipment_default(agent, &topology,
+					       OMCI_GPON_SLOT, OMCI_GPON_UNIT_TYPE,
+					       1, true, data);
+	if (ret)
+		return ret;
+	ret = omci_agent_add_equipment_default(agent, &topology,
+					       OMCI_ETHERNET_SLOT,
+					       OMCI_ETHERNET_UNIT_TYPE,
+					       agent->config.uni_count, false, data);
+	if (ret)
+		return ret;
+	ret = omci_agent_add_equipment_default(agent, &topology,
+					       OMCI_VEIP_SLOT, OMCI_VEIP_UNIT_TYPE,
+					       1, false, data);
+	if (ret)
+		return ret;
+
 	ret = omci_mib_add_default(agent, OMCI_CLASS_ONU_G, 0, data,
 				   sizeof(data));
 	if (ret)
@@ -1364,18 +1488,34 @@ static int omci_agent_populate_defaults(struct omci_device *odev)
 		return ret;
 
 	for (i = 0; i < agent->config.uni_count; i++) {
+		u16 entity_id = OMCI_UNI_ENTITY_ID(OMCI_ETHERNET_SLOT, i + 1);
+
 		memset(data, 0, sizeof(data));
 		data[4] = 0; /* Administrative state unlocked. */
 		ret = omci_mib_add_default(agent, OMCI_CLASS_PPTP_ETHERNET_UNI,
-					   i + 1, data, sizeof(data));
+					   entity_id, data, sizeof(data));
+		if (ret)
+			return ret;
+
+		omci_uni_g_default_data(data);
+		ret = omci_mib_add_default_mask(agent, OMCI_CLASS_UNI_G,
+						entity_id, GENMASK(15, 12),
+						data, sizeof(data));
 		if (ret)
 			return ret;
 	}
 
 	memset(data, 0, sizeof(data));
 	data[0] = 0; /* Administrative state unlocked. */
-	ret = omci_mib_add_default(agent, OMCI_CLASS_VEIP, 1, data,
+	ret = omci_mib_add_default(agent, OMCI_CLASS_VEIP,
+				   OMCI_UNI_ENTITY_ID(OMCI_VEIP_SLOT, 1), data,
 				   sizeof(data));
+	if (ret)
+		return ret;
+	omci_uni_g_default_data(data);
+	ret = omci_mib_add_default_mask(agent, OMCI_CLASS_UNI_G,
+					OMCI_UNI_ENTITY_ID(OMCI_VEIP_SLOT, 1),
+					GENMASK(15, 12), data, sizeof(data));
 	if (ret)
 		return ret;
 

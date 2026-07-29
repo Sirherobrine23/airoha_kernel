@@ -11,6 +11,8 @@ struct omci_me_class;
 struct omci_mib_object;
 
 #define OMCI_CLASS_ONU_DATA		2
+#define OMCI_CLASS_CARDHOLDER		5
+#define OMCI_CLASS_CIRCUIT_PACK		6
 #define OMCI_CLASS_SOFTWARE_IMAGE	7
 #define OMCI_CLASS_PPTP_ETHERNET_UNI	11
 #define OMCI_CLASS_MAC_BRIDGE_SERVICE_PROFILE	45
@@ -26,6 +28,7 @@ struct omci_mib_object;
 #define OMCI_CLASS_ONU2_G		257
 #define OMCI_CLASS_TCONT		262
 #define OMCI_CLASS_ANI_G		263
+#define OMCI_CLASS_UNI_G		264
 #define OMCI_CLASS_GEM_IWTP		266
 #define OMCI_CLASS_GEM_PORT_CTP	268
 #define OMCI_CLASS_GAL_ETHERNET_PROFILE	272
