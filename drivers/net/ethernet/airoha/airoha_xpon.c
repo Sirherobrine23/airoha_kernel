@@ -1983,9 +1983,9 @@ int airoha_gpon_omci_hw_replace_service(void *hw_priv,
 	mutex_unlock(&priv->link_state_lock);
 	gpon_refresh_netdev_link(priv, false);
 	dev_dbg(priv->dev,
-		"OMCI service %#x: UNI %#x GEM %u T-CONT %#x queue %u VLAN %s%u PCP %s%u ANI %s%#x\n",
+		"OMCI service %#x: UNI %#x GEM %u T-CONT %#x channel %u queue %u VLAN %s%u PCP %s%u ANI %s%#x\n",
 		service->cookie, service->uni_entity_id, service->gem_port_id,
-		service->tcont_entity_id, service->queue,
+		service->tcont_entity_id, cfg.tcont, service->queue,
 		service->vlan_valid ? "" : "any/", service->vlan_id,
 		service->pcp_valid ? "" : "any/", service->pcp,
 		service->multicast_ani_valid ? "" : "none/",
