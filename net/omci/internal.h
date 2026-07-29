@@ -54,12 +54,16 @@ struct omci_service_state {
 struct omci_agent_config {
 	u8 serial_number[8];
 	u8 vendor_id[4];
-	u8 version[14];
+	u8 version[OMCI_HARDWARE_VERSION_LEN];
+	u8 software_version[2][OMCI_SOFTWARE_VERSION_LEN];
 	u8 equipment_id[20];
 	u8 password[10];
 	u8 serial_source;
 	u8 vendor_source;
 	u8 version_source;
+	u8 software_version_source[2];
+	u8 omcc_version;
+	u8 omcc_version_source;
 	u8 equipment_source;
 	u8 password_source;
 	u8 traffic_mgmt_option;
