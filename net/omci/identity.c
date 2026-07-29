@@ -288,7 +288,10 @@ int omci_identity_normalize_config(u16 key, const void *value, size_t len,
 		ret = omci_normalize_password(value, len, output);
 		break;
 	case OMCI_CONFIG_VERSION:
-		required = OMCI_OLT_VERSION_LEN;
+	case OMCI_CONFIG_HARDWARE_VERSION:
+	case OMCI_CONFIG_SOFTWARE_VERSION_0:
+	case OMCI_CONFIG_SOFTWARE_VERSION_1:
+		required = OMCI_HARDWARE_VERSION_LEN;
 		if (*output_len < required)
 			return -ENOSPC;
 		ret = omci_normalize_string(value, len, output, required);
