@@ -131,7 +131,10 @@
 
 #define REG_CDM_FWD_CFG(_n)		(CDM_BASE(_n) + 0x08)
 #define CDM_OAM_QSEL_MASK		GENMASK(31, 27)
-#define EN7523_CDM_OAM_QSEL_MASK	GENMASK(15, 12)
+/* EN7523 follows the 4-bit legacy OAM selector at bits 31:28.
+ * Bits 15:12 are used by EN7528, which is a different FE revision.
+ */
+#define EN7523_CDM_OAM_QSEL_MASK	GENMASK(31, 28)
 #define CDM_VIP_QSEL_MASK		GENMASK(24, 20)
 #define EN7523_CDM_VIP_QSEL_MASK	GENMASK(27, 24)
 
