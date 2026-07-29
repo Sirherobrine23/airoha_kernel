@@ -345,6 +345,32 @@ static const struct omci_class_name omci_classes[] = {
 #define OMCI_RW		(OMCI_ATTR_ACCESS_READ | OMCI_ATTR_ACCESS_WRITE)
 #define OMCI_R		OMCI_ATTR_ACCESS_READ
 
+static const struct omci_attr_desc omci_cardholder_attrs[] = {
+	OMCI_ATTR(15, 0, 1, OMCI_R),
+	OMCI_ATTR(14, 1, 1, OMCI_RW),
+	OMCI_ATTR(13, 2, 1, OMCI_RW),
+	OMCI_ATTR(12, 3, 20, OMCI_RW),
+	OMCI_ATTR(11, 23, 20, OMCI_RW),
+	OMCI_ATTR(10, 43, 2, OMCI_R),
+};
+
+static const struct omci_attr_desc omci_circuit_pack_attrs[] = {
+	OMCI_ATTR(15, 0, 1, OMCI_R),
+	OMCI_ATTR(14, 1, 1, OMCI_R),
+	OMCI_ATTR(13, 2, 8, OMCI_R),
+	OMCI_ATTR(12, 10, 14, OMCI_R),
+	OMCI_ATTR(11, 24, 4, OMCI_R),
+	OMCI_ATTR(10, 28, 1, OMCI_RW),
+	OMCI_ATTR(9, 29, 1, OMCI_R),
+	OMCI_ATTR(8, 30, 1, OMCI_RW),
+	OMCI_ATTR(7, 31, 20, OMCI_R),
+	OMCI_ATTR(6, 51, 1, OMCI_RW),
+	OMCI_ATTR(5, 52, 1, OMCI_R),
+	OMCI_ATTR(4, 53, 1, OMCI_R),
+	OMCI_ATTR(3, 54, 1, OMCI_R),
+	OMCI_ATTR(2, 55, 4, OMCI_RW),
+};
+
 static const struct omci_attr_desc omci_pptp_ethernet_uni_attrs[] = {
 	OMCI_ATTR(15, 0, 1, OMCI_R),
 	OMCI_ATTR(14, 1, 1, OMCI_R),
@@ -416,6 +442,13 @@ static const struct omci_attr_desc omci_tcont_attrs[] = {
 	OMCI_ATTR(15, 0, 2, OMCI_RW),
 	OMCI_ATTR(14, 2, 1, OMCI_R),
 	OMCI_ATTR(13, 3, 1, OMCI_RW),
+};
+
+static const struct omci_attr_desc omci_uni_g_attrs[] = {
+	OMCI_ATTR(15, 0, 2, OMCI_RW),
+	OMCI_ATTR(14, 2, 1, OMCI_RW),
+	OMCI_ATTR(13, 3, 1, OMCI_R),
+	OMCI_ATTR(12, 4, 2, OMCI_RW),
 };
 
 static const struct omci_attr_desc omci_gem_iwtp_attrs[] = {
@@ -583,6 +616,14 @@ static const struct omci_attr_desc omci_attribute_attrs[] = {
 	  .attrs = (_attrs), .num_attrs = ARRAY_SIZE(_attrs) }
 
 static const struct omci_me_desc omci_me_descs[] = {
+	STANDARD_DESC(OMCI_CLASS_CARDHOLDER, "Cardholder", STANDARD_ACTIONS,
+		      OMCI_ME_F_ONU_CREATED, GENMASK(15, 10), GENMASK(15, 10),
+		      45, OMCI_CLASS_CATEGORY_EQUIPMENT,
+		      OMCI_CLASS_SUPPORT_NATIVE, omci_cardholder_attrs),
+	STANDARD_DESC(OMCI_CLASS_CIRCUIT_PACK, "Circuit pack", STANDARD_ACTIONS,
+		      OMCI_ME_F_ONU_CREATED, GENMASK(15, 2), GENMASK(15, 2),
+		      59, OMCI_CLASS_CATEGORY_EQUIPMENT,
+		      OMCI_CLASS_SUPPORT_NATIVE, omci_circuit_pack_attrs),
 	STANDARD_DESC(OMCI_CLASS_PPTP_ETHERNET_UNI,
 		      "Physical path termination point Ethernet UNI",
 		      STANDARD_ACTIONS, OMCI_ME_F_ONU_CREATED | OMCI_ME_F_DATAPATH,
@@ -615,6 +656,10 @@ static const struct omci_me_desc omci_me_descs[] = {
 		      GENMASK(15, 13), GENMASK(15, 13), 4,
 		      OMCI_CLASS_CATEGORY_ANI, OMCI_CLASS_SUPPORT_NATIVE,
 		      omci_tcont_attrs),
+	STANDARD_DESC(OMCI_CLASS_UNI_G, "UNI-G", STANDARD_ACTIONS,
+		      OMCI_ME_F_ONU_CREATED, GENMASK(15, 12), GENMASK(15, 12),
+		      6, OMCI_CLASS_CATEGORY_UNI, OMCI_CLASS_SUPPORT_NATIVE,
+		      omci_uni_g_attrs),
 	STANDARD_DESC(OMCI_CLASS_GEM_IWTP,
 		      "GEM interworking termination point", OLT_CREATED_ACTIONS,
 		      OMCI_ME_F_DATAPATH, GENMASK(15, 8), GENMASK(15, 8), 12,
