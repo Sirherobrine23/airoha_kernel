@@ -63,6 +63,12 @@
 #define REG_RX_DMA_IDX(_n)		(NPU_WLAN_BASE_ADDR + ((_n) << 4) + 0x188)
 #define REG_RX_CPU_IDX(_n)		(NPU_WLAN_BASE_ADDR + ((_n) << 4) + 0x18c)
 
+#define NPU_V1_HOST_RX_READY		0x1db8
+#define NPU_V1_HOST_RX_BASE(_n)		(0x1dbc + ((_n) << 2))
+#define NPU_V1_HOST_RX_READY_MASK	GENMASK(7, 0)
+#define NPU_V1_HOST_RX_ROUTE		0x2130
+#define NPU_V1_HOST_RX_ROUTE_MASK	GENMASK(7, 0)
+
 #define NPU_TIMER_BASE_ADDR		0x310100
 #define REG_WDT_TIMER_CTRL(_n)		(NPU_TIMER_BASE_ADDR + ((_n) * 0x100))
 #define WDT_EN_MASK			BIT(25)
@@ -705,6 +711,64 @@ static void airoha_npu_wlan_irq_enable(struct airoha_npu *npu, int q)
 static void airoha_npu_wlan_irq_disable(struct airoha_npu *npu, int q)
 {
 	regmap_clear_bits(npu->regmap, REG_IRQ_RXDONE(q), NPU_IRQ_RX_MASK(q));
+}
+
+static int airoha_npu_wlan_rx_gate_set(struct airoha_npu *npu, int q,
+				       bool enable)
+{
+	u32 base[2];
+	u32 val;
+	int i, err;
+
+	if (npu->soc_data->version != NPU_V1)
+		return 0;
+	if (q < 0 || q > 1)
+		return -EINVAL;
+
+	if (!enable) {
+		err = regmap_write(npu->regmap, NPU_V1_HOST_RX_READY, 0);
+		if (err)
+			return err;
+
+		err = regmap_read(npu->regmap, NPU_V1_HOST_RX_READY, &val);
+		if (err)
+			return err;
+		if (val & NPU_V1_HOST_RX_READY_MASK)
+			return -EIO;
+
+		/* Allow a descriptor copy which passed the gate to complete. */
+		usleep_range(10000, 20000);
+
+		err = regmap_write(npu->regmap, REG_RX_BASE(q), 0);
+		if (err)
+			return err;
+
+		return regmap_write(npu->regmap, NPU_V1_HOST_RX_BASE(q), 0);
+	}
+
+	for (i = 0; i < 2; i++) {
+		err = regmap_read(npu->regmap, REG_RX_BASE(i), &base[i]);
+		if (err)
+			return err;
+		if (!base[i])
+			return 0;
+	}
+
+	for (i = 0; i < 2; i++) {
+		err = regmap_write(npu->regmap, NPU_V1_HOST_RX_BASE(i),
+				   base[i]);
+		if (err)
+			return err;
+	}
+
+	err = regmap_update_bits(npu->regmap, NPU_V1_HOST_RX_ROUTE,
+				 NPU_V1_HOST_RX_ROUTE_MASK, 1);
+	if (err)
+		return err;
+
+	/* Publish cached bases and route before setting the ready byte. */
+	wmb();
+	return regmap_write(npu->regmap, NPU_V1_HOST_RX_READY, 1);
 }
 
 
@@ -1495,6 +1559,7 @@ static int airoha_npu_probe(struct platform_device *pdev)
 	npu->ops.wlan_get_irq_status = airoha_npu_wlan_irq_status_get;
 	npu->ops.wlan_enable_irq = airoha_npu_wlan_irq_enable;
 	npu->ops.wlan_disable_irq = airoha_npu_wlan_irq_disable;
+	npu->ops.wlan_set_rx_gate = airoha_npu_wlan_rx_gate_set;
 
 	npu->regmap = devm_regmap_init_mmio(dev, base, &regmap_config);
 	if (IS_ERR(npu->regmap))

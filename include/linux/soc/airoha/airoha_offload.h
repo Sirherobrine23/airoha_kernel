@@ -215,6 +215,8 @@ struct airoha_npu {
 		u32 (*wlan_get_irq_status)(struct airoha_npu *npu, int q);
 		void (*wlan_enable_irq)(struct airoha_npu *npu, int q);
 		void (*wlan_disable_irq)(struct airoha_npu *npu, int q);
+		int (*wlan_set_rx_gate)(struct airoha_npu *npu, int q,
+					bool enable);
 	} ops;
 #endif
 };
@@ -269,6 +271,12 @@ static inline void airoha_npu_wlan_disable_irq(struct airoha_npu *npu, int q)
 {
 	npu->ops.wlan_disable_irq(npu, q);
 }
+
+static inline int airoha_npu_wlan_set_rx_gate(struct airoha_npu *npu, int q,
+					      bool enable)
+{
+	return npu->ops.wlan_set_rx_gate(npu, q, enable);
+}
 #else
 static inline struct airoha_npu *airoha_npu_get(struct device *dev)
 {
@@ -322,6 +330,12 @@ static inline void airoha_npu_wlan_enable_irq(struct airoha_npu *npu, int q)
 
 static inline void airoha_npu_wlan_disable_irq(struct airoha_npu *npu, int q)
 {
+}
+
+static inline int airoha_npu_wlan_set_rx_gate(struct airoha_npu *npu, int q,
+					      bool enable)
+{
+	return -EOPNOTSUPP;
 }
 #endif
 
