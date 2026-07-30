@@ -1108,6 +1108,17 @@ static int airoha_fe_init(struct airoha_eth *eth)
 	airoha_fe_set(eth, REG_GDM_FWD_CFG(AIROHA_GDM4_IDX),
 		      GDM_PAD_EN_MASK | GDM_STRIP_CRC_MASK);
 
+	/*
+	 * GDM2 is used as the EN7523 xPON datapath. Short Ethernet
+	 * packets such as ARP replies and PPPoE discovery frames must
+	 * be padded to ETH_ZLEN before being handed to the GPON MAC.
+	 * Without this, the upstream transmits runt frames which are
+	 * discarded by the OLT or the peer.
+	 */
+	if (airoha_is(eth, en7523))
+		airoha_fe_set(eth, REG_GDM_FWD_CFG(AIROHA_GDM2_IDX),
+			      GDM_PAD_EN_MASK);
+
 	/* Enable split for MIB counters for GDM3 and GDM4 */
 	airoha_fe_set(eth, REG_FE_GDM_MIB_CFG(AIROHA_GDM3_IDX),
 		      FE_GDM_TX_MIB_SPLIT_EN_MASK |
