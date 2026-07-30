@@ -402,6 +402,14 @@ static void airoha_xpon_phy_stop(struct device *dev, struct phy *phy,
 
 /* G_GBL_CFG */
 #define GBL_CFG_US_FEC_EN	BIT(16)
+#define GBL_CFG_SR_BLK_SIZE_MASK	GENMASK(7, 0)
+
+/*
+ * The GPON MAC stores the reciprocal of the DBRu block size with the bit
+ * order reversed.  The vendor SDK programs a 48-byte block, encoded as
+ * bitrev8(round(2048 / 48)) = bitrev8(43) = 0xd4.
+ */
+#define GPON_DBRU_BLOCK_SIZE_48B	0xd4
 
 /* G_SN_MSG_CFG */
 #define SN_MSG_CFG_SN_REQ_THR_MASK	GENMASK(31, 24)
@@ -889,6 +897,15 @@ static int gpon_prepare_hardware(struct xpon_priv *priv)
 	gpon_rmw(priv, GPON_DBG_IDLE_GEM_THLD, GENMASK(15, 0),
 		 GPON_IDLE_GEM_THLD_DEFAULT);
 
+	/*
+	 * DBRu reports queue occupancy in units selected by sr_blk_size.  The
+	 * EN7523 SDK always selects 48-byte blocks before activation.  Leaving
+	 * the reset/bootloader value here causes the OLT to underestimate the
+	 * upstream backlog and grant only the minimum assured bandwidth.
+	 */
+	gpon_rmw(priv, GPON_GBL_CFG, GBL_CFG_SR_BLK_SIZE_MASK,
+		 GPON_DBRU_BLOCK_SIZE_48B);
+
 	/* Apply the vendor workaround for invalid BWmap length filtering. */
 	gpon_clear_bits(priv, GPON_DBG_BWM_FILTER_CTRL,
 			BWM_FILTER_LEN_VALID_CHECK_EN);
@@ -899,8 +916,9 @@ static int gpon_prepare_hardware(struct xpon_priv *priv)
 				     "failed to start GPON MBI: %#08x\n", mbi);
 
 	dev_info(priv->dev,
-		 "GPON hardware prepared: mbi=%#08x dbg_dly=%#08x idle_gem=%#08x bwm_filter=%#08x\n",
-		 mbi, gpon_read(priv, GPON_DBG_DLY),
+		 "GPON hardware prepared: mbi=%#08x gbl=%#08x dbg_dly=%#08x idle_gem=%#08x bwm_filter=%#08x\n",
+		 mbi, gpon_read(priv, GPON_GBL_CFG),
+		 gpon_read(priv, GPON_DBG_DLY),
 		 gpon_read(priv, GPON_DBG_IDLE_GEM_THLD),
 		 gpon_read(priv, GPON_DBG_BWM_FILTER_CTRL));
 	return 0;
