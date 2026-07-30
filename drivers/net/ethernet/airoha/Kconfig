@@ -54,6 +54,7 @@ config AIROHA_XPON
 	depends on MFD_SYSCON
 	select PHY_AIROHA_XPON
 	select OMCI
+	select RESET_CONTROLLER
 	help
 	  Driver for the shared xPON MAC complex found in Airoha/EcoNet SoCs.
 	  GPON and EPON are implemented by one platform driver and selected by
