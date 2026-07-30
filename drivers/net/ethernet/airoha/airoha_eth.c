@@ -2244,6 +2244,7 @@ static int airoha_qdma_init_hfwd_queues(struct airoha_qdma *qdma)
 static void airoha_qdma_init_qos(struct airoha_qdma *qdma)
 {
 	struct airoha_eth *eth = qdma->eth;
+	u32 meter_cfg, meter_window, meter_timeslice;
 	int id = qdma - &eth->qdma[0];
 
 	airoha_qdma_clear(qdma, REG_TXWRR_MODE_CFG, TWRR_WEIGHT_SCALE_MASK);
@@ -2260,16 +2261,31 @@ static void airoha_qdma_init_qos(struct airoha_qdma *qdma)
 		airoha_qdma_clear(qdma, REG_PSE_BUF_USAGE_CFG,
 				  PSE_BUF_ESTIMATE_EN_MASK);
 
-	airoha_qdma_set(qdma, REG_EGRESS_RATE_METER_CFG,
+	meter_cfg = EGRESS_RATE_METER_EN_MASK |
+		    EGRESS_RATE_METER_EQ_RATE_EN_MASK;
+	meter_window = 0x1f;
+	meter_timeslice = 0x7ff;
+
+	/* The EN7523 SDK uses a shorter sampling interval on QDMA WAN and
+	 * leaves equal-rate mode disabled there. QDMA LAN uses the generic
+	 * 2047us x 31 = 63.457ms interval.
+	 */
+	if (airoha_is(eth, en7523) && id == 1) {
+		meter_cfg &= ~EGRESS_RATE_METER_EQ_RATE_EN_MASK;
+		meter_window = 20;
+		meter_timeslice = 200; /* 200us x 20 = 4ms */
+	}
+
+	meter_cfg |= FIELD_PREP(EGRESS_RATE_METER_WINDOW_SZ_MASK,
+				meter_window) |
+		     FIELD_PREP(EGRESS_RATE_METER_TIMESLICE_MASK,
+				meter_timeslice);
+	airoha_qdma_rmw(qdma, REG_EGRESS_RATE_METER_CFG,
 			EGRESS_RATE_METER_EN_MASK |
-			EGRESS_RATE_METER_EQ_RATE_EN_MASK);
-	/* 2047us x 31 = 63.457ms */
-	airoha_qdma_rmw(qdma, REG_EGRESS_RATE_METER_CFG,
-			EGRESS_RATE_METER_WINDOW_SZ_MASK,
-			FIELD_PREP(EGRESS_RATE_METER_WINDOW_SZ_MASK, 0x1f));
-	airoha_qdma_rmw(qdma, REG_EGRESS_RATE_METER_CFG,
+			EGRESS_RATE_METER_EQ_RATE_EN_MASK |
+			EGRESS_RATE_METER_WINDOW_SZ_MASK |
 			EGRESS_RATE_METER_TIMESLICE_MASK,
-			FIELD_PREP(EGRESS_RATE_METER_TIMESLICE_MASK, 0x7ff));
+			meter_cfg);
 
 	/* ratelimit init */
 	airoha_qdma_set(qdma, REG_GLB_TRTCM_CFG, GLB_TRTCM_EN_MASK);
