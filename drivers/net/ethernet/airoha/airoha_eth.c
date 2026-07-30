@@ -29,6 +29,10 @@
 
 static const struct net_device_ops airoha_netdev_ops;
 
+#define EN7523_GPON_MAX_FRAME_LEN	2000
+#define EN7523_GPON_PSE_BUF_CHAN_THR	4
+#define EN7523_GPON_PSE_BUF_TOTAL_THR	0xe0
+
 u32 airoha_rr(void __iomem *base, u32 offset)
 {
 	return readl(base + offset);
@@ -200,6 +204,7 @@ int airoha_eth_set_xpon_mode(struct net_device *netdev,
 			      enum airoha_xpon_mode mode)
 {
 	struct airoha_gdm_dev *dev;
+	u32 max_frame_len;
 	int ret;
 
 	ret = airoha_eth_validate_xpon_gdm2(netdev, &dev);
@@ -215,6 +220,33 @@ int airoha_eth_set_xpon_mode(struct net_device *netdev,
 	airoha_fe_rmw(dev->eth, REG_GDM_MISC_CFG, GDM2_RLS_MODE_MASK,
 		      mode == AIROHA_XPON_MODE_GPON ?
 		      GDM2_RLS_MODE_MASK : 0);
+
+	/* gwan_init() in the EN7523 SDK programs GDMA2 to accept GPON
+	 * frames from 60 to 2000 bytes. Restore the regular FE maximum when
+	 * switching to EPON so the GPON-specific limit does not leak across
+	 * modes.
+	 */
+	max_frame_len = mode == AIROHA_XPON_MODE_GPON ?
+			EN7523_GPON_MAX_FRAME_LEN : AIROHA_MAX_RX_SIZE;
+	airoha_fe_rmw(dev->eth, REG_GDM_LEN_CFG(AIROHA_GDM2_IDX),
+		      GDM_SHORT_LEN_MASK | GDM_LONG_LEN_MASK,
+		      FIELD_PREP(GDM_SHORT_LEN_MASK, ETH_ZLEN) |
+		      FIELD_PREP(GDM_LONG_LEN_MASK, max_frame_len));
+
+	/* gpon_init_qdma_tx_buff() programs these fixed WAN thresholds when
+	 * the ONU-ID is assigned and whenever the T-CONT set changes.
+	 */
+	if (mode == AIROHA_XPON_MODE_GPON) {
+		u32 pse_buf_cfg;
+
+		pse_buf_cfg = FIELD_PREP(PSE_BUF_CHAN_THR_MASK,
+					 EN7523_GPON_PSE_BUF_CHAN_THR) |
+			      FIELD_PREP(PSE_BUF_TOTAL_THR_MASK,
+					 EN7523_GPON_PSE_BUF_TOTAL_THR);
+		airoha_qdma_rmw(&dev->eth->qdma[1], REG_PSE_BUF_USAGE_CFG1,
+				PSE_BUF_CHAN_THR_MASK | PSE_BUF_TOTAL_THR_MASK,
+				pse_buf_cfg);
+	}
 
 	/* A mode switch starts from a quiescent GDM2/CDM2 datapath. */
 	airoha_fe_clear(dev->eth, REG_GDM_TXCHN_EN(AIROHA_GDM2_IDX), ~0U);
@@ -2178,11 +2210,22 @@ static int airoha_qdma_init_hfwd_queues(struct airoha_qdma *qdma)
 
 static void airoha_qdma_init_qos(struct airoha_qdma *qdma)
 {
+	struct airoha_eth *eth = qdma->eth;
+	int id = qdma - &eth->qdma[0];
+
 	airoha_qdma_clear(qdma, REG_TXWRR_MODE_CFG, TWRR_WEIGHT_SCALE_MASK);
 	airoha_qdma_set(qdma, REG_TXWRR_MODE_CFG, TWRR_WEIGHT_BASE_MASK);
 
-	airoha_qdma_clear(qdma, REG_PSE_BUF_USAGE_CFG,
-			  PSE_BUF_ESTIMATE_EN_MASK);
+	/* The EN7523 SDK enables PSE buffer estimation only on QDMA WAN.
+	 * QDMA1 is the WAN instance in this driver. Later SoCs explicitly
+	 * keep this estimator disabled, as does EN7523 QDMA LAN.
+	 */
+	if (airoha_is(eth, en7523) && id == 1)
+		airoha_qdma_set(qdma, REG_PSE_BUF_USAGE_CFG,
+				PSE_BUF_ESTIMATE_EN_MASK);
+	else
+		airoha_qdma_clear(qdma, REG_PSE_BUF_USAGE_CFG,
+				  PSE_BUF_ESTIMATE_EN_MASK);
 
 	airoha_qdma_set(qdma, REG_EGRESS_RATE_METER_CFG,
 			EGRESS_RATE_METER_EN_MASK |
