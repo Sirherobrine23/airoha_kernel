@@ -2619,6 +2619,52 @@ static void gpon_restart_work_fn(struct work_struct *work)
 		dev_err(priv->dev, "failed to restart GPON: %d\n", ret);
 }
 
+int airoha_gpon_omci_hw_start(void *hw_priv)
+{
+	struct xpon_priv *priv = hw_priv;
+	int ret = 0;
+
+	if (READ_ONCE(priv->started))
+		return 0;
+
+	WRITE_ONCE(priv->started, true);
+	gpon_refresh_netdev_link(priv, true);
+	if (priv->sfp_bus) {
+		if (!READ_ONCE(priv->optical_active))
+			sfp_upstream_start(priv->sfp_bus);
+	} else {
+		WRITE_ONCE(priv->optical_active, true);
+		ret = gpon_enable(priv);
+		if (ret)
+			WRITE_ONCE(priv->optical_active, false);
+	}
+
+	if (ret) {
+		WRITE_ONCE(priv->started, false);
+		gpon_refresh_netdev_link(priv, true);
+	}
+
+	return ret;
+}
+
+void airoha_gpon_omci_hw_stop(void *hw_priv)
+{
+	struct xpon_priv *priv = hw_priv;
+
+	if (!READ_ONCE(priv->started))
+		return;
+
+	WRITE_ONCE(priv->started, false);
+	cancel_delayed_work_sync(&priv->restart_work);
+	if (priv->sfp_bus && READ_ONCE(priv->optical_active)) {
+		sfp_upstream_stop(priv->sfp_bus);
+	} else {
+		WRITE_ONCE(priv->optical_active, false);
+		gpon_disable(priv);
+	}
+	gpon_refresh_netdev_link(priv, true);
+}
+
 /* -----------------------------------------------------------------------
  * Interrupt handler
  * -------------------------------------------------------------------- */
@@ -2881,43 +2927,17 @@ static const struct sfp_upstream_ops gpon_sfp_ops = {
 static int gpon_link_start(void *data)
 {
 	struct xpon_priv *priv = data;
-	int ret = 0;
 
-	if (READ_ONCE(priv->started))
-		return 0;
-
-	WRITE_ONCE(priv->started, true);
+	/* net/omci owns GPON activation; ndo_open only exposes saved carrier. */
 	gpon_refresh_netdev_link(priv, true);
-	if (priv->sfp_bus) {
-		if (!READ_ONCE(priv->optical_active))
-			sfp_upstream_start(priv->sfp_bus);
-	} else {
-		WRITE_ONCE(priv->optical_active, true);
-		ret = gpon_enable(priv);
-		if (ret)
-			WRITE_ONCE(priv->optical_active, false);
-	}
-
-	if (ret)
-		WRITE_ONCE(priv->started, false);
-	return ret;
+	return 0;
 }
 
 static void gpon_link_stop(void *data)
 {
 	struct xpon_priv *priv = data;
 
-	if (!READ_ONCE(priv->started))
-		return;
-
-	WRITE_ONCE(priv->started, false);
-	cancel_delayed_work_sync(&priv->restart_work);
-	if (priv->sfp_bus && READ_ONCE(priv->optical_active)) {
-		sfp_upstream_stop(priv->sfp_bus);
-	} else {
-		WRITE_ONCE(priv->optical_active, false);
-		gpon_disable(priv);
-	}
+	/* net/omci keeps OMCC and activation alive across ndo_stop. */
 	gpon_refresh_netdev_link(priv, true);
 }
 
@@ -3906,31 +3926,41 @@ static int airoha_xpon_register_gpon_omci(struct xpon_priv *priv)
 {
 	int ret;
 
+	priv->omci_handler.rx = airoha_gpon_omci_receive;
+	priv->omci_handler.priv = &priv->omci;
+	ret = airoha_eth_register_xpon_oam(priv->gdm_dev,
+					   &priv->omci_handler);
+	if (ret)
+		return ret;
+
 	ret = airoha_gpon_omci_register(&priv->omci, priv->dev, priv->gdm_dev,
 					priv, &priv->identity);
 	if (ret)
-		return ret;
+		goto err_unregister_oam;
 
 	/*
 	 * The OMCI device is zero-initialized. Publish O1 before the first
 	 * PLOAM state callback so userspace never observes an invalid O0.
 	 */
 	airoha_gpon_omci_set_state(&priv->omci, GPON_O1_INITIAL);
-
-	priv->omci_handler.rx = airoha_gpon_omci_receive;
-	priv->omci_handler.priv = &priv->omci;
-	ret = airoha_eth_register_xpon_oam(priv->gdm_dev,
-					   &priv->omci_handler);
-	if (ret) {
-		airoha_gpon_omci_unregister(&priv->omci);
-		return ret;
-	}
+	ret = airoha_gpon_omci_start(&priv->omci);
+	if (ret)
+		goto err_unregister_omci;
 
 	return 0;
+
+err_unregister_omci:
+	airoha_gpon_omci_stop(&priv->omci);
+err_unregister_oam:
+	airoha_eth_unregister_xpon_oam(priv->gdm_dev, &priv->omci_handler);
+	airoha_gpon_omci_unregister(&priv->omci);
+	return ret;
 }
 
 static void airoha_xpon_unregister_gpon_omci(struct xpon_priv *priv)
 {
+	/* Drain the transport before detaching its RX handler. */
+	airoha_gpon_omci_stop(&priv->omci);
 	airoha_eth_unregister_xpon_oam(priv->gdm_dev, &priv->omci_handler);
 	airoha_gpon_omci_unregister(&priv->omci);
 }
@@ -4077,20 +4107,20 @@ static int airoha_xpon_probe(struct platform_device *pdev)
 	if (ret)
 		goto err_put_sfp;
 
-	if (airoha_xpon_is_gpon(priv)) {
-		ret = airoha_xpon_register_gpon_omci(priv);
-		if (ret)
-			goto err_del_upstream;
-	}
-
 	link_ops = airoha_xpon_get_link_ops(priv);
 	ret = airoha_eth_register_xpon(priv->gdm_dev, priv->mode, link_ops,
 				       priv);
 	if (ret)
-		goto err_unregister_gpon_omci;
+		goto err_del_upstream;
 
 	airoha_xpon_update_netdev_link(priv->gdm_dev,
 				       priv->mode, false);
+
+	if (airoha_xpon_is_gpon(priv)) {
+		ret = airoha_xpon_register_gpon_omci(priv);
+		if (ret)
+			goto err_unregister_xpon;
+	}
 
 	platform_set_drvdata(pdev, priv);
 	if (airoha_xpon_is_gpon(priv))
@@ -4104,9 +4134,8 @@ static int airoha_xpon_probe(struct platform_device *pdev)
 			 priv->gdm_dev->name, priv->irq);
 	return 0;
 
-err_unregister_gpon_omci:
-	if (airoha_xpon_is_gpon(priv))
-		airoha_xpon_unregister_gpon_omci(priv);
+err_unregister_xpon:
+	airoha_eth_unregister_xpon(priv->gdm_dev, link_ops, priv);
 err_del_upstream:
 	sfp_bus_del_upstream(priv->sfp_bus);
 err_put_sfp:
@@ -4140,26 +4169,28 @@ static void airoha_xpon_remove(struct platform_device *pdev)
 	if (airoha_xpon_is_gpon(priv))
 		cancel_delayed_work_sync(&priv->restart_work);
 
+	/* net/omci owns and stops the GPON transport before it is detached. */
+	if (airoha_xpon_is_gpon(priv))
+		airoha_xpon_unregister_gpon_omci(priv);
+
 	link_ops = airoha_xpon_get_link_ops(priv);
 	airoha_eth_unregister_xpon(priv->gdm_dev, link_ops, priv);
 
-	if (priv->sfp_bus && READ_ONCE(priv->optical_active))
+	if (!airoha_xpon_is_gpon(priv) && priv->sfp_bus &&
+	    READ_ONCE(priv->optical_active))
 		sfp_upstream_stop(priv->sfp_bus);
 
-	if (airoha_xpon_is_gpon(priv) &&
-	    (READ_ONCE(priv->mac_enabled) || priv->phy_powered)) {
-		gpon_disable(priv);
-	} else if (!airoha_xpon_is_gpon(priv) &&
-		   READ_ONCE(priv->mac_enabled)) {
+	if (!airoha_xpon_is_gpon(priv) && READ_ONCE(priv->mac_enabled)) {
 		epon_disable(priv);
+	} else if (airoha_xpon_is_gpon(priv) &&
+		   (READ_ONCE(priv->mac_enabled) || priv->phy_powered)) {
+		/* Defensive fallback for a provider that failed to stop cleanly. */
+		gpon_disable(priv);
 	} else if (airoha_xpon_is_gpon(priv)) {
 		cancel_work_sync(&priv->irq_work);
 		cancel_delayed_work_sync(&priv->to1_work);
 		cancel_delayed_work_sync(&priv->to2_work);
 	}
-
-	if (airoha_xpon_is_gpon(priv))
-		airoha_xpon_unregister_gpon_omci(priv);
 
 	sfp_bus_del_upstream(priv->sfp_bus);
 	sfp_bus_put(priv->sfp_bus);

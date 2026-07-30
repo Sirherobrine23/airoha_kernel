@@ -330,6 +330,9 @@ int omci_device_xmit(struct omci_device *odev, const void *data, size_t len)
 	u32 tx_len;
 	int ret;
 
+	if (!READ_ONCE(odev->started))
+		return -ENETDOWN;
+
 	spin_lock_bh(&odev->state_lock);
 	gem_port_id = odev->gem_port_id;
 	channel_up = odev->channel_up;
@@ -387,6 +390,11 @@ static int omci_cmd_tx(struct sk_buff *skb, struct genl_info *info)
 		goto out_unlock_owner;
 	}
 	mutex_unlock(&odev->owner_lock);
+
+	if (!READ_ONCE(odev->started)) {
+		ret = -ENETDOWN;
+		goto out_unlock_devices;
+	}
 
 	spin_lock_bh(&odev->state_lock);
 	gem_port_id = odev->gem_port_id;
@@ -1305,6 +1313,7 @@ omci_device_register(struct device *parent, u32 ifindex, u32 capabilities,
 		return ERR_PTR(-ENOMEM);
 
 	INIT_LIST_HEAD(&odev->list);
+	mutex_init(&odev->lifecycle_lock);
 	mutex_init(&odev->owner_lock);
 	spin_lock_init(&odev->state_lock);
 	skb_queue_head_init(&odev->rx_queue);
@@ -1336,6 +1345,51 @@ omci_device_register(struct device *parent, u32 ifindex, u32 capabilities,
 }
 EXPORT_SYMBOL_GPL(omci_device_register);
 
+int omci_device_start(struct omci_device *odev)
+{
+	int ret = 0;
+
+	if (!odev)
+		return -EINVAL;
+
+	mutex_lock(&odev->lifecycle_lock);
+	if (odev->started)
+		goto out;
+
+	/*
+	 * Publish the lifecycle state before entering the provider so state and
+	 * receive callbacks generated synchronously by start() are accepted.
+	 */
+	WRITE_ONCE(odev->started, true);
+	if (odev->ops->start) {
+		ret = odev->ops->start(odev);
+		if (ret)
+			WRITE_ONCE(odev->started, false);
+	}
+out:
+	mutex_unlock(&odev->lifecycle_lock);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(omci_device_start);
+
+void omci_device_stop(struct omci_device *odev)
+{
+	if (!odev)
+		return;
+
+	mutex_lock(&odev->lifecycle_lock);
+	if (!odev->started)
+		goto out;
+
+	/* Let the provider drain the active OMCC before rejecting new traffic. */
+	if (odev->ops->stop)
+		odev->ops->stop(odev);
+	WRITE_ONCE(odev->started, false);
+out:
+	mutex_unlock(&odev->lifecycle_lock);
+}
+EXPORT_SYMBOL_GPL(omci_device_stop);
+
 void omci_device_unregister(struct omci_device *odev)
 {
 	struct net *owner_net;
@@ -1346,6 +1400,7 @@ void omci_device_unregister(struct omci_device *odev)
 	mutex_lock(&omci_devices_lock);
 	list_del_init(&odev->list);
 	mutex_unlock(&omci_devices_lock);
+	omci_device_stop(odev);
 
 	cancel_work_sync(&odev->rx_work);
 	skb_queue_purge(&odev->rx_queue);
@@ -1540,6 +1595,11 @@ void omci_device_receive(struct omci_device *odev, struct sk_buff *skb,
 	if (!skb)
 		return;
 	if (!odev) {
+		dev_kfree_skb_any(skb);
+		return;
+	}
+	if (!READ_ONCE(odev->started)) {
+		atomic64_inc(&odev->rx_dropped);
 		dev_kfree_skb_any(skb);
 		return;
 	}

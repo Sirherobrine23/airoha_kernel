@@ -11,6 +11,30 @@
 #include "airoha_eth.h"
 #include "airoha_gpon_omci.h"
 
+static int airoha_gpon_omci_start_transport(struct omci_device *odev)
+{
+	struct airoha_gpon_omci *omci = omci_device_priv(odev);
+	int ret;
+
+	ret = airoha_eth_xpon_control_start(omci->gdm_dev);
+	if (ret)
+		return ret;
+
+	ret = airoha_gpon_omci_hw_start(omci->hw_priv);
+	if (ret)
+		airoha_eth_xpon_control_stop(omci->gdm_dev);
+
+	return ret;
+}
+
+static void airoha_gpon_omci_stop_transport(struct omci_device *odev)
+{
+	struct airoha_gpon_omci *omci = omci_device_priv(odev);
+
+	airoha_gpon_omci_hw_stop(omci->hw_priv);
+	airoha_eth_xpon_control_stop(omci->gdm_dev);
+}
+
 static int airoha_gpon_omci_xmit(struct omci_device *odev,
 				 struct sk_buff *skb, u16 gem_port_id)
 {
@@ -113,6 +137,8 @@ airoha_gpon_omci_config_changed(struct omci_device *odev, u16 key,
 }
 
 static const struct omci_device_ops airoha_gpon_omci_ops = {
+	.start = airoha_gpon_omci_start_transport,
+	.stop = airoha_gpon_omci_stop_transport,
 	.xmit = airoha_gpon_omci_xmit,
 	.get_ani_topology = airoha_gpon_omci_get_ani_topology,
 	.set_tcont = airoha_gpon_omci_set_tcont,
@@ -151,6 +177,16 @@ int airoha_gpon_omci_register(struct airoha_gpon_omci *omci,
 	}
 
 	return ret;
+}
+
+int airoha_gpon_omci_start(struct airoha_gpon_omci *omci)
+{
+	return omci_device_start(omci->odev);
+}
+
+void airoha_gpon_omci_stop(struct airoha_gpon_omci *omci)
+{
+	omci_device_stop(omci->odev);
 }
 
 void airoha_gpon_omci_unregister(struct airoha_gpon_omci *omci)

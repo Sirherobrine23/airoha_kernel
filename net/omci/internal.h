@@ -118,6 +118,9 @@ struct omci_device {
 	u32 id;
 	u32 ifindex;
 	u32 capabilities;
+	/* Serializes provider transport ownership. */
+	struct mutex lifecycle_lock;
+	bool started;
 
 	/* Protect the optional userspace observer. */
 	struct mutex owner_lock;

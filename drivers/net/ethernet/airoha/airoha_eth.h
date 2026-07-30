@@ -600,9 +600,12 @@ struct airoha_xpon_oam_handler {
 };
 
 /**
- * struct airoha_xpon_link_ops - xPON lifecycle callbacks owned by GDM2
- * @start: start the optical upstream after GDM2 and QDMA are available
- * @stop: stop the optical upstream before GDM2 and QDMA are disabled
+ * struct airoha_xpon_link_ops - xPON netdev lifecycle notifications
+ * @start: notify the provider that the data netdev has been opened
+ * @stop: notify the provider that the data netdev is being closed
+ *
+ * These callbacks control netdev-facing state only. Protocol control planes
+ * such as OMCI acquire the shared GDM2/QDMA transport separately.
  */
 struct airoha_xpon_link_ops {
 	int (*start)(void *priv);
@@ -679,12 +682,13 @@ struct airoha_gdm_dev {
 	atomic64_t xpon_oam_rx_dropped;
 	atomic64_t xpon_oam_rx_no_handler;
 
-	/* Serializes xPON provider registration and netdev lifecycle calls. */
+	/* Serializes xPON registration, netdev notifications and control-plane IO. */
 	struct mutex xpon_lock;
 	const struct airoha_xpon_link_ops *xpon_ops;
 	void *xpon_priv;
 	enum airoha_xpon_mode xpon_mode;
 	bool xpon_started;
+	bool xpon_control_started;
 	/* Protects the xPON state consumed by netdev and ethtool callbacks. */
 	spinlock_t xpon_state_lock;
 	struct airoha_xpon_link_state xpon_link;
@@ -878,6 +882,8 @@ void airoha_eth_unregister_xpon(struct net_device *netdev,
 				void *priv);
 void airoha_eth_xpon_update_link(struct net_device *netdev,
 				 const struct airoha_xpon_link_state *state);
+int airoha_eth_xpon_control_start(struct net_device *netdev);
+void airoha_eth_xpon_control_stop(struct net_device *netdev);
 void airoha_eth_xpon_dump_oam_rx_state(struct net_device *netdev);
 int airoha_eth_register_xpon_oam(struct net_device *netdev,
 				 struct airoha_xpon_oam_handler *handler);
