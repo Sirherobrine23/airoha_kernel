@@ -3758,7 +3758,8 @@ static netdev_tx_t __airoha_dev_xmit(struct sk_buff *skb,
 	}
 
 	fport = airoha_get_fe_port(dev);
-	msg1 = FIELD_PREP(QDMA_ETH_TXMSG_NBOQ_MASK, dev->nbq) |
+	msg1 = FIELD_PREP(QDMA_ETH_TXMSG_NBOQ_MASK,
+			  xpon ? xpon->tcont : dev->nbq) |
 	       FIELD_PREP(QDMA_ETH_TXMSG_FPORT_MASK, fport) |
 	       FIELD_PREP(QDMA_ETH_TXMSG_METER_MASK, 0x7f);
 	if (xpon_oam)
