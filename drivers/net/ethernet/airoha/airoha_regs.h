@@ -920,6 +920,10 @@
 #define REG_PSE_BUF_USAGE_CFG		0x1028
 #define PSE_BUF_ESTIMATE_EN_MASK	BIT(29)
 
+#define REG_PSE_BUF_USAGE_CFG1		0x10d0
+#define PSE_BUF_CHAN_THR_MASK		GENMASK(26, 16)
+#define PSE_BUF_TOTAL_THR_MASK		GENMASK(10, 0)
+
 #define REG_CHAN_QOS_MODE(_n)		(0x1040 + ((_n) << 2))
 #define CHAN_QOS_MODE_MASK(_n)		GENMASK(2 + ((_n) << 2), (_n) << 2)
 
