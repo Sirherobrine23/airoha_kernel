@@ -2873,6 +2873,69 @@ static void airoha_qdma_stop(struct airoha_qdma *qdma)
 	}
 }
 
+int airoha_eth_xpon_control_start(struct net_device *netdev)
+{
+	struct airoha_gdm_dev *dev;
+	struct airoha_qdma *qdma;
+	u32 pse_port = FE_PSE_PORT_PPE1;
+	int ret;
+
+	ret = airoha_eth_validate_xpon_gdm2(netdev, &dev);
+	if (ret)
+		return ret;
+
+	mutex_lock(&dev->xpon_lock);
+	if (dev->xpon_control_started)
+		goto out;
+
+	ret = airoha_set_vip_for_gdm_port(dev, true);
+	if (ret)
+		goto out;
+
+	/* GDM2 is a WAN datapath and does not carry a DSA source tag. */
+	airoha_fe_clear(dev->eth, REG_GDM_INGRESS_CFG(dev->port->id),
+			GDM_STAG_EN_MASK);
+
+	qdma = airoha_qdma_deref(dev);
+	airoha_qdma_start(qdma);
+	if (airoha_ppe_is_enabled(dev->eth, 1))
+		pse_port = FE_PSE_PORT_PPE2;
+	airoha_set_gdm_port_fwd_cfg(dev->eth,
+				    REG_GDM_FWD_CFG(dev->port->id), pse_port);
+	WRITE_ONCE(dev->xpon_control_started, true);
+out:
+	mutex_unlock(&dev->xpon_lock);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(airoha_eth_xpon_control_start);
+
+void airoha_eth_xpon_control_stop(struct net_device *netdev)
+{
+	struct airoha_gdm_dev *dev;
+	struct airoha_qdma *qdma;
+
+	if (airoha_eth_validate_xpon_gdm2(netdev, &dev))
+		return;
+
+	mutex_lock(&dev->xpon_lock);
+	if (!dev->xpon_control_started)
+		goto out;
+
+	WRITE_ONCE(dev->xpon_control_started, false);
+	qdma = airoha_qdma_deref(dev);
+	if (!netif_running(netdev)) {
+		airoha_set_vip_for_gdm_port(dev, false);
+		if (!dev->port->users)
+			airoha_set_gdm_port_fwd_cfg(dev->eth,
+						    REG_GDM_FWD_CFG(dev->port->id),
+						    FE_PSE_PORT_DROP);
+	}
+	airoha_qdma_stop(qdma);
+out:
+	mutex_unlock(&dev->xpon_lock);
+}
+EXPORT_SYMBOL_GPL(airoha_eth_xpon_control_stop);
+
 static void airoha_dev_set_mtu(struct net_device *netdev)
 {
 	struct airoha_gdm_dev *dev = netdev_priv(netdev);
@@ -2985,19 +3048,22 @@ static int airoha_dev_stop(struct net_device *netdev)
 	struct airoha_gdm_dev *dev = netdev_priv(netdev);
 	struct airoha_gdm_port *port = dev->port;
 	struct airoha_qdma *qdma;
+	bool xpon_control;
 	int i;
 
 	airoha_eth_xpon_stop(dev);
 	netif_carrier_off(netdev);
 	netif_tx_disable(netdev);
-	airoha_set_vip_for_gdm_port(dev, false);
+	xpon_control = READ_ONCE(dev->xpon_control_started);
+	if (!xpon_control)
+		airoha_set_vip_for_gdm_port(dev, false);
 	for (i = 0; i < netdev->num_tx_queues; i++)
 		netdev_tx_reset_subqueue(netdev, i);
 
 	qdma = airoha_qdma_deref(dev);
 	if (--port->users)
 		airoha_ppe_set_mtu(dev);
-	else
+	else if (!xpon_control)
 		airoha_set_gdm_port_fwd_cfg(qdma->eth,
 					    REG_GDM_FWD_CFG(port->id),
 					    FE_PSE_PORT_DROP);
