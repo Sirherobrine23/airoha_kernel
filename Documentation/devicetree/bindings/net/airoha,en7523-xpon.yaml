@@ -53,6 +53,16 @@ properties:
       - const: mac
       - const: dying-gasp
 
+  resets:
+    maxItems: 1
+    description:
+      Reset line for the shared xPON MAC register and table state. The driver
+      pulses this reset before every GPON or EPON session start so no T-CONT,
+      GEM, OMCC, encryption or activation state leaks between sessions.
+
+  reset-names:
+    const: mac
+
   ethernet:
     $ref: /schemas/types.yaml#/definitions/phandle
     description:
@@ -130,6 +140,8 @@ allOf:
       required:
         - phys
         - phy-names
+        - resets
+        - reset-names
       properties:
         airoha,pon-mode: true
     else:
@@ -141,6 +153,7 @@ additionalProperties: true
 examples:
   - |
     #include <dt-bindings/interrupt-controller/arm-gic.h>
+    #include <dt-bindings/reset/airoha,en7523-reset.h>
 
     pon0: sfp {
         compatible = "sff,sfp";
@@ -153,6 +166,8 @@ examples:
         reg-names = "mac";
         interrupts = <GIC_SPI 42 IRQ_TYPE_LEVEL_HIGH>;
         interrupt-names = "mac";
+        resets = <&scuclk EN7523_XPON_MAC_RST>;
+        reset-names = "mac";
         airoha,scu = <&scuclk>;
         airoha,pon-mode = "gpon";
         airoha,gpon-serial-number = [49 4e 56 50 71 43 86 02];
