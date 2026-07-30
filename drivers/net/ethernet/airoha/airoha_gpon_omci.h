@@ -25,6 +25,8 @@ int airoha_gpon_omci_register(struct airoha_gpon_omci *omci,
 			      struct net_device *gdm_dev,
 			      void *hw_priv,
 			      const struct omci_identity *identity);
+int airoha_gpon_omci_start(struct airoha_gpon_omci *omci);
+void airoha_gpon_omci_stop(struct airoha_gpon_omci *omci);
 void airoha_gpon_omci_unregister(struct airoha_gpon_omci *omci);
 void airoha_gpon_omci_set_onu_id(struct airoha_gpon_omci *omci, u16 onu_id);
 void airoha_gpon_omci_set_channel(struct airoha_gpon_omci *omci,
@@ -37,6 +39,8 @@ bool airoha_gpon_omci_receive(void *data, struct sk_buff *skb,
 
 int airoha_gpon_omci_hw_get_ani_topology(void *hw_priv,
 					 struct omci_ani_topology *topology);
+int airoha_gpon_omci_hw_start(void *hw_priv);
+void airoha_gpon_omci_hw_stop(void *hw_priv);
 int airoha_gpon_omci_hw_set_tcont(void *hw_priv, u16 entity_id,
 				  u16 alloc_id, bool valid);
 int airoha_gpon_omci_hw_set_gem_port(void *hw_priv, u16 entity_id,
