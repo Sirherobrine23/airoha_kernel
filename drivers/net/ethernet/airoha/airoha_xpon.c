@@ -3901,8 +3901,13 @@ static int airoha_xpon_init_gpon(struct platform_device *pdev,
 		return dev_err_probe(dev, -EINVAL,
 				     "missing GPON register window\n");
 
-	priv->fsm_wq = alloc_ordered_workqueue("%s-gpon-fsm",
-					       WQ_MEM_RECLAIM, dev_name(dev));
+	/* The FSM synchronously drains OMCI work queued on system_wq during
+	 * session teardown. It is not part of the memory-reclaim path, so do
+	 * not mark it WQ_MEM_RECLAIM: a reclaim worker must not flush a
+	 * non-reclaim workqueue.
+	 */
+	priv->fsm_wq = alloc_ordered_workqueue("%s-gpon-fsm", 0,
+					       dev_name(dev));
 	if (!priv->fsm_wq)
 		return -ENOMEM;
 
