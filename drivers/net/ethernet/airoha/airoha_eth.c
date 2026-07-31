@@ -44,6 +44,10 @@ static int airoha_qdma_set_gpon_dba_report(struct net_device *netdev,
 #define EN7523_GPON_DBA_CBS_BYTES		0x8000
 #define EN7523_GPON_DBA_PBS_BYTES		0xffff
 
+#define AIROHA_XPON_TX_OFFLOAD_FEATURES		\
+	(NETIF_F_IP_CSUM | NETIF_F_IPV6_CSUM | \
+	 NETIF_F_SG | NETIF_F_TSO | NETIF_F_TSO6)
+
 u32 airoha_rr(void __iomem *base, u32 offset)
 {
 	return readl(base + offset);
@@ -5258,8 +5262,18 @@ static int airoha_alloc_gdm_device(struct airoha_eth *eth,
 	mutex_init(&dev->xpon_lock);
 	spin_lock_init(&dev->xpon_state_lock);
 	spin_lock_init(&dev->xpon_service_lock);
-	if (of_property_read_bool(np, "airoha,xpon-managed"))
+	if (of_property_read_bool(np, "airoha,xpon-managed")) {
 		dev->flags |= AIROHA_PRIV_F_XPON_MANAGED;
+
+		/* EN7523 GPON does not implement the generic GDM TX offload
+		 * descriptor contract.  Keep checksumming, segmentation and
+		 * fragment linearisation in the network stack until each mode
+		 * is independently supported by the xPON datapath.
+		 */
+		netdev->hw_features &= ~AIROHA_XPON_TX_OFFLOAD_FEATURES;
+		netdev->features &= ~AIROHA_XPON_TX_OFFLOAD_FEATURES;
+		netdev->vlan_features &= ~AIROHA_XPON_TX_OFFLOAD_FEATURES;
+	}
 	port->devs[index] = dev;
 
 	return airoha_setup_phylink(netdev);
