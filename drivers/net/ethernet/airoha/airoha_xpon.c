@@ -1409,10 +1409,11 @@ static void gpon_hw_send_ploam(struct xpon_priv *priv,
 		}
 	}
 
-	dev_info(priv->dev,
-			    "PLOAM TX: onu=%u type=%#04x copies=%d words=%08x/%08x/%08x\n",
-		 onu_id, type, times, msg->value[0], msg->value[1],
-		 msg->value[2]);
+	if (type != PLOAM_UP_REI)
+		dev_info(priv->dev,
+			 "PLOAM TX: onu=%u type=%#04x copies=%d words=%08x/%08x/%08x\n",
+			 onu_id, type, times, msg->value[0], msg->value[1], msg->value[2]);
+
 	for (t = 0; t < times; t++) {
 		u32 avail;
 		int ret;
