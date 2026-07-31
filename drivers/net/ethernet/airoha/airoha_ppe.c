@@ -2261,6 +2261,7 @@ struct airoha_ppe_dev *airoha_ppe_get_dev(struct device *dev)
 	struct platform_device *pdev;
 	struct device_node *np;
 	struct airoha_eth *eth;
+	int err = -ENODEV;
 
 	np = of_parse_phandle(dev->of_node, "airoha,eth", 0);
 	if (!np)
@@ -2282,6 +2283,7 @@ struct airoha_ppe_dev *airoha_ppe_get_dev(struct device *dev)
 	eth = platform_get_drvdata(pdev);
 	if (!eth) {
 		dev_err(dev, "failed to get platform drvdata for airoha_eth\n");
+		err = -EPROBE_DEFER;
 		goto error_module_put;
 	}
 
@@ -2300,7 +2302,7 @@ error_module_put:
 error_pdev_put:
 	platform_device_put(pdev);
 
-	return ERR_PTR(-ENODEV);
+	return ERR_PTR(err);
 }
 EXPORT_SYMBOL_GPL(airoha_ppe_get_dev);
 
