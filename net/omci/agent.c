@@ -3533,7 +3533,7 @@ static void omci_agent_log_wire(struct omci_device *odev,
 	u8 action;
 
 	if (omci_wire_decode(data, len, &request)) {
-		dev_info(odev->parent, "OMCI %s invalid PDU: %*phN\n",
+		dev_warn(odev->parent, "OMCI %s invalid PDU: %*phN\n",
 			 direction, (int)len, data);
 		return;
 	}
@@ -3542,21 +3542,21 @@ static void omci_agent_log_wire(struct omci_device *odev,
 	response = request.message_type & 0x20;
 	if (action == OMCI_MSG_TYPE_MIB_UPLOAD && response &&
 	    request.payload_len >= 2) {
-		dev_info(odev->parent,
-			 "OMCI %s: tci=%#06x type=%#04x action=%u device=%#04x class=%u entity=%#06x payload=%u command-count=%u\n",
-			 direction, request.transaction_id, request.message_type,
-			 action, request.device_id, request.class_id,
-			 request.entity_id, request.payload_len,
-			 get_unaligned_be16(request.payload));
+		dev_dbg(odev->parent,
+			"OMCI %s: tci=%#06x type=%#04x action=%u device=%#04x class=%u entity=%#06x payload=%u command-count=%u\n",
+			direction, request.transaction_id, request.message_type,
+			action, request.device_id, request.class_id,
+			request.entity_id, request.payload_len,
+			get_unaligned_be16(request.payload));
 	} else if (action == OMCI_MSG_TYPE_MIB_UPLOAD_NEXT &&
 		   request.payload_len >= 2) {
-		dev_info(odev->parent,
-			 "OMCI %s: tci=%#06x type=%#04x action=%u device=%#04x class=%u entity=%#06x payload=%u %s=%u\n",
-			 direction, request.transaction_id, request.message_type,
-			 action, request.device_id, request.class_id,
-			 request.entity_id, request.payload_len,
-			 response ? "returned-class" : "sequence",
-			 get_unaligned_be16(request.payload));
+		dev_dbg(odev->parent,
+			"OMCI %s: tci=%#06x type=%#04x action=%u device=%#04x class=%u entity=%#06x payload=%u %s=%u\n",
+			direction, request.transaction_id, request.message_type,
+			action, request.device_id, request.class_id,
+			request.entity_id, request.payload_len,
+			response ? "returned-class" : "sequence",
+			get_unaligned_be16(request.payload));
 	} else if (action == OMCI_MSG_TYPE_GET_NEXT &&
 		   request.payload_len >= (response ? 3 : 4)) {
 		u16 mask = response ? get_unaligned_be16(request.payload + 1) :
@@ -3564,23 +3564,23 @@ static void omci_agent_log_wire(struct omci_device *odev,
 		u16 sequence = response ? 0 :
 				  get_unaligned_be16(request.payload + 2);
 
-		dev_info(odev->parent,
-			 "OMCI %s: tci=%#06x type=%#04x action=%u device=%#04x class=%u entity=%#06x payload=%u result=%u mask=%#06x sequence=%u\n",
-			 direction, request.transaction_id, request.message_type,
-			 action, request.device_id, request.class_id,
-			 request.entity_id, request.payload_len,
-			 response ? request.payload[0] : 0, mask, sequence);
+		dev_dbg(odev->parent,
+			"OMCI %s: tci=%#06x type=%#04x action=%u device=%#04x class=%u entity=%#06x payload=%u result=%u mask=%#06x sequence=%u\n",
+			direction, request.transaction_id, request.message_type,
+			action, request.device_id, request.class_id,
+			request.entity_id, request.payload_len,
+			response ? request.payload[0] : 0, mask, sequence);
 	} else {
 		u8 result = request.payload_len ? request.payload[0] : 0;
 
-		dev_info(odev->parent,
-			 "OMCI %s: tci=%#06x type=%#04x action=%u device=%#04x class=%u entity=%#06x payload=%u result=%u\n",
-			 direction, request.transaction_id, request.message_type,
-			 action, request.device_id, request.class_id,
-			 request.entity_id, request.payload_len, result);
+		dev_dbg(odev->parent,
+			"OMCI %s: tci=%#06x type=%#04x action=%u device=%#04x class=%u entity=%#06x payload=%u result=%u\n",
+			direction, request.transaction_id, request.message_type,
+			action, request.device_id, request.class_id,
+			request.entity_id, request.payload_len, result);
 	}
-	dev_info(odev->parent, "OMCI %s PDU: %*phN\n",
-		 direction, (int)len, data);
+	dev_dbg(odev->parent, "OMCI %s PDU: %*phN\n",
+		direction, (int)len, data);
 }
 
 static int
