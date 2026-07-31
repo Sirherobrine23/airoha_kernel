@@ -3516,14 +3516,74 @@ static int airoha_dev_set_features(struct net_device *netdev,
 }
 
 static int
+airoha_eth_xpon_lookup_service(struct airoha_gdm_dev *dev,
+			       bool vlan_valid, u16 vlan_id,
+			       bool pcp_valid, u8 pcp,
+			       struct airoha_xpon_tx_info *info)
+{
+	const struct airoha_xpon_service_cfg *fallback = NULL;
+	int i;
+
+	spin_lock_bh(&dev->xpon_service_lock);
+	for (i = 0; i < AIROHA_XPON_MAX_SERVICES; i++) {
+		const struct airoha_xpon_service_cfg *service;
+
+		service = &dev->xpon_services[i];
+		if (!service->valid)
+			continue;
+		if (service->default_service)
+			fallback = service;
+		if (!service->vlan_valid && !service->pcp_valid)
+			continue;
+		if (service->vlan_valid &&
+		    (!vlan_valid || service->vlan_id != vlan_id))
+			continue;
+		if (service->pcp_valid &&
+		    (!pcp_valid || service->pcp != pcp))
+			continue;
+		fallback = service;
+		break;
+	}
+
+	if (fallback) {
+		info->gem_port_id = fallback->gem_port_id;
+		info->tcont = fallback->tcont;
+		info->queue = fallback->queue;
+		info->oam = false;
+	}
+	spin_unlock_bh(&dev->xpon_service_lock);
+
+	return fallback ? 0 : -ENOENT;
+}
+
+int airoha_eth_xpon_get_tx_info(struct net_device *netdev, bool vlan_valid,
+				u16 vlan_id, bool pcp_valid, u8 pcp,
+				struct airoha_xpon_tx_info *info)
+{
+	struct airoha_gdm_dev *dev;
+	int ret;
+
+	if (!info)
+		return -EINVAL;
+
+	ret = airoha_eth_validate_xpon_gdm2(netdev, &dev);
+	if (ret)
+		return ret;
+	if (!(dev->flags & AIROHA_PRIV_F_XPON_MANAGED) ||
+	    dev->xpon_mode != AIROHA_XPON_MODE_GPON)
+		return -EOPNOTSUPP;
+
+	return airoha_eth_xpon_lookup_service(dev, vlan_valid, vlan_id,
+					     pcp_valid, pcp, info);
+}
+
+static int
 airoha_eth_xpon_classify(struct airoha_gdm_dev *dev, struct sk_buff *skb,
 			 struct airoha_xpon_tx_info *info)
 {
-	const struct airoha_xpon_service_cfg *fallback = NULL;
 	u16 vlan_id = 0;
 	u8 pcp = 0;
 	bool vlan_valid;
-	int i;
 
 	vlan_valid = skb_vlan_tag_present(skb);
 	if (vlan_valid) {
@@ -3551,36 +3611,8 @@ airoha_eth_xpon_classify(struct airoha_gdm_dev *dev, struct sk_buff *skb,
 		}
 	}
 
-	spin_lock_bh(&dev->xpon_service_lock);
-	for (i = 0; i < AIROHA_XPON_MAX_SERVICES; i++) {
-		const struct airoha_xpon_service_cfg *service;
-
-		service = &dev->xpon_services[i];
-		if (!service->valid)
-			continue;
-		if (service->default_service)
-			fallback = service;
-		if (!service->vlan_valid && !service->pcp_valid)
-			continue;
-		if (service->vlan_valid &&
-		    (!vlan_valid || service->vlan_id != vlan_id))
-			continue;
-		if (service->pcp_valid &&
-		    (!vlan_valid || service->pcp != pcp))
-			continue;
-		fallback = service;
-		break;
-	}
-
-	if (fallback) {
-		info->gem_port_id = fallback->gem_port_id;
-		info->tcont = fallback->tcont;
-		info->queue = fallback->queue;
-		info->oam = false;
-	}
-	spin_unlock_bh(&dev->xpon_service_lock);
-
-	return fallback ? 0 : -ENOENT;
+	return airoha_eth_xpon_lookup_service(dev, vlan_valid, vlan_id,
+					     vlan_valid, pcp, info);
 }
 
 int airoha_eth_xpon_add_service(struct net_device *netdev,
