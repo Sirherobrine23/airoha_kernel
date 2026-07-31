@@ -1893,6 +1893,18 @@ void airoha_gpon_omci_hw_set_operational(void *hw_priv, bool operational)
 	gpon_refresh_netdev_link(priv, false);
 }
 
+static bool airoha_gpon_config_requires_restart(u16 key)
+{
+	switch (key) {
+	case OMCI_CONFIG_SERIAL_NUMBER:
+	case OMCI_CONFIG_VENDOR_ID:
+	case OMCI_CONFIG_PASSWORD:
+		return true;
+	default:
+		return false;
+	}
+}
+
 void airoha_gpon_omci_hw_config_changed(void *hw_priv, u16 key,
 					const struct omci_identity *identity)
 {
@@ -1902,11 +1914,18 @@ void airoha_gpon_omci_hw_config_changed(void *hw_priv, u16 key,
 		return;
 
 	/*
-	 * This callback is issued for runtime net/omci configuration changes,
-	 * not for OLT managed-entity transactions. Restart the optical session
-	 * for every accepted update so the MAC reset discards all state derived
-	 * from the previous configuration before the new OMCI view is exposed.
+	 * Only the serial number, vendor ID and password participate in GPON
+	 * activation. Agent policy, profile and managed-entity identity updates
+	 * are consumed by net/omci and must not tear down an operational optical
+	 * session or discard the provisioned T-CONT/GEM datapath.
 	 */
+	if (!airoha_gpon_config_requires_restart(key)) {
+		dev_dbg(priv->dev,
+			"OMCI configuration changed (key %u), GPON restart not required\n",
+			key);
+		return;
+	}
+
 	mutex_lock(&priv->omci_config_lock);
 	priv->pending_identity = *identity;
 	priv->config_restart_key = key;
@@ -1914,7 +1933,7 @@ void airoha_gpon_omci_hw_config_changed(void *hw_priv, u16 key,
 	mutex_unlock(&priv->omci_config_lock);
 
 	dev_info(priv->dev,
-		 "OMCI configuration changed (key %u), scheduling GPON MAC reset\n",
+		 "GPON activation identity changed (OMCI key %u), scheduling MAC reset\n",
 		 key);
 	mod_delayed_work(priv->fsm_wq, &priv->restart_work, 0);
 }
