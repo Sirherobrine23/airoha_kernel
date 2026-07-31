@@ -503,6 +503,7 @@ struct airoha_flow_data {
 		struct {
 			u16 id;
 			__be16 proto;
+			u8 prio;
 		} hdr[2];
 		u8 num;
 	} vlan;
@@ -893,6 +894,9 @@ int airoha_eth_xmit_xpon_oam(struct net_device *netdev, struct sk_buff *skb,
 			     u16 gem_port_id);
 int airoha_eth_xpon_add_service(struct net_device *netdev,
 				const struct airoha_xpon_service_cfg *cfg);
+int airoha_eth_xpon_get_tx_info(struct net_device *netdev, bool vlan_valid,
+				u16 vlan_id, bool pcp_valid, u8 pcp,
+				struct airoha_xpon_tx_info *info);
 bool airoha_eth_xpon_del_service(struct net_device *netdev, u32 cookie,
 				  u16 *gem_port_id);
 bool airoha_eth_xpon_has_gem_service(struct net_device *netdev,

@@ -538,15 +538,35 @@ static void airoha_ppe_foe_set_bridge_addrs(struct airoha_foe_bridge *br,
 	br->src_mac_lo = get_unaligned_be32(eh->h_source + 2);
 }
 
+static int
+airoha_ppe_xpon_get_tx_info(struct net_device *netdev,
+			    const struct airoha_flow_data *data,
+			    struct airoha_xpon_tx_info *info)
+{
+	int i;
+
+	for (i = data->vlan.num - 1; i >= 0; i--) {
+		const typeof(data->vlan.hdr[0]) *vlan = &data->vlan.hdr[i];
+
+		if (!airoha_eth_xpon_get_tx_info(netdev, true, vlan->id, true,
+						 vlan->prio, info))
+			return 0;
+	}
+
+	return airoha_eth_xpon_get_tx_info(netdev, false, 0, false, 0, info);
+}
+
 static int airoha_ppe_foe_entry_prepare(struct airoha_eth *eth,
 					struct airoha_foe_entry *hwe,
 					struct net_device *netdev, int type,
 					struct airoha_flow_data *data,
 					int l4proto, u8 dsfield)
 {
+	struct airoha_xpon_tx_info xpon = {};
 	u32 qdata = FIELD_PREP(AIROHA_FOE_SHAPER_ID, 0x7f), ports_pad, val;
 	int wlan_etype = -EINVAL, dsa_port = airoha_get_dsa_port(&netdev);
 	struct airoha_foe_mac_info_common *l2;
+	bool xpon_flow = false;
 	u8 smac_id = 0xf;
 
 	memset(hwe, 0, sizeof(*hwe));
@@ -596,6 +616,18 @@ static int airoha_ppe_foe_entry_prepare(struct airoha_eth *eth,
 				return -EINVAL;
 			}
 
+			if (airoha_is(eth, en7523) &&
+			    (dev->flags & AIROHA_PRIV_F_XPON_MANAGED) &&
+			    dev->xpon_mode == AIROHA_XPON_MODE_GPON) {
+				int ret;
+
+				ret = airoha_ppe_xpon_get_tx_info(netdev, data,
+								  &xpon);
+				if (ret)
+					return ret;
+				xpon_flow = true;
+			}
+
 			if (dsa_port >= 0 || airoha_is_lan_gdm_dev(dev))
 				pse_port = port->id == 4 ? FE_PSE_PORT_GDM4
 							 : port->id;
@@ -604,14 +636,18 @@ static int airoha_ppe_foe_entry_prepare(struct airoha_eth *eth,
 					       * loopback
 					       */
 
-			/* For traffic forwarded to DSA devices select QoS
-			 * channel according to the DSA user port index, rely
-			 * on port id otherwise.
+			/* GPON hardware forwarding must carry the same T-CONT,
+			 * queue and NBOQ metadata as CPU-originated descriptors.
 			 */
-			channel = dsa_port >= 0 ? dsa_port : port->id;
-			channel = channel % AIROHA_NUM_QOS_CHANNELS;
-			priority = rt_tos2priority(dsfield);
-			priority = priority % AIROHA_NUM_QOS_QUEUES;
+			if (xpon_flow) {
+				channel = xpon.tcont;
+				priority = xpon.queue;
+			} else {
+				channel = dsa_port >= 0 ? dsa_port : port->id;
+				channel %= AIROHA_NUM_QOS_CHANNELS;
+				priority = rt_tos2priority(dsfield);
+				priority %= AIROHA_NUM_QOS_QUEUES;
+			}
 			qdata |= FIELD_PREP(AIROHA_FOE_CHANNEL, channel) |
 				 FIELD_PREP(AIROHA_FOE_QID, priority);
 
@@ -624,7 +660,9 @@ static int airoha_ppe_foe_entry_prepare(struct airoha_eth *eth,
 			if (!airoha_is(eth, en7523) &&
 			    airoha_is_lan_gdm_dev(dev))
 				val |= AIROHA_FOE_IB2_FAST_PATH;
-			if (dsa_port >= 0)
+			if (xpon_flow)
+				val |= FIELD_PREP(AIROHA_FOE_IB2_NBQ, xpon.tcont);
+			else if (dsa_port >= 0)
 				val |= FIELD_PREP(AIROHA_FOE_IB2_NBQ,
 						  dsa_port);
 			else if (airoha_is(eth, en7523) &&
@@ -632,10 +670,12 @@ static int airoha_ppe_foe_entry_prepare(struct airoha_eth *eth,
 				 dev->nbq != 0)
 				val |= FIELD_PREP(AIROHA_FOE_IB2_NBQ, dev->nbq);
 
-			smac_id = port->id;			
+			smac_id = port->id;
 			dev_dbg(eth->dev,
-				 "foe_prepare: port_id=%d dev_nbq=%d dsa_port=%d ib2=%08x nbq=%lu\n",
-				 port->id, dev->nbq, dsa_port, val, FIELD_GET(AIROHA_FOE_IB2_NBQ, val));
+				 "foe_prepare: port_id=%d dev_nbq=%d dsa_port=%d ib2=%08x nbq=%lu xpon=%u gem=%u channel=%u queue=%u\n",
+				 port->id, dev->nbq, dsa_port, val,
+				 FIELD_GET(AIROHA_FOE_IB2_NBQ, val), xpon_flow,
+				 xpon.gem_port_id, channel, priority);
 		}
 	}
 
@@ -693,6 +733,9 @@ static int airoha_ppe_foe_entry_prepare(struct airoha_eth *eth,
 	} else if (dsa_port >= 0) {
 		l2->etype = BIT(dsa_port);
 		l2->etype |= !data->vlan.num ? BIT(15) : 0;
+	} else if (xpon_flow) {
+		/* EN7523 reuses the FOE EtherType field as the GPON GEM tag. */
+		l2->etype = xpon.gem_port_id;
 	} else if (data->pppoe.num) {
 		l2->etype = ETH_P_PPP_SES;
 	}
@@ -1828,6 +1871,7 @@ static int airoha_ppe_flow_offload_replace(struct airoha_eth *eth,
 
 			data.vlan.hdr[data.vlan.num].id = act->vlan.vid;
 			data.vlan.hdr[data.vlan.num].proto = act->vlan.proto;
+			data.vlan.hdr[data.vlan.num].prio = act->vlan.prio;
 			data.vlan.num++;
 			break;
 		case FLOW_ACTION_VLAN_POP:
