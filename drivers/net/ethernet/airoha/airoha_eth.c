@@ -1967,44 +1967,60 @@ static int airoha_qdma_tx_napi_poll(struct napi_struct *napi, int budget)
 	irq_queued = FIELD_GET(IRQ_ENTRY_LEN_MASK, status);
 
 	while (irq_queued > 0 && done < budget) {
-		u32 qid, val = irq_q->q[head];
 		struct airoha_qdma_desc *desc;
 		struct airoha_queue_entry *e;
 		struct airoha_queue *q;
-		u32 index, desc_ctrl;
+		u32 qid, val, index, desc_ctrl;
 		struct sk_buff *skb;
+		int retry;
 
-		if (val == 0xff)
+		/*
+		 * The IRQ status can become visible before the corresponding
+		 * completion entry reaches coherent memory.  The vendor driver
+		 * retries this read for the same reason.
+		 */
+		for (retry = 0; retry < 16; retry++) {
+			val = READ_ONCE(irq_q->q[head]);
+			if (val != U32_MAX)
+				break;
+
+			dma_rmb();
+			cpu_relax();
+		}
+		if (val == U32_MAX)
 			break;
 
-		irq_q->q[head] = 0xff; /* mark as done */
-		head = (head + 1) % irq_q->size;
-		irq_queued--;
-		done++;
+		/*
+		 * The completion entry is published after the descriptor writeback.
+		 * Order the descriptor read after the queue entry read.
+		 */
+		dma_rmb();
 
 		qid = FIELD_GET(IRQ_RING_IDX_MASK, val);
 		if (qid >= eth->soc->tx_ring)
-			continue;
+			goto consume;
 
 		q = &qdma->q_tx[qid];
 		if (!q->ndesc)
-			continue;
+			goto consume;
 
 		index = FIELD_GET(IRQ_DESC_IDX_MASK, val);
 		if (index >= q->ndesc)
-			continue;
+			goto consume;
 
 		spin_lock_bh(&q->lock);
 
 		if (!q->queued)
-			goto unlock;
+			goto unlock_consume;
 
 		desc = &q->desc[index];
-		desc_ctrl = le32_to_cpu(desc->ctrl);
+		desc_ctrl = le32_to_cpu(READ_ONCE(desc->ctrl));
 
 		if (!(desc_ctrl & QDMA_DESC_DONE_MASK) &&
-		    !(desc_ctrl & QDMA_DESC_DROP_MASK))
-			goto unlock;
+		    !(desc_ctrl & QDMA_DESC_DROP_MASK)) {
+			spin_unlock_bh(&q->lock);
+			break;
+		}
 
 		e = &q->entry[index];
 		skb = e->skb;
@@ -2038,12 +2054,20 @@ static int airoha_qdma_tx_napi_poll(struct napi_struct *napi, int budget)
 			airoha_qdma_wake_netdev_txqs(q);
 		}
 
-unlock:
+unlock_consume:
 		spin_unlock_bh(&q->lock);
+consume:
+		WRITE_ONCE(irq_q->q[head], U32_MAX);
+		head = (head + 1) % irq_q->size;
+		irq_queued--;
+		done++;
 	}
 
 	if (done) {
 		int i, len = done >> 7;
+
+		/* Publish empty markers before returning entries to hardware. */
+		dma_wmb();
 
 		for (i = 0; i < len; i++)
 			airoha_qdma_rmw(qdma, REG_IRQ_CLEAR_LEN(id),
