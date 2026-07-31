@@ -1604,8 +1604,8 @@ static int airoha_qdma_rx_process(struct airoha_queue *q, int budget)
 			msg1 = le32_to_cpu(READ_ONCE(desc->msg1));
 			channel = FIELD_GET(EN7523_QDMA_ETH_RXMSG_CHAN_MASK, msg0);
 			gem_port_id = FIELD_GET(EN7523_QDMA_ETH_RXMSG_GEM_MASK, msg0);
-			dev_info_ratelimited(eth->dev,
-					     "QDMA RX15 descriptor: len=%d ctrl=%#010x msg=%#010x/%#010x/%#010x/%#010x oam=%u channel=%u gem=%u no-mic=%u\n",
+			dev_dbg_ratelimited(eth->dev,
+					    "QDMA RX15 descriptor: len=%d ctrl=%#010x msg=%#010x/%#010x/%#010x/%#010x oam=%u channel=%u gem=%u no-mic=%u\n",
 					     len, desc_ctrl, msg0, msg1, msg2, msg3,
 					     !!(msg0 & EN7523_QDMA_ETH_RXMSG_OAM_MASK),
 					     channel, gem_port_id,
@@ -1695,8 +1695,8 @@ static int airoha_qdma_rx_process(struct airoha_queue *q, int budget)
 					dev_kfree_skb_any(q->skb);
 				}
 
-				dev_info_ratelimited(&netdev->dev,
-						     "xPON OAM RX: ring=%td len=%u msg=%#010x/%#010x/%#010x/%#010x sport=%u channel=%u gem=%u no-mic=%u crc=%u runt=%u long=%u consumed=%u totals=%lld/%lld/%lld\n",
+				dev_dbg_ratelimited(&netdev->dev,
+						    "xPON OAM RX: ring=%td len=%u msg=%#010x/%#010x/%#010x/%#010x sport=%u channel=%u gem=%u no-mic=%u crc=%u runt=%u long=%u consumed=%u totals=%lld/%lld/%lld\n",
 					q - &q->qdma->q_rx[0], skb_len,
 					msg0, msg1, msg2, msg3, sport, channel,
 					gem_port_id,
