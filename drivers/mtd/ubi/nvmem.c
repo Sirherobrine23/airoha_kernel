@@ -85,7 +85,9 @@ static int ubi_nvmem_add(struct ubi_volume_info *vi)
 	config.owner = THIS_MODULE;
 	config.priv = unv;
 	config.reg_read = ubi_nvmem_reg_read;
-	config.size = vi->usable_leb_size * vi->size;
+	config.size = vi->vol_type == UBI_STATIC_VOLUME ?
+		vi->used_bytes :
+		vi->usable_leb_size * vi->size;
 	config.word_size = 1;
 	config.stride = 1;
 	config.read_only = true;
