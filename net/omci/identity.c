@@ -98,9 +98,15 @@ static int omci_normalize_serial(const u8 *data, size_t len, u8 serial[8])
 	u8 suffix[4];
 	int ret;
 
-	if (len == 8) {
+
+	switch (len) {
+	case 8:
 		memcpy(serial, data, 8);
 		return 0;
+	case 16:
+		if (omci_all_hex(trimmed, 16))
+			return omci_hex_compact(trimmed, 16, serial, 8);
+		break;
 	}
 	len = omci_trim_input(&trimmed, len);
 	if (len == 12 && omci_all_hex(trimmed + 4, 8)) {
