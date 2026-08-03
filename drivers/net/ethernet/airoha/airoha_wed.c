@@ -39,6 +39,7 @@
 #define MTK_WED_BUF_PER_PAGE		(PAGE_SIZE / MTK_WED_BUF_SIZE)
 #define MTK_WED_TX_RING_SIZE		2048
 #define MTK_WED_WDMA_RING_SIZE		1024
+#define MTK_WED_WDMA_DUMMY_RING_SIZE	8
 #define MTK_WED_DLY_INT_CFG		0x210
 #define MTK_WED_DLY_INT_VALUE		0xc014c014
 #define MTK_WED_MT7915_RX_DONE_BAND0	BIT(16)
@@ -906,7 +907,7 @@ mtk_wed_wdma_rx_ring_setup(struct mtk_wed_device *dev, int idx, int size,
 			       idx, size, reset);
 
 	wdma = &dev->rx_wdma[idx];
-	if (!reset && mtk_wed_ring_alloc(dev, wdma, MTK_WED_WDMA_RING_SIZE,
+	if (!reset && mtk_wed_ring_alloc(dev, wdma, size,
 					 dev->hw->soc->wdma_desc_size, true))
 		return -ENOMEM;
 
@@ -1040,7 +1041,9 @@ mtk_wed_start(struct mtk_wed_device *dev, u32 irq_mask)
 	for (i = 0; i < ARRAY_SIZE(dev->rx_wdma); i++)
 		if (!dev->rx_wdma[i].desc)
 			mtk_wed_wdma_rx_ring_setup(dev, i,
-						   MTK_WED_WDMA_RING_SIZE, false);
+						   i ? MTK_WED_WDMA_DUMMY_RING_SIZE :
+						       MTK_WED_WDMA_RING_SIZE,
+						   false);
 
 	pcie_int_mask = readl(dev->hw->pcie + AIROHA_PCIE_INT_MASK);
 	pcie_int_mask |= AIROHA_PCIE_MSI_MASK;
@@ -1143,54 +1146,23 @@ unlock:
 	return ret;
 }
 
-static int
-mtk_wed_en7523_tx_ring1_setup(struct mtk_wed_device *dev, bool reset)
+static void
+mtk_wed_en7523_clear_tx_ring1(struct mtk_wed_device *dev)
 {
-	struct mtk_wed_ring *ring = &dev->tx_ring[1];
-	phys_addr_t wpdma_phys;
-	void __iomem *wpdma;
+	u32 wpdma_phys, offset;
 
-	if (!dev->wlan.base || dev->wlan.wpdma_tx < dev->wlan.phy_base)
-		return -ENODEV;
-
-	if (!reset && !ring->desc &&
-	    mtk_wed_ring_alloc(dev, ring, MTK_WED_TX_RING_SIZE,
-			       sizeof(*ring->desc), true))
-		return -ENOMEM;
-
-	if (!ring->desc)
-		return 0;
-
-	if (reset)
-		mtk_wed_ring_reset(ring, MTK_WED_TX_RING_SIZE, true);
+	if (dev->tx_ring[1].desc || !dev->wlan.base ||
+	    dev->wlan.wpdma_tx < dev->wlan.phy_base)
+		return;
 
 	wpdma_phys = dev->wlan.wpdma_tx +
 		     MTK_WED_RING_TX(1) - MTK_WED_RING_TX(0);
-	wpdma = dev->wlan.base + wpdma_phys - dev->wlan.phy_base;
 
-	ring->reg_base = MTK_WED_RING_TX(1);
-	ring->wpdma = wpdma;
-
-	wed_w32(dev, MTK_WED_RING_TX(1) + MTK_WED_RING_OFS_BASE,
-		ring->desc_phys);
-	wed_w32(dev, MTK_WED_RING_TX(1) + MTK_WED_RING_OFS_COUNT,
-		MTK_WED_TX_RING_SIZE);
-	wed_w32(dev, MTK_WED_RING_TX(1) + MTK_WED_RING_OFS_CPU_IDX, 0);
-	wed_w32(dev, MTK_WED_RING_TX(1) + MTK_WED_RING_OFS_DMA_IDX, 0);
-
-	wpdma_tx_w32(dev, 1, MTK_WED_RING_OFS_BASE, ring->desc_phys);
-	wpdma_tx_w32(dev, 1, MTK_WED_RING_OFS_COUNT, MTK_WED_TX_RING_SIZE);
-	wpdma_tx_w32(dev, 1, MTK_WED_RING_OFS_CPU_IDX, 0);
-	wpdma_tx_w32(dev, 1, MTK_WED_RING_OFS_DMA_IDX, 0);
-
-	wed_w32(dev, MTK_WED_WPDMA_RING_TX(1) + MTK_WED_RING_OFS_BASE,
-		ring->desc_phys);
-	wed_w32(dev, MTK_WED_WPDMA_RING_TX(1) + MTK_WED_RING_OFS_COUNT,
-		MTK_WED_TX_RING_SIZE);
-	wed_w32(dev, MTK_WED_WPDMA_RING_TX(1) + MTK_WED_RING_OFS_CPU_IDX, 0);
-	wed_w32(dev, MTK_WED_WPDMA_RING_TX(1) + MTK_WED_RING_OFS_DMA_IDX, 0);
-
-	return 0;
+	for (offset = 0; offset <= MTK_WED_RING_OFS_DMA_IDX; offset += 4) {
+		wed_w32(dev, MTK_WED_RING_TX(1) + offset, 0);
+		wlan_w32(dev, wpdma_phys + offset, 0);
+		wed_w32(dev, MTK_WED_WPDMA_RING_TX(1) + offset, 0);
+	}
 }
 
 static int
@@ -1198,7 +1170,6 @@ mtk_wed_tx_ring_setup(struct mtk_wed_device *dev, int idx,
 		      void __iomem *regs, bool reset)
 {
 	struct mtk_wed_ring *ring;
-	int ret;
 
 	if (WARN_ON(idx < 0 || idx >= ARRAY_SIZE(dev->tx_ring)))
 		return -EINVAL;
@@ -1238,11 +1209,8 @@ mtk_wed_tx_ring_setup(struct mtk_wed_device *dev, int idx,
 	wed_w32(dev, MTK_WED_WPDMA_RING_TX(idx) + MTK_WED_RING_OFS_CPU_IDX, 0);
 	wed_w32(dev, MTK_WED_WPDMA_RING_TX(idx) + MTK_WED_RING_OFS_DMA_IDX, 0);
 
-	if (!idx) {
-		ret = mtk_wed_en7523_tx_ring1_setup(dev, reset);
-		if (ret)
-			return ret;
-	}
+	if (!idx)
+		mtk_wed_en7523_clear_tx_ring1(dev);
 
 	airoha_wed_info(dev, "tx_ring_setup: idx=%d desc=%pad wpdma_base=%08x wed_base=%08x count=%u\n",
 			       idx, &ring->desc_phys,
