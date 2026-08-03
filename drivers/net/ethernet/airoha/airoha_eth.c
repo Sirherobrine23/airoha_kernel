@@ -5519,9 +5519,8 @@ static int airoha_probe(struct platform_device *pdev)
 	 * the NPU faulting and rebooting its cores indefinitely.
 	 */
 	err = airoha_npu_start(eth->dev);
-	if (err == -EPROBE_DEFER)
-		goto error_napi_stop;
-	if (err && err != -ENODEV && err != -EOPNOTSUPP)
+	if (err && err != -ENODEV && err != -EPROBE_DEFER &&
+	    err != -EOPNOTSUPP)
 		dev_warn(eth->dev, "failed to start NPU: %d\n", err);
 
 	return 0;
