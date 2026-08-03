@@ -2308,8 +2308,46 @@ static void omci_agent_reset_olt_objects_locked(struct omci_agent *agent)
 		xa_erase(&agent->mib, index);
 		kfree(object);
 	}
+}
+
+static int omci_agent_mib_reset_locked(struct omci_device *odev, bool all,
+				       bool *profile_changed)
+{
+	struct omci_agent *agent = &odev->agent;
+	struct omci_mib_object *object;
+	unsigned long index;
+	int reset_ret;
+	int ret;
+
+	omci_agent_reset_table_snapshot_locked(agent);
+	reset_ret = omci_agent_clear_services_locked(odev);
+
+	if (all) {
+		xa_for_each(&agent->mib, index, object) {
+			xa_erase(&agent->mib, index);
+			kfree(object);
+		}
+	} else {
+		omci_agent_reset_olt_objects_locked(agent);
+	}
+
+	/*
+	 * A MIB reset restores ONU-created MEs to their initial values. Rebuild
+	 * them as well as the selected profile's vendor MEs so repeated resets
+	 * expose the same MIB and capability table as a fresh agent.
+	 */
+	ret = omci_agent_populate_defaults(odev);
+	if (!ret)
+		ret = omci_agent_seed_profile_locked(odev,
+						     agent->profile_effective);
+	if (!ret)
+		ret = omci_agent_profile_refresh_locked(odev, NULL, profile_changed);
+
 	omci_agent_set_mib_sync_locked(agent, 0);
 	agent->upload_index = 0;
+	omci_agent_reset_duplicate_locked(agent);
+
+	return ret ?: reset_ret;
 }
 
 static int omci_agent_hw_update(struct omci_device *odev,
@@ -3034,7 +3072,9 @@ static u8 omci_agent_set_locked(struct omci_device *odev, u16 class_id,
 	if (ret)
 		goto rollback_parameter;
 
-	object->origin = OMCI_MIB_ORIGIN_OLT;
+	/* Keep ONU-created instances across a subsequent MIB reset. */
+	if (!existed)
+		object->origin = OMCI_MIB_ORIGIN_OLT;
 	if (class_id == OMCI_CLASS_OLT_G) {
 		ret = omci_agent_profile_refresh_locked(odev, &object->olt_g,
 							profile_changed);
@@ -3788,10 +3828,7 @@ omci_agent_build_response_locked(struct omci_device *odev,
 		*content_len = 32;
 		break;
 	case OMCI_MSG_TYPE_MIB_RESET:
-		omci_agent_reset_table_snapshot_locked(agent);
-		omci_agent_reset_olt_objects_locked(agent);
-		if (omci_agent_profile_refresh_locked(odev, NULL,
-						      profile_changed))
+		if (omci_agent_mib_reset_locked(odev, false, profile_changed))
 			content[0] = OMCI_RESULT_PROCESSING_ERROR;
 		else
 			content[0] = OMCI_RESULT_SUCCESS;
@@ -4624,27 +4661,9 @@ unlock:
 void omci_agent_mib_reset(struct omci_device *odev, bool all)
 {
 	struct omci_agent *agent = &odev->agent;
-	struct omci_mib_object *object;
-	unsigned long index;
 
 	mutex_lock(&agent->lock);
-	omci_agent_clear_services_locked(odev);
-	if (!all) {
-		omci_agent_reset_olt_objects_locked(agent);
-		omci_agent_profile_refresh_locked(odev, NULL, NULL);
-		omci_agent_reset_duplicate_locked(agent);
-		mutex_unlock(&agent->lock);
-		return;
-	}
-	xa_for_each(&agent->mib, index, object) {
-		xa_erase(&agent->mib, index);
-		kfree(object);
-	}
-	omci_agent_set_mib_sync_locked(agent, 0);
-	agent->upload_index = 0;
-	omci_agent_populate_defaults(odev);
-	omci_agent_profile_refresh_locked(odev, NULL, NULL);
-	omci_agent_reset_duplicate_locked(agent);
+	omci_agent_mib_reset_locked(odev, all, NULL);
 	mutex_unlock(&agent->lock);
 }
 
