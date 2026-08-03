@@ -15,6 +15,7 @@
 #include <linux/regmap.h>
 #include <linux/seq_file.h>
 #include <linux/xarray.h>
+#include <linux/workqueue.h>
 
 #include "airoha_eth.h"
 
@@ -29,6 +30,7 @@
 #define NPU_EN7581_FIRMWARE_RV32_MAX_SIZE	0x200000
 #define NPU_EN7581_FIRMWARE_DATA_MAX_SIZE	0x10000
 #define NPU_DUMP_SIZE				512
+#define NPU_FIRMWARE_RETRY_MS			1000
 /*
  * Mailbox DMA payload size. Covers sizeof(struct ppe_mbox_data) (28) and
  * WLAN TLV messages (header + payload); largest in-tree WLAN payload today
@@ -139,8 +141,10 @@ struct airoha_npu_priv {
 	struct airoha_npu npu;
 	struct reserved_mem *rmem;
 	void __iomem *base;
+	void __iomem *fw_addr;
 	/* Serialize the one-time firmware load and core startup. */
 	struct mutex start_lock;
+	struct delayed_work start_work;
 	bool started;
 };
 
@@ -375,28 +379,23 @@ airoha_npu_load_firmware_from_dts(struct device *dev, void __iomem *addr,
 }
 
 static int airoha_npu_run_firmware(struct device *dev, void __iomem *base,
-				   struct reserved_mem *rmem)
+				   void __iomem *fw_addr)
 {
 	const struct airoha_npu_soc_data *soc;
-	void __iomem *addr;
 	int ret;
 
 	soc = of_device_get_match_data(dev);
 	if (!soc)
 		return -EINVAL;
 
-	addr = devm_memremap(dev, rmem->base, rmem->size, MEMREMAP_WC);
-	if (IS_ERR(addr))
-		return PTR_ERR(addr);
-
 	/* Try to load firmware images using the firmware names provided via
 	 * dts if available.
 	 */
 	if (of_find_property(dev->of_node, "firmware-name", NULL))
-		return airoha_npu_load_firmware_from_dts(dev, addr, base);
+		return airoha_npu_load_firmware_from_dts(dev, fw_addr, base);
 
 	/* Load rv32 npu firmware */
-	ret = airoha_npu_load_firmware(dev, addr, soc->fw_rv32.name,
+	ret = airoha_npu_load_firmware(dev, fw_addr, soc->fw_rv32.name,
 				       soc->fw_rv32.max_size);
 	if (ret)
 		return ret;
@@ -1738,9 +1737,10 @@ static int airoha_npu_probe_cpu_cores(struct airoha_npu *npu)
 		goto out_unlock;
 	}
 
-	err = airoha_npu_run_firmware(npu->dev, priv->base, priv->rmem);
+	err = airoha_npu_run_firmware(npu->dev, priv->base, priv->fw_addr);
 	if (err) {
-		dev_err(npu->dev, "failed to run npu firmware: %d\n", err);
+		if (err != -EPROBE_DEFER)
+			dev_err(npu->dev, "failed to run npu firmware: %d\n", err);
 		goto out_unlock;
 	}
 
@@ -1786,6 +1786,24 @@ out_unlock:
 	return err;
 }
 
+static void airoha_npu_start_work(struct work_struct *work)
+{
+	struct airoha_npu_priv *priv;
+	int err;
+
+	priv = container_of(to_delayed_work(work), struct airoha_npu_priv,
+			    start_work);
+	err = airoha_npu_probe_cpu_cores(&priv->npu);
+	if (err == -EPROBE_DEFER) {
+		mod_delayed_work(system_wq, &priv->start_work,
+				 msecs_to_jiffies(NPU_FIRMWARE_RETRY_MS));
+		return;
+	}
+
+	if (err)
+		dev_err(priv->npu.dev, "failed to start NPU: %d\n", err);
+}
+
 int airoha_npu_start(struct device *dev)
 {
 	struct platform_device *pdev;
@@ -1815,6 +1833,14 @@ int airoha_npu_start(struct device *dev)
 	}
 
 	err = airoha_npu_probe_cpu_cores(npu);
+	if (err == -EPROBE_DEFER) {
+		mod_delayed_work(system_wq,
+				 &airoha_npu_to_priv(npu)->start_work,
+				 msecs_to_jiffies(NPU_FIRMWARE_RETRY_MS));
+		dev_info(npu->dev,
+			 "firmware unavailable; NPU startup will be retried\n");
+		err = 0;
+	}
 
 out_unlock_device:
 	device_unlock(&pdev->dev);
@@ -1845,6 +1871,7 @@ static int airoha_npu_probe(struct platform_device *pdev)
 	npu = &priv->npu;
 	priv->base = base;
 	mutex_init(&priv->start_lock);
+	INIT_DELAYED_WORK(&priv->start_work, airoha_npu_start_work);
 
 	npu->soc_data = of_device_get_match_data(dev);
 	if (!npu->soc_data)
@@ -1878,6 +1905,10 @@ static int airoha_npu_probe(struct platform_device *pdev)
 	if (!rmem)
 		return -ENODEV;
 	priv->rmem = rmem;
+	priv->fw_addr = devm_memremap(dev, rmem->base, rmem->size,
+				      MEMREMAP_WC);
+	if (IS_ERR(priv->fw_addr))
+		return PTR_ERR(priv->fw_addr);
 
 	np = of_parse_phandle(dev->of_node, "airoha,scu", 0);
 	if (!np)
@@ -1954,8 +1985,10 @@ static int airoha_npu_probe(struct platform_device *pdev)
 static void airoha_npu_remove(struct platform_device *pdev)
 {
 	struct airoha_npu *npu = platform_get_drvdata(pdev);
+	struct airoha_npu_priv *priv = airoha_npu_to_priv(npu);
 	int i;
 
+	cancel_delayed_work_sync(&priv->start_work);
 	airoha_npu_debugfs_remove(npu);
 
 	for (i = 0; i < npu->soc_data->max_cores; i++)
