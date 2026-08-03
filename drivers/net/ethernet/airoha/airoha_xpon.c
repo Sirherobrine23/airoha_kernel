@@ -548,6 +548,8 @@ static void airoha_xpon_phy_stop(struct device *dev, struct phy *phy,
 #define GPON_TO2_MS		100
 /* Restart delay after an OLT Deactivate_ONU-ID request. */
 #define GPON_DEACTIVATE_RESTART_MS	500
+/* Coalesce a net/omci apply batch into one complete MAC/PHY restart. */
+#define GPON_CONFIG_RESTART_DEBOUNCE_MS	250
 #define XPON_LINK_POLL_MS		250
 #define GPON_REARM_RETRY_MS		1000
 
@@ -1898,7 +1900,19 @@ static bool airoha_gpon_config_requires_restart(u16 key)
 	switch (key) {
 	case OMCI_CONFIG_SERIAL_NUMBER:
 	case OMCI_CONFIG_VENDOR_ID:
+	case OMCI_CONFIG_VERSION:
+	case OMCI_CONFIG_EQUIPMENT_ID:
 	case OMCI_CONFIG_PASSWORD:
+	case OMCI_CONFIG_TRAFFIC_MGMT_OPTION:
+	case OMCI_CONFIG_ONU_TYPE:
+	case OMCI_CONFIG_UNI_COUNT:
+	case OMCI_CONFIG_AGENT_FAKE_OMCI:
+	case OMCI_CONFIG_OLT_PROFILE:
+	case OMCI_CONFIG_OLT_PROFILE_FORCE:
+	case OMCI_CONFIG_OMCC_VERSION:
+	case OMCI_CONFIG_HARDWARE_VERSION:
+	case OMCI_CONFIG_SOFTWARE_VERSION_0:
+	case OMCI_CONFIG_SOFTWARE_VERSION_1:
 		return true;
 	default:
 		return false;
@@ -1914,10 +1928,14 @@ void airoha_gpon_omci_hw_config_changed(void *hw_priv, u16 key,
 		return;
 
 	/*
-	 * Only the serial number, vendor ID and password participate in GPON
-	 * activation. Agent policy, profile and managed-entity identity updates
-	 * are consumed by net/omci and must not tear down an operational optical
-	 * session or discard the provisioned T-CONT/GEM datapath.
+	 * A complete provider/profile apply changes both PLOAM activation data
+	 * and the OMCI view exposed after O5. Restart for those session-defining
+	 * values, but keep live agent policy toggles such as permissive mode and
+	 * dying-gasp handling from tearing down an operational service.
+	 *
+	 * net/omci writes a profile one key at a time. Delay the work briefly so
+	 * serial number, password, profile and managed-entity identity are all
+	 * committed before the MAC and digital PHY are reset once.
 	 */
 	if (!airoha_gpon_config_requires_restart(key)) {
 		dev_dbg(priv->dev,
@@ -1933,9 +1951,10 @@ void airoha_gpon_omci_hw_config_changed(void *hw_priv, u16 key,
 	mutex_unlock(&priv->omci_config_lock);
 
 	dev_info(priv->dev,
-		 "GPON activation identity changed (OMCI key %u), scheduling MAC reset\n",
+		 "GPON session configuration changed (OMCI key %u), scheduling full restart\n",
 		 key);
-	mod_delayed_work(priv->fsm_wq, &priv->restart_work, 0);
+	mod_delayed_work(priv->fsm_wq, &priv->restart_work,
+			 msecs_to_jiffies(GPON_CONFIG_RESTART_DEBOUNCE_MS));
 }
 
 int airoha_gpon_omci_hw_get_ani_topology(void *hw_priv,
