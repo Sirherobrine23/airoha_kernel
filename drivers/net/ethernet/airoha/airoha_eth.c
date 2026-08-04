@@ -2017,6 +2017,10 @@ static int airoha_qdma_tx_napi_poll(struct napi_struct *napi, int budget)
 		if (!q->queued)
 			goto unlock_consume;
 
+		e = &q->entry[index];
+		if (!e->dma_addr)
+			goto unlock_consume;
+
 		desc = &q->desc[index];
 		desc_ctrl = le32_to_cpu(READ_ONCE(desc->ctrl));
 
@@ -2026,16 +2030,20 @@ static int airoha_qdma_tx_napi_poll(struct napi_struct *napi, int budget)
 			break;
 		}
 
-		e = &q->entry[index];
 		skb = e->skb;
-
 		dma_unmap_single(eth->dev, e->dma_addr, e->dma_len,
 				 DMA_TO_DEVICE);
 		e->dma_addr = 0;
+		e->dma_len = 0;
+		e->skb = NULL;
 		list_add_tail(&e->list, &q->tx_list);
 
+		WRITE_ONCE(desc->ctrl, 0);
+		WRITE_ONCE(desc->addr, 0);
+		WRITE_ONCE(desc->data, 0);
 		WRITE_ONCE(desc->msg0, 0);
 		WRITE_ONCE(desc->msg1, 0);
+		WRITE_ONCE(desc->msg2, 0);
 		q->queued--;
 
 		if (skb) {
