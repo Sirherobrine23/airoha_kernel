@@ -167,6 +167,9 @@
 #define CDM_LRO_AGE_TIME_MASK		GENMASK(31, 16)
 #define CDM_LRO_AGG_TIME_MASK		GENMASK(15, 0)
 
+#define REG_CDM_FAQ_CFG(_n)		(CDM_BASE(_n) + 0xb0)
+#define REG_CDM_FAQ_THR_CFG(_n)	(CDM_BASE(_n) + 0xb4)
+
 #define REG_GDM_FWD_CFG(_n)		GDM_BASE(_n)
 #define GDM_PAD_EN_MASK			BIT(28)
 #define GDM_DROP_CRC_ERR_MASK		BIT(23)
