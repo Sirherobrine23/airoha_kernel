@@ -341,7 +341,7 @@ static int airoha_pinmux_set_direction(struct pinctrl_dev *pctrl_dev,
 {
 	struct airoha_pinctrl *pinctrl = pinctrl_dev_get_drvdata(pctrl_dev);
 	u32 mask, index;
-	int err, pin;
+	int err, pin, offset;
 
 	pin = airoha_convert_pin_to_reg_offset(pctrl_dev, range, p);
 	if (pin < 0)
@@ -356,11 +356,12 @@ static int airoha_pinmux_set_direction(struct pinctrl_dev *pctrl_dev,
 		return err;
 
 	/* set direction */
-	mask = BIT(2 * (pin % AIROHA_REG_GPIOCTRL_NUM_PIN));
+	offset = 2 * (pin % AIROHA_REG_GPIOCTRL_NUM_PIN);
+	mask = GENMASK(offset + 1, offset);
 	index = pin / AIROHA_REG_GPIOCTRL_NUM_PIN;
 	return regmap_update_bits(pinctrl->regmap,
 				  pinctrl->gpiochip.dir[index], mask,
-				  !input ? mask : 0);
+				  !input ? BIT(offset) : 0);
 }
 
 static const struct pinmux_ops airoha_pmxops = {
@@ -691,6 +692,17 @@ int airoha_pinctrl_probe(struct platform_device *pdev)
 	}
 
 	pinctrl->chip_scu = map;
+
+	/* Restore SoC mux registers to their reset/default state. */
+	for (i = 0; i < data->num_hwinit_regs; i++) {
+		err = regmap_write(pinctrl->chip_scu,
+				   data->hwinit_regs[i].offset,
+				   data->hwinit_regs[i].val);
+		if (err)
+			return dev_err_probe(dev, err,
+				"Failed to reset SCU IOMUX register 0x%x\n",
+				data->hwinit_regs[i].offset);
+	}
 
 	/* Init pinctrl desc struct */
 	pinctrl->desc.name = data->pinctrl_name;

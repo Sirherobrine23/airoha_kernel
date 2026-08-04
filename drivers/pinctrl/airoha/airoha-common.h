@@ -153,6 +153,11 @@ struct airoha_pinctrl {
 	struct irq_chip gpio_irq_chip;
 };
 
+struct airoha_pinctrl_hwinit_reg {
+	u32 offset;
+	u32 val;
+};
+
 struct airoha_pinctrl_match_data {
 	const char *chip_scu_compatible;
 	const char *pinctrl_name;
@@ -163,6 +168,8 @@ struct airoha_pinctrl_match_data {
 	const unsigned int num_grps;
 	const struct airoha_pinctrl_func *funcs;
 	const unsigned int num_funcs;
+	const struct airoha_pinctrl_hwinit_reg *hwinit_regs;
+	const unsigned int num_hwinit_regs;
 	const struct airoha_pinctrl_confs_info confs_info[AIROHA_PINCTRL_CONFS_MAX];
 };
 

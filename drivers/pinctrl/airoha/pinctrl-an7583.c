@@ -38,6 +38,7 @@
 #define GPIO_SPI_CS1_MODE_MASK			BIT(0)
 
 #define REG_GPIO_PON_MODE			0x021c
+#define GPIO_MODE_MASK			(GENMASK(22, 15) | GENMASK(26, 25))
 #define GPIO_PON_ALT_MODE_MASK			BIT(27)
 #define MDIO_0_GPIO_MODE_MASK			BIT(26)
 #define MDC_0_GPIO_MODE_MASK			BIT(25)
@@ -74,6 +75,7 @@
 
 #define REG_FORCE_GPIO_EN			0x0228
 #define FORCE_GPIO_EN(n)			BIT(n)
+#define REG_FORCE_GPIO32_EN			0x022c
 
 /* LED MAP */
 #define REG_LAN_LED0_MAPPING			0x027c
@@ -399,7 +401,7 @@ static const int pon_tod_1pps_pins[] = { 32 };
 static const int gsw_tod_1pps_pins[] = { 32 };
 static const int sipo_pins[] = { 34, 35 };
 static const int sipo_rclk_pins[] = { 34, 35, 33 };
-static const int mdio_pins[] = { 43, 44 };
+static const int mdio_pins[] = { 53, 54 };
 static const int uart2_pins[] = { 34, 35 };
 static const int uart2_cts_rts_pins[] = { 32, 33 };
 static const int hsuart_pins[] = { 30, 31 };
@@ -413,7 +415,7 @@ static const int jtag_udi_pins[] = { 23, 24, 22, 25, 26 };
 static const int jtag_dfd_pins[] = { 23, 24, 22, 25, 26 };
 static const int pcm1_pins[] = { 10, 11, 12, 13, 14 };
 static const int pcm2_pins[] = { 28, 29, 30, 31, 24 };
-static const int spi_pins[] = { 28, 29, 30, 31 };
+static const int spi_pins[] = { 45, 46, 47, 48 };
 static const int spi_quad_pins[] = { 25, 26 };
 static const int spi_cs1_pins[] = { 27 };
 static const int pcm_spi_pins[] = { 28, 29, 30, 31, 10, 11, 12, 13 };
@@ -579,9 +581,10 @@ static const char *const uart_groups[] = {
 	"uart2", "uart2_cts_rts", "hsuart", "hsuart_cts_rts",
 	"uart4", "uart5", "npu_uart"
 };
+static const char *const i2c_groups[] = { "i2c0", "i2c1" };
 static const char *const jtag_groups[] = { "jtag_udi", "jtag_dfd" };
 static const char *const pcm_groups[] = { "pcm1", "pcm2" };
-static const char *const spi_groups[] = { "spi_quad", "spi_cs1" };
+static const char *const spi_groups[] = { "spi", "spi_quad", "spi_cs1" };
 static const char *const pcm_spi_groups[] = {
 	"pcm_spi", "pcm_spi_rst", "pcm_spi_cs1"
 };
@@ -715,16 +718,10 @@ static const struct airoha_pinctrl_func_group mdio_func_group[] = {
 		.regmap[0] = {
 			AIROHA_FUNC_MUX,
 			REG_GPIO_PON_MODE,
-			GPIO_SGMII_MDIO_MODE_MASK,
-			GPIO_SGMII_MDIO_MODE_MASK
+			MDC_0_GPIO_MODE_MASK | MDIO_0_GPIO_MODE_MASK,
+			0
 		},
-		.regmap[1] = {
-			AIROHA_FUNC_MUX,
-			REG_GPIO_SPI_CS1_MODE,
-			GPIO_MDC_IO_MASTER_MODE_MASK,
-			GPIO_MDC_IO_MASTER_MODE_MASK
-		},
-		.regmap_size = 2,
+		.regmap_size = 1,
 	},
 };
 
@@ -796,6 +793,28 @@ static const struct airoha_pinctrl_func_group uart_func_group[] = {
 	},
 };
 
+static const struct airoha_pinctrl_func_group i2c_func_group[] = {
+	{
+		.name = "i2c0",
+		.regmap[0] = {
+			AIROHA_FUNC_MUX,
+			REG_GPIO_PON_MODE,
+			I2C0_SCL_GPIO_MODE_MASK | I2C0_SDA_GPIO_MODE_MASK,
+			0
+		},
+		.regmap_size = 1,
+	}, {
+		.name = "i2c1",
+		.regmap[0] = {
+			AIROHA_FUNC_MUX,
+			REG_GPIO_PON_MODE,
+			I2C1_SCL_GPIO_MODE_MASK | I2C1_SDA_GPIO_MODE_MASK,
+			0
+		},
+		.regmap_size = 1,
+	},
+};
+
 static const struct airoha_pinctrl_func_group jtag_func_group[] = {
 	{
 		.name = "jtag_udi",
@@ -842,6 +861,16 @@ static const struct airoha_pinctrl_func_group pcm_func_group[] = {
 
 static const struct airoha_pinctrl_func_group spi_func_group[] = {
 	{
+		.name = "spi",
+		.regmap[0] = {
+			AIROHA_FUNC_MUX,
+			REG_GPIO_PON_MODE,
+			SPI_CLK_GPIO_MODE_MASK | SPI_CS_GPIO_MODE_MASK |
+			SPI_MOSI_GPIO_MODE_MASK | SPI_MISO_GPIO_MODE_MASK,
+			0
+		},
+		.regmap_size = 1,
+	}, {
 		.name = "spi_quad",
 		.regmap[0] = {
 			AIROHA_FUNC_MUX,
@@ -859,33 +888,6 @@ static const struct airoha_pinctrl_func_group spi_func_group[] = {
 			GPIO_SPI_CS1_MODE_MASK
 		},
 		.regmap_size = 1,
-	}, {
-		.name = "spi_cs2",
-		.regmap[0] = {
-			AIROHA_FUNC_MUX,
-			REG_GPIO_SPI_CS1_MODE,
-			GPIO_SPI_CS2_MODE_MASK,
-			GPIO_SPI_CS2_MODE_MASK
-		},
-		.regmap_size = 1,
-	}, {
-		.name = "spi_cs3",
-		.regmap[0] = {
-			AIROHA_FUNC_MUX,
-			REG_GPIO_SPI_CS1_MODE,
-			GPIO_SPI_CS3_MODE_MASK,
-			GPIO_SPI_CS3_MODE_MASK
-		},
-		.regmap_size = 1,
-	}, {
-		.name = "spi_cs4",
-		.regmap[0] = {
-			AIROHA_FUNC_MUX,
-			REG_GPIO_SPI_CS1_MODE,
-			GPIO_SPI_CS4_MODE_MASK,
-			GPIO_SPI_CS4_MODE_MASK
-		},
-		.regmap_size = 1,
 	},
 };
 
@@ -897,15 +899,6 @@ static const struct airoha_pinctrl_func_group pcm_spi_func_group[] = {
 			REG_GPIO_SPI_CS1_MODE,
 			GPIO_PCM_SPI_MODE_MASK,
 			GPIO_PCM_SPI_MODE_MASK
-		},
-		.regmap_size = 1,
-	}, {
-		.name = "pcm_spi_int",
-		.regmap[0] = {
-			AIROHA_FUNC_MUX,
-			REG_GPIO_SPI_CS1_MODE,
-			GPIO_PCM_INT_MODE_MASK,
-			GPIO_PCM_INT_MODE_MASK
 		},
 		.regmap_size = 1,
 	}, {
@@ -924,33 +917,6 @@ static const struct airoha_pinctrl_func_group pcm_spi_func_group[] = {
 			REG_GPIO_SPI_CS1_MODE,
 			GPIO_PCM_SPI_CS1_MODE_MASK,
 			GPIO_PCM_SPI_CS1_MODE_MASK
-		},
-		.regmap_size = 1,
-	}, {
-		.name = "pcm_spi_cs2",
-		.regmap[0] = {
-			AIROHA_FUNC_MUX,
-			REG_GPIO_SPI_CS1_MODE,
-			GPIO_PCM_SPI_CS2_MODE_MASK,
-			GPIO_PCM_SPI_CS2_MODE_MASK
-		},
-		.regmap_size = 1,
-	}, {
-		.name = "pcm_spi_cs3",
-		.regmap[0] = {
-			AIROHA_FUNC_MUX,
-			REG_GPIO_SPI_CS1_MODE,
-			GPIO_PCM_SPI_CS3_MODE_MASK,
-			GPIO_PCM_SPI_CS3_MODE_MASK
-		},
-		.regmap_size = 1,
-	}, {
-		.name = "pcm_spi_cs4",
-		.regmap[0] = {
-			AIROHA_FUNC_MUX,
-			REG_GPIO_SPI_CS1_MODE,
-			GPIO_PCM_SPI_CS4_MODE_MASK,
-			GPIO_PCM_SPI_CS4_MODE_MASK
 		},
 		.regmap_size = 1,
 	},
@@ -1193,6 +1159,7 @@ static const struct airoha_pinctrl_func pinctrl_funcs[] = {
 	PINCTRL_FUNC_DESC("sipo", sipo),
 	PINCTRL_FUNC_DESC("mdio", mdio),
 	PINCTRL_FUNC_DESC("uart", uart),
+	PINCTRL_FUNC_DESC("i2c", i2c),
 	PINCTRL_FUNC_DESC("jtag", jtag),
 	PINCTRL_FUNC_DESC("pcm", pcm),
 	PINCTRL_FUNC_DESC("spi", spi),
@@ -1441,6 +1408,15 @@ static const struct airoha_pinctrl_conf pinctrl_pcie_rst_od_conf[] = {
 	PINCTRL_CONF_DESC(52, REG_PCIE_RESET_OD, PCIE1_RESET_OD_MASK),
 };
 
+static const struct airoha_pinctrl_hwinit_reg hwinit_regs[] = {
+	{ REG_SW_TOD_1PPS_MODE, 0 },
+	{ REG_GPIO_SPI_CS1_MODE, 0 },
+	{ REG_GPIO_PON_MODE, GPIO_MODE_MASK },
+	{ REG_NPU_UART_EN, 0 },
+	{ REG_FORCE_GPIO_EN, 0 },
+	{ REG_FORCE_GPIO32_EN, 0 },
+};
+
 static const struct airoha_pinctrl_match_data pinctrl_match_data = {
 	.chip_scu_compatible = "airoha,en7581-chip-scu",
 	.pinctrl_name = KBUILD_MODNAME,
@@ -1451,6 +1427,8 @@ static const struct airoha_pinctrl_match_data pinctrl_match_data = {
 	.num_grps = ARRAY_SIZE(pinctrl_groups),
 	.funcs = pinctrl_funcs,
 	.num_funcs = ARRAY_SIZE(pinctrl_funcs),
+	.hwinit_regs = hwinit_regs,
+	.num_hwinit_regs = ARRAY_SIZE(hwinit_regs),
 	.confs_info = {
 		[AIROHA_PINCTRL_CONFS_PULLUP] = {
 			.confs = pinctrl_pullup_conf,
