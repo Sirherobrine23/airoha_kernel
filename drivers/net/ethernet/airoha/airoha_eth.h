@@ -63,11 +63,14 @@
 	(_n) == 15 ? 128 : 16)
 
 #define AIROHA_LRO_PAGE_ORDER			2
+#define EN7523_AIROHA_LRO_PAGE_ORDER		4
 #define AIROHA_MAX_NUM_LRO_QUEUES		8
 #define EN7523_AIROHA_MAX_NUM_LRO_QUEUES	4
 #define AIROHA_RXQ_LRO_EN_MASK			GENMASK(31, 24)
 #define EN7523_AIROHA_RXQ_LRO_EN_MASK		GENMASK(14, 11)
 #define AIROHA_RXQ_LRO_MAX_AGG_COUNT		64
+#define EN7523_AIROHA_RXQ_LRO_MAX_AGG_COUNT	30
+#define EN7523_AIROHA_RXQ_LRO_MAX_AGG_SIZE	44000
 #define AIROHA_RXQ_LRO_MAX_AGG_TIME		100
 #define AIROHA_RXQ_LRO_MAX_AGE_TIME		2000 /* 1ms */
 
@@ -224,6 +227,7 @@ struct airoha_queue_entry {
 	};
 	dma_addr_t dma_addr;
 	u16 dma_len;
+	bool dma_map_page;
 };
 
 struct airoha_queue {

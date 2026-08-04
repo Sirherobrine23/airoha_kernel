@@ -657,6 +657,12 @@ static int airoha_ppe_foe_entry_prepare(struct airoha_eth *eth,
 			/* For downlink traffic consume SRAM memory for hw
 			 * forwarding descriptors queue.
 			 */
+			/* The vendor SDK defines SUPPORT_FAST_PATH only for
+			 * EN7580/EN7581/AN7583.  EN7523 must use the normal
+			 * PPE-to-QDMA path; setting FAST_PATH makes a bound FOE
+			 * entry consume an unsupported descriptor path and drops
+			 * the flow as soon as it transitions to BIND.
+			 */
 			if (!airoha_is(eth, en7523) &&
 			    airoha_is_lan_gdm_dev(dev))
 				val |= AIROHA_FOE_IB2_FAST_PATH;
