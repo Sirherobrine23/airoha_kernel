@@ -892,33 +892,9 @@ static const struct airoha_pinctrl_func_group spi_func_group[] = {
 			GPIO_SPI_CS1_MODE_MASK
 		},
 		.regmap_size = 1,
-	}, {
-		.name = "spi_cs2",
-		.regmap[0] = {
-			AIROHA_FUNC_MUX,
-			REG_GPIO_SPI_CS1_MODE,
-			GPIO_SPI_CS2_MODE_MASK,
-			GPIO_SPI_CS2_MODE_MASK
-		},
-		.regmap_size = 1,
-	}, {
-		.name = "spi_cs3",
-		.regmap[0] = {
-			AIROHA_FUNC_MUX,
-			REG_GPIO_SPI_CS1_MODE,
-			GPIO_SPI_CS3_MODE_MASK,
-			GPIO_SPI_CS3_MODE_MASK
-		},
-		.regmap_size = 1,
-	}, {
-		.name = "spi_cs4",
-		.regmap[0] = {
-			AIROHA_FUNC_MUX,
-			REG_GPIO_SPI_CS1_MODE,
-			GPIO_SPI_CS4_MODE_MASK,
-			GPIO_SPI_CS4_MODE_MASK
-		},
-		.regmap_size = 1,
+
+
+
 	},
 };
 
@@ -932,15 +908,7 @@ static const struct airoha_pinctrl_func_group pcm_spi_func_group[] = {
 			GPIO_PCM_SPI_MODE_MASK
 		},
 		.regmap_size = 1,
-	}, {
-		.name = "pcm_spi_int",
-		.regmap[0] = {
-			AIROHA_FUNC_MUX,
-			REG_GPIO_SPI_CS1_MODE,
-			GPIO_PCM_INT_MODE_MASK,
-			GPIO_PCM_INT_MODE_MASK
-		},
-		.regmap_size = 1,
+
 	}, {
 		.name = "pcm_spi_rst",
 		.regmap[0] = {
@@ -959,33 +927,9 @@ static const struct airoha_pinctrl_func_group pcm_spi_func_group[] = {
 			GPIO_PCM_SPI_CS1_MODE_MASK
 		},
 		.regmap_size = 1,
-	}, {
-		.name = "pcm_spi_cs2",
-		.regmap[0] = {
-			AIROHA_FUNC_MUX,
-			REG_GPIO_SPI_CS1_MODE,
-			GPIO_PCM_SPI_CS2_MODE_MASK,
-			GPIO_PCM_SPI_CS2_MODE_MASK
-		},
-		.regmap_size = 1,
-	}, {
-		.name = "pcm_spi_cs3",
-		.regmap[0] = {
-			AIROHA_FUNC_MUX,
-			REG_GPIO_SPI_CS1_MODE,
-			GPIO_PCM_SPI_CS3_MODE_MASK,
-			GPIO_PCM_SPI_CS3_MODE_MASK
-		},
-		.regmap_size = 1,
-	}, {
-		.name = "pcm_spi_cs4",
-		.regmap[0] = {
-			AIROHA_FUNC_MUX,
-			REG_GPIO_SPI_CS1_MODE,
-			GPIO_PCM_SPI_CS4_MODE_MASK,
-			GPIO_PCM_SPI_CS4_MODE_MASK
-		},
-		.regmap_size = 1,
+
+
+
 	},
 };
 
@@ -1226,6 +1170,7 @@ static const struct airoha_pinctrl_func pinctrl_funcs[] = {
 	PINCTRL_FUNC_DESC("sipo", sipo),
 	PINCTRL_FUNC_DESC("mdio", mdio),
 	PINCTRL_FUNC_DESC("uart", uart),
+	PINCTRL_FUNC_DESC("i2c", i2c),
 	PINCTRL_FUNC_DESC("jtag", jtag),
 	PINCTRL_FUNC_DESC("pcm", pcm),
 	PINCTRL_FUNC_DESC("spi", spi),

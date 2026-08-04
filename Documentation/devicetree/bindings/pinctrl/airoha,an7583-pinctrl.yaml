@@ -120,6 +120,14 @@ patternProperties:
           - if:
               properties:
                 function:
+                  const: i2c
+            then:
+              properties:
+                groups:
+                  enum: [i2c0, i2c1]
+          - if:
+              properties:
+                function:
                   const: jtag
             then:
               properties:
