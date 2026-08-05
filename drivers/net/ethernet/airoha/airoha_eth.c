@@ -1549,7 +1549,8 @@ static struct sk_buff *airoha_qdma_build_rx_skb(struct airoha_queue *q,
 	int qid = q - &q->qdma->q_rx[0];
 	struct sk_buff *skb;
 
-	if (!raw && FIELD_GET(QDMA_ETH_RXMSG_AGG_COUNT_MASK, msg2) > 1) { /* LRO */
+	if (!raw && !airoha_is(q->qdma->eth, en7523) &&
+	    FIELD_GET(QDMA_ETH_RXMSG_AGG_COUNT_MASK, msg2) > 1) { /* LRO */
 		skb = airoha_qdma_lro_rx_skb(q, desc, e);
 		if (!skb)
 			return NULL;
@@ -1898,7 +1899,7 @@ static int airoha_qdma_init_rx_queue(struct airoha_queue *q,
 			FIELD_PREP(RX_RING_THR_MASK, thr));
 	airoha_qdma_rmw(qdma, REG_RX_DMA_IDX(qid), RX_RING_DMA_IDX_MASK,
 			FIELD_PREP(RX_RING_DMA_IDX_MASK, q->head));
-	if (lro_q || (airoha_is(eth, en7523) && qid == 15))
+	if (lro_q || airoha_is(eth, en7523))
 		airoha_qdma_clear(qdma, REG_RX_SCATTER_CFG(qid),
 				  RX_RING_SG_EN_MASK);
 	else
