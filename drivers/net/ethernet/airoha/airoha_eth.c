@@ -118,6 +118,7 @@ static u32 airoha_qdma_rx_irq_bank_mask(struct airoha_qdma *qdma, int bank)
 
 static void airoha_qdma_quiesce_irqs(struct airoha_qdma *qdma)
 {
+	u32 status, len;
 	int bank;
 
 	for (bank = 0; bank < qdma->eth->soc->irq_banks; bank++) {
@@ -129,6 +130,21 @@ static void airoha_qdma_quiesce_irqs(struct airoha_qdma *qdma)
 
 	airoha_qdma_wr(qdma, REG_INT_STATUS(0), 0xffffffff);
 	airoha_qdma_wr(qdma, REG_INT_STATUS(1), 0xffffffff);
+
+	/* A warm boot can leave the previous kernel's host rings active. */
+	airoha_qdma_clear(qdma, REG_QDMA_GLOBAL_CFG,
+			  GLOBAL_CFG_IRQ0_EN_MASK);
+
+	status = airoha_qdma_rr(qdma, REG_IRQ_STATUS(0));
+	len = FIELD_GET(IRQ_ENTRY_LEN_MASK, status);
+	while (len >= 0x80) {
+		airoha_qdma_rmw(qdma, REG_IRQ_CLEAR_LEN(0),
+				IRQ_CLEAR_LEN_MASK, 0x80);
+		len -= 0x80;
+	}
+	if (len)
+		airoha_qdma_rmw(qdma, REG_IRQ_CLEAR_LEN(0),
+				IRQ_CLEAR_LEN_MASK, len);
 }
 
 static int airoha_set_macaddr(struct airoha_gdm_dev *dev, const u8 *addr)
@@ -2117,7 +2133,7 @@ static int airoha_qdma_tx_napi_poll(struct napi_struct *napi, int budget)
 			goto unlock_consume;
 
 		e = &q->entry[index];
-		if (!e->dma_addr)
+		if (unlikely(!e->dma_addr))
 			goto unlock_consume;
 
 		desc = &q->desc[index];
@@ -3096,6 +3112,9 @@ static void airoha_qdma_stop(struct airoha_qdma *qdma)
 	if (--qdma->users)
 		return;
 
+	if (airoha_is(qdma->eth, en7523))
+		return;
+
 	airoha_qdma_clear(qdma, REG_QDMA_GLOBAL_CFG,
 			  GLOBAL_CFG_TX_DMA_EN_MASK |
 			  GLOBAL_CFG_RX_DMA_EN_MASK);
@@ -3299,8 +3318,10 @@ static int airoha_dev_stop(struct net_device *netdev)
 	xpon_control = READ_ONCE(dev->xpon_control_started);
 	if (!xpon_control)
 		airoha_set_vip_for_gdm_port(dev, false);
-	for (i = 0; i < netdev->num_tx_queues; i++)
-		netdev_tx_reset_subqueue(netdev, i);
+	if (!airoha_is(dev->eth, en7523)) {
+		for (i = 0; i < netdev->num_tx_queues; i++)
+			netdev_tx_reset_subqueue(netdev, i);
+	}
 
 	qdma = airoha_qdma_deref(dev);
 	if (--port->users)
