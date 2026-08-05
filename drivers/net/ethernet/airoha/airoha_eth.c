@@ -5356,8 +5356,7 @@ static int airoha_alloc_gdm_device(struct airoha_eth *eth,
 	err = of_get_ethdev_address(np, netdev);
 	if (err) {
 		if (err == -EPROBE_DEFER)
-			return dev_err_probe(eth->dev, err,
-					     "defer mac address node");
+			return err;
 
 		eth_hw_addr_random(netdev);
 		dev_info(eth->dev, "generated random MAC address %pM\n",
@@ -5637,16 +5636,6 @@ static int airoha_probe(struct platform_device *pdev)
 	err = airoha_register_gdm_devices(eth);
 	if (err)
 		goto error_napi_stop;
-
-	/* The EN7523 NPU firmware accesses the FE/QDMA datapath as soon as its
-	 * cores are released. Start it only after every GDM netdev has been
-	 * registered successfully, otherwise a partial Ethernet probe can leave
-	 * the NPU faulting and rebooting its cores indefinitely.
-	 */
-	err = airoha_npu_start(eth->dev);
-	if (err && err != -ENODEV && err != -EPROBE_DEFER &&
-	    err != -EOPNOTSUPP)
-		dev_warn(eth->dev, "failed to start NPU: %d\n", err);
 
 	return 0;
 

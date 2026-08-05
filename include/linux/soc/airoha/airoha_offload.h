@@ -220,7 +220,6 @@ struct airoha_npu {
 };
 
 #if (IS_BUILTIN(CONFIG_NET_AIROHA_NPU) || IS_MODULE(CONFIG_NET_AIROHA_NPU))
-int airoha_npu_start(struct device *dev);
 struct airoha_npu *airoha_npu_get(struct device *dev);
 void airoha_npu_put(struct airoha_npu *npu);
 
@@ -271,11 +270,6 @@ static inline void airoha_npu_wlan_disable_irq(struct airoha_npu *npu, int q)
 	npu->ops.wlan_disable_irq(npu, q);
 }
 #else
-static inline int airoha_npu_start(struct device *dev)
-{
-	return -EOPNOTSUPP;
-}
-
 static inline struct airoha_npu *airoha_npu_get(struct device *dev)
 {
 	return NULL;
