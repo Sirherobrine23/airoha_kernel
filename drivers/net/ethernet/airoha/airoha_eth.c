@@ -1288,6 +1288,7 @@ static int airoha_qdma_fill_rx_queue(struct airoha_queue *q)
 {
 	struct airoha_qdma *qdma = q->qdma;
 	int qid = q - &qdma->q_rx[0];
+	int rx_offset = airoha_is(qdma->eth, en7523) ? NET_IP_ALIGN : 0;
 	int nframes = 0;
 
 	while (q->queued < q->ndesc - 1) {
@@ -1312,7 +1313,8 @@ static int airoha_qdma_fill_rx_queue(struct airoha_queue *q)
 
 		WRITE_ONCE(desc->tcp_ts_reply, 0);
 		val = airoha_is(qdma->eth, en7523) ?
-			FIELD_PREP(EN7523_QDMA_DESC_LEN_MASK, e->dma_len) :
+			FIELD_PREP(EN7523_QDMA_DESC_LEN_MASK,
+				   e->dma_len - rx_offset) :
 			FIELD_PREP(QDMA_DESC_LEN_MASK, e->dma_len);
 		WRITE_ONCE(desc->ctrl, cpu_to_le32(val));
 		WRITE_ONCE(desc->addr, cpu_to_le32(e->dma_addr));
@@ -1559,6 +1561,8 @@ static struct sk_buff *airoha_qdma_build_rx_skb(struct airoha_queue *q,
 		if (!skb)
 			return NULL;
 
+		if (airoha_is(q->qdma->eth, en7523))
+			skb_reserve(skb, NET_IP_ALIGN);
 		__skb_put(skb, len);
 		if ((netdev->features & NETIF_F_RXCSUM) &&
 		    airoha_qdma_rx_checksum_ok(q->qdma->eth, desc))
@@ -1627,8 +1631,7 @@ static int airoha_qdma_rx_process(struct airoha_queue *q, int budget)
 		q->tail = (q->tail + 1) % q->ndesc;
 		q->queued--;
 
-		dma_sync_single_for_cpu(eth->dev, e->dma_addr,
-					SKB_WITH_OVERHEAD(q->buf_size), dir);
+		dma_sync_single_for_cpu(eth->dev, e->dma_addr, e->dma_len, dir);
 
 		page = virt_to_head_page(e->buf);
 		len = airoha_is(eth, en7523) ?
@@ -2532,6 +2535,8 @@ static int airoha_qdma_hw_init(struct airoha_qdma *qdma)
 	}
 
 	airoha_qdma_wr(qdma, REG_QDMA_GLOBAL_CFG,
+		       (airoha_is(qdma->eth, en7523) ?
+			GLOBAL_CFG_RX_2B_OFFSET_MASK : 0) |
 		       FIELD_PREP(GLOBAL_CFG_DMA_PREFERENCE_MASK, 3) |
 		       GLOBAL_CFG_CPU_TXR_RR_MASK |
 		       GLOBAL_CFG_PAYLOAD_BYTE_SWAP_MASK |
