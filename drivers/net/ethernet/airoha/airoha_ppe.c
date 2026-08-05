@@ -580,28 +580,48 @@ static int airoha_ppe_foe_entry_prepare(struct airoha_eth *eth,
 	      AIROHA_FOE_IB1_BIND_TTL;
 	hwe->ib1 = val;
 
-	/* EN7523 vendor entries use PORT_AG=0 (account group); mainline's 0x1f
-	 * yields ib2=0x3e240 vs the vendor's 0x240 for the same flow.
+	/* EN7523 vendor routed entries use accounting group 2047
+	 * (INFO2[23:13] = 0x7ff).
 	 */
 	val = FIELD_PREP(AIROHA_FOE_IB2_PORT_AG,
-			 airoha_is(eth, en7523) ? 0x0 : 0x1f);
+			 airoha_is(eth, en7523) ? 0x7ff : 0x1f);
 	if (netdev) {
 		struct airoha_wdma_info info = {};
 
 		if (!airoha_ppe_get_wdma_info(netdev, data->eth.h_dest,
 					      &info)) {
-			val |= FIELD_PREP(AIROHA_FOE_IB2_NBQ, info.idx) |
+			val |= FIELD_PREP(AIROHA_FOE_IB2_NBQ,
+					  airoha_is(eth, en7523) ?
+					  (info.idx ? 2 : 0) : info.idx) |
 			       FIELD_PREP(AIROHA_FOE_IB2_PSE_PORT,
 					  airoha_is(eth, en7523) ?
 					  FE_PSE_PORT_GDM3 :
 					  FE_PSE_PORT_CDM4);
 			if (airoha_is(eth, en7523))
 				val |= AIROHA_FOE_IB2_PSE_QOS;
-			qdata |= FIELD_PREP(AIROHA_FOE_ACTDP, info.bss);
+			if (airoha_is(eth, en7523)) {
+				/* Match the vendor WDMA-instance egress tuple:
+				 * band0 uses DP_RA0/channel 6 and band1 uses
+				 * DP_RAI0/channel 8.
+				 */
+				qdata = FIELD_PREP(AIROHA_FOE_ACTDP,
+						   (info.idx ? 15 : 6) +
+						   info.bss) |
+					FIELD_PREP(AIROHA_FOE_SHAPER_ID,
+						   0x3f) |
+					FIELD_PREP(AIROHA_FOE_CHANNEL,
+						   info.idx ? 8 : 6);
+			} else {
+				qdata |= FIELD_PREP(AIROHA_FOE_ACTDP,
+						    info.bss);
+			}
 			wlan_etype = FIELD_PREP(AIROHA_FOE_MAC_WDMA_BAND,
 						info.idx) |
 				     FIELD_PREP(AIROHA_FOE_MAC_WDMA_WCID,
 						info.wcid);
+			if (airoha_is(eth, en7523))
+				wlan_etype = ((info.wcid & 0xff) << 6) |
+					     (info.bss & 0x3f);
 		} else {
 			struct airoha_gdm_dev *dev = netdev_priv(netdev);
 			struct airoha_gdm_port *port;
@@ -631,10 +651,14 @@ static int airoha_ppe_foe_entry_prepare(struct airoha_eth *eth,
 			if (dsa_port >= 0 || airoha_is_lan_gdm_dev(dev))
 				pse_port = port->id == 4 ? FE_PSE_PORT_GDM4
 							 : port->id;
-			else
+			else {
 				pse_port = 2; /* uplink relies on GDM2
 					       * loopback
 					       */
+				if (airoha_is(eth, en7523))
+					qdata = FIELD_PREP(AIROHA_FOE_SHAPER_ID,
+							   0x3f);
+			}
 
 			/* GPON hardware forwarding must carry the same T-CONT,
 			 * queue and NBOQ metadata as CPU-originated descriptors.
@@ -648,8 +672,11 @@ static int airoha_ppe_foe_entry_prepare(struct airoha_eth *eth,
 				priority = rt_tos2priority(dsfield);
 				priority %= AIROHA_NUM_QOS_QUEUES;
 			}
-			qdata |= FIELD_PREP(AIROHA_FOE_CHANNEL, channel) |
-				 FIELD_PREP(AIROHA_FOE_QID, priority);
+			if (!airoha_is(eth, en7523) || pse_port != 2 || xpon_flow)
+				qdata |= FIELD_PREP(AIROHA_FOE_CHANNEL,
+						    channel) |
+					 FIELD_PREP(AIROHA_FOE_QID,
+						    priority);
 
 			val |= FIELD_PREP(AIROHA_FOE_IB2_PSE_PORT, pse_port) |
 			       FIELD_PREP(AIROHA_FOE_IB2_DSCP, dsfield) |
