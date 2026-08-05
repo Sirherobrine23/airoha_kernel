@@ -320,6 +320,9 @@ static void airoha_ppe_hw_init(struct airoha_ppe *ppe)
 			airoha_fe_wr(eth, REG_PPE_IP_PROTO_CHK(i) + 0x8, 0x00003a01);
 			airoha_fe_wr(eth, REG_PPE_TB_CFG(i), 0xef403fb4);
 			airoha_fe_wr(eth, REG_PPE_TB_HASH_CFG(i), 0x31003001);
+			airoha_fe_wr(eth, REG_PPE_GLO_CFG(i) + 0x2c, 0x0fa00fa0);
+			airoha_fe_wr(eth, REG_PPE_GLO_CFG(i) + 0x30, 0x00011f40);
+
 			/* Remaining vendor PPE config registers (dumped from stock
 			 * fw): KA, MIRROR, L2 bridge cfg / ethertype enable.
 			 * Offsets relative to GLO_CFG (PPE base + 0x200):
@@ -330,6 +333,12 @@ static void airoha_ppe_hw_init(struct airoha_ppe *ppe)
 			airoha_fe_wr(eth, REG_PPE_GLO_CFG(i) + 0x54, 0x00000021);
 			airoha_fe_wr(eth, REG_PPE_GLO_CFG(i) + 0x88, 0x001d077f);
 			airoha_fe_wr(eth, REG_PPE_GLO_CFG(i) + 0x8c, 0x0000001b);
+
+			/* QinQ/VLAN TPIDs and IPv4/IPv6 ethertypes. */
+			airoha_fe_wr(eth, REG_PPE_GLO_CFG(i) + 0xd0, 0x88a88100);
+			airoha_fe_wr(eth, REG_PPE_GLO_CFG(i) + 0xd4, 0x08000000);
+			airoha_fe_wr(eth, REG_PPE_GLO_CFG(i) + 0xd8, 0x000086dd);
+
 			/* Give every egress forwarding port a generous MTU so a
 			 * full-size offloaded frame is never bounced to the CPU
 			 * with HIT_BIND_EXCEED_MTU. The hardware-forwarded path may
