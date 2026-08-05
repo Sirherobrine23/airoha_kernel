@@ -7,6 +7,7 @@
  */
 
 #include <linux/debugfs.h>
+#include <linux/io.h>
 #include <linux/seq_file.h>
 
 #include "airoha_wed.h"
@@ -64,6 +65,39 @@ dump_wed_regs(struct seq_file *s, struct mtk_wed_device *dev,
 	}
 }
 
+static void
+dump_wed_tx_rings(struct seq_file *s, struct mtk_wed_device *dev)
+{
+	int i;
+
+	seq_puts(s, "\nring path        base       count cpu_idx dma_idx\n");
+	for (i = 0; i < ARRAY_SIZE(dev->tx_ring); i++) {
+		static const char * const path[] = { "WED_TX", "WED_WPDMA" };
+		u32 reg[] = { MTK_WED_RING_TX(i), MTK_WED_WPDMA_RING_TX(i) };
+		int j;
+
+		for (j = 0; j < ARRAY_SIZE(reg); j++)
+			seq_printf(s, "%4d %-11s 0x%08x %5u %7u %7u\n", i,
+				   path[j],
+				   wed_r32(dev, reg[j] + MTK_WED_RING_OFS_BASE),
+				   wed_r32(dev, reg[j] + MTK_WED_RING_OFS_COUNT),
+				   (u32)(wed_r32(dev, reg[j] + MTK_WED_RING_OFS_CPU_IDX) &
+				   GENMASK(15, 0)),
+				   (u32)(wed_r32(dev, reg[j] + MTK_WED_RING_OFS_DMA_IDX) &
+				   GENMASK(15, 0)));
+
+		if (dev->tx_ring[i].wpdma)
+			seq_printf(s, "%4d %-11s 0x%08x %5u %7u %7u\n", i,
+				   "WLAN_WPDMA",
+				   readl(dev->tx_ring[i].wpdma + MTK_WED_RING_OFS_BASE),
+				   readl(dev->tx_ring[i].wpdma + MTK_WED_RING_OFS_COUNT),
+				   (u32)(readl(dev->tx_ring[i].wpdma +
+					       MTK_WED_RING_OFS_CPU_IDX) & GENMASK(15, 0)),
+				   (u32)(readl(dev->tx_ring[i].wpdma +
+					       MTK_WED_RING_OFS_DMA_IDX) & GENMASK(15, 0)));
+	}
+}
+
 static int
 wed_txinfo_show(struct seq_file *s, void *data)
 {
@@ -74,6 +108,8 @@ wed_txinfo_show(struct seq_file *s, void *data)
 		return 0;
 
 	dump_wed_regs(s, dev, wed_regs);
+
+	dump_wed_tx_rings(s, dev);
 
 	return 0;
 }
