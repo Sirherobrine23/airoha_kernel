@@ -2370,7 +2370,8 @@ static int airoha_qdma_init_hfwd_queues(struct airoha_qdma *qdma)
 			LMGR_INIT_START | LMGR_SRAM_MODE_MASK |
 			HW_FWD_DESC_NUM_MASK,
 			FIELD_PREP(HW_FWD_DESC_NUM_MASK, num_desc) |
-			LMGR_INIT_START | LMGR_SRAM_MODE_MASK);
+			LMGR_INIT_START |
+			(airoha_is(eth, en7523) ? 0 : LMGR_SRAM_MODE_MASK));
 
 	return read_poll_timeout(airoha_qdma_rr, status,
 				 !(status & LMGR_INIT_START), USEC_PER_MSEC,
