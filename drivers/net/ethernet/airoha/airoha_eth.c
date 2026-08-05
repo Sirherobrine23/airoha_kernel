@@ -103,6 +103,34 @@ static void airoha_qdma_irq_disable(struct airoha_irq_bank *irq_bank,
 	airoha_qdma_set_irqmask(irq_bank, index, mask, 0);
 }
 
+static u32 airoha_qdma_rx_irq_bank_mask(struct airoha_qdma *qdma, int bank)
+{
+	if (airoha_is(qdma->eth, en7523)) {
+		static const u32 en7523_rx_irq_mask[] = {
+			0x839f, 0x7c00,
+		};
+
+		return en7523_rx_irq_mask[bank];
+	}
+
+	return RX_IRQ_BANK_PIN_MASK(bank);
+}
+
+static void airoha_qdma_quiesce_irqs(struct airoha_qdma *qdma)
+{
+	int bank;
+
+	for (bank = 0; bank < qdma->eth->soc->irq_banks; bank++) {
+		airoha_qdma_wr(qdma, REG_INT_ENABLE(bank,
+						    QDMA_INT_REG_IDX0), 0);
+		airoha_qdma_wr(qdma, REG_INT_ENABLE(bank,
+						    QDMA_INT_REG_IDX1), 0);
+	}
+
+	airoha_qdma_wr(qdma, REG_INT_STATUS(0), 0xffffffff);
+	airoha_qdma_wr(qdma, REG_INT_STATUS(1), 0xffffffff);
+}
+
 static int airoha_set_macaddr(struct airoha_gdm_dev *dev, const u8 *addr)
 {
 	u8 ref_addr[ETH_ALEN] __aligned(2);
@@ -1829,7 +1857,8 @@ static int airoha_qdma_rx_napi_poll(struct napi_struct *napi, int budget)
 							 : QDMA_INT_REG_IDX2;
 
 		for (i = 0; i < qdma->eth->soc->irq_banks; i++) {
-			if (!(BIT(qid) & RX_IRQ_BANK_PIN_MASK(i)))
+			if (!(BIT(qid) &
+			      airoha_qdma_rx_irq_bank_mask(qdma, i)))
 				continue;
 
 			airoha_qdma_irq_enable(&qdma->irq_banks[i], intr_reg,
@@ -2481,32 +2510,57 @@ static void airoha_qdma_init_qos_stats(struct airoha_qdma *qdma)
 	}
 }
 
-static int airoha_qdma_hw_init(struct airoha_qdma *qdma)
+static void airoha_qdma_configure_irqs(struct airoha_qdma *qdma)
 {
 	int i;
 
 	for (i = 0; i < qdma->eth->soc->irq_banks; i++) {
+		u32 rx_mask = airoha_qdma_rx_irq_bank_mask(qdma, i);
+
 		/* clear pending irqs */
 		airoha_qdma_wr(qdma, REG_INT_STATUS(i), 0xffffffff);
 		/* setup rx irqs */
+		if (airoha_is(qdma->eth, en7523)) {
+			airoha_qdma_irq_enable(&qdma->irq_banks[i],
+					       QDMA_INT_REG_IDX1,
+					       RX_DONE_LOW_INT_MASK & rx_mask);
+			continue;
+		}
+
 		airoha_qdma_irq_enable(&qdma->irq_banks[i], QDMA_INT_REG_IDX0,
-				       INT_RX0_MASK(RX_IRQ_BANK_PIN_MASK(i)));
+				       INT_RX0_MASK(rx_mask));
 		airoha_qdma_irq_enable(&qdma->irq_banks[i], QDMA_INT_REG_IDX1,
-				       INT_RX1_MASK(RX_IRQ_BANK_PIN_MASK(i)));
+				       INT_RX1_MASK(rx_mask));
+
 		airoha_qdma_irq_enable(&qdma->irq_banks[i], QDMA_INT_REG_IDX2,
-				       INT_RX2_MASK(RX_IRQ_BANK_PIN_MASK(i)));
+				       INT_RX2_MASK(rx_mask));
 		airoha_qdma_irq_enable(&qdma->irq_banks[i], QDMA_INT_REG_IDX3,
-				       INT_RX3_MASK(RX_IRQ_BANK_PIN_MASK(i)));
+				       INT_RX3_MASK(rx_mask));
 	}
 	/* setup tx irqs */
 	airoha_qdma_irq_enable(&qdma->irq_banks[0], QDMA_INT_REG_IDX0,
-			       TX_COHERENT_LOW_INT_MASK | INT_TX_MASK);
-	airoha_qdma_irq_enable(&qdma->irq_banks[0], QDMA_INT_REG_IDX4,
-			       TX_COHERENT_HIGH_INT_MASK);
+			       (airoha_is(qdma->eth, en7523) ? 0 :
+				TX_COHERENT_LOW_INT_MASK) |
+			       INT_TX_MASK);
+
+	if (!airoha_is(qdma->eth, en7523))
+		airoha_qdma_irq_enable(&qdma->irq_banks[0],
+				       QDMA_INT_REG_IDX4,
+				       TX_COHERENT_HIGH_INT_MASK);
+}
+
+static int airoha_qdma_hw_init(struct airoha_qdma *qdma)
+{
+	int i;
+
+	if (!airoha_is(qdma->eth, en7523))
+		airoha_qdma_configure_irqs(qdma);
 
 	if (airoha_is(qdma->eth, en7523)) {
-		airoha_qdma_wr(qdma, 0x30, 0x7C000000);
-		airoha_qdma_wr(qdma, 0x34, 0x7C007C00);
+		/*
+		 * INT3 serves the 2.4 GHz RX ring.  INT4 and IRQ2 are owned
+		 * by the NPU when WiFi offload is enabled.
+		 */
 		airoha_qdma_wr(qdma, 0x38, 0x00200000);
 		airoha_qdma_wr(qdma, 0x3C, 0x00200020);
 		airoha_qdma_wr(qdma, 0x40, 0x00000030);
@@ -2570,17 +2624,21 @@ static irqreturn_t airoha_irq_handler(int irq, void *dev_instance)
 	struct airoha_irq_bank *irq_bank = dev_instance;
 	struct airoha_qdma *qdma = irq_bank->qdma;
 	u32 rx_intr_mask = 0, rx_intr1, rx_intr2;
-	u32 intr[ARRAY_SIZE(irq_bank->irqmask)];
-	int i;
+	bool handled = false;
+	u32 intr[ARRAY_SIZE(irq_bank->irqmask)] = {};
+	int i, num_status;
 
-	for (i = 0; i < ARRAY_SIZE(intr); i++) {
+	num_status = airoha_is(qdma->eth, en7523) ? 2 : ARRAY_SIZE(intr);
+
+	for (i = 0; i < num_status; i++) {
 		intr[i] = airoha_qdma_rr(qdma, REG_INT_STATUS(i));
 		intr[i] &= irq_bank->irqmask[i];
 		airoha_qdma_wr(qdma, REG_INT_STATUS(i), intr[i]);
+		handled |= !!intr[i];
 	}
 
 	if (!test_bit(DEV_STATE_INITIALIZED, &qdma->eth->state))
-		return IRQ_NONE;
+		return IRQ_RETVAL(handled);
 
 	rx_intr1 = intr[1] & RX_DONE_LOW_INT_MASK;
 	if (rx_intr1) {
@@ -2669,6 +2727,9 @@ static int airoha_qdma_init(struct platform_device *pdev,
 	if (IS_ERR(qdma->regs))
 		return dev_err_probe(eth->dev, PTR_ERR(qdma->regs),
 				     "failed to iomap qdma%d regs\n", id);
+
+	if (airoha_is(eth, en7523))
+		airoha_qdma_quiesce_irqs(qdma);
 
 	err = airoha_qdma_init_irq_banks(pdev, qdma);
 	if (err)
@@ -5637,8 +5698,11 @@ static int airoha_probe(struct platform_device *pdev)
 			goto error_wed_exit;
 	}
 
-	for (i = 0; i < ARRAY_SIZE(eth->qdma); i++)
+	for (i = 0; i < ARRAY_SIZE(eth->qdma); i++) {
 		airoha_qdma_start_napi(&eth->qdma[i]);
+		if (airoha_is(eth, en7523))
+			airoha_qdma_configure_irqs(&eth->qdma[i]);
+	}
 
 	err = airoha_register_gdm_devices(eth);
 	if (err)
