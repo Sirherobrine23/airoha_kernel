@@ -2437,6 +2437,9 @@ static void airoha_qdma_init_qos(struct airoha_qdma *qdma)
 	airoha_qdma_clear(qdma, REG_TXWRR_MODE_CFG, TWRR_WEIGHT_SCALE_MASK);
 	airoha_qdma_set(qdma, REG_TXWRR_MODE_CFG, TWRR_WEIGHT_BASE_MASK);
 
+	if (airoha_is(qdma->eth, en7523))
+		airoha_qdma_set(qdma, REG_QDMA_HQOS_MODE_CFG, QDMA_HQOS_MODE_EN);
+
 	/* The EN7523 SDK enables PSE buffer estimation only on QDMA WAN.
 	 * QDMA1 is the WAN instance in this driver. Later SoCs explicitly
 	 * keep this estimator disabled, as does EN7523 QDMA LAN.
@@ -2452,6 +2455,10 @@ static void airoha_qdma_init_qos(struct airoha_qdma *qdma)
 		    EGRESS_RATE_METER_EQ_RATE_EN_MASK;
 	meter_window = 0x1f;
 	meter_timeslice = 0x7ff;
+
+	if (airoha_is(eth, en7523))
+		meter_cfg &= ~(EGRESS_RATE_METER_EN_MASK |
+			       EGRESS_RATE_METER_EQ_RATE_EN_MASK);
 
 	/* The EN7523 SDK uses a shorter sampling interval on QDMA WAN and
 	 * leaves equal-rate mode disabled there. QDMA LAN uses the generic
@@ -2482,7 +2489,8 @@ static void airoha_qdma_init_qos(struct airoha_qdma *qdma)
 	airoha_qdma_rmw(qdma, REG_GLB_TRTCM_CFG, GLB_SLOW_TICK_RATIO_MASK,
 			FIELD_PREP(GLB_SLOW_TICK_RATIO_MASK, 40));
 
-	airoha_qdma_set(qdma, REG_EGRESS_TRTCM_CFG, EGRESS_TRTCM_EN_MASK);
+	if (!airoha_is(qdma->eth, en7523))
+		airoha_qdma_set(qdma, REG_EGRESS_TRTCM_CFG, EGRESS_TRTCM_EN_MASK);
 	airoha_qdma_rmw(qdma, REG_EGRESS_TRTCM_CFG, EGRESS_FAST_TICK_MASK,
 			FIELD_PREP(EGRESS_FAST_TICK_MASK, 25));
 	airoha_qdma_rmw(qdma, REG_EGRESS_TRTCM_CFG,

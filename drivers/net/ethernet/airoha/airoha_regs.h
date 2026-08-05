@@ -928,7 +928,11 @@
 #define PSE_BUF_TOTAL_THR_MASK		GENMASK(10, 0)
 
 #define REG_CHAN_QOS_MODE(_n)		(0x1040 + ((_n) << 2))
-#define CHAN_QOS_MODE_MASK(_n)		GENMASK(2 + ((_n) << 2), (_n) << 2)
+#define CHAN_QOS_MODE_MASK(_n)		GENMASK(2 + (((_n) & 0x7) << 2), \
+						 (((_n) & 0x7) << 2))
+
+#define REG_QDMA_HQOS_MODE_CFG		0x0090
+#define QDMA_HQOS_MODE_EN		BIT(31)
 
 #define REG_GLB_TRTCM_CFG		0x1080
 #define GLB_TRTCM_EN_MASK		BIT(31)
