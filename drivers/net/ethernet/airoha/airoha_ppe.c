@@ -1553,6 +1553,26 @@ airoha_ppe_ipv6_tuple_match(const struct airoha_foe_ipv6 *foe,
 }
 
 static bool
+airoha_ppe_ipv4_dnat_tuple_match(struct airoha_flow_table_entry *e,
+				 const struct airoha_ppe_skb_tuple *skb)
+{
+	if (skb->family != AIROHA_PPE_TUPLE_IPV4 || !skb->has_ports)
+		return false;
+
+	if (e->data.ipv4.orig_tuple.src_ip != be32_to_cpu(skb->v4.src) ||
+	    e->data.ipv4.orig_tuple.dest_ip != be32_to_cpu(skb->v4.dst))
+		return false;
+
+	if (e->data.ipv4.orig_tuple.src_port != skb->src_port)
+		return false;
+
+	if (e->data.ipv4.new_tuple.src_ip != e->data.ipv4.orig_tuple.src_ip)
+		return false;
+
+	return e->data.ipv4.new_tuple.dest_port == skb->dst_port;
+}
+
+static bool
 airoha_ppe_foe_entry_match_skb_tuple(struct airoha_flow_table_entry *e,
 				     const struct airoha_ppe_skb_tuple *skb)
 {
@@ -1571,7 +1591,8 @@ airoha_ppe_foe_entry_match_skb_tuple(struct airoha_flow_table_entry *e,
 		return airoha_ppe_ipv4_tuple_match(&e->data.ipv4.orig_tuple,
 						    skb, true) ||
 		       airoha_ppe_ipv4_tuple_match(&e->data.ipv4.new_tuple,
-						    skb, true);
+						    skb, true) ||
+		       airoha_ppe_ipv4_dnat_tuple_match(e, skb);
 	case PPE_PKT_TYPE_IPV6_ROUTE_3T:
 		return airoha_ppe_ipv6_tuple_match(&e->data.ipv6, skb, false);
 	case PPE_PKT_TYPE_IPV6_ROUTE_5T:
