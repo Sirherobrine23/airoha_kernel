@@ -15,10 +15,10 @@
 #include <linux/reset-controller.h>
 #include <dt-bindings/clock/en7523-clk.h>
 #include <dt-bindings/clock/econet,en751221-scu.h>
-#include <dt-bindings/reset/econet,en751221-scu.h>
 #include <dt-bindings/reset/airoha,en7523-reset.h>
 #include <dt-bindings/reset/airoha,en7581-reset.h>
 #include <dt-bindings/reset/airoha,an7583-reset.h>
+#include <dt-bindings/reset/econet,en751221-scu.h>
 
 #define RST_NR_PER_BANK			32
 
@@ -91,8 +91,8 @@
 
 #define REG_RST_CTRL2			0x830
 #define REG_RST_CTRL1			0x834
-
-/* EN751221 */
+#define EN751221_REG_RST_DMT		0x84
+#define EN751221_REG_RST_USB		0xec
 #define EN751221_REG_SPI_DIV		0x0cc
 #define EN751221_REG_SPI_DIV_MASK	GENMASK(31, 8)
 #define EN751221_SPI_BASE		500000000
@@ -102,10 +102,6 @@
 #define EN751221_REG_BUS_MASK		GENMASK(21, 12)
 #define EN751221_REG_SSR3		0x094
 #define EN751221_REG_SSR3_GSW_MASK	GENMASK(9, 8)
-
-#define EN751221_REG_RST_DMT		0x84
-#define EN751221_REG_RST_USB		0xec
-
 #define EN751221_MAX_CLKS		5
 
 enum en_hir {
@@ -1671,15 +1667,18 @@ static int an7583_clk_hw_init(struct platform_device *pdev,
 	return register_resets(dev, clk_map, soc_data);
 }
 
-static enum en_hir get_hw_id(struct regmap *clk_map)
+static enum en_hir en751221_get_hw_id(struct regmap *clk_map)
 {
 	u32 val;
+	int err;
 
-	if (regmap_read(clk_map, REG_HIR, &val))
+	err = regmap_read(clk_map, REG_HIR, &val);
+	if (err) {
+		pr_warn("Unable to read EcoNet SoC HIR: %d\n", err);
 		return HIR_UNKNOWN;
+	}
 
 	val = FIELD_GET(REG_HIR_MASK, val);
-
 	if (val < HIR_MAX)
 		return (enum en_hir)val;
 
@@ -1688,9 +1687,9 @@ static enum en_hir get_hw_id(struct regmap *clk_map)
 	return HIR_UNKNOWN;
 }
 
-static int en751221_try_register_clk(struct device *dev, int key,
-				      struct clk_hw_onecell_data *clk_data,
-				      const char *name, u32 rate)
+static int en751221_register_fixed_rate(struct device *dev, int key,
+					struct clk_hw_onecell_data *clk_data,
+					const char *name, u32 rate)
 {
 	struct clk_hw *hw;
 
@@ -1699,26 +1698,28 @@ static int en751221_try_register_clk(struct device *dev, int key,
 
 	hw = devm_clk_hw_register_fixed_rate(dev, name, NULL, 0, rate);
 	if (IS_ERR(hw))
-		return PTR_ERR(hw);
+		return dev_err_probe(dev, PTR_ERR(hw),
+				     "Failed to register clk %s\n", name);
 
 	clk_data->hws[key] = hw;
+
 	return 0;
 }
 
 static int en751221_register_clocks(struct device *dev,
-				     struct clk_hw_onecell_data *clk_data,
-				     struct regmap *map, struct regmap *clk_map)
+				    struct clk_hw_onecell_data *clk_data,
+				    struct regmap *map, struct regmap *clk_map)
 {
-	enum en_hir hid = get_hw_id(clk_map);
+	enum en_hir hid = en751221_get_hw_id(clk_map);
 	struct clk_hw *hw;
-	u32 rate;
-	u32 div;
+	u32 rate, val;
 	int err;
 
 	/* PCI */
 	hw = en7523_register_pcie_clk(dev, clk_map);
 	if (IS_ERR(hw))
 		return PTR_ERR(hw);
+
 	clk_data->hws[EN751221_CLK_PCIE] = hw;
 
 	/* SPI */
@@ -1726,43 +1727,51 @@ static int en751221_register_clocks(struct device *dev,
 	if (hid == HIR_EN7526C)
 		rate = EN751221_SPI_BASE_EN7526C;
 
-	err = regmap_read(map, EN751221_REG_SPI_DIV, &div);
+	err = regmap_read(map, EN751221_REG_SPI_DIV, &val);
 	if (err)
-		return err;
+		return dev_err_probe(dev, err,
+				     "Failed reading fixed clk div spi\n");
 
-	div = FIELD_GET(EN751221_REG_SPI_DIV_MASK, div) * 2;
-	if (!div)
-		div = EN751221_SPI_DIV_DEFAULT;
+	val = FIELD_GET(EN751221_REG_SPI_DIV_MASK, val) * 2;
+	if (!val)
+		val = EN751221_SPI_DIV_DEFAULT;
 
-	err = en751221_try_register_clk(dev, EN751221_CLK_SPI, clk_data,
-					"spi", rate / div);
+	err = en751221_register_fixed_rate(dev, EN751221_CLK_SPI, clk_data,
+					   "spi", rate / val);
 	if (err)
 		return err;
 
 	/* BUS */
-	err = regmap_read(clk_map, EN751221_REG_BUS, &rate);
+	err = regmap_read(clk_map, EN751221_REG_BUS, &val);
 	if (err)
-		return err;
-	rate = FIELD_GET(EN751221_REG_BUS_MASK, rate);
-	rate *= 1000000;
-	err = en751221_try_register_clk(dev, EN751221_CLK_BUS, clk_data,
-					"bus", rate);
+		return dev_err_probe(dev, err,
+				     "Failed reading fixed clk rate bus\n");
+
+	rate = FIELD_GET(EN751221_REG_BUS_MASK, val) * 1000000;
+	err = en751221_register_fixed_rate(dev, EN751221_CLK_BUS, clk_data,
+					   "bus", rate);
 	if (err)
 		return err;
 
 	/* CPU */
-	err = en751221_try_register_clk(dev, EN751221_CLK_CPU, clk_data,
-					"cpu", rate * 4);
+	err = en751221_register_fixed_rate(dev, EN751221_CLK_CPU, clk_data,
+					   "cpu", rate * 4);
 	if (err)
 		return err;
 
 	/* GSW */
-	err = regmap_read(clk_map, EN751221_REG_SSR3, &rate);
+	err = regmap_read(clk_map, EN751221_REG_SSR3, &val);
 	if (err)
-		return err;
-	rate = FIELD_GET(EN751221_REG_SSR3_GSW_MASK, rate);
-	return en751221_try_register_clk(dev, EN751221_CLK_GSW, clk_data, "gsw",
-				  gsw751221_base[rate]);
+		return dev_err_probe(dev, err,
+				     "Failed reading fixed clk rate gsw\n");
+
+	val = FIELD_GET(EN751221_REG_SSR3_GSW_MASK, val);
+	if (val >= ARRAY_SIZE(gsw751221_base))
+		return dev_err_probe(dev, -EINVAL,
+				     "Invalid GSW clock selector %u\n", val);
+
+	return en751221_register_fixed_rate(dev, EN751221_CLK_GSW, clk_data,
+					    "gsw", gsw751221_base[val]);
 }
 
 static int en751221_clk_hw_init(struct platform_device *pdev,
@@ -1792,7 +1801,6 @@ static int en751221_clk_hw_init(struct platform_device *pdev,
 
 	return register_resets(&pdev->dev, clk_map, soc_data);
 }
-
 
 static int en7523_clk_probe(struct platform_device *pdev)
 {
@@ -1879,10 +1887,10 @@ static const struct en_clk_soc_data an7583_data = {
 };
 
 static const struct en_clk_soc_data en751221_data = {
+	.num_clocks = EN751221_MAX_CLKS,
 	.rst_map = en751221_rst_map,
 	.rst_ofs = en751221_rst_ofs,
 	.nr_resets = ARRAY_SIZE(en751221_rst_map),
-	.num_clocks = EN751221_MAX_CLKS,
 	.pcie_ops = {
 		.is_enabled = en7523_pci_is_enabled,
 		.prepare = en7523_pci_prepare,
@@ -1890,7 +1898,6 @@ static const struct en_clk_soc_data en751221_data = {
 	},
 	.hw_init = en751221_clk_hw_init,
 };
-
 
 static const struct of_device_id of_match_clk_en7523[] = {
 	{ .compatible = "airoha,en7523-scu", .data = &en7523_data },
