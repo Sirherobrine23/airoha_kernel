@@ -62,7 +62,7 @@ comment "SPI Master Controller Drivers"
 
 config SPI_AIROHA_SNFI
 	tristate "Airoha SPI Flash Interface"
-	depends on ARCH_AIROHA || COMPILE_TEST
+	depends on ARCH_AIROHA || ECONET || COMPILE_TEST
 	depends on SPI_MASTER
 	select REGMAP_MMIO
 	help
