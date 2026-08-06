@@ -12,6 +12,7 @@ choice
 	config SOC_ECONET_EN751221
 		bool "EN751221 family"
 		select COMMON_CLK
+		select CPU_BIG_ENDIAN
 		select ECONET_EN751221_INTC
 		select IRQ_MIPS_CPU
 		select SMP
@@ -22,6 +23,23 @@ choice
 		  They are based on single core MIPS 34Kc processors. To boot
 		  this kernel, you will need a device tree such as
 		  MIPS_RAW_APPENDED_DTB=y, and a root filesystem.
+
+	config SOC_ECONET_EN7528
+		bool "EN7528 family"
+		select COMMON_CLK
+		select CPU_LITTLE_ENDIAN
+		select IRQ_MIPS_CPU
+		select MIPS_CPU_SCACHE
+		select MIPS_GIC
+		select SMP
+		select SMP_UP
+		select SYS_SUPPORTS_HIGHMEM
+		select SYS_SUPPORTS_MIPS_CPS
+		select SYS_SUPPORTS_MULTITHREADING
+		select SYS_SUPPORTS_SMP
+		help
+		  The EN7528 family with dual-core MIPS 1004Kc.
+		  Requires MIPS_RAW_APPENDED_DTB=y for boot.
 endchoice
 
 choice
