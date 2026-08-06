@@ -404,6 +404,12 @@ config SPI_DLN2
 	 This driver can also be built as a module.  If so, the module
 	 will be called spi-dln2.
 
+config SPI_AIROHA_EN7523
+	bool "Airoha EN7523 SPI controller support"
+	depends on ARCH_AIROHA
+	help
+	  This enables SPI controller support for the Airoha EN7523 SoC.
+
 config SPI_EP93XX
 	tristate "Cirrus Logic EP93xx SPI controller"
 	depends on ARCH_EP93XX || COMPILE_TEST
