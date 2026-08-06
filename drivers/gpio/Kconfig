@@ -293,7 +293,7 @@ config GPIO_EM
 
 config GPIO_EN7523
 	tristate "Airoha GPIO support"
-	depends on ARCH_AIROHA
+	depends on ARCH_AIROHA || ECONET
 	default ARCH_AIROHA
 	select GPIO_GENERIC
 	select GPIOLIB_IRQCHIP
