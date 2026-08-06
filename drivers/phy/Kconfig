@@ -113,6 +113,17 @@ config PHY_NXP_PTN3222
 	  schemes. It supports all three USB 2.0 data rates: Low Speed, Full
 	  Speed and High Speed.
 
+config PHY_EN7528_PCIE
+	tristate "EcoNet EN7528 PCIe PHY Driver"
+	depends on ECONET || COMPILE_TEST
+	depends on OF
+	select GENERIC_PHY
+	select REGMAP_MMIO
+	help
+	  Say Y here to add support for EcoNet EN7528 PCIe PHY driver.
+	  This driver provides PHY initialization for the two PCIe ports
+	  on EN7528 SoC.
+
 source "drivers/phy/airoha/Kconfig"
 source "drivers/phy/allwinner/Kconfig"
 source "drivers/phy/amlogic/Kconfig"
