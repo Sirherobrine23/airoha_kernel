@@ -74,8 +74,8 @@ struct en7528_usb_phy_priv {
 };
 
 static void en7528_usb_phy_slew_rate_calibration(struct en7528_usb_phy_priv *priv,
-						  unsigned int port_id,
-						  unsigned int port_base)
+						 unsigned int port_id,
+						 unsigned int port_base)
 {
 	unsigned int acr0 = port_base + EN7528_USB_PHY_ACR0;
 	u32 fm_out;
@@ -108,9 +108,9 @@ static void en7528_usb_phy_slew_rate_calibration(struct en7528_usb_phy_priv *pri
 
 	/* Timeout can happen and we will apply default value at the end */
 	(void)regmap_read_poll_timeout(priv->regmap, EN7528_USB_PHY_FMMONR0,
-				 fm_out, fm_out,
-				 EN7528_USB_PHY_FREQDET_SLEEP,
-				 EN7528_USB_PHY_FREQDET_TIMEOUT);
+				       fm_out, fm_out,
+				       EN7528_USB_PHY_FREQDET_SLEEP,
+				       EN7528_USB_PHY_FREQDET_TIMEOUT);
 
 	/* Disable frequency meter */
 	regmap_clear_bits(priv->regmap, EN7528_USB_PHY_FMCR0,
@@ -134,7 +134,8 @@ static void en7528_usb_phy_slew_rate_calibration(struct en7528_usb_phy_priv *pri
 		/* (1024 / FM_OUT) * REF_CK * SR_COEF */
 		srctrl = EN7528_USB_PHY_REF_CK * EN7528_USB_PHY_SR_COEF;
 		srctrl = (srctrl * EN7528_USB_PHY_FM_DET_CYCLE_CNT) / fm_out;
-		srctrl = DIV_ROUND_CLOSEST(srctrl, EN7528_USB_PHY_SR_COEF_DIVISOR);
+		srctrl = DIV_ROUND_CLOSEST(srctrl,
+					   EN7528_USB_PHY_SR_COEF_DIVISOR);
 		dev_dbg(priv->dev, "port%u: SR calibration applied: %x\n",
 			port_id, srctrl);
 	}
@@ -241,7 +242,7 @@ static int en7528_usb_phy_probe(struct platform_device *pdev)
 	struct en7528_usb_phy_priv *priv;
 	struct device *dev = &pdev->dev;
 	unsigned int index;
-	void *base;
+	void __iomem *base;
 
 	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
 	if (!priv)
