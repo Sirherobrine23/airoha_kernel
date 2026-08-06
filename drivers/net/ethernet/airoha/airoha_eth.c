@@ -5470,7 +5470,7 @@ static int airoha_register_gdm_devices(struct airoha_eth *eth)
 	return 0;
 }
 
-static int airoha_probe(struct platform_device *pdev)
+static int airoha_eth_probe(struct platform_device *pdev)
 {
 	struct reset_control_bulk_data *xsi_rsts;
 	struct device_node *np;
@@ -5636,7 +5636,7 @@ error_ports_free:
 	return err;
 }
 
-static void airoha_remove(struct platform_device *pdev)
+static void airoha_eth_remove(struct platform_device *pdev)
 {
 	struct airoha_eth *eth = platform_get_drvdata(pdev);
 	int i;
@@ -5983,8 +5983,8 @@ static const struct of_device_id of_airoha_match[] = {
 MODULE_DEVICE_TABLE(of, of_airoha_match);
 
 static struct platform_driver airoha_driver = {
-	.probe = airoha_probe,
-	.remove = airoha_remove,
+	.probe = airoha_eth_probe,
+	.remove = airoha_eth_remove,
 	.driver = {
 		.name = KBUILD_MODNAME,
 		.of_match_table = of_airoha_match,
