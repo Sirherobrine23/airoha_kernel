@@ -82,10 +82,11 @@ static void opfifo_write(u32 cmd, u32 len)
 
 static void set_cs(int state)
 {
-	if (state)
-		opfifo_write(OP_CSH, 1);
-	else
-		opfifo_write(OP_CSL, 1);
+	u32 cmd = state ? OP_CSH : OP_CSL;
+
+	/* EN751221 drops writes if we don't send this twice. */
+	opfifo_write(cmd, 1);
+	opfifo_write(cmd, 1);
 }
 
 static void manual_begin_cmd(void)
@@ -226,12 +227,12 @@ static int xfer_write(struct spi_transfer *xfer, int next_xfer_is_rx)
 	return xfer->len;
 }
 
-size_t max_transfer_size(struct spi_device *spi)
+static size_t max_transfer_size(struct spi_device *spi)
 {
 	return _ENSPI_MAX_XFER;
 }
 
-int transfer_one_message(struct spi_controller *ctrl, struct spi_message *msg)
+static int transfer_one_message(struct spi_controller *ctrl, struct spi_message *msg)
 {
 	struct spi_transfer *xfer;
 	int next_xfer_is_rx = 0;

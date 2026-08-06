@@ -406,7 +406,7 @@ config SPI_DLN2
 
 config SPI_AIROHA_EN7523
 	bool "Airoha EN7523 SPI controller support"
-	depends on ARCH_AIROHA
+	depends on ARCH_AIROHA || ECONET
 	help
 	  This enables SPI controller support for the Airoha EN7523 SoC.
 
