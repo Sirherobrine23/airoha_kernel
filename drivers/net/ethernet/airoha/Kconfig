@@ -7,6 +7,12 @@ config NET_VENDOR_AIROHA
 
 if NET_VENDOR_AIROHA
 
+config NET_AIROHA_COMMON
+	tristate
+	help
+	  Shared helpers used by the Airoha ARM and EcoNet MIPS frame-engine
+	  Ethernet drivers.
+
 config NET_AIROHA_NPU
 	tristate "Airoha NPU support"
 	select WANT_DEV_COREDUMP
@@ -18,6 +24,7 @@ config NET_AIROHA_NPU
 config NET_AIROHA
 	tristate "Airoha SoC Gigabit Ethernet support"
 	depends on NET_DSA || !NET_DSA
+	select NET_AIROHA_COMMON
 	select NET_AIROHA_NPU
 	select PAGE_POOL
 	select PHYLINK

@@ -7,6 +7,8 @@
 #ifndef AIROHA_ETH_H
 #define AIROHA_ETH_H
 
+#include "airoha_common.h"
+
 #include <linux/atomic.h>
 #include <linux/debugfs.h>
 #include <linux/etherdevice.h>
@@ -794,10 +796,6 @@ struct airoha_eth {
 	struct airoha_qdma qdma[AIROHA_MAX_NUM_QDMA];
 	struct airoha_gdm_port **ports;
 };
-
-u32 airoha_rr(void __iomem *base, u32 offset);
-void airoha_wr(void __iomem *base, u32 offset, u32 val);
-u32 airoha_rmw(void __iomem *base, u32 offset, u32 mask, u32 val);
 
 #define airoha_fe_rr(eth, offset)				\
 	airoha_rr((eth)->fe_regs, (offset))
