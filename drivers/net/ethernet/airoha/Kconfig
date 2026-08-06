@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: GPL-2.0-only
 config NET_VENDOR_AIROHA
-	bool "Airoha devices"
+	bool "Airoha/EcoNet devices"
 	depends on ARCH_AIROHA || ECONET || COMPILE_TEST
 	help
-	  If you have a Airoha SoC with ethernet, say Y.
+	  If you have a Airoha/EcoNet SoC with ethernet, say Y.
 
 if NET_VENDOR_AIROHA
 
@@ -12,14 +12,6 @@ config NET_AIROHA_COMMON
 	help
 	  Shared helpers used by the Airoha ARM and EcoNet MIPS frame-engine
 	  Ethernet drivers.
-
-config NET_AIROHA_NPU
-	tristate "Airoha NPU support"
-	select WANT_DEV_COREDUMP
-	select REGMAP_MMIO
-	help
-	  This driver supports Airoha Network Processor (NPU) available
-	  on the Airoha Soc family.
 
 config NET_AIROHA
 	tristate "Airoha SoC Gigabit Ethernet support"
@@ -32,18 +24,25 @@ config NET_AIROHA
 	  This driver supports the gigabit ethernet MACs in the
 	  Airoha SoC family.
 
-config NET_ECONET_EN751221
-	tristate "EcoNet EN751221 Ethernet support"
-	depends on ECONET || COMPILE_TEST
+config NET_ECONET
+	tristate "EcoNet SoC Gigabit Ethernet support"
+	depends on NET_DSA || !NET_DSA
 	depends on OF
 	select NET_AIROHA_COMMON
 	select PAGE_POOL
+	select PHYLINK
 	help
-	  Support the dual-QDMA, dual-GDM frame engine found in the EcoNet
-	  EN7512, EN7521, EN7526 and related EN751221-family MIPS SoCs.
+	  This driver supports the gigabit ethernet MACs in the
+	  EcoNet SoC family.
 
-	  The driver is separate from the newer Airoha EN7523/EN7581 frame
-	  engine driver, while sharing generic MMIO, DMA and netdev helpers.
+config NET_AIROHA_NPU
+	tristate "Airoha NPU support"
+	depends on ARCH_AIROHA
+	select WANT_DEV_COREDUMP
+	select REGMAP_MMIO
+	help
+	  This driver supports Airoha Network Processor (NPU) available
+	  on the Airoha Soc family.
 
 config NET_AIROHA_FLOW_STATS
 	default y
@@ -53,20 +52,20 @@ config NET_AIROHA_FLOW_STATS
 	  Enable Airoha flowtable statistic counters.
 
 config NET_AIROHA_SOC_WED
-	bool "Airoha EN7523 WED support"
-	depends on NET_AIROHA && PCI
+	bool "Airoha/EcoNet WED support"
+	depends on PCI
 	select NET_MEDIATEK_WED_COMMON
 	help
 	  Enable WiFi Ethernet Datapath (WED) hardware offload for the
-	  EN7523 SoC. When enabled, mt76 WiFi drivers can offload
-	  wireless transmit processing through the WED engine rather than
-	  taking the slow path through the CPU.
+	  SoC. When enabled, mt76 WiFi drivers can offload wireless
+	  transmit processing through the WED engine rather than taking
+	  the slow path through the CPU.
 
 	  If unsure, say N.
 
-config AIROHA_XPON
-	tristate "Airoha/EcoNet unified GPON and EPON MAC driver"
-	depends on ARCH_AIROHA || COMPILE_TEST
+config AIROHA_XPON_V1
+	tristate "Airoha/EcoNet xPON MAC driver"
+	depends on ARCH_AIROHA || ECONET || COMPILE_TEST
 	depends on NET_AIROHA
 	depends on OF
 	depends on SFP
