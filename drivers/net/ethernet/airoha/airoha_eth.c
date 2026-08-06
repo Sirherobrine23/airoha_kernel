@@ -49,24 +49,6 @@ static int airoha_qdma_set_gpon_dba_report(struct net_device *netdev,
 	(NETIF_F_IP_CSUM | NETIF_F_IPV6_CSUM | \
 	 NETIF_F_SG | NETIF_F_TSO | NETIF_F_TSO6)
 
-u32 airoha_rr(void __iomem *base, u32 offset)
-{
-	return readl(base + offset);
-}
-
-void airoha_wr(void __iomem *base, u32 offset, u32 val)
-{
-	writel(val, base + offset);
-}
-
-u32 airoha_rmw(void __iomem *base, u32 offset, u32 mask, u32 val)
-{
-	val |= (airoha_rr(base, offset) & ~mask);
-	airoha_wr(base, offset, val);
-
-	return val;
-}
-
 static void airoha_qdma_set_irqmask(struct airoha_irq_bank *irq_bank,
 				    int index, u32 clear, u32 set)
 {
@@ -4091,16 +4073,6 @@ int airoha_eth_xmit_xpon_oam(struct net_device *netdev, struct sk_buff *skb,
 }
 EXPORT_SYMBOL_GPL(airoha_eth_xmit_xpon_oam);
 
-static void airoha_ethtool_get_drvinfo(struct net_device *netdev,
-				       struct ethtool_drvinfo *info)
-{
-	struct airoha_gdm_dev *dev = netdev_priv(netdev);
-	struct airoha_eth *eth = dev->eth;
-
-	strscpy(info->driver, eth->dev->driver->name, sizeof(info->driver));
-	strscpy(info->bus_info, dev_name(eth->dev), sizeof(info->bus_info));
-}
-
 static void airoha_ethtool_get_mac_stats(struct net_device *netdev,
 					 struct ethtool_eth_mac_stats *stats)
 {
@@ -5095,7 +5067,7 @@ static const struct net_device_ops airoha_netdev_ops = {
 };
 
 static const struct ethtool_ops airoha_ethtool_ops = {
-	.get_drvinfo		= airoha_ethtool_get_drvinfo,
+	.get_drvinfo		= airoha_eth_get_drvinfo,
 	.get_eth_mac_stats      = airoha_ethtool_get_mac_stats,
 	.get_rmon_stats		= airoha_ethtool_get_rmon_stats,
 	.get_link_ksettings	= airoha_ethtool_get_link_ksettings,
@@ -5352,16 +5324,9 @@ static int airoha_alloc_gdm_device(struct airoha_eth *eth,
 	if (err)
 		return err;
 
-	err = of_get_ethdev_address(np, netdev);
-	if (err) {
-		if (err == -EPROBE_DEFER)
-			return dev_err_probe(eth->dev, err,
-					     "defer mac address node");
-
-		eth_hw_addr_random(netdev);
-		dev_info(eth->dev, "generated random MAC address %pM\n",
-			 netdev->dev_addr);
-	}
+	err = airoha_eth_init_mac_address(eth->dev, np, netdev);
+	if (err)
+		return err;
 
 	/* Allowed nbq for EN7581 on GDM3 port are 4 and 5 for PCIE0
 	 * and PCIE1 respectively.
@@ -5407,24 +5372,16 @@ static int airoha_alloc_gdm_device(struct airoha_eth *eth,
 static int airoha_alloc_gdm_port(struct airoha_eth *eth,
 				 struct device_node *np)
 {
-	const __be32 *id_ptr = of_get_property(np, "reg", NULL);
 	struct airoha_gdm_port *port;
 	struct device_node *node;
 	int err, nbq, p, d = 0;
-	u32 id;
+	u32 id, max_ports = eth->soc->max_gdm_ports;
 
-	if (!id_ptr) {
-		dev_err(eth->dev, "missing gdm port id\n");
-		return -EINVAL;
-	}
+	err = airoha_eth_get_port_id(eth->dev, np, 1, max_ports, &id);
+	if (err)
+		return err;
 
-	id = be32_to_cpup(id_ptr);
 	p = id - 1;
-
-	if (!id || id > eth->soc->max_gdm_ports) {
-		dev_err(eth->dev, "invalid gdm port id: %d\n", id);
-		return -EINVAL;
-	}
 
 	if (eth->ports[p]) {
 		dev_err(eth->dev, "duplicate gdm port id: %d\n", id);
@@ -5530,11 +5487,9 @@ static int airoha_probe(struct platform_device *pdev)
 
 	eth->dev = &pdev->dev;
 
-	err = dma_set_mask_and_coherent(eth->dev, DMA_BIT_MASK(32));
-	if (err) {
-		dev_err(eth->dev, "failed configuring DMA mask\n");
+	err = airoha_eth_set_dma_mask(eth->dev);
+	if (err)
 		return err;
-	}
 
 	eth->fe_regs = devm_platform_ioremap_resource_byname(pdev, "fe");
 	if (IS_ERR(eth->fe_regs))
@@ -5580,13 +5535,9 @@ static int airoha_probe(struct platform_device *pdev)
 	if (!eth->ports)
 		return -ENOMEM;
 	
-	eth->napi_dev = alloc_netdev_dummy(0);
+	eth->napi_dev = airoha_eth_alloc_napi_dev("qdma_eth");
 	if (!eth->napi_dev)
 		return -ENOMEM;
-
-	/* Enable threaded NAPI by default */
-	eth->napi_dev->threaded = true;
-	strscpy(eth->napi_dev->name, "qdma_eth", sizeof(eth->napi_dev->name));
 	platform_set_drvdata(pdev, eth);
 
 	/* Allocate the GDM ports before bringing up the QDMA hardware. This
