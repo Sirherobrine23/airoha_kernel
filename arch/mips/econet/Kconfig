@@ -14,7 +14,9 @@ choice
 		select COMMON_CLK
 		select CPU_BIG_ENDIAN
 		select ECONET_EN751221_INTC
+		select HAVE_PCI
 		select IRQ_MIPS_CPU
+		select PCI_DRIVERS_GENERIC
 		select SMP
 		select SMP_UP
 		select SYS_SUPPORTS_SMP
@@ -28,9 +30,11 @@ choice
 		bool "EN7528 family"
 		select COMMON_CLK
 		select CPU_LITTLE_ENDIAN
+		select HAVE_PCI
 		select IRQ_MIPS_CPU
 		select MIPS_CPU_SCACHE
 		select MIPS_GIC
+		select PCI_DRIVERS_GENERIC
 		select SMP
 		select SMP_UP
 		select SYS_SUPPORTS_HIGHMEM
