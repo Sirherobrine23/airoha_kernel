@@ -20,33 +20,1663 @@
  * Since QDMA engines are responsible for receiving traffic, the QDMA calls
  * en75_rx_before_recv() before calling napi_gro_receive(), this gives the main
  * driver an opportunity to assign the skb a net_device based on which port is
- * indicated in the DMA packet descriptor. Therefore the QDMA driver
- * (econet_qdma.c) has no awareness of the GDM driver (econet_port.c).
+ * indicated in the DMA packet descriptor. Therefore the QDMA section has
+ * no awareness of the GDM port section.
  *
  * When sending, the GDM driver must in fact register the packet with a QDMA
- * engine. The main driver (this file) passes an opaque QDMA driver struct to
- * the GDM driver which then calls en75_qdma_xmit() when it has a packet to
+ * engine. The platform-driver section passes an opaque QDMA structure to
+ * the GDM port section, which calls en75_qdma_xmit() when it has a packet to
  * send. In order to avoid race conditions during driver teardown, the GDM
  * calls en75_qdma_use() and only calls en75_qdma_unuse() when the GDM driver
  * itself is tearing down. The QDMA will not teardown until it no longer has
  * any users. Any number of GDMs could share a QDMA without problem.
  */
-#include <linux/skbuff.h>
+
+#include <linux/bitmap.h>
+#include <linux/dev_printk.h>
 #include <linux/etherdevice.h>
-#include <net/dsa.h>
+#include <linux/ioport.h>
+#include <linux/mdio.h>
+#include <linux/module.h>
+#include <linux/netdevice.h>
+#include <linux/of_net.h>
+#include <linux/of_reserved_mem.h>
 #include <linux/platform_device.h>
 #include <linux/reset.h>
-#include <linux/of_net.h>
+#include <linux/skbuff.h>
+#include <linux/spinlock.h>
+#include <linux/types.h>
+#include <net/dsa.h>
+#include <net/page_pool/helpers.h>
 
-#include "econet_gdm_regs.h"
-#include "linux/dev_printk.h"
-#include "linux/ioport.h"
-#include "linux/mdio.h"
-#include "linux/netdevice.h"
-#include "econet_qdma_desc.h"
-#include "econet_qdma_regs.h"
 #include "econet_eth.h"
 
+/* QDMA datapath. */
+/* The non-dma part of RX packet descriptor */
+struct en75_q_rx_ent {
+	void				*buf;
+	dma_addr_t			dma_addr;
+	u16				dma_len;
+};
+
+struct en75_q_rx {
+	/* No lock, access only in NAPI, or else when NAPI is disabled
+	 * and qdma->lock is held */
+	struct en75_q_rx_ent		*entry;
+	struct desc			*desc;
+	u16				cpu_i;
+
+	/* Not modified after init */
+	struct en75_qdma		*qdma;
+	struct qchain_regs __iomem	*qchain_regs;
+	int				ndesc;
+	int				buf_size;
+	struct napi_struct		napi;
+	struct page_pool		*page_pool;
+};
+
+/* The non-dma part of TX packet descriptor */
+struct en75_q_tx_ent {
+	struct sk_buff			*skb;
+	dma_addr_t			dma_addr;
+	u16				dma_len;
+	u16				freelist_next;
+};
+
+struct en75_q_tx {
+	/* protect concurrent queue accesses
+	 * use _bh unless in napi poll */
+	spinlock_t			lock_bh;
+	struct en75_q_tx_ent		*entry;
+	struct desc			*desc;
+
+	/* FIFO of free entries because they complete out of order. */
+	u16				freelist_head;
+	u16				freelist_tail;
+
+	/* Not modified after init */
+	struct en75_qdma		*qdma;
+	struct qchain_regs __iomem	*qchain_regs;
+	int				ndesc;
+	struct napi_struct		napi;
+};
+
+struct en75_irq {
+	/* protect concurrent irqmask accesses
+	 * use _irqsave unless in irq handler */
+	spinlock_t 			lock_irq;
+	u32 				irqmask[QDMA_REGS_PER_IRQ];
+	u32 __iomem 			*mask_reg[QDMA_REGS_PER_IRQ];
+	u32 __iomem 			*status_reg[QDMA_REGS_PER_IRQ];
+
+	/* Not modified after init */
+	struct en75_qdma 		*qdma;
+	int 				irq;
+};
+
+struct en75_tx_doneq {
+	/* No lock, access only in NAPI */
+	u32 				*q;
+	struct qregs_doneq __iomem	*regs;
+
+	/* Not modified after init */
+	struct en75_qdma 		*qdma;
+	int 				size;
+	struct napi_struct 		napi;
+};
+
+struct en75_qdma {
+	/* Protects register programming and users. */
+	struct mutex			lock;
+	struct qregs __iomem		*regs;
+	int				users;
+
+	/* Synchronized inside of the structure */
+	struct en75_irq 		irqs[QDMA_NUM_IRQS];
+	struct en75_tx_doneq 		q_tx_done[QDMA_NUM_TX_DONE];
+	struct en75_q_tx 		q_tx[QDMA_NUM_CHAINS];
+	struct en75_q_rx 		q_rx[QDMA_NUM_CHAINS];
+
+	/* Not modified after init */
+	struct en75_eth 		*eth;
+	struct device 			*dev;
+	int 				id;
+	struct fwdesc 			*hwf_desc;
+	struct net_device 		*napi_dev;
+	struct en75_qdma_cfg 		cfg;
+	const struct en75_soc_data	*soc;
+};
+
+static void en75_fill_rx_queue(struct en75_q_rx *q, u32 end_i)
+{
+	u32 ndesc = q->ndesc;
+	u32 cpu_i = (q->cpu_i + 1) % ndesc;
+
+	for (; cpu_i != end_i; cpu_i = (cpu_i + 1) % ndesc) {
+		struct en75_q_rx_ent *e = &q->entry[cpu_i];
+		struct desc *pdesc = &q->desc[cpu_i];
+		struct page *page;
+		int offset;
+		int i;
+
+		page = page_pool_dev_alloc_frag(q->page_pool, &offset,
+						q->buf_size);
+
+		if (!page)
+			break;
+
+		WARN_ON_ONCE(e->dma_addr);
+		e->buf = page_address(page) + offset;
+		e->dma_addr = page_pool_get_dma_addr(page) + offset;
+		e->dma_len = SKB_WITH_OVERHEAD(q->buf_size);
+
+		WRITE_ONCE(pdesc->info, ((struct desc_info) {
+			.word = FIELD_PREP(DESC_INFO_PKT_LEN_MASK, e->dma_len)
+		}));
+		WRITE_ONCE(pdesc->pkt_addr, e->dma_addr);
+		for (i = 0; i < ARRAY_SIZE(pdesc->msg.raw); i++)
+			WRITE_ONCE(pdesc->msg.raw[i], 0);
+	}
+
+	cpu_i = (cpu_i - 1) % ndesc;
+
+	q->cpu_i = cpu_i;
+	en75_wreg(cpu_i, &q->qchain_regs->rx_cpui);
+}
+
+static void en75_qdma_rx_process_one(struct en75_q_rx *q, u32 cpu_i,
+				     enum dma_data_direction dir)
+{
+	struct en75_q_rx_ent *e = &q->entry[cpu_i];
+	struct sk_buff *skb;
+	struct page *page;
+	struct desc desc;
+	u32 hash;
+	u8 sport;
+	int len;
+
+	memcpy(&desc, &q->desc[cpu_i], sizeof(desc));
+
+	dma_sync_single_for_cpu(q->qdma->dev, e->dma_addr,
+				SKB_WITH_OVERHEAD(q->buf_size), dir);
+
+	/* Not needed but a couple of WARN_ON_ONCE() check this later */
+	e->dma_addr = 0;
+
+	/* Make debug more readable */
+	WRITE_ONCE(q->desc[cpu_i].pkt_addr, 0);
+
+	len = get_desc_info_pkt_len(&desc.info);
+	if (!len || len > SKB_WITH_OVERHEAD(q->buf_size))
+		goto return_page;
+
+	if (WARN_ON_ONCE(is_desc_info_nls(&desc.info)))
+		goto return_page;
+
+	skb = napi_build_skb(e->buf, q->buf_size);
+	if (!skb)
+		goto return_page;
+
+	__skb_put(skb, len);
+	skb_mark_for_recycle(skb);
+	skb->ip_summed = CHECKSUM_UNNECESSARY;
+
+	hash = get_erx_ppe_entry(&desc.msg.erx);
+	skb_set_hash(skb, jhash_1word(hash, 0),
+		     PKT_HASH_TYPE_L4);
+
+	/* TODO: When we begin supporting the PPE, we will handle
+	 *       PPE_CPU_REASON_HIT_UNBIND_RATE_REACHED here. */
+
+	sport = get_erx_sport(&desc.msg.erx);
+	if (en75_rx_before_recv(q->qdma->eth, skb, sport))
+		dev_kfree_skb(skb);
+	else
+		napi_gro_receive(&q->napi, skb);
+
+	return;
+
+return_page:
+	page = virt_to_head_page(e->buf);
+	page_pool_put_full_page(q->page_pool, page, false);
+}
+
+static int en75_qdma_rx_process(struct en75_q_rx *q, int budget)
+{
+	enum dma_data_direction dir = page_pool_get_dma_dir(q->page_pool);
+	u32 hardware_i = en75_rreg(&q->qchain_regs->rx_hwi);
+	int ndesc = q->ndesc;
+	u32 cpu_i;
+	int done;
+
+	/* The stored value of cpu_i is the last entry actually handled.
+	 * Whereas hardware_i is the next entry that has not yet been received.
+	 */
+	cpu_i = (q->cpu_i + 1) % ndesc;
+
+	for (done = 0; done < budget && cpu_i != hardware_i; done++) {
+		en75_qdma_rx_process_one(q, cpu_i, dir);
+		cpu_i = (cpu_i + 1) % ndesc;
+	}
+
+	en75_fill_rx_queue(q, cpu_i);
+
+	return done;
+}
+
+#define IRQ_PURPOSE(t, s, c) \
+	((union en75_irq_purpose){ .type = IPS_ ## t, .source = IPSC_ ## s, .chain = (c) })
+
+union irq_bit {
+	struct {
+		int irq_idx 	: 8;
+		int reg_idx 	: 8;
+		int bit_idx 	: 8;
+		int _pad 	: 8;
+	};
+	u32 word;
+};
+static_assert(sizeof(union irq_bit) == 4, "irq_bit size");
+
+/* IRQ functions relevant to the EN751221 IRQ layout */
+
+static const union en75_irq_purpose EN751221_IRQ_MAP[] = {
+	[0]  = IRQ_PURPOSE(DONE,		TX,	0),
+	[1]  = IRQ_PURPOSE(DONE,		RX,	0),
+	[2]  = IRQ_PURPOSE(NO_DSCP,		TX,	0),
+	[3]  = IRQ_PURPOSE(NO_DSCP,		RX,	0),
+	[4]  = IRQ_PURPOSE(DONE,		TX,	1),
+	[5]  = IRQ_PURPOSE(DONE,		RX,	1),
+	[6]  = IRQ_PURPOSE(NO_DSCP,		TX,	1),
+	[7]  = IRQ_PURPOSE(NO_DSCP,		RX,	1),
+	[8]  = IRQ_PURPOSE(NO_DSCP,		FWD,	-1),
+	[9]  = IRQ_PURPOSE(NO_DSCP,		DONE,	0),
+	[10] = IRQ_PURPOSE(LOW_DSCP,		FWD,	0),
+	[11] = IRQ_PURPOSE(OVERFLOW,		UNSPEC,	-1),
+	[12] = IRQ_PURPOSE(ERR_COHERENT,	TX,	0),
+	[13] = IRQ_PURPOSE(ERR_COHERENT,	RX,	0),
+	[14] = IRQ_PURPOSE(ERR_COHERENT,	TX,	1),
+	[15] = IRQ_PURPOSE(ERR_COHERENT,	RX,	1),
+	[16] = IRQ_PURPOSE(GPON_INT,		UNSPEC,	-1),
+	[17] = IRQ_PURPOSE(EPON_INT,		UNSPEC,	-1),
+	[18] = IRQ_PURPOSE(XPON_INT,		UNSPEC,	-1),
+};
+
+static bool en751221_valid_irq_bit(union irq_bit bit)
+{
+	return bit.irq_idx == 0 && bit.reg_idx == 0 &&
+		bit.bit_idx < ARRAY_SIZE(EN751221_IRQ_MAP);
+}
+
+static union en75_irq_purpose en751221_irq_purpose(union irq_bit bit)
+{
+	if (WARN_ON_ONCE(!en751221_valid_irq_bit(bit)))
+		return (union en75_irq_purpose){0};
+
+	return EN751221_IRQ_MAP[bit.bit_idx];
+}
+
+static union irq_bit en751221_irq_bit(union en75_irq_purpose purpose)
+{
+	union irq_bit bit = {0};
+	for (int i = 0; i < ARRAY_SIZE(EN751221_IRQ_MAP); i++) {
+		if (EN751221_IRQ_MAP[i].word == purpose.word) {
+			bit.bit_idx = i;
+			return bit;
+		}
+	}
+	return bit;
+}
+
+static u32 __iomem *en751221_irq_status_reg(struct qregs __iomem *regs, int irqn)
+{
+	if (irqn > 0)
+		return ERR_PTR(-EINVAL);
+
+	return &regs->int_status;
+}
+
+static u32 __iomem *en751221_irq_enable_reg(struct qregs __iomem *regs, int irqn)
+{
+	if (irqn > 0)
+		return ERR_PTR(-EINVAL);
+
+	return &regs->int_enable;
+}
+
+/* End EN751221 IRQ functions */
+
+static void en75_qdma_set_irqmask(struct en75_qdma *qdma, union irq_bit b, bool enable)
+{
+	struct en75_irq *irq;
+
+	if (WARN_ON_ONCE(b.irq_idx >= ARRAY_SIZE(qdma->irqs)))
+		return;
+
+	irq = &qdma->irqs[b.irq_idx];
+
+	if (WARN_ON_ONCE(b.reg_idx >= ARRAY_SIZE(irq->irqmask)))
+		return;
+
+	if (WARN_ON_ONCE(b.bit_idx >= 32))
+		return;
+
+	guard(spinlock_irqsave)(&irq->lock_irq);
+
+	if (enable)
+		irq->irqmask[b.reg_idx] |= BIT(b.bit_idx);
+	else
+		irq->irqmask[b.reg_idx] &= ~BIT(b.bit_idx);
+
+	en75_wreg(irq->irqmask[b.reg_idx], irq->mask_reg[b.reg_idx]);
+
+	/* Read irq_enable register in order to guarantee the update above
+	 * completes in the spinlock critical section.
+	 */
+	en75_rreg(irq->mask_reg[b.reg_idx]);
+}
+
+static int en75_qdma_rx_napi_poll(struct napi_struct *napi, int budget)
+{
+	struct en75_q_rx *q = container_of(napi, struct en75_q_rx, napi);
+	struct en75_qdma *qdma = q->qdma;
+	int cur, done = 0;
+
+	do {
+		cur = en75_qdma_rx_process(q, budget - done);
+		done += cur;
+	} while (cur && done < budget);
+
+	if (done < budget && napi_complete(napi)) {
+		union en75_irq_purpose purpose;
+		union irq_bit b;
+
+		purpose = IRQ_PURPOSE(DONE, RX, q - &qdma->q_rx[0]);
+		b = en751221_irq_bit(purpose);
+		en75_qdma_set_irqmask(qdma, b, true);
+	}
+
+	return done;
+}
+
+static irqreturn_t en75_irq_handler(int irq_num, void *dev_instance)
+{
+	struct en75_irq *irq = dev_instance;
+	struct en75_qdma *qdma = irq->qdma;
+	int i;
+
+	guard(spinlock)(&irq->lock_irq);
+
+	for (i = 0; i < ARRAY_SIZE(irq->irqmask); i++) {
+		unsigned long regval;
+		u32 disable_int = 0;
+		u8 bit;
+
+		regval = en75_rreg(irq->status_reg[i]);
+		regval &= irq->irqmask[i];
+
+		/* You must write the bits back to the status register
+		 * or you will keep receiving the same interrupt. */
+		en75_wreg((u32)regval, irq->status_reg[i]);
+
+		for_each_set_bit(bit, &regval, 32) {
+			union en75_irq_purpose p;
+
+
+			p = en751221_irq_purpose((union irq_bit){
+				.irq_idx = irq - &qdma->irqs[0],
+				.reg_idx = i,
+				.bit_idx = bit,
+			});
+
+			if (p.type == IPS_DONE && p.source == IPSC_RX) {
+				napi_schedule_irqoff(&qdma->q_rx[p.chain].napi);
+				disable_int |= BIT(bit);
+				continue;
+			}
+			if (p.type == IPS_DONE && p.source == IPSC_TX) {
+				napi_schedule_irqoff(&qdma->q_tx_done[i].napi);
+				disable_int |= BIT(bit);
+				continue;
+			}
+			dev_dbg_ratelimited(qdma->dev,
+					    "%s IRQ from %s[%d]\n",
+					    en75_irq_purpose_type_str(p.type),
+					    en75_irq_purpose_source_str(p.source),
+					    p.chain);
+		}
+
+		irq->irqmask[i] &= ~disable_int;
+		en75_wreg(irq->irqmask[i], irq->mask_reg[i]);
+	}
+
+	return IRQ_HANDLED;
+}
+
+#define IRQ_RING_IDX_MASK		GENMASK(20, 16)
+#define IRQ_DESC_IDX_MASK		GENMASK(15, 0)
+
+static int en75_poll_tx_complete(struct napi_struct *napi, int budget)
+{
+	struct qregs_doneq_state state;
+	struct en75_tx_doneq *done_q;
+	struct en75_qdma *qdma;
+	int id, irq_queued;
+	u32 done = 0, head;
+
+	done_q = container_of(napi, struct en75_tx_doneq, napi);
+	qdma = done_q->qdma;
+	id = done_q - &qdma->q_tx_done[0];
+
+	state = en75_rreg(&done_q->regs->state);
+	head = get_qregs_doneq_state_head_index(&state);
+	head = head % done_q->size;
+	irq_queued = get_qregs_doneq_state_length(&state);
+
+	while (irq_queued > 0 && done < budget) {
+		u32 index, qid, val = done_q->q[head];
+		struct en75_q_tx_ent *e;
+		struct en75_q_tx *q;
+		struct netdev_queue *txq;
+		struct sk_buff *skb;
+		struct desc desc;
+
+		if (val == 0xffffffffU)
+			break;
+
+		done_q->q[head] = 0xffffffffU; /* mark as done */
+		head = (head + 1) % done_q->size;
+		irq_queued--;
+		done++;
+
+		qid = FIELD_GET(IRQ_RING_IDX_MASK, val);
+		if (WARN_ON_ONCE(qid >= ARRAY_SIZE(qdma->q_tx)))
+			continue;
+
+		q = &qdma->q_tx[qid];
+		if (WARN_ON_ONCE(!q->ndesc))
+			continue;
+
+		index = FIELD_GET(IRQ_DESC_IDX_MASK, val);
+		if (WARN_ON_ONCE(index >= q->ndesc))
+			continue;
+
+		guard(spinlock)(&q->lock_bh);
+
+		desc = q->desc[index];
+
+		if (WARN_ON_ONCE(!is_desc_info_done(&desc.info) &&
+				 !is_desc_info_dropped(&desc.info)))
+			continue;
+
+		e = &q->entry[index];
+		skb = e->skb;
+
+		dma_unmap_single(qdma->dev, e->dma_addr, e->dma_len,
+				 DMA_TO_DEVICE);
+		memset(e, 0, sizeof(*e));
+
+		/* Completion ring can report out of order when hw QoS is
+		 * enabled and packets with different priority are queued
+		 * to same DMA ring. So we use a linked list to maintain free
+		 * entries.
+		 */
+		e->freelist_next = 0xffff;
+		q->entry[q->freelist_tail].freelist_next = index;
+		q->freelist_tail = index;
+
+		txq = netdev_get_tx_queue(skb->dev,
+					  skb_get_queue_mapping(skb));
+		netdev_tx_completed_queue(txq, 1, skb->len);
+		if (netif_tx_queue_stopped(txq))
+			netif_tx_wake_queue(txq);
+
+		dev_kfree_skb_any(skb);
+	}
+
+	if (done) {
+		int i, len = done >> 7;
+
+		for (i = 0; i < len; i++) {
+			en75_rreg(&qdma->regs->done_queue.pop_back);
+			en75_wreg(0x80U, &qdma->regs->done_queue.pop_back);
+		}
+		en75_rreg(&qdma->regs->done_queue.pop_back);
+		en75_wreg(done & 0x7f, &qdma->regs->done_queue.pop_back);
+	}
+
+	if (done < budget && napi_complete(napi)) {
+		union en75_irq_purpose purpose = IRQ_PURPOSE(DONE, TX, id);
+		union irq_bit b = en751221_irq_bit(purpose);
+
+		en75_qdma_set_irqmask(qdma, b, true);
+	}
+
+	return done;
+}
+
+int en75_qdma_xmit(struct en75_qdma *qdma, struct sk_buff *skb,
+		   union desc_msg *msg, int qid)
+{
+	struct en75_q_tx *q = &qdma->q_tx[qid];
+	int len = skb_headlen(skb);
+	struct en75_q_tx_ent *e;
+	u16 index, next_index;
+	struct desc *desc;
+	dma_addr_t addr;
+	int ret;
+
+	guard(spinlock_bh)(&q->lock_bh);
+
+	index = q->freelist_head;
+	if (index == 0xffff)
+		return -EBUSY;
+
+	e = &q->entry[index];
+	next_index = e->freelist_next;
+	if (next_index == 0xffff)
+		return -EBUSY;
+
+	addr = dma_map_single(qdma->dev, skb->data, len, DMA_TO_DEVICE);
+	ret = dma_mapping_error(qdma->dev, addr);
+	if (unlikely(ret))
+		return ret;
+
+	desc = &q->desc[index];
+	WRITE_ONCE(desc->pkt_addr, addr);
+	WRITE_ONCE(desc->info, ((struct desc_info) {
+		.word = FIELD_PREP(DESC_INFO_PKT_LEN_MASK, len)
+	}));
+	WRITE_ONCE(desc->next_idx, next_index);
+	for (int i = 0; i < ARRAY_SIZE(desc->msg.raw); i++)
+		WRITE_ONCE(desc->msg.raw[i], msg->raw[i]);
+
+	e->skb = skb;
+	e->dma_addr = addr;
+	e->dma_len = len;
+	q->freelist_head = next_index;
+
+	skb_tx_timestamp(skb);
+
+	en75_wreg((u32)next_index, &q->qchain_regs->tx_cpui);
+
+	return q->entry[next_index].freelist_next == 0xffff ?
+		EBUSY : 0;
+}
+
+/* Init functions, no locks, assumed non-concurrent */
+
+static int en75_init_rx_queue(struct en75_q_rx *q,
+			      struct en75_qdma *qdma, int ndesc)
+{
+	const struct page_pool_params pp_params = {
+		.order = 0,
+		.pool_size = 256,
+		.flags = PP_FLAG_DMA_MAP | PP_FLAG_DMA_SYNC_DEV,
+		.dma_dir = DMA_FROM_DEVICE,
+		.max_len = PAGE_SIZE,
+		.nid = NUMA_NO_NODE,
+		.dev = qdma->dev,
+		.napi = &q->napi,
+	};
+	int threshold = clamp(ndesc >> 3, 1, 32);
+	struct qregs_rxring_size rrs;
+	struct qregs_rxring_low rrl;
+	dma_addr_t dma_addr;
+
+	q->buf_size = EN75_MAX_PACKET_SIZE;
+	q->ndesc = ndesc;
+	q->qdma = qdma;
+	q->qchain_regs = (q == &qdma->q_rx[0]) ?
+			 &qdma->regs->qchain0 :
+			 &qdma->regs->qchain1;
+
+	q->entry = devm_kzalloc(qdma->dev, q->ndesc * sizeof(*q->entry),
+				GFP_KERNEL);
+	if (!q->entry)
+		return -ENOMEM;
+
+	q->page_pool = page_pool_create(&pp_params);
+	if (IS_ERR(q->page_pool)) {
+		int err = PTR_ERR(q->page_pool);
+
+		q->page_pool = NULL;
+		return err;
+	}
+
+	q->desc = dmam_alloc_coherent(qdma->dev, q->ndesc * sizeof(*q->desc),
+				      &dma_addr, GFP_KERNEL);
+	if (!q->desc)
+		return -ENOMEM;
+
+	memset(q->desc, 0, q->ndesc * sizeof(*q->desc));
+
+	netif_napi_add(qdma->napi_dev, &q->napi, en75_qdma_rx_napi_poll);
+
+	en75_wreg(lower_32_bits(dma_addr), &q->qchain_regs->rxbase);
+
+	/* en75_fill_rx_queue fills everything from current cpu index + 1 up to
+	 * but excluding end_i, so to fill every entry we run it with 0 to do
+	 * 1,2,3,[...],n, then we run it with 1 to do 0. */
+	en75_fill_rx_queue(q, 0);
+	en75_fill_rx_queue(q, 1);
+	for (int i = 0; i < q->ndesc; i++)
+		if (!q->entry[i].dma_addr)
+			return -ENOMEM;
+
+	/* The RX hardware side considers that hwi == cpui means the queue is
+	 * full, not empty. Since cpui starts at 0, we initialize hwi to 1. */
+	en75_wreg(1U, &q->qchain_regs->rx_hwi);
+
+	rrs = en75_rreg(&qdma->regs->rxring_size);
+	rrl = en75_rreg(&qdma->regs->rxring_low);
+
+	if (q == &qdma->q_rx[0]) {
+		set_qregs_rxring_size_ring0(&rrs, ndesc);
+		set_qregs_rxring_low_ring0(&rrl, threshold);
+	} else {
+		set_qregs_rxring_size_ring1(&rrs, ndesc);
+		set_qregs_rxring_low_ring1(&rrl, threshold);
+	}
+
+	en75_wreg(rrs, &qdma->regs->rxring_size);
+	en75_wreg(rrl, &qdma->regs->rxring_low);
+
+	return 0;
+}
+
+static int en75_init_irqs(struct device *dev, struct en75_qdma *qdma,
+			  int *irqs, int num_irqs)
+{
+	int i;
+
+	if (num_irqs < ARRAY_SIZE(qdma->irqs))
+		return -EINVAL;
+
+	for (i = 0; i < ARRAY_SIZE(qdma->irqs); i++) {
+		struct en75_irq *irq = &qdma->irqs[i];
+		const char *name;
+		int err;
+		int j;
+
+		spin_lock_init(&irq->lock_irq);
+		irq->qdma = qdma;
+
+		irq->irq = irqs[i];
+		if (irq->irq < 0)
+			return irq->irq;
+
+		for (j = 0; j < QDMA_REGS_PER_IRQ; j++) {
+			irq->status_reg[j] = en751221_irq_status_reg(qdma->regs, j);
+			irq->mask_reg[j] = en751221_irq_enable_reg(qdma->regs, j);
+		}
+
+		name = devm_kasprintf(dev, GFP_KERNEL,
+				      KBUILD_MODNAME "-%d.%d", qdma->id, i);
+		if (!name)
+			return -ENOMEM;
+
+		err = devm_request_irq(dev, irq->irq,
+				       en75_irq_handler, IRQF_SHARED, name,
+				       irq);
+		if (err)
+			return err;
+	}
+
+	return 0;
+}
+
+static int en75_init_tx_doneq(struct en75_tx_doneq *done_q,
+			      struct en75_qdma *qdma, int size)
+{
+	dma_addr_t dma_addr;
+
+	netif_napi_add_tx(qdma->napi_dev, &done_q->napi,
+			  en75_poll_tx_complete);
+	done_q->q = dmam_alloc_coherent(qdma->dev, size * sizeof(u32),
+				       &dma_addr, GFP_KERNEL);
+	if (!done_q->q)
+		return -ENOMEM;
+
+	memset(done_q->q, 0xff, size * sizeof(u32));
+	done_q->size = size;
+	done_q->qdma = qdma;
+	done_q->regs = &qdma->regs->done_queue;
+
+	en75_wreg(lower_32_bits(dma_addr), &qdma->regs->done_queue.address);
+	struct qregs_doneq_cfg cfg = en75_rreg(&qdma->regs->done_queue.config);
+	set_qregs_doneq_cfg_size(&cfg, size);
+	set_qregs_doneq_cfg_int_threshold(&cfg, 1);
+	en75_wreg(cfg, &qdma->regs->done_queue.config);
+
+	return 0;
+}
+
+static int en75_init_tx_queue(struct en75_q_tx *q,
+			      struct en75_qdma *qdma, int size)
+{
+	int i, qid = q - &qdma->q_tx[0];
+	dma_addr_t dma_addr;
+
+	spin_lock_init(&q->lock_bh);
+	q->ndesc = size;
+	q->qdma = qdma;
+	q->qchain_regs = (qid == 0) ?
+			 &qdma->regs->qchain0 :
+			 &qdma->regs->qchain1;
+
+	q->entry = devm_kzalloc(qdma->dev, q->ndesc * sizeof(*q->entry),
+				GFP_KERNEL);
+	if (!q->entry)
+		return -ENOMEM;
+
+	q->desc = dmam_alloc_coherent(qdma->dev, q->ndesc * sizeof(*q->desc),
+				      &dma_addr, GFP_KERNEL);
+	if (!q->desc)
+		return -ENOMEM;
+
+	memset(q->desc, 0, q->ndesc * sizeof(*q->desc));
+
+	for (i = 0; i < q->ndesc - 1; i++) {
+		q->entry[i].freelist_next = i + 1;
+	}
+	q->entry[q->ndesc - 1].freelist_next = 0xffff;
+	q->freelist_tail = q->ndesc - 1;
+	q->freelist_head = 0;
+
+	en75_wreg(lower_32_bits(dma_addr), &q->qchain_regs->txbase);
+
+	/* On TX, hardware advances hwi until it is equal to cpui. */
+	en75_wreg(0U, &q->qchain_regs->tx_cpui);
+	en75_wreg(0U, &q->qchain_regs->tx_hwi);
+
+	return 0;
+}
+
+static int en75_init_hw_fwd(struct en75_qdma *qdma)
+{
+	enum qregs_hwf_cfg_pkt_sz buf_size_cfg = QREGS_HWF_CFG_PKT_SZ_2048;
+	int ret, size, index, num_desc = qdma->cfg.num_fwd_descs;
+	struct qregs_hwf_cfg1 cfg1;
+	dma_addr_t dma_addr;
+	u32 buf_size = 2048;
+	struct hwf_cfg cfg;
+	const char *name;
+
+	name = devm_kasprintf(qdma->dev, GFP_KERNEL, "qdma%d-buf", qdma->id);
+	if (!name)
+		return -ENOMEM;
+
+	while (buf_size < qdma->cfg.fwd_max_packet_size) {
+		buf_size_cfg++;
+		buf_size = 2048 << buf_size_cfg;
+		if (buf_size > 16384) {
+			dev_err(qdma->dev, "Unsupported hw forwarding max packet size %d\n",
+				qdma->cfg.fwd_max_packet_size);
+			return -EINVAL;
+		}
+	}
+
+	index = of_property_match_string(qdma->dev->of_node,
+					 "memory-region-names", name);
+	if (index >= 0) {
+		struct reserved_mem *rmem;
+		struct device_node *np;
+
+		/* Consume reserved memory for hw forwarding buffers queue if
+		 * available in the DTS
+		 */
+		np = of_parse_phandle(qdma->dev->of_node, "memory-region",
+				      index);
+		if (!np)
+			return -ENODEV;
+
+		rmem = of_reserved_mem_lookup(np);
+		of_node_put(np);
+		dma_addr = rmem->base;
+		/* Compute the number of hw descriptors according to the
+		 * reserved memory size and the payload buffer size
+		 */
+		num_desc = div_u64(rmem->size, buf_size);
+
+		if (num_desc < qdma->cfg.num_fwd_descs)
+			dev_warn(qdma->dev,
+				 "Reserved memory %pa too small for %d "
+				 "hw forwarding descriptors with %d bytes"
+				 "payload, reducing to %d descriptors.\n",
+				 &rmem->size, qdma->cfg.num_fwd_descs,
+				 buf_size, num_desc);
+	} else {
+		size = buf_size * num_desc;
+		if (!dmam_alloc_coherent(qdma->dev, size, &dma_addr,
+					 GFP_KERNEL))
+			return -ENOMEM;
+	}
+
+	en75_wreg(lower_32_bits(dma_addr), &qdma->regs->hwf_data_addr);
+
+	size = num_desc * sizeof(*qdma->hwf_desc);
+	qdma->hwf_desc = dmam_alloc_coherent(qdma->dev, size, &dma_addr, GFP_KERNEL);
+	if (!qdma->hwf_desc)
+		return -ENOMEM;
+
+	en75_wreg(lower_32_bits(dma_addr), &qdma->regs->hwf_desc_addr);
+
+	cfg = en75_rreg(&qdma->regs->hwf_cfg);
+	set_qregs_hwf_cfg_pkt_sz(&cfg, buf_size_cfg);
+	set_qregs_hwf_cfg_low_th(&cfg, qdma->cfg.fwd_low_threshold);
+	en75_wreg(cfg, &qdma->regs->hwf_cfg);
+
+	cfg1 = en75_rreg(&qdma->regs->hwf_cfg1);
+	set_qregs_hwf_cfg1_fwd_desc_n(&cfg1, num_desc);
+	set_qregs_hwf_cfg1_overhead(&cfg1, 0x14);
+	set_qregs_hwf_cfg1_start(&cfg1, true);
+	en75_wreg(cfg1, &qdma->regs->hwf_cfg1);
+
+	ret = read_poll_timeout(en75_rreg, cfg1,
+				!is_qregs_hwf_cfg1_start(&cfg1), USEC_PER_MSEC,
+				30 * USEC_PER_MSEC, true,
+				&qdma->regs->hwf_cfg1);
+	if (ret)
+		dev_err(qdma->dev,
+			"Error %pe waiting for HW forwarding engine to start",
+			ERR_PTR(ret));
+	return ret;
+}
+
+static int en75_init_final(struct en75_qdma *qdma)
+{
+	struct qregs_qcfg qcfg;
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(qdma->irqs); i++) {
+		int j;
+
+		/* clear pending irqs */
+		for (j = 0; j < ARRAY_SIZE(qdma->irqs[i].status_reg); j++)
+			en75_wreg(0xffffffffU, qdma->irqs[i].status_reg[j]);
+
+		/* enable IRQs */
+		for (j = 0; j < ARRAY_SIZE(qdma->irqs[i].irqmask); j++) {
+			u32 mask = 0;
+
+			for (int k = 0; k < 32; k++) {
+				union en75_irq_purpose p;
+				union irq_bit bit = {
+					.irq_idx = i,
+					.reg_idx = j,
+					.bit_idx = k,
+				};
+				u32 en = 0;
+
+				if (!en751221_valid_irq_bit(bit))
+					continue;
+
+				p = en751221_irq_purpose(bit);
+
+				/* RX and TX done */
+				en |= (p.type == IPS_DONE);
+
+				/* Running out of resources */
+				en |= (p.type == IPS_NO_DSCP && p.source != IPSC_TX);
+				en |= (p.type == IPS_LOW_DSCP && p.source != IPSC_TX);
+
+				/* Error conditions */
+				en |= (p.type == IPS_ERR_COHERENT);
+				en |= (p.type == IPS_OVERFLOW);
+
+				/* External hardware */
+				en |= (p.type == IPS_GPON_INT);
+				en |= (p.type == IPS_EPON_INT);
+				en |= (p.type == IPS_XPON_INT);
+
+				mask |= en << k;
+			}
+
+			qdma->irqs[i].irqmask[j] = mask;
+			en75_wreg(mask, qdma->irqs[i].mask_reg[j]);
+		}
+	}
+
+	qcfg = (struct qregs_qcfg) { 0 };
+	set_qregs_qcfg_msg_word_swap(&qcfg, true);
+	set_qregs_qcfg_dscp_byte_swap(&qcfg, qdma->soc->dscp_byte_swap);
+	set_qregs_qcfg_payload_byte_sw(&qcfg, true);
+	set_qregs_qcfg_irq_en(&qcfg, true);
+	set_qregs_qcfg_check_done(&qcfg, true);
+	set_qregs_qcfg_tx_wb_done(&qcfg, true);
+	set_qregs_qcfg_burst_size(&qcfg, QREGS_QCFG_BURST_SIZE_128_BYTES);
+	en75_wreg(qcfg, &qdma->regs->qdma_cfg);
+
+	en75_wreg(0U, &qdma->regs->rx_int_delay);
+
+	struct qregs_tx_congest_cfg cngst_cfg = {0};
+	set_qregs_tx_congest_cfg_tail_drop_en(&cngst_cfg, true);
+	set_qregs_tx_congest_cfg_dei_drop_en(&cngst_cfg, true);
+	en75_wreg(cngst_cfg, &qdma->regs->tx_congest_cfg);
+
+	return 0;
+}
+
+static int en75_init(struct device *dev,
+		     struct en75_qdma *qdma,
+		     int *irqs,
+		     int num_irqs)
+{
+	int err;
+	int i;
+
+	/* Make sure RX and TX are shutdown */
+	en75_wreg((struct qregs_qcfg) { 0 }, &qdma->regs->qdma_cfg);
+
+	err = en75_init_irqs(dev, qdma, irqs, num_irqs);
+	if (err)
+		return err;
+
+	for (i = 0; i < ARRAY_SIZE(qdma->q_rx); i++) {
+		err = en75_init_rx_queue(&qdma->q_rx[i], qdma,
+					 qdma->cfg.num_rx_descs[i]);
+		if (err)
+			return err;
+	}
+
+	for (i = 0; i < ARRAY_SIZE(qdma->q_tx_done); i++) {
+		err = en75_init_tx_doneq(&qdma->q_tx_done[i], qdma,
+					 qdma->cfg.done_list_size[i]);
+		if (err)
+			return err;
+	}
+
+	for (i = 0; i < ARRAY_SIZE(qdma->q_tx); i++) {
+		err = en75_init_tx_queue(&qdma->q_tx[i], qdma,
+					 qdma->cfg.num_tx_descs[i]);
+		if (err)
+			return err;
+	}
+
+	err = en75_init_hw_fwd(qdma);
+	if (err)
+		return err;
+
+	return en75_init_final(qdma);
+}
+
+/* End init functions */
+
+static void en75_qdma_destroy_rxq_locked(struct en75_q_rx *q)
+{
+	int i;
+
+	if (!q->page_pool)
+		return;
+
+	for (i = 0; i < q->ndesc; i++) {
+		struct en75_q_rx_ent *e = &q->entry[i];
+		struct page *page;
+
+		if (!e->dma_addr)
+			continue;
+
+		page = virt_to_head_page(e->buf);
+		dma_sync_single_for_cpu(q->qdma->dev, e->dma_addr, e->dma_len,
+					page_pool_get_dma_dir(q->page_pool));
+		page_pool_put_full_page(q->page_pool, page, false);
+		e->dma_addr = 0;
+		e->buf = NULL;
+	}
+
+	page_pool_destroy(q->page_pool);
+	q->page_pool = NULL;
+}
+
+static int en75_qdma_destroy_locked(struct en75_qdma *qdma)
+{
+	struct qregs_qcfg qcfg;
+	int i;
+
+	if (WARN_ON_ONCE(qdma->users))
+		return -EBUSY;
+
+	qcfg = en75_rreg(&qdma->regs->qdma_cfg);
+	set_qregs_qcfg_irq_en(&qcfg, false);
+	set_qregs_qcfg_rx_dma_en(&qcfg, false);
+	set_qregs_qcfg_tx_dma_en(&qcfg, false);
+	en75_wreg(qcfg, &qdma->regs->qdma_cfg);
+
+	for (i = 0; i < ARRAY_SIZE(qdma->irqs); i++) {
+		struct en75_irq *irq = &qdma->irqs[i];
+		int j;
+
+		for (j = 0; j < ARRAY_SIZE(irq->irqmask); j++) {
+			irq->irqmask[j] = 0;
+			if (irq->mask_reg[j])
+				en75_wreg(0U, irq->mask_reg[j]);
+		}
+
+		if (irq->irq > 0)
+			synchronize_irq(irq->irq);
+	}
+
+	for (i = 0; i < ARRAY_SIZE(qdma->q_rx); i++) {
+		struct en75_q_rx *q = &qdma->q_rx[i];
+
+		en75_qdma_destroy_rxq_locked(q);
+		if (q->napi.dev)
+			netif_napi_del(&q->napi);
+	}
+
+	for (i = 0; i < ARRAY_SIZE(qdma->q_tx_done); i++) {
+		struct en75_tx_doneq *q = &qdma->q_tx_done[i];
+
+		if (q->napi.dev)
+			netif_napi_del(&q->napi);
+	}
+
+	if (qdma->napi_dev) {
+		free_netdev(qdma->napi_dev);
+		qdma->napi_dev = NULL;
+	}
+
+	return 0;
+}
+
+int en75_qdma_destroy(struct en75_qdma *qdma)
+{
+	guard(mutex)(&qdma->lock);
+
+	return en75_qdma_destroy_locked(qdma);
+}
+
+int en75_qdma_use(struct en75_qdma *qdma)
+{
+	struct qregs_qcfg qcfg;
+	int i;
+
+	guard(mutex)(&qdma->lock);
+
+	if (qdma->users++ > 0)
+		return 0;
+
+	qcfg = en75_rreg(&qdma->regs->qdma_cfg);
+	set_qregs_qcfg_rx_dma_en(&qcfg, true);
+	set_qregs_qcfg_tx_dma_en(&qcfg, true);
+	en75_wreg(qcfg, &qdma->regs->qdma_cfg);
+
+	for (i = 0; i < ARRAY_SIZE(qdma->q_rx); i++)
+		napi_enable(&qdma->q_rx[i].napi);
+
+	for (i = 0; i < ARRAY_SIZE(qdma->q_tx_done); i++)
+		napi_enable(&qdma->q_tx_done[i].napi);
+
+	return 0;
+}
+
+int en75_qdma_unuse(struct en75_qdma *qdma)
+{
+	struct qregs_qcfg qcfg;
+	int i, j;
+
+	guard(mutex)(&qdma->lock);
+
+	if (WARN_ON_ONCE(qdma->users <= 0))
+		return -EINVAL;
+	if (--qdma->users > 0)
+		return 0;
+
+	qcfg = en75_rreg(&qdma->regs->qdma_cfg);
+	set_qregs_qcfg_rx_dma_en(&qcfg, false);
+	set_qregs_qcfg_tx_dma_en(&qcfg, false);
+	en75_wreg(qcfg, &qdma->regs->qdma_cfg);
+
+	for (i = 0; i < ARRAY_SIZE(qdma->q_rx); i++)
+		napi_disable(&qdma->q_rx[i].napi);
+
+	for (i = 0; i < ARRAY_SIZE(qdma->q_tx_done); i++)
+		napi_disable(&qdma->q_tx_done[i].napi);
+
+	for (i = 0; i < ARRAY_SIZE(qdma->q_tx); i++) {
+		struct en75_q_tx *q = &qdma->q_tx[i];
+
+		guard(spinlock_bh)(&q->lock_bh);
+		for (j = 0; j < q->ndesc; j++) {
+			struct en75_q_tx_ent *e = &q->entry[j];
+
+			/* In the free list already */
+			if (!e->dma_addr)
+				continue;
+
+			dma_unmap_single(qdma->dev, e->dma_addr, e->dma_len,
+					DMA_TO_DEVICE);
+			dev_kfree_skb_any(e->skb);
+			memset(e, 0, sizeof(*e));
+
+			e->freelist_next = 0xffff;
+			q->entry[q->freelist_tail].freelist_next = j;
+			q->freelist_tail = j;
+		}
+	}
+
+	return 0;
+}
+
+struct en75_qdma *en75_qdma_new(struct en75_eth *eth,
+				void __iomem *qdma_regs,
+				int id,
+				int *irqs,
+				int num_irqs,
+				struct en75_qdma_cfg *cfg)
+{
+	struct en75_qdma *qdma;
+	int err;
+
+	qdma = devm_kzalloc(eth->dev, sizeof(*qdma), GFP_KERNEL);
+	if (!qdma)
+		return ERR_PTR(-ENOMEM);
+
+	qdma->dev = eth->dev;
+	qdma->id = id;
+	mutex_init(&qdma->lock);
+	qdma->regs = qdma_regs;
+	memcpy(&qdma->cfg, cfg, sizeof(*cfg));
+	qdma->soc = cfg->soc;
+	qdma->eth = eth;
+
+	{
+		char name[IFNAMSIZ];
+
+		snprintf(name, sizeof(name), "qdma%d_eth", id);
+		qdma->napi_dev = airoha_eth_alloc_napi_dev(name);
+	}
+	if (!qdma->napi_dev)
+		return ERR_PTR(-ENOMEM);
+
+	err = en75_init(eth->dev, qdma, irqs, num_irqs);
+	if (err) {
+		en75_qdma_destroy(qdma);
+		return ERR_PTR(err);
+	}
+
+	return qdma;
+}
+
+/*
+ * EcoNet EN751221 has 2 GDM ports, one for LAN and one for WAN.
+ * Each port has it's own registers and MAC address, and it's own
+ * net_device instance.
+ */
+
+struct en75_hw_stats {
+	/* protect concurrent hw_stats accesses */
+	spinlock_t lock;
+	struct u64_stats_sync syncp;
+
+	/* EN751221 gdm1 has only limited stats, gdm1 has all */
+	bool g2_stats;
+
+	/* get_stats64 */
+	u64 rx_ok_pkts;
+	u64 tx_ok_pkts;
+	u64 rx_ok_bytes;
+	u64 tx_ok_bytes;
+	u64 rx_errors;
+	u64 rx_drops;
+	u64 tx_drops;
+	u64 rx_over_errors;
+
+	/* get_stats64 (requires gdm2 extended stats) */
+	u64 rx_crc_error;
+	u64 rx_multicast;
+
+	/* ethtool stats (all requires gdm2 extended stats) */
+	u64 tx_broadcast;
+	u64 tx_multicast;
+	u64 tx_len[7];
+	u64 rx_broadcast;
+	u64 rx_fragment;
+	u64 rx_jabber;
+	u64 rx_len[7];
+};
+
+struct en75_gdm_port {
+	struct net_device *dev;
+
+	struct gdm __iomem *regs;
+
+	/* Protects accesses to hardware regs */
+	spinlock_t reg_lock;
+
+	struct en75_hw_stats stats;
+
+	// DECLARE_BITMAP(qos_sq_bmap, AIROHA_NUM_QOS_CHANNELS);
+
+	/* qos stats counters */
+	u64 cpu_tx_packets;
+	u64 fwd_tx_packets;
+
+	// struct metadata_dst *dsa_meta[AIROHA_MAX_DSA_PORTS];
+
+	struct en75_qdma *qdma;
+
+	struct en75_eth *eth;
+
+	enum etx_fport fport;
+
+	int qid;
+};
+
+static void en75_set_macaddr(struct en75_gdm_port *port, const u8 *addr)
+{
+	struct gdm_mymac_msb msb;
+	struct gdm_mymac_lsb lsb;
+
+	scoped_guard(spinlock, &port->reg_lock) {
+		msb = en75_rreg(&port->regs->mymac_msb);
+		lsb = en75_rreg(&port->regs->mymac_lsb);
+		set_gdm_mymac_msb_a(&msb, addr[0]);
+		set_gdm_mymac_msb_b(&msb, addr[1]);
+		set_gdm_mymac_lsb_c(&lsb, addr[2]);
+		set_gdm_mymac_lsb_d(&lsb, addr[3]);
+		set_gdm_mymac_lsb_e(&lsb, addr[4]);
+		set_gdm_mymac_lsb_f(&lsb, addr[5]);
+		en75_wreg(lsb, &port->regs->mymac_lsb);
+		en75_wreg(msb, &port->regs->mymac_msb);
+	}
+
+	en75_port_set_macaddr(port->eth, port->fport, addr);
+}
+
+static int en75_dev_set_macaddr(struct net_device *dev, void *p)
+{
+	struct en75_gdm_port *port = netdev_priv(dev);
+	int err;
+
+	err = eth_mac_addr(dev, p);
+	if (err)
+		return err;
+
+	en75_set_macaddr(port, dev->dev_addr);
+
+	return 0;
+}
+
+static void en75_set_gdm_port_fwd_cfg(struct en75_gdm_port *port,
+				      enum etx_fport val)
+{
+	struct fwd_cfg fc;
+
+	guard(spinlock)(&port->reg_lock);
+	fc = en75_rreg(&port->regs->fwd_cfg);
+	set_gdm_fwd_cfg_mymac_fport(&fc, val);
+	set_gdm_fwd_cfg_mcast_fport(&fc, val);
+	set_gdm_fwd_cfg_bcast_fport(&fc, val);
+	set_gdm_fwd_cfg_default_fport(&fc, val);
+	set_gdm_fwd_cfg_drop_oversize(&fc, true);
+	en75_wreg(fc, &port->regs->fwd_cfg);
+}
+
+static int en75_dev_init(struct net_device *dev)
+{
+	struct en75_gdm_port *port = netdev_priv(dev);
+
+	en75_set_macaddr(port, dev->dev_addr);
+	/* Route each GDM port to the CPU side of its matching QDMA. */
+	en75_set_gdm_port_fwd_cfg(port,
+		port->fport == ETX_FPORT_GDM2 ?
+		ETX_FPORT_QDMA1_CPU : ETX_FPORT_QDMA0_CPU);
+
+	return 0;
+}
+
+static int en75_dev_open(struct net_device *dev)
+{
+	struct en75_gdm_port *port = netdev_priv(dev);
+	struct gdm_len_th rlt;
+	int err;
+
+	// TODO DSA
+	// if (netdev_uses_dsa(dev))
+	// 	airoha_fe_set(qdma->eth, REG_GDM_INGRESS_CFG(port->id),
+	// 		      GDM_STAG_EN_MASK);
+	// else
+	// 	airoha_fe_clear(qdma->eth, REG_GDM_INGRESS_CFG(port->id),
+	// 			GDM_STAG_EN_MASK);
+
+	scoped_guard(spinlock, &port->reg_lock) {
+		rlt = en75_rreg(&port->regs->rx_len_threshold);
+		set_gdm_len_th_runt_len(&rlt, 60);
+		set_gdm_len_th_oversize_len(&rlt,
+					 ETH_HLEN + dev->mtu + ETH_FCS_LEN);
+		en75_wreg(rlt, &port->regs->rx_len_threshold);
+	}
+
+	err = en75_qdma_use(port->qdma);
+	if (err)
+		return err;
+
+	netif_tx_start_all_queues(dev);
+
+	return 0;
+}
+
+static int en75_dev_stop(struct net_device *dev)
+{
+	struct en75_gdm_port *port = netdev_priv(dev);
+
+	netif_tx_disable(dev);
+
+	return en75_qdma_unuse(port->qdma);
+}
+
+static int en75_dev_change_mtu(struct net_device *dev, int mtu)
+{
+	struct en75_gdm_port *port = netdev_priv(dev);
+	struct gdm_len_th rlt;
+
+	guard(spinlock)(&port->reg_lock);
+	rlt = en75_rreg(&port->regs->rx_len_threshold);
+	set_gdm_len_th_oversize_len(&rlt, ETH_HLEN + mtu + ETH_FCS_LEN);
+	en75_wreg(rlt, &port->regs->rx_len_threshold);
+
+	WRITE_ONCE(dev->mtu, mtu);
+
+	return 0;
+}
+
+static netdev_tx_t en75_dev_xmit(struct sk_buff *skb, struct net_device *dev)
+{
+	struct en75_gdm_port *port = netdev_priv(dev);
+	int qid, ret = 0, len = skb->len;
+	struct netdev_queue *txq;
+	union desc_msg msg = {0};
+
+	qid = skb_get_queue_mapping(skb);
+	set_etx_channel(&msg.etx, qid / EN75_NUM_QUEUES);
+	set_etx_queue(&msg.etx, qid % EN75_NUM_QUEUES);
+	set_etx_fport(&msg.etx, port->fport);
+
+	txq = netdev_get_tx_queue(dev, qid);
+
+	/* Non-linear skbs are unsupported, we shouldn't get them but
+	 * if we do, we'll attempt to linearize. */
+	if (skb_linearize(skb))
+		goto drop;
+
+	netdev_tx_sent_queue(txq, len);
+
+	ret = en75_qdma_xmit(port->qdma, skb, &msg, 0);
+	if (ret == -EBUSY) {
+		netdev_tx_completed_queue(txq, 1, len);
+		netif_tx_stop_queue(txq);
+		return NETDEV_TX_BUSY;
+	}
+	if (ret < 0) {
+		netdev_tx_completed_queue(txq, 1, len);
+		goto drop;
+	}
+
+	/* Positive EBUSY means this packet was queued and filled the ring. */
+	if (ret == EBUSY)
+		netif_tx_stop_queue(txq);
+
+	return NETDEV_TX_OK;
+
+drop:
+	dev_kfree_skb_any(skb);
+	dev->stats.tx_dropped++;
+	return NETDEV_TX_OK;
+}
+
+static void en75_update_hw_stats(struct en75_gdm_port *port)
+{
+	struct gdm_counters __iomem *c = &port->regs->counters;
+	struct clear_counters cc = {0};
+	u32 i = 0;
+
+	guard(spinlock)(&port->stats.lock);
+	u64_stats_update_begin(&port->stats.syncp);
+
+	port->stats.tx_ok_pkts += en75_rreg(&c->tx.tx_pkts);
+	port->stats.tx_ok_bytes += en75_rreg(&c->tx.bytes);
+	port->stats.tx_drops += en75_rreg(&c->tx.drops);
+	if (port->stats.g2_stats) {
+		port->stats.tx_broadcast += en75_rreg(&c->tx.g2.tx_bcast);
+		port->stats.tx_multicast += en75_rreg(&c->tx.g2.tx_mcast);
+
+		port->stats.tx_len[i] += en75_rreg(&c->tx.g2.f_less_64);
+		port->stats.tx_len[i++] += en75_rreg(&c->tx.g2.f_64);
+
+		port->stats.tx_len[i++] += en75_rreg(&c->tx.g2.f_65_127);
+		port->stats.tx_len[i++] += en75_rreg(&c->tx.g2.f_128_255);
+		port->stats.tx_len[i++] += en75_rreg(&c->tx.g2.f_256_511);
+		port->stats.tx_len[i++] += en75_rreg(&c->tx.g2.f_512_1023);
+		port->stats.tx_len[i++] += en75_rreg(&c->tx.g2.f_1024_1518);
+		port->stats.tx_len[i++] += en75_rreg(&c->tx.g2.f_more_1518);
+	}
+
+	port->stats.rx_ok_pkts += en75_rreg(&c->rx.pkts);
+	port->stats.rx_ok_bytes += en75_rreg(&c->rx.bytes);
+	port->stats.rx_errors += en75_rreg(&c->rx.drops_err);
+	port->stats.rx_over_errors += en75_rreg(&c->rx.drops_overflow);
+	if (port->stats.g2_stats) {
+		port->stats.rx_drops += en75_rreg(&c->rx.g2.edrops);
+		port->stats.rx_broadcast += en75_rreg(&c->rx.g2.bcast);
+		port->stats.rx_multicast += en75_rreg(&c->rx.g2.mcast);
+		port->stats.rx_crc_error += en75_rreg(&c->rx.g2.ecrc);
+		port->stats.rx_fragment += en75_rreg(&c->rx.g2.efrag);
+		port->stats.rx_jabber += en75_rreg(&c->rx.g2.ejabber);
+
+		i = 0;
+		port->stats.rx_len[i] += en75_rreg(&c->rx.g2.f_less_64);
+		port->stats.rx_len[i++] += en75_rreg(&c->rx.g2.f_64);
+
+		port->stats.rx_len[i++] += en75_rreg(&c->rx.g2.f_65_127);
+		port->stats.rx_len[i++] += en75_rreg(&c->rx.g2.f_128_255);
+		port->stats.rx_len[i++] += en75_rreg(&c->rx.g2.f_256_511);
+		port->stats.rx_len[i++] += en75_rreg(&c->rx.g2.f_512_1023);
+		port->stats.rx_len[i++] += en75_rreg(&c->rx.g2.f_1024_1518);
+		port->stats.rx_len[i++] += en75_rreg(&c->rx.g2.f_more_1518);
+	} else {
+		port->stats.rx_drops += en75_rreg(&c->rx.drops_err);
+		port->stats.rx_drops += en75_rreg(&c->rx.drops_fc);
+		port->stats.rx_drops += en75_rreg(&c->rx.drops_rc);
+		port->stats.rx_drops += en75_rreg(&c->rx.drops_overflow);
+	}
+
+	set_gdm_cl_cnt_rx(&cc, true);
+	set_gdm_cl_cnt_tx(&cc, true);
+	en75_wreg(cc, &port->regs->clear_counters);
+
+	u64_stats_update_end(&port->stats.syncp);
+}
+
+static void en75_dev_get_stats64(struct net_device *dev,
+				 struct rtnl_link_stats64 *storage)
+{
+	struct en75_gdm_port *port = netdev_priv(dev);
+	unsigned int start;
+
+	en75_update_hw_stats(port);
+	do {
+		start = u64_stats_fetch_begin(&port->stats.syncp);
+		storage->rx_packets = port->stats.rx_ok_pkts;
+		storage->tx_packets = port->stats.tx_ok_pkts;
+		storage->rx_bytes = port->stats.rx_ok_bytes;
+		storage->tx_bytes = port->stats.tx_ok_bytes;
+		storage->rx_errors = port->stats.rx_errors;
+		storage->rx_dropped = port->stats.rx_drops;
+		storage->tx_dropped = port->stats.tx_drops;
+		storage->rx_over_errors = port->stats.rx_over_errors;
+		if (port->stats.g2_stats) {
+			storage->multicast = port->stats.rx_multicast;
+			storage->rx_crc_errors = port->stats.rx_crc_error;
+		}
+	} while (u64_stats_fetch_retry(&port->stats.syncp, start));
+}
+
+static void en75_ethtool_get_mac_stats(struct net_device *dev,
+				       struct ethtool_eth_mac_stats *stats)
+{
+	struct en75_gdm_port *port = netdev_priv(dev);
+	unsigned int start;
+
+	en75_update_hw_stats(port);
+
+	if (!port->stats.g2_stats)
+		return;
+
+	do {
+		start = u64_stats_fetch_begin(&port->stats.syncp);
+		stats->MulticastFramesXmittedOK = port->stats.tx_multicast;
+		stats->BroadcastFramesXmittedOK = port->stats.tx_broadcast;
+		stats->BroadcastFramesReceivedOK = port->stats.rx_broadcast;
+	} while (u64_stats_fetch_retry(&port->stats.syncp, start));
+}
+
+static const struct ethtool_rmon_hist_range en75_ethtool_rmon_ranges[] = {
+	{    0,    64 },
+	{   65,   127 },
+	{  128,   255 },
+	{  256,   511 },
+	{  512,  1023 },
+	{ 1024,  1518 },
+	{ 1519, 10239 },
+	{},
+};
+
+static void
+en75_ethtool_get_rmon_stats(struct net_device *dev,
+			    struct ethtool_rmon_stats *stats,
+			    const struct ethtool_rmon_hist_range **ranges)
+{
+	struct en75_gdm_port *port = netdev_priv(dev);
+	struct en75_hw_stats *hw_stats = &port->stats;
+	unsigned int start;
+
+	BUILD_BUG_ON(ARRAY_SIZE(en75_ethtool_rmon_ranges) !=
+		     ARRAY_SIZE(hw_stats->tx_len) + 1);
+	BUILD_BUG_ON(ARRAY_SIZE(en75_ethtool_rmon_ranges) !=
+		     ARRAY_SIZE(hw_stats->rx_len) + 1);
+
+	*ranges = en75_ethtool_rmon_ranges;
+	en75_update_hw_stats(port);
+
+	if (!port->stats.g2_stats)
+		return;
+
+	do {
+		int i;
+
+		start = u64_stats_fetch_begin(&port->stats.syncp);
+		stats->fragments = hw_stats->rx_fragment;
+		stats->jabbers = hw_stats->rx_jabber;
+		for (i = 0; i < ARRAY_SIZE(en75_ethtool_rmon_ranges) - 1;
+		     i++) {
+			stats->hist[i] = hw_stats->rx_len[i];
+			stats->hist_tx[i] = hw_stats->tx_len[i];
+		}
+	} while (u64_stats_fetch_retry(&port->stats.syncp, start));
+}
+
+static const struct net_device_ops en75_netdev_ops = {
+	.ndo_init		= en75_dev_init,
+	.ndo_open		= en75_dev_open,
+	.ndo_stop		= en75_dev_stop,
+	.ndo_change_mtu		= en75_dev_change_mtu,
+	.ndo_start_xmit		= en75_dev_xmit,
+	.ndo_get_stats64        = en75_dev_get_stats64,
+	.ndo_set_mac_address	= en75_dev_set_macaddr,
+};
+
+static const struct ethtool_ops en75_ethtool_ops = {
+	.get_drvinfo		= airoha_eth_get_drvinfo,
+	.get_eth_mac_stats      = en75_ethtool_get_mac_stats,
+	.get_rmon_stats		= en75_ethtool_get_rmon_stats,
+};
+
+struct net_device *en75_alloc_gdm_port(struct en75_eth *eth,
+				       struct device_node *np,
+				       struct gdm __iomem *regs,
+				       struct en75_qdma *qdma,
+				       enum etx_fport fport,
+				       bool has_g2_stats)
+{
+	struct en75_gdm_port *port;
+	struct net_device *ndev;
+	int err;
+
+	ndev = devm_alloc_etherdev_mqs(eth->dev, sizeof(*port),
+				       EN75_NUM_SOFT_QUEUES,
+				       EN75_NUM_SOFT_QUEUES);
+	if (!ndev) {
+		dev_err(eth->dev, "alloc_etherdev failed\n");
+		return ERR_PTR(-ENOMEM);
+	}
+
+	ndev->netdev_ops = &en75_netdev_ops;
+	ndev->ethtool_ops = &en75_ethtool_ops;
+	ndev->max_mtu = SKB_WITH_OVERHEAD(EN75_MAX_PACKET_SIZE) -
+			ETH_HLEN - ETH_FCS_LEN;
+	ndev->watchdog_timeo = 5 * HZ;
+
+	/*
+	 * This driver is meant to forward packets, not send/receive them.
+	 * Therefore most features are not that useful.
+	 *
+	 * NETIF_F_TSO | NETIF_F_TSO6:
+	 *   - Supported in EN751627, not in EN751221, not used in forwarding.
+	 *
+	 * NETIF_F_IP_CSUM | NETIF_F_RXCSUM | NETIF_F_IPV6_CSUM:
+	 *   - Supported but disabled for simplicity.
+	 *
+	 * NETIF_F_HW_TC:
+	 *   - TODO: When we get the PPE working, we will enable this for
+	 *           TC_SETUP_BLOCK / TC_SETUP_FT for NAT flow-table offloading.
+	 */
+	ndev->hw_features = 0;
+
+	ndev->features |= ndev->hw_features;
+	ndev->vlan_features = ndev->hw_features;
+	ndev->dev.of_node = np;
+	SET_NETDEV_DEV(ndev, eth->dev);
+
+	err = airoha_eth_init_mac_address(eth->dev, np, ndev);
+	if (err)
+		return ERR_PTR(err);
+
+	port = netdev_priv(ndev);
+	u64_stats_init(&port->stats.syncp);
+	spin_lock_init(&port->stats.lock);
+	spin_lock_init(&port->reg_lock);
+	port->stats.g2_stats = has_g2_stats;
+	port->dev = ndev;
+	port->regs = regs;
+	port->fport = fport;
+	port->qdma = qdma;
+	port->eth = eth;
+
+	// TODO: This is pretty easy to enable
+// 	err = airoha_metadata_dst_alloc(port);
+// 	if (err)
+// 		return err;
+
+	err = register_netdev(ndev);
+	if (err)
+		goto free_metadata_dst;
+
+	dev_info(eth->dev, "port %d%s registered with %pM\n",
+		fport,
+		(fport == ETX_FPORT_GDM1) ? " (LAN)" :
+		(fport == ETX_FPORT_GDM2) ? " (WAN)" : "",
+		ndev->dev_addr);
+
+	return ndev;
+
+free_metadata_dst:
+// 	airoha_metadata_dst_free(port);
+	return ERR_PTR(err);
+}
+
+/* Frame-engine platform driver. */
 /* MT7530 switch configuration */
 #define  PMCR_FORCE_FDX			BIT(1)
 #define  PMCR_FORCE_LNK			BIT(0)
@@ -96,7 +1726,6 @@ struct en75_eth_pvt {
 	struct reset_control		*reset;
 	int				qdma_irq[EN75_NUM_QDMA * QDMA_NUM_IRQS];
 	struct en75_qdma		*qdma[EN75_NUM_QDMA];
-	struct en75_debug		*debug;
 	/* Whether our register window covers the on-die switch, see probe. */
 	bool				has_switch_regs;
 };
@@ -286,7 +1915,6 @@ static void en75_remove(struct platform_device *pdev)
 	if (!eth)
 		return;
 
-	en75_debugfs_exit(eth->debug);
 
 	for (i = 0; i < ARRAY_SIZE(eth->ports); i++) {
 		if (!eth->ports[i])
@@ -304,7 +1932,6 @@ static void en75_remove(struct platform_device *pdev)
 
 static int en75_probe(struct platform_device *pdev)
 {
-	struct en75_debug_conf debug_conf = {0};
 	struct en751221_regs __iomem *regs;
 	struct resource *regs_res;
 	struct en75_eth_pvt *eth;
@@ -383,8 +2010,7 @@ static int en75_probe(struct platform_device *pdev)
 		en75_prepare_qdma_cfg(&cfg, eth->soc);
 		eth->qdma[i] = en75_qdma_new(&eth->pub, &regs->qdma_regs[i], i,
 					     &eth->qdma_irq[i * QDMA_NUM_IRQS],
-					     QDMA_NUM_IRQS, &cfg,
-					     &debug_conf.qdma[i]);
+					     QDMA_NUM_IRQS, &cfg);
 
 		if (IS_ERR(eth->qdma[i])) {
 			err = PTR_ERR(eth->qdma[i]);
@@ -407,7 +2033,6 @@ static int en75_probe(struct platform_device *pdev)
 		}
 	}
 
-	eth->debug = en75_debugfs_init(&debug_conf);
 
 	/* Configure the MT7530 as a dumb switch, unless it is managed by DSA */
 	if (eth->has_switch_regs) {
