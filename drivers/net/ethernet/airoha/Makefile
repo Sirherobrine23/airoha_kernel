@@ -11,6 +11,9 @@ airoha-eth-y := airoha_eth.o airoha_ppe.o
 airoha-eth-$(CONFIG_DEBUG_FS) += airoha_ppe_debugfs.o
 obj-$(CONFIG_NET_AIROHA_NPU) += airoha_npu.o
 
+obj-$(CONFIG_NET_ECONET_EN751221) += econet-eth.o
+econet-eth-y := econet_eth.o econet_qdma.o econet_port.o econet_debugfs.o
+
 airoha-eth-$(CONFIG_NET_AIROHA_SOC_WED) += airoha_wed.o airoha_wed_debugfs.o
 
 # Airoha/EcoNet shared GPON + EPON MAC complex

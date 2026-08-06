@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-2.0-only
 config NET_VENDOR_AIROHA
 	bool "Airoha devices"
-	depends on ARCH_AIROHA || COMPILE_TEST
+	depends on ARCH_AIROHA || ECONET || COMPILE_TEST
 	help
 	  If you have a Airoha SoC with ethernet, say Y.
 
@@ -31,6 +31,19 @@ config NET_AIROHA
 	help
 	  This driver supports the gigabit ethernet MACs in the
 	  Airoha SoC family.
+
+config NET_ECONET_EN751221
+	tristate "EcoNet EN751221 Ethernet support"
+	depends on ECONET || COMPILE_TEST
+	depends on OF
+	select NET_AIROHA_COMMON
+	select PAGE_POOL
+	help
+	  Support the dual-QDMA, dual-GDM frame engine found in the EcoNet
+	  EN7512, EN7521, EN7526 and related EN751221-family MIPS SoCs.
+
+	  The driver is separate from the newer Airoha EN7523/EN7581 frame
+	  engine driver, while sharing generic MMIO, DMA and netdev helpers.
 
 config NET_AIROHA_FLOW_STATS
 	default y
