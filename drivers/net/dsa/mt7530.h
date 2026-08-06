@@ -22,6 +22,7 @@ enum mt753x_id {
 	ID_EN7581 = 4,
 	ID_AN7583 = 5,
 	ID_EN7523 = 6,
+	ID_EN7528 = 7,
 };
 
 #define	NUM_TRGMII_CTRL			5
