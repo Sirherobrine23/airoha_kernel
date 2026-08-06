@@ -3,6 +3,9 @@
 # Airoha for the Mediatek SoCs built-in ethernet macs
 #
 
+obj-$(CONFIG_NET_AIROHA_COMMON) += airoha-common.o
+airoha-common-y := airoha_common.o
+
 obj-$(CONFIG_NET_AIROHA) += airoha-eth.o
 airoha-eth-y := airoha_eth.o airoha_ppe.o
 airoha-eth-$(CONFIG_DEBUG_FS) += airoha_ppe_debugfs.o
