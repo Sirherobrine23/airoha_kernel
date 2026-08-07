@@ -45,6 +45,7 @@
 #define UART_RXD_GPIO_MODE_MASK			BIT(24)
 #define UART_TXD_GPIO_MODE_MASK			BIT(23)
 #define SPI_GPIO_MODE_MASK			GENMASK(22, 19)
+#define EMMC_GPIO_MODE_MASK			GENMASK(21, 19)
 #define SPI_MISO_GPIO_MODE_MASK			BIT(22)
 #define SPI_MOSI_GPIO_MODE_MASK			BIT(21)
 #define SPI_CS_GPIO_MODE_MASK			BIT(20)
@@ -994,7 +995,7 @@ static const struct airoha_pinctrl_func_group emmc_func_group[] = {
 		.regmap[0] = {
 			AIROHA_FUNC_MUX,
 			REG_GPIO_PON_MODE,
-			GPIO_EMMC_MODE_MASK,
+			GPIO_EMMC_MODE_MASK | EMMC_GPIO_MODE_MASK,
 			GPIO_EMMC_MODE_MASK
 		},
 		.regmap_size = 1,
