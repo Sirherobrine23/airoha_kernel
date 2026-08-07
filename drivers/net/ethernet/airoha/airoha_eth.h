@@ -668,6 +668,9 @@ struct airoha_xpon_tx_info {
 };
 
 struct airoha_gdm_dev {
+	/* Must stay first: shared GDM/phylink and PPE port metadata. */
+	struct airoha_gdm_common common;
+
 	struct airoha_qdma __rcu *qdma;
 	struct airoha_gdm_port *port;
 	struct airoha_eth *eth;
@@ -705,9 +708,6 @@ struct airoha_gdm_dev {
 	struct airoha_xpon_service_cfg
 		xpon_services[AIROHA_XPON_MAX_SERVICES];
 
-	struct phylink *phylink;
-	struct phylink_config phylink_config;
-	bool phylink_started;
 };
 
 struct airoha_gdm_port {
@@ -729,6 +729,24 @@ struct airoha_gdm_port {
 #define AIROHA_PPE_CPU_REASON_FOE_UNHIT			0x0d
 #define AIROHA_PPE_CPU_REASON_HIT_UNBIND		0x0e
 #define AIROHA_PPE_CPU_REASON_HIT_UNBIND_RATE_REACHED	0x0f
+
+struct airoha_ppe_host_ops {
+	int (*get_fe_port)(struct airoha_gdm_dev *dev);
+	bool (*is_valid_gdm_dev)(struct airoha_eth *eth,
+				 struct airoha_gdm_dev *dev);
+	int (*xpon_get_tx_info)(struct net_device *netdev, bool vlan_valid,
+				u16 vlan_id, bool pcp_valid, u8 pcp,
+				struct airoha_xpon_tx_info *info);
+	struct airoha_npu *(*npu_get)(struct airoha_eth *eth);
+	void (*npu_put)(struct airoha_npu *npu);
+	int (*npu_ppe_init)(struct airoha_npu *npu);
+	int (*npu_ppe_deinit)(struct airoha_npu *npu);
+	int (*npu_ppe_init_stats)(struct airoha_npu *npu, dma_addr_t addr,
+				  u32 num_stats_entries);
+	void (*npu_stats_read)(struct airoha_npu *npu, u32 index,
+			       struct airoha_foe_stats *stats);
+	void (*npu_stats_clear)(struct airoha_npu *npu, u32 index);
+};
 
 struct airoha_ppe {
 	struct airoha_ppe_dev dev;
@@ -786,6 +804,7 @@ struct airoha_eth {
 	struct airoha_npu __rcu *npu;
 
 	struct airoha_ppe *ppe;
+	const struct airoha_ppe_host_ops *ppe_host_ops;
 	struct rhashtable flow_table;
 
 	struct reset_control_bulk_data rsts[AIROHA_MAX_NUM_RSTS];
@@ -939,7 +958,7 @@ struct airoha_foe_entry *airoha_ppe_foe_get_entry(struct airoha_ppe *ppe,
 void airoha_ppe_foe_entry_get_stats(struct airoha_ppe *ppe, u32 hash,
 				    struct airoha_foe_stats64 *stats);
 
-#ifdef CONFIG_DEBUG_FS
+#if IS_ENABLED(CONFIG_NET_AIROHA_PPE_DEBUGFS)
 int airoha_ppe_debugfs_init(struct airoha_ppe *ppe);
 #else
 static inline int airoha_ppe_debugfs_init(struct airoha_ppe *ppe)
