@@ -8,6 +8,7 @@
 #include <linux/platform_device.h>
 #include <linux/skbuff.h>
 #include <linux/types.h>
+#include <linux/soc/airoha/airoha_offload.h>
 
 #include "airoha_common.h"
 
@@ -3329,15 +3330,12 @@ enum econet_fport {
 
 struct econet_eth {
 	struct device *dev;
+	struct airoha_ppe_dev *ppe;
 };
 
 /* Called in softirq context */
 int econet_rx_before_recv(struct econet_eth *eth, struct sk_buff *skb,
 			enum etx_fport sport);
-
-/* Called from the port driver to the main eth to notify the switch */
-int econet_port_set_macaddr(struct econet_eth *eth, enum etx_fport portn,
-			  const u8 *addr);
 
 struct econet_qdma_cfg {
 	int num_rx_descs[QDMA_NUM_CHAINS];

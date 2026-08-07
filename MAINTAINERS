@@ -747,6 +747,7 @@ F:	Documentation/devicetree/bindings/net/airoha,en7523-wed.yaml
 F:	Documentation/devicetree/bindings/net/airoha,en7581-eth.yaml
 F:	Documentation/devicetree/bindings/net/econet,en751221-eth.yaml
 F:	drivers/net/ethernet/airoha/
+F:	include/linux/soc/airoha/airoha_offload.h
 
 AIROHA ETHERNET PHY DRIVER
 M:	Christian Marangi <ansuelsmth@gmail.com>

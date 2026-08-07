@@ -10,6 +10,7 @@
 #include <linux/netdevice.h>
 #include <linux/of.h>
 #include <linux/of_net.h>
+#include <linux/phylink.h>
 
 #include "airoha_common.h"
 
@@ -110,6 +111,129 @@ void airoha_eth_get_drvinfo(struct net_device *netdev,
 	strscpy(info->bus_info, dev_name(parent), sizeof(info->bus_info));
 }
 EXPORT_SYMBOL_GPL(airoha_eth_get_drvinfo);
+
+static void airoha_gdm_mac_config(struct phylink_config *config,
+				  unsigned int mode,
+				  const struct phylink_link_state *state)
+{
+	struct airoha_gdm_common *gdm;
+
+	gdm = container_of(config, struct airoha_gdm_common, phylink_config);
+	if (gdm->mac_ops && gdm->mac_ops->mac_config)
+		gdm->mac_ops->mac_config(gdm->priv, mode, state);
+}
+
+static void airoha_gdm_mac_link_up(struct phylink_config *config,
+				   struct phy_device *phy,
+				   unsigned int mode,
+				   phy_interface_t interface,
+				   int speed, int duplex,
+				   bool tx_pause, bool rx_pause)
+{
+	struct airoha_gdm_common *gdm;
+
+	gdm = container_of(config, struct airoha_gdm_common, phylink_config);
+	if (gdm->mac_ops && gdm->mac_ops->mac_link_up)
+		gdm->mac_ops->mac_link_up(gdm->priv, phy, mode, interface,
+					  speed, duplex, tx_pause, rx_pause);
+}
+
+static void airoha_gdm_mac_link_down(struct phylink_config *config,
+				     unsigned int mode,
+				     phy_interface_t interface)
+{
+	struct airoha_gdm_common *gdm;
+
+	gdm = container_of(config, struct airoha_gdm_common, phylink_config);
+	if (gdm->mac_ops && gdm->mac_ops->mac_link_down)
+		gdm->mac_ops->mac_link_down(gdm->priv, mode, interface);
+}
+
+static const struct phylink_mac_ops airoha_gdm_phylink_ops = {
+	.mac_config = airoha_gdm_mac_config,
+	.mac_link_up = airoha_gdm_mac_link_up,
+	.mac_link_down = airoha_gdm_mac_link_down,
+};
+
+void airoha_gdm_common_init(struct airoha_gdm_common *gdm,
+			    struct net_device *netdev,
+			    enum airoha_eth_family family, u8 id,
+			    u8 pse_port, void *priv,
+			    const struct airoha_gdm_mac_ops *mac_ops)
+{
+	memset(gdm, 0, sizeof(*gdm));
+	gdm->magic = AIROHA_GDM_COMMON_MAGIC;
+	gdm->family = family;
+	gdm->id = id;
+	gdm->pse_port = pse_port;
+	gdm->netdev = netdev;
+	gdm->priv = priv;
+	gdm->mac_ops = mac_ops;
+	gdm->phylink_config.dev = &netdev->dev;
+	gdm->phylink_config.type = PHYLINK_NETDEV;
+}
+EXPORT_SYMBOL_GPL(airoha_gdm_common_init);
+
+int airoha_gdm_phylink_create(struct airoha_gdm_common *gdm,
+			      struct device_node *np,
+			      phy_interface_t phy_mode)
+{
+	struct phylink *phylink;
+
+	phylink = phylink_create(&gdm->phylink_config,
+				 of_fwnode_handle(np), phy_mode,
+				 &airoha_gdm_phylink_ops);
+	if (IS_ERR(phylink))
+		return PTR_ERR(phylink);
+
+	gdm->phylink = phylink;
+	return 0;
+}
+EXPORT_SYMBOL_GPL(airoha_gdm_phylink_create);
+
+int airoha_gdm_phylink_connect(struct airoha_gdm_common *gdm,
+			       bool allow_no_phy)
+{
+	int err;
+
+	if (!gdm->phylink)
+		return -ENODEV;
+
+	err = phylink_of_phy_connect(gdm->phylink,
+				     gdm->netdev->dev.of_node, 0);
+	if (err) {
+		if (allow_no_phy && err == -ENODEV)
+			return 0;
+		return err;
+	}
+
+	phylink_start(gdm->phylink);
+	gdm->phylink_started = true;
+	return 0;
+}
+EXPORT_SYMBOL_GPL(airoha_gdm_phylink_connect);
+
+void airoha_gdm_phylink_disconnect(struct airoha_gdm_common *gdm)
+{
+	if (!gdm->phylink_started)
+		return;
+
+	phylink_stop(gdm->phylink);
+	phylink_disconnect_phy(gdm->phylink);
+	gdm->phylink_started = false;
+}
+EXPORT_SYMBOL_GPL(airoha_gdm_phylink_disconnect);
+
+void airoha_gdm_phylink_destroy(struct airoha_gdm_common *gdm)
+{
+	airoha_gdm_phylink_disconnect(gdm);
+	if (!gdm->phylink)
+		return;
+
+	phylink_destroy(gdm->phylink);
+	gdm->phylink = NULL;
+}
+EXPORT_SYMBOL_GPL(airoha_gdm_phylink_destroy);
 
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("Shared helpers for Airoha and EcoNet Ethernet drivers");
