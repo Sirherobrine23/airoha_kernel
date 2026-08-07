@@ -197,9 +197,8 @@ static void econet_qdma_rx_process_one(struct econet_q_rx *q, u32 cpu_i,
 	hash = get_erx_ppe_entry(&desc.msg.erx);
 	skb_set_hash(skb, jhash_1word(hash, 0),
 		     PKT_HASH_TYPE_L4);
-
-	/* TODO: When we begin supporting the PPE, we will handle
-	 *       PPE_CPU_REASON_HIT_UNBIND_RATE_REACHED here. */
+	airoha_ppe_dev_check_skb_reason(q->qdma->eth->ppe, skb, hash,
+					get_erx_crsn(&desc.msg.erx));
 
 	sport = get_erx_sport(&desc.msg.erx);
 	if (econet_rx_before_recv(q->qdma->eth, skb, sport))
@@ -806,11 +805,23 @@ static int econet_init_hw_fwd(struct econet_qdma *qdma)
 
 		rmem = of_reserved_mem_lookup(np);
 		of_node_put(np);
+		if (!rmem)
+			return dev_err_probe(qdma->dev, -EINVAL,
+					     "invalid %s memory-region\n", name);
+		if (!rmem->size || upper_32_bits(rmem->base) ||
+		    upper_32_bits(rmem->base + rmem->size - 1))
+			return dev_err_probe(qdma->dev, -ERANGE,
+					     "%s memory-region must be below 4 GiB\n",
+					     name);
+
 		dma_addr = rmem->base;
 		/* Compute the number of hw descriptors according to the
 		 * reserved memory size and the payload buffer size
 		 */
 		num_desc = div_u64(rmem->size, buf_size);
+		if (!num_desc)
+			return dev_err_probe(qdma->dev, -EINVAL,
+					     "%s memory-region is too small\n", name);
 
 		if (num_desc < qdma->cfg.num_fwd_descs)
 			dev_warn(qdma->dev,
@@ -1211,6 +1222,9 @@ struct econet_hw_stats {
 };
 
 struct econet_gdm_port {
+	/* Must stay first for common GDM/phylink and PPE metadata. */
+	struct airoha_gdm_common common;
+
 	struct net_device *dev;
 
 	struct gdm __iomem *regs;
@@ -1255,7 +1269,6 @@ static void econet_set_macaddr(struct econet_gdm_port *port, const u8 *addr)
 		econet_wreg(msb, &port->regs->mymac_msb);
 	}
 
-	econet_port_set_macaddr(port->eth, port->fport, addr);
 }
 
 static int econet_dev_set_macaddr(struct net_device *dev, void *p)
@@ -1306,15 +1319,18 @@ static int econet_dev_open(struct net_device *dev)
 	struct gdm_len_th rlt;
 	int err;
 
-	// TODO DSA
-	// if (netdev_uses_dsa(dev))
-	// 	airoha_fe_set(qdma->eth, REG_GDM_INGRESS_CFG(port->id),
-	// 		      GDM_STAG_EN_MASK);
-	// else
-	// 	airoha_fe_clear(qdma->eth, REG_GDM_INGRESS_CFG(port->id),
-	// 			GDM_STAG_EN_MASK);
+	err = airoha_gdm_phylink_connect(&port->common, false);
+	if (err) {
+		netdev_err(dev, "could not attach PHY: %d\n", err);
+		return err;
+	}
 
+	/* The MT7530 CPU port is represented by ethernet = <&gdm1>. Keep
+	 * the MTK special tag on the DSA conduit and disable it on a direct
+	 * PHY/WAN GDM, mirroring the newer Airoha datapath.
+	 */
 	scoped_guard(spinlock, &port->reg_lock) {
+		econet_wreg((u32)netdev_uses_dsa(dev), &port->regs->stag_en);
 		rlt = econet_rreg(&port->regs->rx_len_threshold);
 		set_gdm_len_th_runt_len(&rlt, 60);
 		set_gdm_len_th_oversize_len(&rlt,
@@ -1323,8 +1339,12 @@ static int econet_dev_open(struct net_device *dev)
 	}
 
 	err = econet_qdma_use(port->qdma);
-	if (err)
+	if (err) {
+		scoped_guard(spinlock, &port->reg_lock)
+			econet_wreg(0U, &port->regs->stag_en);
+		airoha_gdm_phylink_disconnect(&port->common);
 		return err;
+	}
 
 	netif_tx_start_all_queues(dev);
 
@@ -1336,6 +1356,10 @@ static int econet_dev_stop(struct net_device *dev)
 	struct econet_gdm_port *port = netdev_priv(dev);
 
 	netif_tx_disable(dev);
+	airoha_gdm_phylink_disconnect(&port->common);
+
+	scoped_guard(spinlock, &port->reg_lock)
+		econet_wreg(0U, &port->regs->stag_en);
 
 	return econet_qdma_unuse(port->qdma);
 }
@@ -1550,6 +1574,15 @@ econet_ethtool_get_rmon_stats(struct net_device *dev,
 	} while (u64_stats_fetch_retry(&port->stats.syncp, start));
 }
 
+static int econet_dev_setup_tc(struct net_device *dev,
+			       enum tc_setup_type type, void *type_data)
+{
+	struct econet_gdm_port *port = netdev_priv(dev);
+
+	return airoha_ppe_dev_setup_tc(port->common.ppe, dev, type,
+				       type_data);
+}
+
 static const struct net_device_ops econet_netdev_ops = {
 	.ndo_init		= econet_dev_init,
 	.ndo_open		= econet_dev_open,
@@ -1558,13 +1591,68 @@ static const struct net_device_ops econet_netdev_ops = {
 	.ndo_start_xmit		= econet_dev_xmit,
 	.ndo_get_stats64        = econet_dev_get_stats64,
 	.ndo_set_mac_address	= econet_dev_set_macaddr,
+	.ndo_setup_tc		= econet_dev_setup_tc,
 };
+
+static int econet_ethtool_get_link_ksettings(struct net_device *dev,
+					     struct ethtool_link_ksettings *cmd)
+{
+	struct econet_gdm_port *port = netdev_priv(dev);
+
+	return phylink_ethtool_ksettings_get(port->common.phylink, cmd);
+}
+
+static int econet_ethtool_set_link_ksettings(struct net_device *dev,
+					     const struct ethtool_link_ksettings *cmd)
+{
+	struct econet_gdm_port *port = netdev_priv(dev);
+
+	return phylink_ethtool_ksettings_set(port->common.phylink, cmd);
+}
+
+static int econet_ethtool_nway_reset(struct net_device *dev)
+{
+	struct econet_gdm_port *port = netdev_priv(dev);
+
+	return phylink_ethtool_nway_reset(port->common.phylink);
+}
 
 static const struct ethtool_ops econet_ethtool_ops = {
 	.get_drvinfo		= airoha_eth_get_drvinfo,
+	.get_link		= ethtool_op_get_link,
+	.get_link_ksettings	= econet_ethtool_get_link_ksettings,
+	.set_link_ksettings	= econet_ethtool_set_link_ksettings,
+	.nway_reset		= econet_ethtool_nway_reset,
 	.get_eth_mac_stats      = econet_ethtool_get_mac_stats,
 	.get_rmon_stats		= econet_ethtool_get_rmon_stats,
 };
+
+static int econet_setup_phylink(struct econet_gdm_port *port,
+				struct device_node *np)
+{
+	struct phylink_config *config = &port->common.phylink_config;
+	phy_interface_t phy_mode;
+	int err;
+
+	err = of_get_phy_mode(np, &phy_mode);
+	if (err)
+		return dev_err_probe(port->eth->dev, err,
+				     "GDM%u has no valid phy-mode\n",
+				     port->common.id);
+
+	config->mac_capabilities = MAC_ASYM_PAUSE | MAC_SYM_PAUSE |
+				   MAC_10 | MAC_100 | MAC_1000 |
+				   MAC_2500FD | MAC_5000FD | MAC_10000FD;
+	__set_bit(PHY_INTERFACE_MODE_INTERNAL, config->supported_interfaces);
+	__set_bit(PHY_INTERFACE_MODE_MII, config->supported_interfaces);
+	__set_bit(PHY_INTERFACE_MODE_GMII, config->supported_interfaces);
+	__set_bit(PHY_INTERFACE_MODE_RGMII, config->supported_interfaces);
+	__set_bit(PHY_INTERFACE_MODE_RGMII_ID, config->supported_interfaces);
+	__set_bit(PHY_INTERFACE_MODE_RGMII_RXID, config->supported_interfaces);
+	__set_bit(PHY_INTERFACE_MODE_RGMII_TXID, config->supported_interfaces);
+
+	return airoha_gdm_phylink_create(&port->common, np, phy_mode);
+}
 
 struct net_device *econet_alloc_gdm_port(struct econet_eth *eth,
 				       struct device_node *np,
@@ -1606,10 +1694,12 @@ struct net_device *econet_alloc_gdm_port(struct econet_eth *eth,
 	 *           TC_SETUP_BLOCK / TC_SETUP_FT for NAT flow-table offloading.
 	 */
 	ndev->hw_features = 0;
+	if (eth->ppe && eth->ppe->enabled)
+		ndev->hw_features |= NETIF_F_HW_TC;
 
 	ndev->features |= ndev->hw_features;
 	ndev->vlan_features = ndev->hw_features;
-	ndev->dev.of_node = np;
+	ndev->dev.of_node = of_node_get(np);
 	SET_NETDEV_DEV(ndev, eth->dev);
 
 	err = airoha_eth_init_mac_address(eth->dev, np, ndev);
@@ -1617,6 +1707,12 @@ struct net_device *econet_alloc_gdm_port(struct econet_eth *eth,
 		return ERR_PTR(err);
 
 	port = netdev_priv(ndev);
+	airoha_gdm_common_init(&port->common, ndev,
+			       AIROHA_ETH_FAMILY_ECONET, fport,
+			       fport == ETX_FPORT_GDM2 ? DPORT_GDMA2 :
+						      DPORT_GDMA1,
+			       port, NULL);
+	port->common.ppe = eth->ppe;
 	u64_stats_init(&port->stats.syncp);
 	spin_lock_init(&port->stats.lock);
 	spin_lock_init(&port->reg_lock);
@@ -1626,6 +1722,10 @@ struct net_device *econet_alloc_gdm_port(struct econet_eth *eth,
 	port->fport = fport;
 	port->qdma = qdma;
 	port->eth = eth;
+
+	err = econet_setup_phylink(port, np);
+	if (err)
+		goto free_of_node;
 
 	// TODO: This is pretty easy to enable
 // 	err = airoha_metadata_dst_alloc(port);
@@ -1646,103 +1746,32 @@ struct net_device *econet_alloc_gdm_port(struct econet_eth *eth,
 
 free_metadata_dst:
 // 	airoha_metadata_dst_free(port);
+	airoha_gdm_phylink_destroy(&port->common);
+free_of_node:
+	of_node_put(ndev->dev.of_node);
+	ndev->dev.of_node = NULL;
 	return ERR_PTR(err);
 }
 
 /* Frame-engine platform driver. */
-/* MT7530 switch configuration */
-#define  PMCR_FORCE_FDX			BIT(1)
-#define  PMCR_FORCE_LNK			BIT(0)
-#define  PMCR_FORCE_SPEED_1000		BIT(3)
-#define  PMCR_BACKOFF_EN		BIT(9)
-#define  PMCR_BACKPR_EN			BIT(8)
-#define  PMCR_MAC_MODE			BIT(16)
-#define  MT7530_FORCE_MODE		BIT(15)
-#define  PMCR_MAC_TX_EN			BIT(14)
-#define  PMCR_MAC_RX_EN			BIT(13)
-#define  PMCR_IFG_XMIT_MASK		GENMASK(19, 18)
-#define  PMCR_IFG_XMIT(x)		FIELD_PREP(PMCR_IFG_XMIT_MASK, x)
-#define    IFG_64BIT 2
-/* Match bootloader value, 0x9e30b */
-#define ECONET_PMCR_CONFIG ((u32)( \
-		PMCR_FORCE_FDX | PMCR_FORCE_LNK | PMCR_FORCE_SPEED_1000 | \
-		PMCR_BACKOFF_EN | PMCR_BACKPR_EN | PMCR_MAC_MODE | \
-		MT7530_FORCE_MODE | PMCR_MAC_TX_EN | PMCR_MAC_RX_EN | \
-		PMCR_IFG_XMIT(IFG_64BIT) \
-	))
-#define MT753X_PMCR_P(x)		(0x3000 + ((x) * 0x100))
-
-#define MT753X_MFC			0x10
-#define  BC_FFP_MASK			GENMASK(31, 24)
-#define  BC_FFP(x)			FIELD_PREP(BC_FFP_MASK, x)
-#define  UNM_FFP_MASK			GENMASK(23, 16)
-#define  UNM_FFP(x)			FIELD_PREP(UNM_FFP_MASK, x)
-#define  UNU_FFP_MASK			GENMASK(15, 8)
-#define  UNU_FFP(x)			FIELD_PREP(UNU_FFP_MASK, x)
-#define  MT7530_CPU_EN			BIT(7)
-#define  MT7530_CPU_PORT_MASK		GENMASK(6, 4)
-#define  MT7530_CPU_PORT(x)		FIELD_PREP(MT7530_CPU_PORT_MASK, x)
-
-#define ECONET_MFC_CONFIG ((u32)( \
-		BC_FFP(0xff) | UNM_FFP(0xff) | UNU_FFP(0xff) | \
-		MT7530_CPU_EN | MT7530_CPU_PORT(6) \
-	))
-
-#define SWITCH_MAC_HI			0x30e8
-#define SWITCH_MAC_LO			0x30e4
 
 struct econet_eth_pvt {
 	struct econet_eth			pub;
 	const struct econet_soc_data	*soc;
 	struct net_device		*ports[ECONET_NUM_GDM_PORTS];
-	struct en751221_regs __iomem	*regs;
+	void __iomem			*fe_base;
+	struct gdm __iomem		*gdm[ECONET_NUM_GDM_PORTS];
+	void __iomem			*ppe_base;
+	struct qregs __iomem		*qdma_regs[ECONET_NUM_QDMA];
 	struct reset_control		*reset;
 	int				qdma_irq[ECONET_NUM_QDMA * QDMA_NUM_IRQS];
 	struct econet_qdma		*qdma[ECONET_NUM_QDMA];
-	/* Whether our register window covers the on-die switch, see probe. */
-	bool				has_switch_regs;
 };
 
-union gdm_regs {
-	struct gdm	regs;
-	u32		words[0x800 / sizeof(u32)];
-};
-
-struct en751221_regs {
-	/* BFB50000 - BFB50400 */
-	u32		fe[0x400 / sizeof(u32)];
-
-	/* BFB50400 - BFB50C00 */
-	union gdm_regs	port0;
-
-	/* BFB50C00 - BFB51000 */
-	u32		ppe[0x400 / sizeof(u32)];
-
-	/* BFB51000 - BFB51400 */
-	u32		unknown_deadbeef[0x400 / sizeof(u32)];
-
-	/* BFB51400 - BFB51C00 */
-	union gdm_regs	port1;
-
-	/* BFB51C00 - BFB52000 */
-	u32		unknown_deadbeef2[0x400 / sizeof(u32)];
-
-	/* BFB52000 - BFB52400 */
-	u32		ppe_accounting[0x400 / sizeof(u32)];
-
-	/* BFB52400 - BFB54000 */
-	u32		ppe_unused[0x1c00 / sizeof(u32)];
-
-	/* BFB54000 - BFB56000 */
-	struct qregs	qdma_regs[ECONET_NUM_QDMA];
-
-	/* BFB56000 - BFB58000 */
-	u32		unknown_zeroed[0x2000 / sizeof(u32)];
-
-	/* BFB58000 - BFB60000 */
-	u32		switch_regs[0x8000 / sizeof(u32)];
-};
-_Static_assert(sizeof(struct en751221_regs) == 0x10000, "en751221_regs size incorrect");
+#define ECONET_FE_GDM1_OFFSET	0x0400
+#define ECONET_FE_PPE_OFFSET	0x0c00
+#define ECONET_FE_GDM2_OFFSET	0x1400
+#define ECONET_FE_MIN_SIZE	0x2600
 
 static struct net_device *econet_get_sport_dev(struct econet_eth_pvt *eth,
 					     enum etx_fport sport)
@@ -1794,48 +1823,16 @@ int econet_rx_before_recv(struct econet_eth *eth, struct sk_buff *skb,
 	return 0;
 }
 
-int econet_port_set_macaddr(struct econet_eth *eth, enum etx_fport portn, const u8 *addr)
-{
-	struct econet_eth_pvt *ep = (struct econet_eth_pvt *) eth;
-	u32 __iomem *reg = ep->regs->switch_regs;
-	struct gdm_mymac_msb msb = { .word = 0 };
-	struct gdm_mymac_lsb lsb = { .word = 0 };
-
-	/*
-	 * This programs the switch source MAC address (SMACCR). Those
-	 * registers live in the switch register block, so when the switch is
-	 * managed by the mt7530 DSA driver they are not ours to write.
-	 */
-	if (!ep->has_switch_regs)
-		return 0;
-
-	if (portn != ETX_FPORT_GDM1)
-		return 0;
-
-	set_gdm_mymac_msb_a(&msb, addr[0]);
-	set_gdm_mymac_msb_b(&msb, addr[1]);
-	set_gdm_mymac_lsb_c(&lsb, addr[2]);
-	set_gdm_mymac_lsb_d(&lsb, addr[3]);
-	set_gdm_mymac_lsb_e(&lsb, addr[4]);
-	set_gdm_mymac_lsb_f(&lsb, addr[5]);
-
-	econet_wreg(lsb, (struct gdm_mymac_lsb *)&reg[SWITCH_MAC_LO / 4]);
-	econet_wreg(msb, (struct gdm_mymac_msb *)&reg[SWITCH_MAC_HI / 4]);
-
-	return 0;
-}
-
 static int econet_init_port(struct econet_eth_pvt *eth, struct device_node *np)
 {
 	struct net_device *dev;
-	u32 index, id, max_index = ARRAY_SIZE(eth->ports) - 1;
+	u32 id;
 	int err;
 
-	err = airoha_eth_get_port_id(eth->pub.dev, np, 0, max_index, &index);
+	err = airoha_eth_get_port_id(eth->pub.dev, np, 1,
+				     ARRAY_SIZE(eth->ports), &id);
 	if (err)
 		return err;
-
-	id = index + 1;
 
 	if (eth->ports[id - 1]) {
 		dev_err(eth->pub.dev, "duplicate gdm port id: %d\n", id);
@@ -1844,13 +1841,13 @@ static int econet_init_port(struct econet_eth_pvt *eth, struct device_node *np)
 
 	if (id == 1)
 		dev = econet_alloc_gdm_port(&eth->pub, np,
-					  &eth->regs->port0.regs,
+					  eth->gdm[0],
 					  eth->qdma[0],
 					  ETX_FPORT_GDM1,
 					  false);
 	else if (id == 2)
 		dev = econet_alloc_gdm_port(&eth->pub, np,
-					  &eth->regs->port1.regs,
+					  eth->gdm[1],
 					  eth->qdma[1],
 					  ETX_FPORT_GDM2,
 					  true);
@@ -1894,7 +1891,14 @@ static void econet_eth_remove(struct platform_device *pdev)
 			continue;
 
 		unregister_netdev(eth->ports[i]);
+		airoha_gdm_phylink_destroy(&((struct econet_gdm_port *)
+					netdev_priv(eth->ports[i]))->common);
+		of_node_put(eth->ports[i]->dev.of_node);
+		eth->ports[i]->dev.of_node = NULL;
 	}
+
+	airoha_ppe_econet_deinit(eth->pub.ppe);
+	eth->pub.ppe = NULL;
 
 	for (i = 0; i < ARRAY_SIZE(eth->qdma); i++)
 		if (eth->qdma[i])
@@ -1905,11 +1909,14 @@ static void econet_eth_remove(struct platform_device *pdev)
 
 static int econet_eth_probe(struct platform_device *pdev)
 {
-	struct en751221_regs __iomem *regs;
-	struct resource *regs_res;
+	static const char * const qdma_names[ECONET_NUM_QDMA] = {
+		"qdma0", "qdma1",
+	};
+	struct resource *fe_res;
 	struct econet_eth_pvt *eth;
 	struct econet_qdma_cfg cfg;
 	struct device_node *np;
+	void __iomem *fe_base;
 	int i, err, irq;
 
 	eth = devm_kzalloc(&pdev->dev, sizeof(*eth), GFP_KERNEL);
@@ -1927,38 +1934,41 @@ static int econet_eth_probe(struct platform_device *pdev)
 	if (err)
 		return err;
 
-	regs = devm_platform_get_and_ioremap_resource(pdev, 0, &regs_res);
-	if (IS_ERR(regs))
-		return dev_err_probe(&pdev->dev, PTR_ERR(regs),
-				     "failed to map registers\n");
-
-	if (resource_size(regs_res) <
-	    offsetof(struct en751221_regs, switch_regs)) {
+	fe_res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "fe");
+	if (!fe_res)
 		return dev_err_probe(&pdev->dev, -EINVAL,
-				     "insufficient register space\n");
+				     "missing fe register resource\n");
+	if (resource_size(fe_res) < ECONET_FE_MIN_SIZE)
+		return dev_err_probe(&pdev->dev, -EINVAL,
+				     "fe register resource is too small\n");
+
+	fe_base = devm_ioremap_resource(&pdev->dev, fe_res);
+	if (IS_ERR(fe_base))
+		return dev_err_probe(&pdev->dev, PTR_ERR(fe_base),
+				     "failed to map fe registers\n");
+
+	eth->fe_base = fe_base;
+	eth->gdm[0] = fe_base + ECONET_FE_GDM1_OFFSET;
+	eth->ppe_base = fe_base + ECONET_FE_PPE_OFFSET;
+	eth->gdm[1] = fe_base + ECONET_FE_GDM2_OFFSET;
+
+	for (i = 0; i < ARRAY_SIZE(eth->qdma_regs); i++) {
+		eth->qdma_regs[i] =
+			devm_platform_ioremap_resource_byname(pdev, qdma_names[i]);
+		if (IS_ERR(eth->qdma_regs[i]))
+			return dev_err_probe(&pdev->dev,
+					     PTR_ERR(eth->qdma_regs[i]),
+					     "failed to map %s registers\n",
+					     qdma_names[i]);
 	}
 
-	/*
-	 * The on-die switch sits right above the frame engine in the register
-	 * space. When it is managed by the mt7530 DSA driver it is described
-	 * by its own device tree node and claims those registers itself, so
-	 * the window handed to us stops short of them. In that case we are
-	 * purely the DSA conduit and must leave the switch alone.
-	 */
-	eth->has_switch_regs =
-		resource_size(regs_res) >= sizeof(struct en751221_regs);
+	eth->reset =
+		devm_reset_control_array_get_optional_exclusive(&pdev->dev);
+	if (IS_ERR(eth->reset))
+		return dev_err_probe(&pdev->dev, PTR_ERR(eth->reset),
+				     "failed to get resets\n");
 
-	eth->regs = regs;
-
-	eth->reset = devm_reset_control_array_get_exclusive(&pdev->dev);
-	if (IS_ERR(eth->reset)) {
-		err = PTR_ERR(eth->reset);
-		if (err == -EPROBE_DEFER)
-			return err;
-
-		dev_warn(&pdev->dev, "failed to get resets %pe\n", eth->reset);
-		eth->reset = NULL;
-	} else {
+	if (eth->reset) {
 		err = reset_control_assert(eth->reset);
 		if (err)
 			return err;
@@ -1977,14 +1987,13 @@ static int econet_eth_probe(struct platform_device *pdev)
 		eth->qdma_irq[i] = irq;
 	}
 
-	BUILD_BUG_ON(ARRAY_SIZE(eth->qdma) != ARRAY_SIZE(regs->qdma_regs));
-	BUILD_BUG_ON(ARRAY_SIZE(eth->qdma) != ARRAY_SIZE(eth->qdma_irq) * QDMA_NUM_IRQS);
+	BUILD_BUG_ON(ARRAY_SIZE(eth->qdma_irq) !=
+		     ECONET_NUM_QDMA * QDMA_NUM_IRQS);
 	for (i = 0; i < ARRAY_SIZE(eth->qdma); i++) {
 		econet_prepare_qdma_cfg(&cfg, eth->soc);
-		eth->qdma[i] = econet_qdma_new(&eth->pub, &regs->qdma_regs[i], i,
-					     &eth->qdma_irq[i * QDMA_NUM_IRQS],
+		eth->qdma[i] = econet_qdma_new(&eth->pub, eth->qdma_regs[i], i,
+					       &eth->qdma_irq[i * QDMA_NUM_IRQS],
 					     QDMA_NUM_IRQS, &cfg);
-
 		if (IS_ERR(eth->qdma[i])) {
 			err = PTR_ERR(eth->qdma[i]);
 			eth->qdma[i] = NULL;
@@ -1992,11 +2001,18 @@ static int econet_eth_probe(struct platform_device *pdev)
 		}
 	}
 
-	for_each_child_of_node(pdev->dev.of_node, np) {
-		if (!of_device_is_compatible(np, "econet,eth-mac"))
-			continue;
+	eth->pub.ppe = airoha_ppe_econet_init(&pdev->dev,
+					      pdev->dev.of_node,
+					      eth->fe_base,
+					      eth->ppe_base);
+	if (IS_ERR(eth->pub.ppe)) {
+		err = PTR_ERR(eth->pub.ppe);
+		eth->pub.ppe = NULL;
+		goto error;
+	}
 
-		if (!of_device_is_available(np))
+	for_each_available_child_of_node(pdev->dev.of_node, np) {
+		if (!of_device_is_compatible(np, "econet,eth-mac"))
 			continue;
 
 		err = econet_init_port(eth, np);
@@ -2004,14 +2020,6 @@ static int econet_eth_probe(struct platform_device *pdev)
 			of_node_put(np);
 			goto error;
 		}
-	}
-
-
-	/* Configure the MT7530 as a dumb switch, unless it is managed by DSA */
-	if (eth->has_switch_regs) {
-		econet_wreg(ECONET_PMCR_CONFIG, &regs->switch_regs[MT753X_PMCR_P(5) / 4]);
-		econet_wreg(ECONET_PMCR_CONFIG, &regs->switch_regs[MT753X_PMCR_P(6) / 4]);
-		econet_wreg(ECONET_MFC_CONFIG, &regs->switch_regs[MT753X_MFC / 4]);
 	}
 
 	return 0;

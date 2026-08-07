@@ -3,46 +3,71 @@ config NET_VENDOR_AIROHA
 	bool "Airoha/EcoNet devices"
 	depends on ARCH_AIROHA || ECONET || COMPILE_TEST
 	help
-	  If you have a Airoha/EcoNet SoC with ethernet, say Y.
+	  Enable Ethernet drivers for the Airoha ARM and EcoNet MIPS frame
+	  engines.
 
 if NET_VENDOR_AIROHA
 
 config NET_AIROHA_COMMON
 	tristate
-	help
-	  Shared helpers used by the Airoha ARM and EcoNet MIPS frame-engine
-	  Ethernet drivers.
-
-config NET_AIROHA
-	tristate "Airoha SoC Gigabit Ethernet support"
-	depends on NET_DSA || !NET_DSA
-	select NET_AIROHA_COMMON
-	select NET_AIROHA_NPU
-	select PAGE_POOL
 	select PHYLINK
 	help
-	  This driver supports the gigabit ethernet MACs in the
-	  Airoha SoC family.
-
-config NET_ECONET
-	tristate "EcoNet SoC Gigabit Ethernet support"
-	depends on NET_DSA || !NET_DSA
-	depends on OF
-	select NET_AIROHA_COMMON
-	select PAGE_POOL
-	select PHYLINK
-	help
-	  This driver supports the gigabit ethernet MACs in the
-	  EcoNet SoC family.
+	  Common GDM, phylink and PPE infrastructure shared by the Airoha ARM
+	  and EcoNet MIPS Ethernet datapaths.
 
 config NET_AIROHA_NPU
 	tristate "Airoha NPU support"
-	depends on ARCH_AIROHA
+	depends on ARCH_AIROHA || COMPILE_TEST
 	select WANT_DEV_COREDUMP
 	select REGMAP_MMIO
 	help
-	  This driver supports Airoha Network Processor (NPU) available
-	  on the Airoha Soc family.
+	  Support the Network Processor Unit available on newer Airoha SoCs.
+	  The Ethernet and PPE drivers also work without this module by using
+	  the CPU-direct PPE path. Enable this option when NPU firmware is
+	  available and PPE statistics or firmware-assisted commits are needed.
+
+config NET_AIROHA
+	tristate "Airoha SoC Gigabit Ethernet support"
+	select NET_AIROHA_COMMON
+	select PAGE_POOL
+	imply NET_AIROHA_NPU if ARCH_AIROHA
+	help
+	  Support the EN7523/EN7581-family Ethernet datapath. GDM/phylink and
+	  PPE infrastructure are provided by the shared Airoha common module.
+
+config NET_ECONET
+	tristate "EcoNet SoC Gigabit Ethernet support"
+	depends on ECONET || COMPILE_TEST
+	depends on OF
+	select NET_AIROHA_COMMON
+	select PAGE_POOL
+	help
+	  Support the dual-QDMA, dual-GDM frame engine found in EcoNet EN7512,
+	  EN7521, EN7526 and related EN751221-family MIPS SoCs.
+
+	  The QDMA datapath stays separate from the newer Airoha datapath, while
+	  GDM/phylink and PPE infrastructure are shared.
+
+config NET_ECONET_PPE
+	bool "EcoNet EN751221 PPE hardware flow offload"
+	depends on NET_ECONET != n
+	depends on NET_CLS_ACT != n
+	depends on NF_FLOW_TABLE != n
+	default y
+	help
+	  Enable IPv4 TCP/UDP hardware NAT offload through the EN751221 FoE
+	  table and expose TC_SETUP_FT to the netfilter flowtable infrastructure.
+	  The Ethernet device-tree node must reference a reserved-memory region
+	  of at least 0x140000 bytes through memory-region. Without that region,
+	  the Ethernet driver remains functional but does not advertise HW TC.
+
+config NET_AIROHA_PPE_DEBUGFS
+	bool
+	default y
+	depends on NET_AIROHA && DEBUG_FS
+	help
+	  Build the EN7523/EN7581 PPE debugfs interface. EcoNet uses the
+	  shared PPE module without registering or building this interface.
 
 config NET_AIROHA_FLOW_STATS
 	default y
@@ -52,21 +77,20 @@ config NET_AIROHA_FLOW_STATS
 	  Enable Airoha flowtable statistic counters.
 
 config NET_AIROHA_SOC_WED
-	bool "Airoha/EcoNet WED support"
-	depends on PCI
+	bool "Airoha EN7523 WED support"
+	depends on NET_AIROHA && PCI
 	select NET_MEDIATEK_WED_COMMON
 	help
-	  Enable WiFi Ethernet Datapath (WED) hardware offload for the
-	  SoC. When enabled, mt76 WiFi drivers can offload wireless
-	  transmit processing through the WED engine rather than taking
-	  the slow path through the CPU.
+	  Enable WiFi Ethernet Datapath (WED) hardware offload for the EN7523
+	  SoC. When enabled, mt76 WiFi drivers can offload wireless transmit
+	  processing through the WED engine rather than taking the CPU path.
 
 	  If unsure, say N.
 
 config AIROHA_XPON_V1
 	tristate "Airoha/EcoNet xPON MAC driver"
 	depends on ARCH_AIROHA || ECONET || COMPILE_TEST
-	depends on NET_AIROHA
+	depends on NET_AIROHA || NET_ECONET
 	depends on OF
 	depends on SFP
 	depends on AIROHA_LDDLA_PHY || AIROHA_LDDLA_PHY=n
@@ -77,7 +101,7 @@ config AIROHA_XPON_V1
 	  Driver for the shared xPON MAC complex found in Airoha/EcoNet SoCs.
 	  GPON and EPON are implemented by one platform driver and selected by
 	  the airoha,pon-mode device-tree property. GPON includes ITU-T G.984.3
-	  activation/PLOAM and uses the in-kernel OMCI agent; EPON
-	  includes IEEE 802.3 MPCP LLID registration and security support.
+	  activation/PLOAM and uses the in-kernel OMCI agent; EPON includes
+	  IEEE 802.3 MPCP LLID registration and security support.
 
-endif #NET_VENDOR_AIROHA
+endif # NET_VENDOR_AIROHA

@@ -3142,20 +3142,16 @@ static int airoha_dev_open(struct net_device *netdev)
 	 * xPON-managed GDM2 to run without either. In the latter case the xPON
 	 * provider owns carrier, speed and duplex.
 	 */
-	err = phylink_of_phy_connect(dev->phylink, netdev->dev.of_node, 0);
+	err = airoha_gdm_phylink_connect(&dev->common,
+					 dev->flags & AIROHA_PRIV_F_XPON_MANAGED);
 	if (err) {
-		if (!(dev->flags & AIROHA_PRIV_F_XPON_MANAGED) ||
-		    err != -ENODEV) {
-			netdev_err(netdev, "could not attach PHY: %d\n", err);
-			return err;
-		}
-
+		netdev_err(netdev, "could not attach PHY: %d\n", err);
+		return err;
+	}
+	if (!dev->common.phylink_started &&
+	    (dev->flags & AIROHA_PRIV_F_XPON_MANAGED))
 		netdev_dbg(netdev,
 			   "no PHY or fixed-link, using xPON link state\n");
-	} else {
-		phylink_start(dev->phylink);
-		dev->phylink_started = true;
-	}
 
 	if (dev->flags & AIROHA_PRIV_F_XPON_MANAGED)
 		netif_carrier_off(netdev);
@@ -3226,11 +3222,7 @@ static int airoha_dev_stop(struct net_device *netdev)
 	airoha_qdma_stop(qdma);
 	airoha_update_netdev_features(dev);
 
-	if (dev->phylink_started) {
-		phylink_stop(dev->phylink);
-		phylink_disconnect_phy(dev->phylink);
-		dev->phylink_started = false;
-	}
+	airoha_gdm_phylink_disconnect(&dev->common);
 
 	return 0;
 }
@@ -4142,7 +4134,7 @@ airoha_ethtool_get_link_ksettings(struct net_device *netdev,
 	unsigned long flags;
 
 	if (!(dev->flags & AIROHA_PRIV_F_XPON_MANAGED))
-		return phylink_ethtool_ksettings_get(dev->phylink, cmd);
+		return phylink_ethtool_ksettings_get(dev->common.phylink, cmd);
 
 	spin_lock_irqsave(&dev->xpon_state_lock, flags);
 	state = dev->xpon_link;
@@ -4153,8 +4145,8 @@ airoha_ethtool_get_link_ksettings(struct net_device *netdev,
 	 * provider publishes its first state. PHY-less ports are reported
 	 * directly from the provider and do not depend on phylink.
 	 */
-	if (!state.valid && dev->phylink_started)
-		return phylink_ethtool_ksettings_get(dev->phylink, cmd);
+	if (!state.valid && dev->common.phylink_started)
+		return phylink_ethtool_ksettings_get(dev->common.phylink, cmd);
 
 	ethtool_link_ksettings_zero_link_mode(cmd, supported);
 	ethtool_link_ksettings_zero_link_mode(cmd, advertising);
@@ -4182,7 +4174,7 @@ airoha_ethtool_set_link_ksettings(struct net_device *netdev,
 	if (dev->flags & AIROHA_PRIV_F_XPON_MANAGED)
 		return -EOPNOTSUPP;
 
-	return phylink_ethtool_ksettings_set(dev->phylink, cmd);
+	return phylink_ethtool_ksettings_set(dev->common.phylink, cmd);
 }
 
 static int airoha_qdma_set_chan_tx_sched(struct net_device *netdev,
@@ -5127,18 +5119,17 @@ bool airoha_is_valid_gdm_dev(struct airoha_eth *eth,
 	return false;
 }
 
-/* Nothing to do in MAC, everything is handled in PCS */
-static void airoha_mac_config(struct phylink_config *config, unsigned int mode,
+/* Nothing to do in MAC, everything is handled in PCS. */
+static void airoha_mac_config(void *priv, unsigned int mode,
 			      const struct phylink_link_state *state)
 {
 }
 
-static void airoha_mac_link_up(struct phylink_config *config, struct phy_device *phy,
+static void airoha_mac_link_up(void *priv, struct phy_device *phy,
 			       unsigned int mode, phy_interface_t interface,
 			       int speed, int duplex, bool tx_pause, bool rx_pause)
 {
-	struct airoha_gdm_dev *dev = container_of(config, struct airoha_gdm_dev,
-						  phylink_config);
+	struct airoha_gdm_dev *dev = priv;
 	struct airoha_gdm_port *port = dev->port;
 	struct airoha_eth *eth = dev->eth;
 	u32 frag_size_tx, frag_size_rx;
@@ -5170,7 +5161,7 @@ static void airoha_mac_link_up(struct phylink_config *config, struct phy_device 
 		mask = GDM4_SGMII1_TX_FRAG_SIZE_MASK;
 		val = FIELD_PREP(GDM4_SGMII1_TX_FRAG_SIZE_MASK,
 				 frag_size_tx);
-	}  else {
+	} else {
 		mask = GDM4_SGMII0_TX_FRAG_SIZE_MASK;
 		val = FIELD_PREP(GDM4_SGMII0_TX_FRAG_SIZE_MASK,
 				 frag_size_tx);
@@ -5191,13 +5182,13 @@ static void airoha_mac_link_up(struct phylink_config *config, struct phy_device 
 	spin_unlock(&port->lock);
 }
 
-/* Nothing to do in MAC, everything is handled in PCS */
-static void airoha_mac_link_down(struct phylink_config *config, unsigned int mode,
+/* Nothing to do in MAC, everything is handled in PCS. */
+static void airoha_mac_link_down(void *priv, unsigned int mode,
 				 phy_interface_t interface)
 {
 }
 
-static const struct phylink_mac_ops airoha_phylink_ops = {
+static const struct airoha_gdm_mac_ops airoha_gdm_mac_ops = {
 	.mac_config = airoha_mac_config,
 	.mac_link_up = airoha_mac_link_up,
 	.mac_link_down = airoha_mac_link_down,
@@ -5220,7 +5211,6 @@ static int airoha_setup_phylink(struct net_device *netdev)
 	struct airoha_gdm_port *port = dev->port;
 	struct phylink_config *config;
 	phy_interface_t phy_mode;
-	struct phylink *phylink;
 	int err;
 
 	err = of_get_phy_mode(np, &phy_mode);
@@ -5229,9 +5219,7 @@ static int airoha_setup_phylink(struct net_device *netdev)
 		return err;
 	}
 
-	config = &dev->phylink_config;
-	config->dev = &netdev->dev;
-	config->type = PHYLINK_NETDEV;
+	config = &dev->common.phylink_config;
 
 	/*
 	 * GDM{1,2} only supports internal for Embedded Switch
@@ -5253,7 +5241,7 @@ static int airoha_setup_phylink(struct net_device *netdev)
 					   MAC_2500FD | MAC_5000FD | MAC_10000FD;
 
 		err = fwnode_phylink_pcs_parse(dev_fwnode(config->dev), NULL,
-					       &dev->phylink_config.num_available_pcs);
+					       &dev->common.phylink_config.num_available_pcs);
 		if (err)
 			return err;
 
@@ -5272,25 +5260,18 @@ static int airoha_setup_phylink(struct net_device *netdev)
 		if (phy_mode != PHY_INTERFACE_MODE_SGMII &&
 		    phy_mode != PHY_INTERFACE_MODE_1000BASEX) {
 			__set_bit(PHY_INTERFACE_MODE_2500BASEX,
-				  dev->phylink_config.supported_interfaces);
+				  dev->common.phylink_config.supported_interfaces);
 			__set_bit(PHY_INTERFACE_MODE_10GBASER,
-				  dev->phylink_config.supported_interfaces);
+				  dev->common.phylink_config.supported_interfaces);
 			__set_bit(PHY_INTERFACE_MODE_USXGMII,
-				  dev->phylink_config.supported_interfaces);
+				  dev->common.phylink_config.supported_interfaces);
 		}
 
 		phy_interface_copy(config->pcs_interfaces,
 				   config->supported_interfaces);
 	}
 
-	phylink = phylink_create(config, of_fwnode_handle(np),
-				 phy_mode, &airoha_phylink_ops);
-	if (IS_ERR(phylink))
-		return PTR_ERR(phylink);
-
-	dev->phylink = phylink;
-
-	return 0;
+	return airoha_gdm_phylink_create(&dev->common, np, phy_mode);
 }
 
 static int airoha_alloc_gdm_device(struct airoha_eth *eth,
@@ -5342,6 +5323,9 @@ static int airoha_alloc_gdm_device(struct airoha_eth *eth,
 
 	netdev->dev.of_node = of_node_get(np);
 	dev = netdev_priv(netdev);
+	airoha_gdm_common_init(&dev->common, netdev,
+			       AIROHA_ETH_FAMILY_AIROHA, port->id, 0,
+			       dev, &airoha_gdm_mac_ops);
 	u64_stats_init(&dev->stats.syncp);
 	dev->port = port;
 	dev->eth = eth;
@@ -5470,6 +5454,75 @@ static int airoha_register_gdm_devices(struct airoha_eth *eth)
 	return 0;
 }
 
+static struct airoha_npu *airoha_eth_ppe_npu_get(struct airoha_eth *eth)
+{
+	struct airoha_npu *npu = airoha_npu_get(eth->dev);
+
+	return npu ? npu : ERR_PTR(-EOPNOTSUPP);
+}
+
+static void airoha_eth_ppe_npu_put(struct airoha_npu *npu)
+{
+	airoha_npu_put(npu);
+}
+
+static int airoha_eth_ppe_npu_init(struct airoha_npu *npu)
+{
+#if IS_ENABLED(CONFIG_NET_AIROHA_NPU)
+	return npu->ops.ppe_init(npu);
+#else
+	return -EOPNOTSUPP;
+#endif
+}
+
+static int airoha_eth_ppe_npu_deinit(struct airoha_npu *npu)
+{
+#if IS_ENABLED(CONFIG_NET_AIROHA_NPU)
+	return npu->ops.ppe_deinit(npu);
+#else
+	return -EOPNOTSUPP;
+#endif
+}
+
+static int airoha_eth_ppe_npu_init_stats(struct airoha_npu *npu,
+					 dma_addr_t addr, u32 entries)
+{
+#if IS_ENABLED(CONFIG_NET_AIROHA_NPU)
+	return npu->ops.ppe_init_stats(npu, addr, entries);
+#else
+	return -EOPNOTSUPP;
+#endif
+}
+
+static void airoha_eth_ppe_npu_stats_read(struct airoha_npu *npu,
+					  u32 index,
+					   struct airoha_foe_stats *stats)
+{
+#if IS_ENABLED(CONFIG_NET_AIROHA_NPU)
+	memcpy_fromio(stats, &npu->stats[index], sizeof(*stats));
+#endif
+}
+
+static void airoha_eth_ppe_npu_stats_clear(struct airoha_npu *npu, u32 index)
+{
+#if IS_ENABLED(CONFIG_NET_AIROHA_NPU)
+	memset_io(&npu->stats[index], 0, sizeof(*npu->stats));
+#endif
+}
+
+static const struct airoha_ppe_host_ops airoha_ppe_host_ops = {
+	.get_fe_port = airoha_get_fe_port,
+	.is_valid_gdm_dev = airoha_is_valid_gdm_dev,
+	.xpon_get_tx_info = airoha_eth_xpon_get_tx_info,
+	.npu_get = airoha_eth_ppe_npu_get,
+	.npu_put = airoha_eth_ppe_npu_put,
+	.npu_ppe_init = airoha_eth_ppe_npu_init,
+	.npu_ppe_deinit = airoha_eth_ppe_npu_deinit,
+	.npu_ppe_init_stats = airoha_eth_ppe_npu_init_stats,
+	.npu_stats_read = airoha_eth_ppe_npu_stats_read,
+	.npu_stats_clear = airoha_eth_ppe_npu_stats_clear,
+};
+
 static int airoha_eth_probe(struct platform_device *pdev)
 {
 	struct reset_control_bulk_data *xsi_rsts;
@@ -5484,6 +5537,7 @@ static int airoha_eth_probe(struct platform_device *pdev)
 	eth->soc = of_device_get_match_data(&pdev->dev);
 	if (!eth->soc)
 		return -EINVAL;
+	eth->ppe_host_ops = &airoha_ppe_host_ops;
 
 	eth->dev = &pdev->dev;
 
@@ -5624,8 +5678,7 @@ error_ports_free:
 			netdev = netdev_from_priv(dev);
 			if (netdev->reg_state == NETREG_REGISTERED)
 				unregister_netdev(netdev);
-			if (dev->phylink)
-				phylink_destroy(dev->phylink);
+			airoha_gdm_phylink_destroy(&dev->common);
 			of_node_put(netdev->dev.of_node);
 		}
 		airoha_metadata_dst_free(port);
@@ -5661,7 +5714,7 @@ static void airoha_eth_remove(struct platform_device *pdev)
 
 			netdev = netdev_from_priv(dev);
 			unregister_netdev(netdev);
-			phylink_destroy(dev->phylink);
+			airoha_gdm_phylink_destroy(&dev->common);
 			of_node_put(netdev->dev.of_node);
 		}
 		airoha_metadata_dst_free(port);
