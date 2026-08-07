@@ -6,9 +6,15 @@
 #ifndef AIROHA_OFFLOAD_H
 #define AIROHA_OFFLOAD_H
 
+#include <linux/io.h>
 #include <linux/skbuff.h>
 #include <linux/spinlock.h>
 #include <linux/workqueue.h>
+#include <net/pkt_cls.h>
+
+struct device;
+struct device_node;
+struct net_device;
 
 enum {
 	PPE_CPU_REASON_HIT_UNBIND_RATE_REACHED = 0x0f,
@@ -21,12 +27,19 @@ struct airoha_ppe_dev {
 		void (*check_skb)(struct airoha_ppe_dev *dev,
 				  struct sk_buff *skb, u16 hash,
 				  bool rx_wlan);
+		void (*check_skb_reason)(struct airoha_ppe_dev *dev,
+					 struct sk_buff *skb, u16 hash,
+					 u8 reason);
+		int (*setup_tc)(struct airoha_ppe_dev *dev,
+				struct net_device *netdev,
+				enum tc_setup_type type, void *type_data);
 	} ops;
 
 	void *priv;
+	bool enabled;
 };
 
-#if (IS_BUILTIN(CONFIG_NET_AIROHA) || IS_MODULE(CONFIG_NET_AIROHA))
+#if (IS_BUILTIN(CONFIG_NET_AIROHA_COMMON) || IS_MODULE(CONFIG_NET_AIROHA_COMMON))
 struct airoha_ppe_dev *airoha_ppe_get_dev(struct device *dev);
 void airoha_ppe_put_dev(struct airoha_ppe_dev *dev);
 
@@ -42,6 +55,30 @@ static inline void airoha_ppe_dev_check_skb(struct airoha_ppe_dev *dev,
 {
 	dev->ops.check_skb(dev, skb, hash, rx_wlan);
 }
+
+static inline void
+airoha_ppe_dev_check_skb_reason(struct airoha_ppe_dev *dev,
+				struct sk_buff *skb, u16 hash, u8 reason)
+{
+	if (dev && dev->ops.check_skb_reason)
+		dev->ops.check_skb_reason(dev, skb, hash, reason);
+}
+
+static inline int airoha_ppe_dev_setup_tc(struct airoha_ppe_dev *dev,
+					  struct net_device *netdev,
+					 enum tc_setup_type type,
+					 void *type_data)
+{
+	if (!dev || !dev->ops.setup_tc)
+		return -EOPNOTSUPP;
+
+	return dev->ops.setup_tc(dev, netdev, type, type_data);
+}
+
+struct airoha_ppe_dev *
+airoha_ppe_econet_init(struct device *dev, struct device_node *np,
+		       void __iomem *fe_base, void __iomem *ppe_base);
+void airoha_ppe_econet_deinit(struct airoha_ppe_dev *dev);
 #else
 static inline struct airoha_ppe_dev *airoha_ppe_get_dev(struct device *dev)
 {
@@ -61,6 +98,31 @@ static inline int airoha_ppe_dev_setup_tc_block_cb(struct airoha_ppe_dev *dev,
 static inline void airoha_ppe_dev_check_skb(struct airoha_ppe_dev *dev,
 					    struct sk_buff *skb, u16 hash,
 					    bool rx_wlan)
+{
+}
+
+static inline void
+airoha_ppe_dev_check_skb_reason(struct airoha_ppe_dev *dev,
+				struct sk_buff *skb, u16 hash, u8 reason)
+{
+}
+
+static inline int airoha_ppe_dev_setup_tc(struct airoha_ppe_dev *dev,
+					  struct net_device *netdev,
+					 enum tc_setup_type type,
+					 void *type_data)
+{
+	return -EOPNOTSUPP;
+}
+
+static inline struct airoha_ppe_dev *
+airoha_ppe_econet_init(struct device *dev, struct device_node *np,
+		       void __iomem *fe_base, void __iomem *ppe_base)
+{
+	return NULL;
+}
+
+static inline void airoha_ppe_econet_deinit(struct airoha_ppe_dev *dev)
 {
 }
 #endif

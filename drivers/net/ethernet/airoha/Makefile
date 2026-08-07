@@ -1,14 +1,24 @@
 # SPDX-License-Identifier: GPL-2.0-only
 #
-# Airoha for the Mediatek SoCs built-in ethernet macs
+# Airoha and EcoNet frame-engine Ethernet drivers
 #
 
-obj-$(CONFIG_NET_AIROHA_NPU) += airoha_npu.o
-obj-$(CONFIG_NET_AIROHA_COMMON) += airoha-eth.o
-airoha-eth-y := airoha_ppe.o airoha-common.o
-airoha-eth-$(CONFIG_NET_AIROHA) += airoha_eth.o
-airoha-eth-$(CONFIG_NET_ECONET) += econet_eth.o
-airoha-eth-$(CONFIG_AIROHA_XPON_V1) := airoha_xpon.o airoha_ploam.o airoha_gpon_omci.o
-airoha-eth-$(CONFIG_NET_AIROHA_SOC_WED) += airoha_wed.o
-airoha-eth-$(CONFIG_DEBUG_FS) += airoha_ppe_debugfs.o airoha_wed_debugfs.o
+# Shared GDM/phylink helpers and the common PPE frontend/backends.
+obj-$(CONFIG_NET_AIROHA_COMMON) += airoha-common.o
+airoha-common-y := airoha_common.o airoha_ppe.o
+airoha-common-$(CONFIG_NET_AIROHA_PPE_DEBUGFS) += airoha_ppe_debugfs.o
 
+# EN7523/EN7581 datapath.
+obj-$(CONFIG_NET_AIROHA) += airoha-eth.o
+airoha-eth-y := airoha_eth.o
+airoha-eth-$(CONFIG_NET_AIROHA_SOC_WED) += airoha_wed.o airoha_wed_debugfs.o
+
+# EN7512/EN7521/EN7526 datapath.
+obj-$(CONFIG_NET_ECONET) += econet-eth.o
+econet-eth-y := econet_eth.o
+
+obj-$(CONFIG_NET_AIROHA_NPU) += airoha_npu.o
+
+# Airoha/EcoNet shared GPON + EPON MAC complex.
+obj-$(CONFIG_AIROHA_XPON_V1) += airoha-xpon.o
+airoha-xpon-y := airoha_xpon.o airoha_ploam.o airoha_gpon_omci.o
