@@ -939,6 +939,19 @@ static int econet_init_final(struct econet_qdma *qdma)
 	set_qregs_tx_congest_cfg_dei_drop_en(&cngst_cfg, true);
 	econet_wreg(cngst_cfg, &qdma->regs->tx_congest_cfg);
 
+	/*
+	 * The vendor EN751221 LAN driver disables per-channel QDMA TX rate
+	 * limiting for channels 0..4 when the external MT7530 is used.  The
+	 * firmware/bootloader may leave these bits enabled, so explicitly clear
+	 * them instead of inheriting a stale hardware shaper configuration.
+	 */
+	{
+		u32 ch_lim_en = econet_rreg(&qdma->regs->ch_lim_en);
+
+		ch_lim_en &= ~GENMASK(4, 0);
+		econet_wreg(ch_lim_en, &qdma->regs->ch_lim_en);
+	}
+
 	return 0;
 }
 
