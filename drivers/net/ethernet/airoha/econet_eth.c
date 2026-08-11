@@ -159,6 +159,8 @@ static void econet_fill_rx_queue(struct econet_q_rx *q, u32 end_i)
 	cpu_i = (cpu_i - 1) % ndesc;
 
 	q->cpu_i = cpu_i;
+	/* Publish every refilled descriptor before returning ownership to DMA. */
+	dma_wmb();
 	econet_wreg(cpu_i, &q->qchain_regs->rx_cpui);
 }
 
@@ -175,8 +177,7 @@ static void econet_qdma_rx_process_one(struct econet_q_rx *q, u32 cpu_i,
 
 	memcpy(&desc, &q->desc[cpu_i], sizeof(desc));
 
-	dma_sync_single_for_cpu(q->qdma->dev, e->dma_addr,
-				SKB_WITH_OVERHEAD(q->buf_size), dir);
+	dma_sync_single_for_cpu(q->qdma->dev, e->dma_addr, e->dma_len, dir);
 
 	/* Not needed but a couple of WARN_ON_ONCE() check this later */
 	e->dma_addr = 0;
@@ -235,6 +236,12 @@ static int econet_qdma_rx_process(struct econet_q_rx *q, int budget)
 	int ndesc = q->ndesc;
 	u32 cpu_i;
 	int done;
+
+	/*
+	 * The device publishes descriptors before advancing RX_HWI. Pair the
+	 * producer-side ordering with a DMA read barrier before consuming them.
+	 */
+	dma_rmb();
 
 	/* The stored value of cpu_i is the last entry actually handled.
 	 * Whereas hardware_i is the next entry that has not yet been received.
@@ -459,6 +466,8 @@ static int econet_poll_tx_complete(struct napi_struct *napi, int budget)
 	head = get_qregs_doneq_state_head_index(&state);
 	head = head % done_q->size;
 	irq_queued = get_qregs_doneq_state_length(&state);
+	/* The done queue entries/descriptors precede the producer state update. */
+	dma_rmb();
 
 	while (irq_queued > 0 && done < budget) {
 		u32 index, qid, val = done_q->q[head];
@@ -585,6 +594,12 @@ int econet_qdma_xmit(struct econet_qdma *qdma, struct sk_buff *skb,
 
 	skb_tx_timestamp(skb);
 
+	/*
+	 * Match the vendor QDMA handoff: the descriptor must be globally visible
+	 * before TX_CPUI gives it to hardware. This is required on non-coherent
+	 * MIPS even though the descriptor ring itself is dma_alloc_coherent().
+	 */
+	dma_wmb();
 	econet_wreg((u32)next_index, &q->qchain_regs->tx_cpui);
 
 	return q->entry[next_index].freelist_next == 0xffff ?
