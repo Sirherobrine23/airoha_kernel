@@ -464,6 +464,8 @@ mt7530_setup_port6(struct dsa_switch *ds, phy_interface_t interface)
 #define EN751221_TRGMII_RX_VALUE_MASK	GENMASK(23, 16)
 #define EN751221_TRGMII_RX_ERR_MASK	GENMASK(11, 8)
 #define EN751221_AGC_L2LEN_CHK		BIT(4)
+#define EN751221_GSW_FC_CTL		0x1fe0
+#define EN751221_GSW_FC_CTL_VAL		0x80083020
 /* Exact external port-6 PVC value used by the EN7512 vendor SDK. */
 #define EN751221_MCM_P6_PVC		0x81008120
 
@@ -694,6 +696,14 @@ static void en751221_trgmii_pair_setup(struct mt7530_priv *ext,
 
 	/* Special-tag frames can look like short L2 frames to the on-die switch. */
 	mt7530_clear(ondie, MT753X_AGC, EN751221_AGC_L2LEN_CHK);
+
+	/*
+	 * The EN7512 vendor SDK disables global switch flow control on both
+	 * sides of the cascade for throughput operation. Keep this separate
+	 * from ingress/egress rate-limit accounting, which is not changed here.
+	 */
+	mt7530_write(ondie, EN751221_GSW_FC_CTL, EN751221_GSW_FC_CTL_VAL);
+	mt7530_write(ext, EN751221_GSW_FC_CTL, EN751221_GSW_FC_CTL_VAL);
 
 	/* Port 6 of the companion MT7530 is the actual MTK tag endpoint. */
 	/*
