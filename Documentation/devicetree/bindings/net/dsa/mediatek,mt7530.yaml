@@ -89,6 +89,10 @@ properties:
         const: mediatek,mt7621
 
       - description:
+          Built-in switch and companion MT7530 MCM of EcoNet EN7512/EN7521
+        const: econet,en751221-switch
+
+      - description:
           Built-in switch of the MT7988 SoC
         const: mediatek,mt7988-switch
 
@@ -275,6 +279,14 @@ allOf:
       properties:
         reset-gpios: false
 
+  - if:
+      required:
+        - mediatek,mcm
+      properties:
+        compatible:
+          not:
+            const: econet,en751221-switch
+    then:
       required:
         - resets
         - reset-names
