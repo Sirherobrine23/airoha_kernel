@@ -769,8 +769,16 @@ struct airoha_ppe {
 	struct dentry *debugfs_dir;
 };
 
+enum airoha_ids {
+	econet_en751221 = 0x751221,
+	econet_en7528 = 0x7528,
+	airoha_en7523 = 0x7523,
+	airoha_en7581 = 0x7581,
+	airoha_an7583 = 0x7583,
+};
+
 struct airoha_eth_soc_data {
-	u16 version;
+	enum airoha_ids version;
 	const char * const *xsi_rsts_names;
 	int num_xsi_rsts;
 	int num_ppe;
@@ -848,12 +856,6 @@ static inline bool airoha_is_lan_gdm_dev(struct airoha_gdm_dev *dev)
 	return !(dev->flags & AIROHA_PRIV_F_WAN);
 }
 
-enum airoha_ids {
-	en7523 = 0x7523,
-	en7581 = 0x7581,
-	an7583 = 0x7583,
-};
-
 #define airoha_is(eth, ...) ({ \
 	const enum airoha_ids _ids[] = {__VA_ARGS__, 0}; \
 	bool _found = false; \
@@ -872,14 +874,14 @@ static inline bool airoha_qdma_is_lro_queue(struct airoha_queue *q)
 	int qid = q - &qdma->q_rx[0];
 	
 	switch (qdma->eth->soc->version) {
-	case en7523:
-		/* en7523 11-14 */
+	case airoha_en7523:
+		/* EN7523 11-14 */
 		BUILD_BUG_ON(hweight32(EN7523_AIROHA_RXQ_LRO_EN_MASK) >
 			     EN7523_AIROHA_MAX_NUM_LRO_QUEUES);
 
 		return !!(EN7523_AIROHA_RXQ_LRO_EN_MASK & BIT(qid));
-	case en7581:
-	case an7583:
+	case airoha_en7581:
+	case airoha_an7583:
 		/* EN7581 SoC supports at most 8 LRO rx queues (24-31) */
 		BUILD_BUG_ON(hweight32(AIROHA_RXQ_LRO_EN_MASK) >
 			     AIROHA_MAX_NUM_LRO_QUEUES);
