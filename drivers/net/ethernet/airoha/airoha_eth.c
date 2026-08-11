@@ -3504,56 +3504,6 @@ static u16 airoha_dev_select_queue(struct net_device *netdev,
 	return queue % dev->eth->soc->tx_ring;
 }
 
-static u32 airoha_get_dsa_tag(struct sk_buff *skb, struct net_device *dev)
-{
-#if IS_ENABLED(CONFIG_NET_DSA)
-	struct ethhdr *ehdr;
-	u8 xmit_tpid;
-	u16 tag;
-
-	if (!netdev_uses_dsa(dev))
-		return 0;
-
-	if (dev->dsa_ptr->tag_ops->proto != DSA_TAG_PROTO_MTK)
-		return 0;
-
-	if (skb_cow_head(skb, 0))
-		return 0;
-
-	ehdr = (struct ethhdr *)skb->data;
-	tag = be16_to_cpu(ehdr->h_proto);
-	xmit_tpid = tag >> 8;
-
-	switch (xmit_tpid) {
-	case MTK_HDR_XMIT_TAGGED_TPID_8100:
-		ehdr->h_proto = cpu_to_be16(ETH_P_8021Q);
-		tag &= ~(MTK_HDR_XMIT_TAGGED_TPID_8100 << 8);
-		break;
-	case MTK_HDR_XMIT_TAGGED_TPID_88A8:
-		ehdr->h_proto = cpu_to_be16(ETH_P_8021AD);
-		tag &= ~(MTK_HDR_XMIT_TAGGED_TPID_88A8 << 8);
-		break;
-	default:
-		/* PPE module requires untagged DSA packets to work properly,
-		 * so move DSA tag to DMA descriptor.
-		 */
-		memmove(skb->data + MTK_HDR_LEN, skb->data, 2 * ETH_ALEN);
-		__skb_pull(skb, MTK_HDR_LEN);
-		break;
-	}
-
-	return tag;
-#else
-	return 0;
-#endif
-}
-
-static u32 airoha_get_channel(u32 sp_tag) {
-	for (int i = 0 ; i <= 5 ; i++)
-		if (sp_tag & (1 << i)) return i;
-	return 7;
-}
-
 int airoha_get_fe_port(struct airoha_gdm_dev *dev)
 {
 	struct airoha_gdm_port *port = dev->port;
@@ -3838,6 +3788,7 @@ static netdev_tx_t __airoha_dev_xmit(struct sk_buff *skb,
 {
 	struct airoha_gdm_dev *dev = netdev_priv(netdev);
 	struct airoha_xpon_tx_info classified;
+	struct airoha_qdma_skb_meta skb_meta;
 	bool xpon_oam = xpon && xpon->oam;
 	u32 nr_frags, tag = 0, msg0, msg1, len;
 	struct airoha_queue_entry *e;
@@ -3870,13 +3821,19 @@ static netdev_tx_t __airoha_dev_xmit(struct sk_buff *skb,
 		if (xpon->oam)
 			msg0 |= QDMA_ETH_TXMSG_OAM_MASK;
 	} else if (airoha_is(qdma->eth, en7523)) {
-		tag = airoha_get_dsa_tag(skb, netdev);
-		chn = airoha_get_channel(tag);
+		airoha_qdma_skb_get_mtk_meta(skb, netdev,
+					     AIROHA_MTK_TAG_TO_DESC,
+					     &skb_meta);
+		tag = skb_meta.mtk_tag;
+		chn = skb_meta.channel;
 		msg0 = FIELD_PREP(QDMA_ETH_TXMSG_CHAN_MASK, chn) |
 		       FIELD_PREP(QDMA_ETH_TXMSG_SP_TAG_MASK, tag | 0x8000);
 	} else {
-		tag = airoha_get_dsa_tag(skb, netdev);
-		chn = airoha_get_channel(tag);
+		airoha_qdma_skb_get_mtk_meta(skb, netdev,
+					     AIROHA_MTK_TAG_TO_DESC,
+					     &skb_meta);
+		tag = skb_meta.mtk_tag;
+		chn = skb_meta.channel;
 		msg0 = FIELD_PREP(QDMA_ETH_TXMSG_CHAN_MASK,
 				  qid / AIROHA_NUM_QOS_QUEUES) |
 		       FIELD_PREP(QDMA_ETH_TXMSG_QUEUE_MASK,
