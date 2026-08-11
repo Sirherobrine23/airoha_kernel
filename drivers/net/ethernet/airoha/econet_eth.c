@@ -920,7 +920,8 @@ static int econet_init_hw_fwd(struct econet_qdma *qdma)
 
 	cfg1 = econet_rreg(&qdma->regs->hwf_cfg1);
 	set_qregs_hwf_cfg1_fwd_desc_n(&cfg1, num_desc);
-	set_qregs_hwf_cfg1_overhead(&cfg1, 0x14);
+	set_qregs_hwf_cfg1_overhead_en(&cfg1, true);
+	set_qregs_hwf_cfg1_overhead(&cfg1, qdma->id == 0 ? 0x14 : 0x18);
 	set_qregs_hwf_cfg1_start(&cfg1, true);
 	econet_wreg(cfg1, &qdma->regs->hwf_cfg1);
 
@@ -2246,18 +2247,18 @@ static void econet_prepare_qdma_cfg(struct econet_qdma_cfg *cfg,
 		cfg->num_rx_descs[1] = 512;
 		cfg->num_tx_descs[0] = 128;
 		cfg->num_tx_descs[1] = 128;
-		cfg->done_list_size[0] = 256;
+		cfg->done_list_size[0] = 2048;
 		cfg->done_list_irq_threshold[0] = 16;
 		cfg->num_fwd_descs = 1024;
 		cfg->fwd_low_threshold = 128;
 		cfg->num_channels = 8;
 	} else if (soc->en751221_special_tag && id == 1) {
 		/* Vendor QDMA_WAN profile. */
-		cfg->num_rx_descs[0] = 256;
+		cfg->num_rx_descs[0] = 512;
 		cfg->num_rx_descs[1] = 256;
 		cfg->num_tx_descs[0] = 1024;
 		cfg->num_tx_descs[1] = 128;
-		cfg->done_list_size[0] = 512;
+		cfg->done_list_size[0] = 2048;
 		cfg->done_list_irq_threshold[0] = 16;
 		cfg->num_fwd_descs = 4096;
 		cfg->fwd_low_threshold = 256;
