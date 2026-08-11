@@ -40,7 +40,7 @@ struct airoha_ppe_dev {
 	bool enabled;
 };
 
-#if (IS_BUILTIN(CONFIG_NET_AIROHA_COMMON) || IS_MODULE(CONFIG_NET_AIROHA_COMMON))
+#if (IS_BUILTIN(CONFIG_NET_AIROHA) || IS_MODULE(CONFIG_NET_AIROHA))
 struct airoha_ppe_dev *airoha_ppe_get_dev(struct device *dev);
 void airoha_ppe_put_dev(struct airoha_ppe_dev *dev);
 

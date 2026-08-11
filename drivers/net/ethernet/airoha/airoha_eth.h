@@ -775,6 +775,77 @@ struct airoha_ppe {
 	struct dentry *debugfs_dir;
 };
 
+/* EcoNet generation-1 PPE/FoE layout. */
+struct econet_foe_mac_info {
+	u16 vlan1;
+	u16 etype;
+	u32 dest_mac_hi;
+	u16 vlan2;
+	u16 dest_mac_lo;
+	u32 src_mac_hi;
+	u16 pppoe_id;
+	u16 src_mac_lo;
+	u16 minfo;
+	u16 winfo;
+	u32 w3info;
+	u32 amsdu;
+};
+
+struct econet_ipv4_tuple {
+	u32 src_ip;
+	u32 dest_ip;
+	union {
+		struct {
+			u16 dest_port;
+			u16 src_port;
+		};
+		u32 ports;
+	};
+};
+
+struct econet_foe_ipv4 {
+	struct econet_ipv4_tuple orig;
+	u32 ib2;
+	struct econet_ipv4_tuple new;
+	u16 timestamp;
+	u16 reserved[3];
+	u32 udf_tsid;
+	struct econet_foe_mac_info l2;
+};
+
+struct econet_foe_entry {
+	u32 ib1;
+	union {
+		struct econet_foe_ipv4 ipv4;
+		u32 data[19];
+	};
+};
+
+struct econet_flow_entry {
+	struct list_head list;
+	struct econet_foe_entry data;
+	unsigned long cookie;
+	u32 src_ip;
+	u32 dest_ip;
+	u16 src_port;
+	u16 dest_port;
+	u16 hash;
+};
+
+struct econet_ppe {
+	struct airoha_ppe_dev dev;
+	struct airoha_eth *eth;
+
+	void *foe_table;
+	dma_addr_t foe_dma;
+
+	/* Protects flows and FoE slot ownership in RX and TC paths. */
+	spinlock_t lock;
+	struct list_head flows;
+	struct list_head block_cb_list;
+	bool armed;
+};
+
 enum airoha_ids {
 	econet_en751221 = 0x751221,
 	econet_en7528 = 0x7528,
@@ -851,7 +922,6 @@ struct airoha_eth {
 
 	unsigned long state;
 	void __iomem *fe_regs;
-	void __iomem *ppe_regs;
 	void __iomem *gdmp_regs;
 
 	struct airoha_npu __rcu *npu;
