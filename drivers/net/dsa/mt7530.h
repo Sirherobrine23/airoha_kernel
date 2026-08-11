@@ -23,6 +23,7 @@ enum mt753x_id {
 	ID_AN7583 = 5,
 	ID_EN7523 = 6,
 	ID_EN7528 = 7,
+	ID_EN751221 = 8,
 };
 
 #define	NUM_TRGMII_CTRL			5
@@ -925,6 +926,7 @@ struct mt7530_priv {
 	int (*create_sgmii)(struct mt7530_priv *priv);
 	u8 active_cpu_ports;
 	struct mdio_device *mdiodev;
+	bool			mdio_bus_registered;
 };
 
 struct mt7530_hw_vlan_entry {
@@ -962,6 +964,7 @@ static inline void INIT_MT7530_DUMMY_POLL(struct mt7530_dummy_poll *p,
 }
 
 int mt7530_probe_common(struct mt7530_priv *priv);
+int mt7530_setup_mdio(struct mt7530_priv *priv);
 void mt7530_remove_common(struct mt7530_priv *priv);
 
 extern const struct dsa_switch_ops mt7530_switch_ops;
