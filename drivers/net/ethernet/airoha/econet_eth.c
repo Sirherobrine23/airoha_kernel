@@ -450,8 +450,8 @@ static irqreturn_t econet_irq_handler(int irq_num, void *dev_instance)
 	return IRQ_HANDLED;
 }
 
-#define IRQ_RING_IDX_MASK		GENMASK(20, 16)
-#define IRQ_DESC_IDX_MASK		GENMASK(15, 0)
+#define IRQ_RING_IDX_MASK		BIT(16)
+#define IRQ_DESC_IDX_MASK		GENMASK(11, 0)
 
 static int econet_poll_tx_complete(struct napi_struct *napi, int budget)
 {
