@@ -789,8 +789,6 @@ struct airoha_eth_ops {
 struct airoha_eth_soc_data {
 	enum airoha_ids version;
 	const struct airoha_eth_ops *eth_ops;
-	bool qdma_dscp_byte_swap;
-	bool en751221_special_tag;
 	const char * const *xsi_rsts_names;
 	int num_xsi_rsts;
 	int num_ppe;
