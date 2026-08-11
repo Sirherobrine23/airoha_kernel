@@ -160,7 +160,7 @@ static const struct phylink_mac_ops airoha_gdm_phylink_ops = {
 };
 
 void airoha_gdm_common_init(struct airoha_gdm_common *gdm,
-			    struct net_device *netdev,
+			    struct airoha_eth *eth, struct net_device *netdev,
 			    enum airoha_eth_family family, u8 id,
 			    u8 pse_port, void *priv,
 			    const struct airoha_gdm_mac_ops *mac_ops)
@@ -170,6 +170,7 @@ void airoha_gdm_common_init(struct airoha_gdm_common *gdm,
 	gdm->family = family;
 	gdm->id = id;
 	gdm->pse_port = pse_port;
+	gdm->eth = eth;
 	gdm->netdev = netdev;
 	gdm->priv = priv;
 	gdm->mac_ops = mac_ops;
