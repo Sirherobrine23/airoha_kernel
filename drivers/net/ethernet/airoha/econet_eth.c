@@ -166,7 +166,6 @@ static void econet_qdma_rx_process_one(struct econet_q_rx *q, u32 cpu_i,
 	struct page *page;
 	struct desc desc;
 	u32 hash;
-	u16 sp_tag, tci;
 	u8 sport;
 	int len;
 
@@ -203,9 +202,7 @@ static void econet_qdma_rx_process_one(struct econet_q_rx *q, u32 cpu_i,
 					get_erx_crsn(&desc.msg.erx));
 
 	sport = get_erx_sport(&desc.msg.erx);
-	sp_tag = get_erx_sp_tag(&desc.msg.erx);
-	tci = get_erx_tci(&desc.msg.erx);
-	if (econet_rx_before_recv(q->qdma->eth, skb, sport, sp_tag, tci))
+	if (econet_rx_before_recv(q->qdma->eth, skb, sport))
 		dev_kfree_skb(skb);
 	else
 		napi_gro_receive(&q->napi, skb);
@@ -1815,76 +1812,22 @@ struct econet_eth_pvt {
 
 #define EN751221_DSA_SPORT_BASE		8
 #define EN751221_DSA_NUM_PORTS		5
-#define EN751221_MTK_STAG_INVALID_MASK	0xfc78
-#define EN751221_MTK_STAG_PORT_MASK	GENMASK(2, 0)
 
-static bool econet_en751221_dsa_sport(u8 sport, u8 *dsa_port)
+static bool econet_en751221_dsa_sport(u8 sport)
 {
-	if (sport < EN751221_DSA_SPORT_BASE ||
-	    sport >= EN751221_DSA_SPORT_BASE + EN751221_DSA_NUM_PORTS)
-		return false;
-
-	*dsa_port = sport - EN751221_DSA_SPORT_BASE;
-	return true;
-}
-
-static int econet_en751221_fixup_dsa_tag(struct econet_eth_pvt *eth,
-					 struct sk_buff *skb, u8 sport,
-					 u16 sp_tag, u16 tci)
-{
-	u16 wire_tag;
-	u8 dsa_port;
-
-	if (!eth->soc->en751221_special_tag ||
-	    !econet_en751221_dsa_sport(sport, &dsa_port))
-		return 0;
-
-	if (unlikely(sp_tag & EN751221_MTK_STAG_INVALID_MASK)) {
-		dev_dbg_ratelimited(eth->pub.dev,
-				    "RX sport %u has invalid descriptor special tag %#04x\n",
-				    sport, sp_tag);
-		return 0;
-	}
-
-	/*
-	 * EN751221 reports external MT7530 ingress as sport 8 + switch_port.
-	 * The descriptor also carries a copy of the MTK special tag. Keep the
-	 * tag in-band for tag_mtk, but use the descriptor as the authoritative
-	 * source-port value. This also repairs the frame if CDMA/GDMA consumed
-	 * the in-band tag while producing the RX metadata.
-	 */
-	sp_tag &= ~EN751221_MTK_STAG_PORT_MASK;
-	sp_tag |= dsa_port;
-
-	if (unlikely(skb->len < 2 * ETH_ALEN + sizeof(u16)))
-		return -EINVAL;
-
-	wire_tag = get_unaligned_be16(skb->data + 2 * ETH_ALEN);
-	if (wire_tag & EN751221_MTK_STAG_INVALID_MASK) {
-		if (skb_cow_head(skb, sizeof(u32)))
-			return -ENOMEM;
-
-		skb_push(skb, sizeof(u32));
-		memmove(skb->data, skb->data + sizeof(u32), 2 * ETH_ALEN);
-	}
-
-	put_unaligned_be16(sp_tag, skb->data + 2 * ETH_ALEN);
-	put_unaligned_be16(tci, skb->data + 2 * ETH_ALEN + sizeof(u16));
-
-	return 0;
+	return sport >= EN751221_DSA_SPORT_BASE &&
+	       sport < EN751221_DSA_SPORT_BASE + EN751221_DSA_NUM_PORTS;
 }
 
 static struct net_device *econet_get_sport_dev(struct econet_eth_pvt *eth,
 					     u8 sport)
 {
-	u8 dsa_port;
-
 	if (sport == ETX_FPORT_GDM2)
 		return eth->ports[1];
 
 	if (sport == ETX_FPORT_GDM1 ||
 	    (eth->soc->en751221_special_tag &&
-	     econet_en751221_dsa_sport(sport, &dsa_port)))
+	     econet_en751221_dsa_sport(sport)))
 		return eth->ports[0];
 
 	dev_info_ratelimited(eth->pub.dev, "rx: on unexpected sport %u\n", sport);
@@ -1892,22 +1835,22 @@ static struct net_device *econet_get_sport_dev(struct econet_eth_pvt *eth,
 }
 
 int econet_rx_before_recv(struct econet_eth *eth, struct sk_buff *skb,
-			u8 sport, u16 sp_tag, u16 tci)
+			u8 sport)
 {
 	struct econet_eth_pvt *ep = (struct econet_eth_pvt *) eth;
 	struct net_device *port;
-	int err;
 
 	port = econet_get_sport_dev(ep, sport);
 	if (!port)
 		return -ENODEV;
 
-	if (netdev_uses_dsa(port)) {
-		err = econet_en751221_fixup_dsa_tag(ep, skb, sport, sp_tag, tci);
-		if (err)
-			return err;
-	}
-
+	/*
+	 * EN7512/EN7521 keeps the MT7530 special tag in-band. The vendor
+	 * receive path removes that tag from skb data in software; rxMsgW3 is
+	 * only used for descriptor-based tag recovery by the EN7526C special
+	 * case. Leave the frame untouched here so the DSA MTK tagger consumes
+	 * the wire tag directly.
+	 */
 	skb->dev = port;
 	skb->protocol = eth_type_trans(skb, port);
 
