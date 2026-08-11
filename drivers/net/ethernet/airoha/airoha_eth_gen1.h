@@ -12,6 +12,8 @@
 
 #include "airoha_common.h"
 
+struct airoha_eth_soc_data;
+
 /* QDMA packet descriptors and descriptor messages. */
 #define FIELD_SET(current, mask, val)	\
 	(((current) & ~(mask)) | FIELD_PREP((mask), (val)))
@@ -3211,11 +3213,6 @@ static inline void set_gdm_len_th_runt_len(struct gdm_len_th *x, u16 v)
 }
 
 /* EcoNet Ethernet driver-private data and interfaces. */
-struct econet_soc_data {
-	bool dscp_byte_swap;
-	bool en751221_special_tag;
-};
-
 /* Number of QDMA engines in this ethernet device. */
 #define ECONET_NUM_QDMA		2
 
@@ -3348,7 +3345,7 @@ struct econet_qdma_cfg {
 	int fwd_low_threshold;
 	int num_channels;
 	bool rx_2b_offset;
-	const struct econet_soc_data *soc;
+	const struct airoha_eth_soc_data *soc;
 };
 
 struct econet_qdma;
