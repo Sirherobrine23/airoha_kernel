@@ -72,6 +72,38 @@ static struct sk_buff *mtk_tag_xmit(struct sk_buff *skb,
 	return skb;
 }
 
+static struct net_device *mtk_tag_find_user(struct net_device *dev, int port)
+{
+	struct dsa_port *cpu_dp = dev->dsa_ptr;
+	struct dsa_switch_tree *dst = cpu_dp->dst;
+	struct net_device *user = NULL;
+	struct dsa_port *dp;
+
+	/* Preserve the traditional single-switch lookup first. */
+	user = dsa_conduit_find_user(dev, 0, port);
+	if (user)
+		return user;
+
+	/*
+	 * The EN751221 has a transparent on-die switch in front of an
+	 * MT7530 MCM. The MTK special tag carries only the source port, not
+	 * a switch ID, so resolve the port across the tree when switch 0 has
+	 * no user port with that index. Accept the fallback only when the
+	 * source port is unambiguous.
+	 */
+	dsa_tree_for_each_user_port(dp, dst) {
+		if (dp->index != port)
+			continue;
+
+		if (user)
+			return NULL;
+
+		user = dp->user;
+	}
+
+	return user;
+}
+
 static struct sk_buff *mtk_tag_rcv(struct sk_buff *skb, struct net_device *dev)
 {
 	u16 hdr;
@@ -92,7 +124,7 @@ static struct sk_buff *mtk_tag_rcv(struct sk_buff *skb, struct net_device *dev)
 	/* Get source port information */
 	port = (hdr & MTK_HDR_RECV_SOURCE_PORT_MASK);
 
-	skb->dev = dsa_conduit_find_user(dev, 0, port);
+	skb->dev = mtk_tag_find_user(dev, port);
 	if (!skb->dev)
 		return NULL;
 

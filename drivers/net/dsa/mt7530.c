@@ -63,6 +63,38 @@ core_write(struct mt7530_priv *priv, u32 reg, u32 val)
 	struct mii_bus *bus = priv->bus;
 	int ret;
 
+	/*
+	 * EN751221 exposes the on-die switch core MMD through the indirect
+	 * PHY access window at address 12. The companion MT7530 uses the
+	 * normal pseudo-PHY derived from the MDIO switch address.
+	 */
+	if (priv->id == ID_EN751221) {
+		ret = priv->info->phy_write_c22(priv, 12, MII_MMD_CTRL,
+					       MDIO_MMD_VEND2);
+		if (ret < 0)
+			goto err_internal;
+
+		ret = priv->info->phy_write_c22(priv, 12, MII_MMD_DATA, reg);
+		if (ret < 0)
+			goto err_internal;
+
+		ret = priv->info->phy_write_c22(priv, 12, MII_MMD_CTRL,
+					       MDIO_MMD_VEND2 | MII_MMD_CTRL_NOINCR);
+		if (ret < 0)
+			goto err_internal;
+
+		ret = priv->info->phy_write_c22(priv, 12, MII_MMD_DATA, val);
+		if (ret < 0)
+			goto err_internal;
+
+		return;
+
+err_internal:
+		dev_err(priv->dev, "failed to write EN751221 core MMD register 0x%x\n",
+			reg);
+		return;
+	}
+
 	mt7530_mutex_lock(priv);
 
 	/* Write the desired MMD Devad */
@@ -420,6 +452,224 @@ mt7530_setup_port6(struct dsa_switch *ds, phy_interface_t interface)
 
 	/* Enable the MT7530 TRGMII clocks */
 	core_set(priv, CORE_TRGMII_GSW_CLK_CG, REG_TRGMIICK_EN);
+}
+
+#define EN751221_TRGMII_CKGCR		0x30f0
+#define EN751221_TRGMII_CKGCR_VAL	0x00001e02
+#define EN751221_TRGMII_MTRAP_VAL	0x01017e8f
+#define EN751221_TRGMII_FE_PHY_CTRL	0x7840
+#define EN751221_TRGMII_FE_PHY_DISABLE	GENMASK(3, 0)
+#define EN751221_TRGMII_TD(i)		(0x7a50 + (i) * 8)
+#define EN751221_TRGMII_RX_VALUE_MASK	GENMASK(23, 16)
+#define EN751221_TRGMII_RX_ERR_MASK	GENMASK(11, 8)
+#define EN751221_AGC_L2LEN_CHK		BIT(4)
+
+static struct mt7530_priv *
+en751221_trgmii_find_ondie_peer(struct dsa_switch *ds)
+{
+	struct dsa_link *dl;
+
+	list_for_each_entry(dl, &ds->dst->rtable, list) {
+		struct mt7530_priv *peer;
+
+		if (dl->dp->ds != ds || dl->dp->index != 6)
+			continue;
+		if (dl->link_dp->index != 5)
+			continue;
+
+		peer = dl->link_dp->ds->priv;
+		if (peer && peer->id == ID_EN751221)
+			return peer;
+	}
+
+	return NULL;
+}
+
+static void en751221_trgmii_setup_pll(struct mt7530_priv *ext,
+				      struct mt7530_priv *ondie)
+{
+	/* Vendor EN7512 sequence: 362.5 MHz TRGMII clock on both sides. */
+	core_write(ext, CORE_PLL_GROUP5, 0x1d00);
+	core_write(ext, CORE_PLL_GROUP10, 0x0057);
+	core_write(ext, CORE_PLL_GROUP11, 0x0057);
+	core_write(ondie, CORE_PLL_GROUP5, 0x1d00);
+	core_write(ondie, CORE_PLL_GROUP10, 0x0057);
+	core_write(ondie, CORE_PLL_GROUP11, 0x0057);
+
+	core_write(ext, CORE_PLL_GROUP4, 0x1800);
+	usleep_range(5000, 6000);
+	core_write(ext, CORE_PLL_GROUP4, 0x1c00);
+	core_write(ext, CORE_PLL_GROUP2, 0xc020);
+	core_write(ext, CORE_PLL_GROUP7, 0xa030);
+	core_write(ext, CORE_PLL_GROUP7, 0xa038);
+	core_write(ext, CORE_TRGMII_GSW_CLK_CG, 0x0003);
+
+	core_write(ondie, CORE_PLL_GROUP4, 0x1800);
+	usleep_range(5000, 6000);
+	core_write(ondie, CORE_PLL_GROUP4, 0x1c00);
+	core_write(ondie, CORE_PLL_GROUP2, 0xc020);
+	core_write(ondie, CORE_PLL_GROUP7, 0xa030);
+	core_write(ondie, CORE_PLL_GROUP7, 0xa038);
+	core_write(ondie, CORE_TRGMII_GSW_CLK_CG, 0x0003);
+
+	msleep(50);
+}
+
+static bool en751221_trgmii_sample_good(struct mt7530_priv *rx, u32 reg)
+{
+	u32 val;
+
+	val = mt7530_read(rx, reg);
+	mt7530_write(rx, reg, val | EDGE_CHK);
+	mt7530_write(rx, reg, val & ~EDGE_CHK);
+	val = mt7530_read(rx, reg);
+
+	return FIELD_GET(EN751221_TRGMII_RX_VALUE_MASK, val) == 0x55 &&
+	       !FIELD_GET(EN751221_TRGMII_RX_ERR_MASK, val);
+}
+
+static void
+en751221_trgmii_calibrate_direction(struct mt7530_priv *tx,
+				    struct mt7530_priv *rx,
+				    const char *name)
+{
+	int channel;
+
+	mt7530_set(tx, MT7530_TRGMII_TXCTRL, TRAIN_TXEN);
+
+	for (channel = 0; channel < NUM_TRGMII_CTRL; channel++) {
+		u32 rx_reg = MT7530_TRGMII_RD(channel);
+		u32 tx_reg = EN751221_TRGMII_TD(channel);
+		int first = -1, last = -1;
+		int dac, tap;
+
+		for (dac = 1; dac <= 127; dac++) {
+			mt7530_rmw(tx, tx_reg, GENMASK(7, 0), 0x55);
+			mt7530_rmw(rx, rx_reg, RD_TAP_MASK, RD_TAP(dac));
+
+			if (en751221_trgmii_sample_good(rx, rx_reg)) {
+				if (first < 0)
+					first = dac;
+				last = dac;
+			} else if (first >= 0) {
+				break;
+			}
+		}
+
+		if (first >= 0 && last > first)
+			tap = (first + last) / 2;
+		else
+			tap = 0;
+
+		mt7530_rmw(rx, rx_reg, RD_TAP_MASK, RD_TAP(tap));
+
+		if (first >= 0 && last > first)
+			dev_info(rx->dev,
+				 "EN751221 TRGMII %s lane %d window %d..%d, tap %d\n",
+				 name, channel, first, last, tap);
+		else
+			dev_warn(rx->dev,
+				 "EN751221 TRGMII %s lane %d calibration failed, tap 0\n",
+				 name, channel);
+	}
+
+	mt7530_clear(tx, MT7530_TRGMII_TXCTRL, TRAIN_TXEN);
+}
+
+static void en751221_trgmii_calibrate(struct mt7530_priv *ext,
+				      struct mt7530_priv *ondie)
+{
+	en751221_trgmii_calibrate_direction(ondie, ext, "SoC->MCM");
+	en751221_trgmii_calibrate_direction(ext, ondie, "MCM->SoC");
+}
+
+static void en751221_trgmii_pair_setup(struct mt7530_priv *ext,
+				       struct mt7530_priv *ondie)
+{
+	u32 mcr_down, mcr_up;
+
+	if (ondie->en751221_trgmii_ready)
+		return;
+
+	/* Avoid the MT7530 seven-second automatic power-down workaround. */
+	mt7530_write(ext, EN751221_TRGMII_CKGCR, EN751221_TRGMII_CKGCR_VAL);
+
+	/* Enable TRGMII and apply the vendor strap override on both sides. */
+	mt7530_write(ext, MT7530_TOP_SIG_CTRL, 0);
+	mt7530_write(ext, MT753X_MTRAP, EN751221_TRGMII_MTRAP_VAL);
+	mt7530_write(ext, MT7530_TOP_SIG_CTRL, 1);
+	mt7530_write(ondie, MT7530_TOP_SIG_CTRL, 0);
+	mt7530_write(ondie, MT753X_MTRAP, EN751221_TRGMII_MTRAP_VAL);
+	mt7530_write(ondie, MT7530_TOP_SIG_CTRL, 1);
+
+	en751221_trgmii_setup_pll(ext, ondie);
+
+	mcr_down = PMCR_IFG_XMIT(2) | PMCR_MAC_MODE | MT7530_FORCE_MODE |
+		    PMCR_MAC_RX_EN | PMCR_BACKOFF_EN | PMCR_BACKPR_EN |
+		    PMCR_FORCE_SPEED_1000 | PMCR_FORCE_FDX;
+	mt7530_write(ondie, MT753X_PMCR_P(5), mcr_down);
+	mt7530_write(ext, MT753X_PMCR_P(6), mcr_down);
+	usleep_range(5000, 6000);
+
+	mt7530_set(ext, MT7530_TRGMII_TXCTRL, TX_RST);
+	usleep_range(5000, 6000);
+	mt7530_clear(ext, MT7530_TRGMII_TXCTRL, TX_RST);
+	mt7530_set(ondie, MT7530_TRGMII_TXCTRL, TX_RST);
+	usleep_range(5000, 6000);
+	mt7530_clear(ondie, MT7530_TRGMII_TXCTRL, TX_RST);
+
+	mt7530_set(ext, MT7530_TRGMII_RCK_CTRL, RX_RST);
+	mt7530_set(ondie, MT7530_TRGMII_RCK_CTRL, RX_RST);
+	mt7530_write(ext, MT7530_P6ECR, P6_INTF_MODE(1));
+	mt7530_write(ondie, MT7530_P6ECR, P6_INTF_MODE(1));
+	mt7530_clear(ext, MT7530_TRGMII_RCK_CTRL, RX_RST);
+	mt7530_clear(ondie, MT7530_TRGMII_RCK_CTRL, RX_RST);
+
+	mcr_up = mcr_down | PMCR_MAC_TX_EN | PMCR_FORCE_LNK;
+	mt7530_write(ondie, MT753X_PMCR_P(5), mcr_up);
+	mt7530_write(ext, MT753X_PMCR_P(6), mcr_up);
+
+	/* The FE PHY bank at addresses 8..11 is not used by these GbE boards. */
+	mt7530_set(ondie, EN751221_TRGMII_FE_PHY_CTRL,
+		   EN751221_TRGMII_FE_PHY_DISABLE);
+
+	/* Match the vendor bridge path: no learning on the cascade. */
+	mt7530_write(ondie, MT7530_PSC_P(5), 0x000fff10);
+	mt7530_write(ondie, MT7530_PSC_P(6), 0x000fff10);
+
+	/*
+	 * Make the on-die switch a transparent 6 <-> 5 transport. It must not
+	 * consume the MTK special tag; the external MT7530 is the tag endpoint.
+	 */
+	mt7530_rmw(ondie, MT7530_PVC_P(5),
+		   PORT_SPEC_TAG | VLAN_ATTR_MASK | PVC_EG_TAG_MASK,
+		   PVC_EG_TAG(MT7530_VLAN_EG_CONSISTENT));
+	mt7530_rmw(ondie, MT7530_PVC_P(6),
+		   PORT_SPEC_TAG | VLAN_ATTR_MASK | PVC_EG_TAG_MASK,
+		   PVC_EG_TAG(MT7530_VLAN_EG_CONSISTENT));
+	mt7530_rmw(ondie, MT7530_PCR_P(5), PCR_MATRIX_MASK | PCR_PORT_VLAN_MASK,
+		   PCR_MATRIX(BIT(6)) | MT7530_PORT_FALLBACK_MODE);
+	mt7530_rmw(ondie, MT7530_PCR_P(6), PCR_MATRIX_MASK | PCR_PORT_VLAN_MASK,
+		   PCR_MATRIX(BIT(5)) | MT7530_PORT_FALLBACK_MODE);
+
+	/* Special-tag frames can look like short L2 frames to the on-die switch. */
+	mt7530_clear(ondie, MT753X_AGC, EN751221_AGC_L2LEN_CHK);
+
+	/* Port 6 of the companion MT7530 is the actual MTK tag endpoint. */
+	mt7530_rmw(ext, MT7530_PVC_P(6),
+		   VLAN_ATTR_MASK | PORT_SPEC_TAG | PVC_EG_TAG_MASK,
+		   PORT_SPEC_TAG | PVC_EG_TAG(MT7530_VLAN_EG_CONSISTENT));
+	mt7530_rmw(ext, MT7530_PCR_P(6), PCR_MATRIX_MASK | PCR_PORT_VLAN_MASK,
+		   PCR_MATRIX(dsa_user_ports(ext->ds)) |
+		   MT7530_PORT_FALLBACK_MODE);
+	mt7530_set(ext, MT753X_MFC,
+		   BC_FFP(BIT(6)) | UNM_FFP(BIT(6)) | UNU_FFP(BIT(6)));
+	mt7530_write(ext, MT7530_PSC_P(6), 0x000fff10);
+
+	en751221_trgmii_calibrate(ext, ondie);
+
+	ondie->en751221_trgmii_ready = true;
+	dev_info(ondie->dev, "EN751221 TRGMII companion link initialized\n");
 }
 
 static void
@@ -1292,9 +1542,13 @@ mt753x_cpu_port_enable(struct dsa_switch *ds, int port)
 {
 	struct mt7530_priv *priv = ds->priv;
 
-	/* Enable Mediatek header mode on the cpu port */
-	mt7530_write(priv, MT7530_PVC_P(port),
-		     PORT_SPEC_TAG);
+	/*
+	 * EN751221 uses the on-die switch only as a transparent transport to
+	 * the companion MT7530. The companion port 6, not this CPU port, is
+	 * the MTK special-tag endpoint.
+	 */
+	if (priv->id != ID_EN751221)
+		mt7530_write(priv, MT7530_PVC_P(port), PORT_SPEC_TAG);
 
 	/* Enable flooding on the CPU port */
 	mt7530_set(priv, MT753X_MFC, BC_FFP(BIT(port)) | UNM_FFP(BIT(port)) |
@@ -1309,11 +1563,12 @@ mt753x_cpu_port_enable(struct dsa_switch *ds, int port)
 			priv->id == ID_EN7523)
 		mt7530_set(priv, MT7531_CFC, MT7531_CPU_PMAP(BIT(port)));
 
-	/* CPU port gets connected to all user ports of
-	 * the switch.
-	 */
-	mt7530_write(priv, MT7530_PCR_P(port),
-		     PCR_MATRIX(dsa_user_ports(priv->ds)));
+	/* CPU port gets connected to all user ports of the switch. */
+	if (priv->id == ID_EN751221)
+		mt7530_write(priv, MT7530_PCR_P(port), PCR_MATRIX(BIT(5)));
+	else
+		mt7530_write(priv, MT7530_PCR_P(port),
+			     PCR_MATRIX(dsa_user_ports(priv->ds)));
 
 	/* Set to fallback mode for independent VLAN learning */
 	mt7530_rmw(priv, MT7530_PCR_P(port), PCR_PORT_VLAN_MASK,
@@ -3080,6 +3335,17 @@ static void mt753x_phylink_mac_link_up(struct phylink_config *config,
 	}
 
 	mt7530_set(priv, MT753X_PMCR_P(dp->index), mcr);
+
+	if (dp->index == 6 && interface == PHY_INTERFACE_MODE_TRGMII &&
+	    priv->id == ID_MT7621 && priv->mdiodev &&
+	    of_device_is_compatible(priv->dev->of_node,
+				    "econet,en751221-switch")) {
+		struct mt7530_priv *ondie;
+
+		ondie = en751221_trgmii_find_ondie_peer(dp->ds);
+		if (ondie)
+			en751221_trgmii_pair_setup(priv, ondie);
+	}
 }
 
 static void mt753x_phylink_mac_disable_tx_lpi(struct phylink_config *config)

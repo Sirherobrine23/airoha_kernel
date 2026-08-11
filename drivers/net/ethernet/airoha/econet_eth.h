@@ -3213,6 +3213,7 @@ static inline void set_gdm_len_th_runt_len(struct gdm_len_th *x, u16 v)
 /* EcoNet Ethernet driver-private data and interfaces. */
 struct econet_soc_data {
 	bool dscp_byte_swap;
+	bool en751221_special_tag;
 };
 
 /* Number of QDMA engines in this ethernet device. */
