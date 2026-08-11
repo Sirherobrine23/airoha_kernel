@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
 /dts-v1/;
 
+#include <dt-bindings/reset/econet,en751221-scu.h>
+
 / {
 	compatible = "econet,en751221";
 	#address-cells = <1>;
@@ -33,6 +35,28 @@
 	chip_scu: syscon@1fa20000 {
 		compatible = "airoha,chip-scu", "syscon";
 		reg = <0x1fa20000 0x200>;
+	};
+
+	scuclk: system-controller@1fb00000 {
+		compatible = "econet,en751221-scu", "syscon";
+		reg = <0x1fb00000 0x1000>;
+
+		#clock-cells = <1>;
+		#reset-cells = <1>;
+	};
+
+	xpon_phy: phy@1faf0000 {
+		compatible = "econet,en751221-xpon-phy";
+		reg = <0x1faf0000 0x600>;
+
+		resets = <&scuclk EN751221_XPON_PHY_RST>;
+		reset-names = "phy";
+
+		airoha,scu = <&scuclk>;
+		airoha,chip-scu = <&chip_scu>;
+
+		#phy-cells = <0>;
+		status = "disabled";
 	};
 
 	intc: interrupt-controller@1fb40000 {

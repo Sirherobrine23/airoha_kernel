@@ -25,7 +25,9 @@ properties:
           - const: airoha,scuclk
           - const: syscon
       - const: airoha,en7581-scu
-      - const: econet,en751221-scu
+      - items:
+          - const: econet,en751221-scu
+          - const: syscon
 
   reg:
     minItems: 1
@@ -89,9 +91,10 @@ allOf:
   - if:
       properties:
         compatible:
-          enum:
-            - airoha,en7581-scu
-            - econet,en751221-scu
+          contains:
+            enum:
+              - airoha,en7581-scu
+              - econet,en751221-scu
     then:
       properties:
         reg:

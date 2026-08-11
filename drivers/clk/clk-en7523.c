@@ -1797,7 +1797,7 @@ static int en751221_clk_hw_init(struct platform_device *pdev,
 	void __iomem *base;
 	int err;
 
-	map = syscon_regmap_lookup_by_compatible("econet,en751221-chip-scu");
+	map = syscon_regmap_lookup_by_compatible("airoha,chip-scu");
 	if (IS_ERR(map))
 		return PTR_ERR(map);
 

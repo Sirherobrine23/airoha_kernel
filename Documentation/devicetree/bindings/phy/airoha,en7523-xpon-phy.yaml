@@ -4,19 +4,21 @@
 $id: http://devicetree.org/schemas/phy/airoha,en7523-xpon-phy.yaml#
 $schema: http://devicetree.org/meta-schemas/core.yaml#
 
-title: Airoha EN7523 GPON and EPON PHY
+title: Airoha and EcoNet GPON and EPON PHY
 
 maintainers:
   - Matheus Sampaio Queiroga <srherobrine20@gmail.com>
 
 description: |
-  The EN7523 family contains a digital xPON PHY shared by the GPON and EPON
-  MAC engines. The PHY controls the receiver CDR, delimiter detection and
-  SerDes interface between the optical analogue front end and the xPON MAC.
+  Airoha EN7523 and EcoNet EN751221 contain a digital xPON PHY shared by the
+  GPON and EPON MAC engines. The generations share the GPON/EPON digital
+  register block; EN7523 additionally integrates PMA/SerDes controls.
 
 properties:
   compatible:
-    const: airoha,en7523-xpon-phy
+    enum:
+      - airoha,en7523-xpon-phy
+      - econet,en751221-xpon-phy
 
   reg:
     maxItems: 1
@@ -30,7 +32,12 @@ properties:
   airoha,scu:
     $ref: /schemas/types.yaml#/definitions/phandle
     description:
-      Phandle to the EN7523 SCU syscon used for WAN mode and PON pin muxing.
+      Phandle to the SoC system-controller syscon used by the xPON PHY.
+
+  airoha,chip-scu:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description:
+      Phandle to the EN751221 CHIP-SCU syscon used for the PON I/O mux.
 
   '#phy-cells':
     const: 0
@@ -42,6 +49,18 @@ required:
   - reset-names
   - airoha,scu
   - '#phy-cells'
+
+allOf:
+  - if:
+      properties:
+        compatible:
+          const: econet,en751221-xpon-phy
+    then:
+      required:
+        - airoha,chip-scu
+    else:
+      properties:
+        airoha,chip-scu: false
 
 additionalProperties: false
 
@@ -55,6 +74,19 @@ examples:
         resets = <&scuclk EN7523_XPON_PHY_RST>;
         reset-names = "phy";
         airoha,scu = <&scuclk>;
+        #phy-cells = <0>;
+    };
+
+  - |
+    #include <dt-bindings/reset/econet,en751221-scu.h>
+
+    phy@1faf0000 {
+        compatible = "econet,en751221-xpon-phy";
+        reg = <0x1faf0000 0x600>;
+        resets = <&scuclk EN751221_XPON_PHY_RST>;
+        reset-names = "phy";
+        airoha,scu = <&scuclk>;
+        airoha,chip-scu = <&chip_scu>;
         #phy-cells = <0>;
     };
 ...
