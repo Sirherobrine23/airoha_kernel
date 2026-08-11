@@ -2473,21 +2473,21 @@ static size_t econet_ppe_foe_size(struct airoha_eth *eth)
 	       sizeof(struct econet_foe_entry);
 }
 
-static __le32 *econet_ppe_slot(struct econet_ppe *ppe, u16 hash)
+static u32 *econet_ppe_slot(struct econet_ppe *ppe, u16 hash)
 {
-	return (__le32 *)((u8 *)ppe->foe_table +
+	return (u32 *)((u8 *)ppe->foe_table +
 			 (size_t)hash * sizeof(struct econet_foe_entry));
 }
 
-static void econet_ppe_read_entry(struct econet_ppe *ppe, u16 hash,
-				  struct econet_foe_entry *entry)
+void econet_ppe_read_entry(struct econet_ppe *ppe, u16 hash,
+			   struct econet_foe_entry *entry)
 {
-	__le32 *slot = econet_ppe_slot(ppe, hash);
+	u32 *slot = econet_ppe_slot(ppe, hash);
 	int i;
 
 	dma_rmb();
 	for (i = 0; i < ARRAY_SIZE(entry->data) + 1; i++)
-		((u32 *)entry)[i] = le32_to_cpu(READ_ONCE(slot[i]));
+		((u32 *)entry)[i] = READ_ONCE(slot[i]);
 }
 
 static bool econet_ppe_cache_cmd(struct econet_ppe *ppe, u32 cmd)
@@ -2514,7 +2514,9 @@ static void econet_ppe_cache_clean(struct econet_ppe *ppe)
 
 	airoha_fe_wr(ppe->eth, REG_EN751221_PPE_CAH_GATE,
 		     gate & ~EN751221_PPE_CAH_GATE_EN);
-	econet_ppe_cache_cmd(ppe, 4);
+	if (!econet_ppe_cache_cmd(ppe, 4))
+		dev_warn(ppe->eth->dev,
+			 "PPE cache clear-all timed out\n");
 	airoha_fe_wr(ppe->eth, REG_EN751221_PPE_CAH_GATE,
 		     gate | EN751221_PPE_CAH_GATE_EN);
 }
@@ -2608,7 +2610,7 @@ static void econet_foe_entry_set_bind_metadata(struct econet_foe_entry *entry)
 static void econet_ppe_commit_entry(struct econet_ppe *ppe,
 				    struct econet_foe_entry *entry, u16 hash)
 {
-	__le32 *slot = econet_ppe_slot(ppe, hash);
+	u32 *slot = econet_ppe_slot(ppe, hash);
 	u16 timestamp = airoha_fe_rr(ppe->eth, REG_FE_FOE_TS) &
 			AIROHA_FOE_IB1_BIND_TIMESTAMP;
 	const u32 *src;
@@ -2631,11 +2633,16 @@ static void econet_ppe_commit_entry(struct econet_ppe *ppe,
 
 		if (i == 6 || i == 10 || i == 12 || i == 14)
 			val = rol32(val, 16);
-		WRITE_ONCE(slot[i + 1], cpu_to_le32(swab32(val)));
+		/*
+		 * Match the old MMIO path exactly. On EN751221 writel() does not
+		 * add a software endian conversion when CONFIG_SWAP_IO_SPACE is
+		 * disabled, so cpu_to_le32(swab32(val)) double-swaps the DMA word.
+		 */
+		WRITE_ONCE(slot[i + 1], swab32(val));
 	}
 	/* Publish the rewrite payload before marking the entry bound. */
 	dma_wmb();
-	WRITE_ONCE(slot[0], cpu_to_le32(swab32(entry->ib1)));
+	WRITE_ONCE(slot[0], swab32(entry->ib1));
 	/* Publish the complete entry before invalidating the lookup cache. */
 	dma_wmb();
 	econet_ppe_cache_clean(ppe);
@@ -2710,7 +2717,7 @@ static void econet_ppe_rx_check(struct econet_ppe *ppe, struct sk_buff *skb,
 				u16 hash, u8 reason)
 {
 	struct econet_flow_entry *flow;
-	struct econet_foe_entry entry, hardware;
+	struct econet_foe_entry entry, hardware, readback = {};
 	u32 src_ip, dest_ip;
 	u16 src_port, dest_port;
 
@@ -2749,6 +2756,7 @@ static void econet_ppe_rx_check(struct econet_ppe *ppe, struct sk_buff *skb,
 			econet_ppe_invalidate_entry(ppe, flow->hash);
 		flow->hash = hash;
 		econet_ppe_commit_entry(ppe, &entry, hash);
+		econet_ppe_read_entry(ppe, hash, &readback);
 		break;
 	}
 	spin_unlock_bh(&ppe->lock);
@@ -2849,7 +2857,6 @@ static int econet_ppe_engine_arm(struct econet_ppe *ppe)
 	airoha_fe_wr(ppe->eth, REG_PPE_DFT_CPORT_BASE(0),
 		     FIELD_PREP(DFT_CPORT_MASK(2), 5));
 	WRITE_ONCE(ppe->armed, true);
-	dev_info(ppe->eth->dev, "PPE hardware flow offload enabled\n");
 	return 0;
 }
 
@@ -2865,7 +2872,6 @@ static void econet_ppe_engine_disarm(struct econet_ppe *ppe)
 	WRITE_ONCE(ppe->armed, false);
 	econet_ppe_flush(ppe);
 	econet_ppe_engine_set(ppe, false);
-	dev_info(ppe->eth->dev, "PPE hardware flow offload disabled\n");
 }
 
 static void econet_flow_mangle_eth(const struct flow_action_entry *act,
@@ -3264,8 +3270,8 @@ static int airoha_ppe_gen1_init(struct airoha_eth *eth)
 	if (!ppe)
 		return -ENOMEM;
 
-	ppe->foe_table = dmam_alloc_coherent(dev, foe_size, &ppe->foe_dma,
-					     GFP_KERNEL);
+	ppe->foe_table = dmam_alloc_coherent(dev, foe_size,
+					     &ppe->foe_dma, GFP_KERNEL);
 	if (!ppe->foe_table)
 		return dev_err_probe(dev, -ENOMEM,
 				     "failed to allocate PPE FoE table\n");
@@ -3275,6 +3281,17 @@ static int airoha_ppe_gen1_init(struct airoha_eth *eth)
 	spin_lock_init(&ppe->lock);
 	INIT_LIST_HEAD(&ppe->flows);
 	INIT_LIST_HEAD(&ppe->block_cb_list);
+
+	/*
+	 * EN751221 uses CAH_GATE to enable the FoE lookup cache. CAH_CTRL is
+	 * the cache command register on this generation, not an enable bit.
+	 * Match the vendor hw_nat driver (CAH_GATE = 0x33) and invalidate any
+	 * stale cache contents before publishing the new DMA-backed FoE table.
+	 */
+	airoha_fe_wr(eth, REG_EN751221_PPE_CAH_GATE,
+		     EN751221_PPE_CAH_GATE_DEFAULT);
+	econet_ppe_cache_clean(ppe);
+
 	memset(ppe->foe_table, 0, foe_size);
 	dma_wmb();
 
@@ -3290,8 +3307,6 @@ static int airoha_ppe_gen1_init(struct airoha_eth *eth)
 	airoha_fe_wr(eth, REG_PPE_TB_CFG(0), tb_cfg);
 	airoha_fe_wr(eth, REG_PPE_IP_PROTO_CHK(0),
 		     PPE_IP_PROTO_CHK_IPV4_MASK | PPE_IP_PROTO_CHK_IPV6_MASK);
-	airoha_fe_wr(eth, REG_EN751221_PPE_CACHE_CTL,
-		     EN751221_PPE_CACHE_CTL_EN);
 	airoha_fe_wr(eth, REG_PPE_PPE_FLOW_CFG(0),
 		     PPE_FLOW_CFG_IP6_3T_ROUTE_MASK |
 		     PPE_FLOW_CFG_IP6_5T_ROUTE_MASK |
@@ -3325,6 +3340,9 @@ static int airoha_ppe_gen1_init(struct airoha_eth *eth)
 	ppe->dev.ops.setup_tc = econet_ppe_setup_tc;
 
 	eth->ppe_dev = &ppe->dev;
+	if (econet_ppe_debugfs_init(ppe))
+		dev_warn(dev, "failed to initialize generation-1 PPE debugfs\n");
+
 	dev_info(dev, "PPE FoE table at %pad, %u entries\n",
 		 &ppe->foe_dma, dram_entries);
 	return 0;
@@ -3343,6 +3361,7 @@ static void airoha_ppe_gen1_deinit(struct airoha_eth *eth)
 		econet_ppe_engine_disarm(ppe);
 	else
 		econet_ppe_flush(ppe);
+	debugfs_remove_recursive(ppe->debugfs_dir);
 	ppe_dev->enabled = false;
 	eth->ppe_dev = NULL;
 }
