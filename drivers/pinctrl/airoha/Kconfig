@@ -1,11 +1,11 @@
 # SPDX-License-Identifier: GPL-2.0-only
-menu "Airoha pinctrl drivers"
-	depends on ARCH_AIROHA || COMPILE_TEST
+menu "Airoha and EcoNet pinctrl drivers"
+	depends on ARCH_AIROHA || ECONET || COMPILE_TEST
 
 config PINCTRL_AIROHA
 	tristate "Airoha pin control"
 	depends on OF
-	depends on ARCH_AIROHA || COMPILE_TEST
+	depends on ARCH_AIROHA || ECONET || COMPILE_TEST
 	select PINMUX
 	select GENERIC_PINCONF
 	select GENERIC_PINCTRL_GROUPS
@@ -17,9 +17,10 @@ config PINCTRL_AIROHA
 	imply PINCTRL_AIROHA_AN7581
 	imply PINCTRL_AIROHA_AN7583
 	imply PINCTRL_AIROHA_EN7523
+	imply PINCTRL_AIROHA_EN751221
 	help
 	  Shared pin controller and gpio driver code for different
-	  Airoha SoCs.
+	  Airoha and EcoNet SoCs.
 
 config PINCTRL_AIROHA_AN7563
 	tristate "AN7563 pinctrl"
@@ -49,5 +50,15 @@ config PINCTRL_AIROHA_EN7523
 	help
 	  Say yes here to support pin controller and gpio driver
 	  on Airoha EN7523, EN7529, EN7562 and other compatible SoCs.
+
+config PINCTRL_AIROHA_EN751221
+	tristate "EN7512/EN7521 pinctrl"
+	depends on MIPS || COMPILE_TEST
+	depends on PINCTRL_AIROHA
+	help
+	  Say yes here to support the GPIO and pin controller found in the
+	  EcoNet EN7512, EN7513, EN7521 and EN7526 SoC families. The driver
+	  provides GPIO, GPIO interrupt and pin multiplexing support through
+	  the common Airoha pin controller implementation.
 
 endmenu
