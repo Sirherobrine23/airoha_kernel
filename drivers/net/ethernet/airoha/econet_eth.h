@@ -270,10 +270,10 @@ static inline void set_etx_vlan_tag(struct etx *x, u16 v)
  *   @unknown1 "nknwn" (bits 31..29): Revision number? (unused)
  *   @ip6 "I" (bit 28): IPv6 packet indicator
  *   @ip4 "P" (bit 27): IPv4 packet indicator
- *   @ip4f "F" (bit 26): IPv4 fragment flag
+ *   @ip4f "F" (bit 26): IPv4 header checksum failure
  *   @tack "T" (bit 25): TCP ACK flag
  *   @l2vld "L" (bit 24): Layer 2 valid flag
- *   @l4f "A" (bit 23): Layer 4 flag (e.g., checksum failure)
+ *   @l4f "A" (bit 23): TCP/UDP checksum failure
  *   @sport (bits 22..19): Where the packet came from, mostly unknown / unused,
  *                         needs testing
  *   @crsn (bits 18..14): Most likely a MediaTek PPE CPU_REASON
