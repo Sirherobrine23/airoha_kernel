@@ -416,17 +416,20 @@ config SL28CPLD_WATCHDOG
 	  To compile this driver as a module, choose M here: the
 	  module will be called sl28cpld_wdt.
 
+# Airoha/EcoNet SoCs
+
+config AIROHA_WATCHDOG
+	tristate "Airoha/EcoNet watchdog"
+	depends on ARCH_AIROHA || ECONET || COMPILE_TEST
+	select COMMON_CLK_EN7523
+	select WATCHDOG_CORE
+	help
+	  Watchdog timer embedded into Airoha and EcoNet SoCs. This will
+	  reboot your system when the timeout is reached.
+
 # ALPHA Architecture
 
 # ARM Architecture
-
-config AIROHA_WATCHDOG
-	tristate "Airoha EN7581 Watchdog"
-	depends on ARCH_AIROHA || COMPILE_TEST
-	select WATCHDOG_CORE
-	help
-	  Watchdog timer embedded into Airoha SoC. This will reboot your
-	  system when the timeout is reached.
 
 config ARM_SP805_WATCHDOG
 	tristate "ARM SP805 Watchdog"
