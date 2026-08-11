@@ -2,28 +2,46 @@
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/platform_device.h>
+#include <linux/slab.h>
 
 #include "airoha_eth.h"
 
 static int airoha_eth_probe(struct platform_device *pdev)
 {
 	const struct airoha_eth_soc_data *soc;
+	struct airoha_eth *eth;
+	int err;
 
 	soc = of_device_get_match_data(&pdev->dev);
 	if (!soc || !soc->eth_ops || !soc->eth_ops->probe)
 		return dev_err_probe(&pdev->dev, -EINVAL,
 				     "missing Ethernet backend data\n");
 
-	return soc->eth_ops->probe(pdev);
+	eth = devm_kzalloc(&pdev->dev, sizeof(*eth), GFP_KERNEL);
+	if (!eth)
+		return -ENOMEM;
+
+	eth->dev = &pdev->dev;
+	eth->soc = soc;
+	platform_set_drvdata(pdev, eth);
+
+	err = soc->eth_ops->probe(pdev, eth);
+	if (err)
+		platform_set_drvdata(pdev, NULL);
+
+	return err;
 }
 
 static void airoha_eth_remove(struct platform_device *pdev)
 {
-	const struct airoha_eth_soc_data *soc;
+	struct airoha_eth *eth = platform_get_drvdata(pdev);
 
-	soc = of_device_get_match_data(&pdev->dev);
-	if (soc && soc->eth_ops && soc->eth_ops->remove)
-		soc->eth_ops->remove(pdev);
+	if (!eth || !eth->soc || !eth->soc->eth_ops ||
+	    !eth->soc->eth_ops->remove)
+		return;
+
+	eth->soc->eth_ops->remove(pdev, eth);
+	platform_set_drvdata(pdev, NULL);
 }
 
 static const struct of_device_id airoha_eth_of_match[] = {
