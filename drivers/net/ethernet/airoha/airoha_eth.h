@@ -570,9 +570,14 @@ struct airoha_irq_bank {
 	int irq;
 };
 
-struct airoha_qdma {
+struct airoha_qdma_common {
 	struct airoha_eth *eth;
 	void __iomem *regs;
+	u8 id;
+};
+
+struct airoha_qdma {
+	struct airoha_qdma_common common;
 
 	int users;
 
@@ -828,6 +833,8 @@ struct airoha_eth {
 
 	struct net_device *napi_dev;
 
+	/* Common QDMA handles; generation-specific objects own the storage. */
+	struct airoha_qdma_common *qdma_common[AIROHA_MAX_NUM_QDMA];
 	struct airoha_qdma qdma[AIROHA_MAX_NUM_QDMA];
 	struct airoha_gdm_port **ports;
 
@@ -849,21 +856,24 @@ struct airoha_eth {
 	FIELD_GET((mask), airoha_fe_rr((eth), (offset)))
 
 #define airoha_qdma_rr(qdma, offset)				\
-	airoha_rr((qdma)->regs, (offset))
+	airoha_rr((qdma)->common.regs, (offset))
 #define airoha_qdma_wr(qdma, offset, val)			\
-	airoha_wr((qdma)->regs, (offset), (val))
+	airoha_wr((qdma)->common.regs, (offset), (val))
 #define airoha_qdma_rmw(qdma, offset, mask, val)		\
-	airoha_rmw((qdma)->regs, (offset), (mask), (val))
+	airoha_rmw((qdma)->common.regs, (offset), (mask), (val))
 #define airoha_qdma_set(qdma, offset, val)			\
-	airoha_rmw((qdma)->regs, (offset), 0, (val))
+	airoha_rmw((qdma)->common.regs, (offset), 0, (val))
 #define airoha_qdma_clear(qdma, offset, val)			\
-	airoha_rmw((qdma)->regs, (offset), (val), 0)
+	airoha_rmw((qdma)->common.regs, (offset), (val), 0)
 #define airoha_qdma_get(qdma, offset, mask)			\
 	FIELD_GET((mask), airoha_qdma_rr((qdma), (offset)))
 
+void airoha_qdma_common_init(struct airoha_qdma_common *qdma,
+			     struct airoha_eth *eth, void __iomem *regs, u8 id);
+
 static inline u16 airoha_qdma_get_txq(struct airoha_qdma *qdma, u16 qid)
 {
-	return qid % qdma->eth->soc->tx_ring;
+	return qid % qdma->common.eth->soc->tx_ring;
 }
 
 static inline bool airoha_is_lan_gdm_dev(struct airoha_gdm_dev *dev)
@@ -898,7 +908,7 @@ static inline bool airoha_qdma_is_lro_queue(struct airoha_queue *q)
 	struct airoha_qdma *qdma = q->qdma;
 	int qid = q - &qdma->q_rx[0];
 	
-	switch (qdma->eth->soc->version) {
+	switch (qdma->common.eth->soc->version) {
 	case airoha_en7523:
 		/* EN7523 11-14 */
 		BUILD_BUG_ON(hweight32(EN7523_AIROHA_RXQ_LRO_EN_MASK) >
