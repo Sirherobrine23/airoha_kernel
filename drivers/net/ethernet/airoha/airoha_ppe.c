@@ -46,7 +46,7 @@ static int airoha_ppe_get_num_stats_entries(struct airoha_ppe *ppe)
 	if (!IS_ENABLED(CONFIG_NET_AIROHA_FLOW_STATS))
 		return -EOPNOTSUPP;
 
-	if (airoha_is(ppe->eth, an7583))
+	if (airoha_is(ppe->eth, airoha_an7583))
 		return -EOPNOTSUPP;
 
 	return ppe->eth->soc->ppe_stats_entries;
@@ -95,7 +95,7 @@ static int airoha_ppe_hw_to_sw_idx(struct airoha_ppe *ppe, u32 hw_idx,
 	u32 dram_num_entries = ppe->eth->soc->ppe_dram_entries;
 	u32 ppe_num_entries = sram_num_entries + dram_num_entries;
 
-	if (!airoha_is(ppe->eth, en7523)) {
+	if (!airoha_is(ppe->eth, airoha_en7523)) {
 		if (hw_idx >= ppe_num_entries)
 			return -ERANGE;
 
@@ -121,7 +121,7 @@ static u32 airoha_ppe_sw_to_hw_idx(struct airoha_ppe *ppe, u32 sw_idx)
 {
 	u32 sram_num_entries = airoha_ppe_get_total_sram_num_entries(ppe);
 
-	if (airoha_is(ppe->eth, en7523) && sw_idx >= sram_num_entries)
+	if (airoha_is(ppe->eth, airoha_en7523) && sw_idx >= sram_num_entries)
 		return ppe->eth->soc->ppe_dram_entries + sw_idx - sram_num_entries;
 
 	return sw_idx;
@@ -205,7 +205,7 @@ void airoha_ppe_set_mtu(struct airoha_gdm_dev *dev)
 	 * this port index, and hw_init already programs a generous MTU for all
 	 * FPs; don't undercut it with the (smaller) per-port L2 size here.
 	 */
-	if (airoha_is(eth, en7523))
+	if (airoha_is(eth, airoha_en7523))
 		len = max_t(u32, len, 2000);
 
 	ppe_id = !airoha_is_lan_gdm_dev(dev) && airoha_ppe_is_enabled(eth, 1);
@@ -255,9 +255,9 @@ static void airoha_ppe_hw_init(struct airoha_ppe *ppe)
 			      FIELD_PREP(PPE_BIND_AGE1_DELTA_TCP, 60));
 
 		switch (eth->soc->version) {
-		case en7523:
+		case airoha_en7523:
 			/**
-			 * the en7523 support for 64 and 80 bytes, current use 80 bytes for ppe
+			 * the airoha_en7523 support for 64 and 80 bytes, current use 80 bytes for ppe
 			 * 0 = 64 Bytes
 			 * 1 = 80 Bytes
 			 */
@@ -349,8 +349,8 @@ static void airoha_ppe_hw_init(struct airoha_ppe *ppe)
 			airoha_fe_wr(eth, REG_PPE_MTU_BASE(i) + 0x0c, 0x07f007e8);
 
 			break;
-		case en7581:
-		case an7583:
+		case airoha_en7581:
+		case airoha_an7583:
 			airoha_fe_rmw(eth, REG_PPE_TB_HASH_CFG(i),
 				      EN7581_PPE_SRAM_TABLE_EN_MASK |
 				      EN7581_PPE_SRAM_HASH1_EN_MASK |
@@ -591,7 +591,7 @@ static int airoha_ppe_foe_entry_prepare(struct airoha_eth *eth,
 	 * yields ib2=0x3e240 vs the vendor's 0x240 for the same flow.
 	 */
 	val = FIELD_PREP(AIROHA_FOE_IB2_PORT_AG,
-			 airoha_is(eth, en7523) ? 0x0 : 0x1f);
+			 airoha_is(eth, airoha_en7523) ? 0x0 : 0x1f);
 	if (netdev) {
 		struct airoha_wdma_info info = {};
 
@@ -599,10 +599,10 @@ static int airoha_ppe_foe_entry_prepare(struct airoha_eth *eth,
 					      &info)) {
 			val |= FIELD_PREP(AIROHA_FOE_IB2_NBQ, info.idx) |
 			       FIELD_PREP(AIROHA_FOE_IB2_PSE_PORT,
-					  airoha_is(eth, en7523) ?
+					  airoha_is(eth, airoha_en7523) ?
 					  FE_PSE_PORT_GDM3 :
 					  FE_PSE_PORT_CDM4);
-			if (airoha_is(eth, en7523))
+			if (airoha_is(eth, airoha_en7523))
 				val |= AIROHA_FOE_IB2_PSE_QOS;
 			qdata |= FIELD_PREP(AIROHA_FOE_ACTDP, info.bss);
 			wlan_etype = FIELD_PREP(AIROHA_FOE_MAC_WDMA_BAND,
@@ -623,7 +623,7 @@ static int airoha_ppe_foe_entry_prepare(struct airoha_eth *eth,
 				return -EINVAL;
 			}
 
-			if (airoha_is(eth, en7523) &&
+			if (airoha_is(eth, airoha_en7523) &&
 			    (dev->flags & AIROHA_PRIV_F_XPON_MANAGED) &&
 			    dev->xpon_mode == AIROHA_XPON_MODE_GPON) {
 				int ret;
@@ -670,7 +670,7 @@ static int airoha_ppe_foe_entry_prepare(struct airoha_eth *eth,
 			 * entry consume an unsupported descriptor path and drops
 			 * the flow as soon as it transitions to BIND.
 			 */
-			if (!airoha_is(eth, en7523) &&
+			if (!airoha_is(eth, airoha_en7523) &&
 			    airoha_is_lan_gdm_dev(dev))
 				val |= AIROHA_FOE_IB2_FAST_PATH;
 			if (xpon_flow)
@@ -678,7 +678,7 @@ static int airoha_ppe_foe_entry_prepare(struct airoha_eth *eth,
 			else if (dsa_port >= 0)
 				val |= FIELD_PREP(AIROHA_FOE_IB2_NBQ,
 						  dsa_port);
-			else if (airoha_is(eth, en7523) &&
+			else if (airoha_is(eth, airoha_en7523) &&
 				 port->id == AIROHA_GDM3_IDX &&
 				 dev->nbq != 0)
 				val |= FIELD_PREP(AIROHA_FOE_IB2_NBQ, dev->nbq);
@@ -868,7 +868,7 @@ static u32 airoha_ppe_foe_get_entry_hash(struct airoha_ppe *ppe,
 	hash ^= hv1 ^ hv2 ^ hv3;
 	hash ^= hash >> 16;
 
-	if (airoha_is(ppe->eth, en7523)) {
+	if (airoha_is(ppe->eth, airoha_en7523)) {
 		u32 dram_entries = ppe->eth->soc->ppe_dram_entries;
 		u32 sram_entries = airoha_ppe_get_total_sram_num_entries(ppe);
 
@@ -999,7 +999,7 @@ static void airoha_ppe_foe_flow_stats_update(struct airoha_ppe *ppe,
 
 	pse_port = FIELD_GET(AIROHA_FOE_IB2_PSE_PORT, *ib2);
 	if (pse_port == FE_PSE_PORT_CDM4 ||
-	    (airoha_is(ppe->eth, en7523) &&
+	    (airoha_is(ppe->eth, airoha_en7523) &&
 	     pse_port == FE_PSE_PORT_GDM3))
 		return;
 
@@ -1597,7 +1597,7 @@ static void airoha_ppe_foe_insert_entry(struct airoha_ppe *ppe,
 	if (state == AIROHA_FOE_STATE_BIND)
 		goto unlock;
 
-	if (airoha_is(ppe->eth, en7523)) {
+	if (airoha_is(ppe->eth, airoha_en7523)) {
 		/* On EN7523 the offloaded flows live in ppe->pending_flows (the
 		 * SW hash does not match the HW hash), so they are matched by
 		 * skb tuple rather than via foe_flow[index]. The HW may present
@@ -1692,7 +1692,7 @@ static int airoha_ppe_foe_flow_commit_entry(struct airoha_ppe *ppe,
 	e->hash = 0xffff;
 
 	spin_lock_bh(&ppe_lock);
-	if (airoha_is(ppe->eth, en7523))
+	if (airoha_is(ppe->eth, airoha_en7523))
 		hlist_add_head(&e->list, &ppe->pending_flows);
 	else
 		hlist_add_head(&e->list, &ppe->foe_flow[hash]);
