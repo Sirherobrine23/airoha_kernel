@@ -5,6 +5,7 @@
  */
 
 #include "airoha_eth.h"
+#include "airoha_regs.h"
 
 static void airoha_debugfs_ppe_print_tuple(struct seq_file *m,
 					   void *src_addr, void *dest_addr,
@@ -340,6 +341,345 @@ static int airoha_ppe_debugfs_foe_bind_show(struct seq_file *m, void *private)
 	return airoha_ppe_debugfs_foe_show(m, private, true);
 }
 DEFINE_SHOW_ATTRIBUTE(airoha_ppe_debugfs_foe_bind);
+
+
+static const char *econet_ppe_debugfs_state_name(u32 state)
+{
+	switch (state) {
+	case AIROHA_FOE_STATE_INVALID:
+		return "INV";
+	case AIROHA_FOE_STATE_UNBIND:
+		return "UNB";
+	case AIROHA_FOE_STATE_BIND:
+		return "BND";
+	case AIROHA_FOE_STATE_FIN:
+		return "FIN";
+	default:
+		return "???";
+	}
+}
+
+static const char *econet_ppe_debugfs_type_name(u32 type)
+{
+	switch (type) {
+	case PPE_PKT_TYPE_IPV4_HNAPT:
+		return "IPv4 5T";
+	case PPE_PKT_TYPE_IPV4_ROUTE:
+		return "IPv4 3T";
+	case PPE_PKT_TYPE_BRIDGE:
+		return "L2B";
+	case PPE_PKT_TYPE_IPV4_DSLITE:
+		return "DS-LITE";
+	case PPE_PKT_TYPE_IPV6_ROUTE_3T:
+		return "IPv6 3T";
+	case PPE_PKT_TYPE_IPV6_ROUTE_5T:
+		return "IPv6 5T";
+	case PPE_PKT_TYPE_IPV6_6RD:
+		return "6RD";
+	default:
+		return "UNKNOWN";
+	}
+}
+
+/*
+ * econet_ppe_commit_entry() stores EN751221 FoE words in the byte/halfword
+ * layout consumed by the PPE. Convert a CPU snapshot of that DMA memory back
+ * into the logical struct layout before decoding it in debugfs.
+ */
+static void
+econet_ppe_debugfs_decode_entry(const struct econet_foe_entry *raw,
+				struct econet_foe_entry *entry)
+{
+	int i;
+
+	memset(entry, 0, sizeof(*entry));
+	entry->ib1 = swab32(raw->ib1);
+
+	for (i = 0; i < ARRAY_SIZE(entry->data); i++) {
+		u32 val = swab32(raw->data[i]);
+
+		/* Mirror the 16-bit lane rotation used by commit_entry(). */
+		if (i == 6 || i == 10 || i == 12 || i == 14)
+			val = rol32(val, 16);
+
+		entry->data[i] = val;
+	}
+
+}
+
+static void econet_ppe_debugfs_mac(const struct econet_foe_mac_info *l2,
+				   u8 *src, u8 *dest)
+{
+	*(__be32 *)&dest[0] = cpu_to_be32(l2->dest_mac_hi);
+	*(__be16 *)&dest[4] = cpu_to_be16(l2->dest_mac_lo);
+	*(__be32 *)&src[0] = cpu_to_be32(l2->src_mac_hi);
+	*(__be16 *)&src[4] = cpu_to_be16(l2->src_mac_lo);
+}
+
+static void econet_ppe_debugfs_print_ipv4(struct seq_file *m,
+					  const struct econet_foe_entry *entry)
+{
+	const struct econet_foe_ipv4 *ipv4 = &entry->ipv4;
+	u8 src[ETH_ALEN], dest[ETH_ALEN];
+
+	econet_ppe_debugfs_mac(&ipv4->l2, src, dest);
+	seq_printf(m,
+		   " orig=%pI4h:%u->%pI4h:%u new=%pI4h:%u->%pI4h:%u eth=%pM->%pM etype=%04x vlan=%u,%u pppoe=%u ib1=%08x ib2=%08x",
+		   &ipv4->orig.src_ip, ipv4->orig.src_port,
+		   &ipv4->orig.dest_ip, ipv4->orig.dest_port,
+		   &ipv4->new.src_ip, ipv4->new.src_port,
+		   &ipv4->new.dest_ip, ipv4->new.dest_port,
+		   src, dest, ipv4->l2.etype, ipv4->l2.vlan1, ipv4->l2.vlan2,
+		   ipv4->l2.pppoe_id, entry->ib1, ipv4->ib2);
+}
+
+static int econet_ppe_debugfs_foe_show(struct seq_file *m, bool bind_only)
+{
+	struct econet_ppe *ppe = m->private;
+	u32 entries = ppe->eth->soc->ppe_dram_entries;
+	u32 i;
+
+	for (i = 0; i < entries; i++) {
+		struct econet_foe_entry raw, entry;
+		u32 state, type;
+
+		spin_lock_bh(&ppe->lock);
+		econet_ppe_read_entry(ppe, i, &raw);
+		spin_unlock_bh(&ppe->lock);
+
+		econet_ppe_debugfs_decode_entry(&raw, &entry);
+		state = FIELD_GET(AIROHA_FOE_IB1_BIND_STATE, entry.ib1);
+		if (state == AIROHA_FOE_STATE_INVALID)
+			continue;
+		if (bind_only && state != AIROHA_FOE_STATE_BIND)
+			continue;
+
+		type = FIELD_GET(AIROHA_FOE_IB1_BIND_PACKET_TYPE, entry.ib1);
+		seq_printf(m, "%05x %s %7s", i,
+			   econet_ppe_debugfs_state_name(state),
+			   econet_ppe_debugfs_type_name(type));
+
+		if (type == PPE_PKT_TYPE_IPV4_HNAPT ||
+		    type == PPE_PKT_TYPE_IPV4_ROUTE)
+			econet_ppe_debugfs_print_ipv4(m, &entry);
+		else
+			seq_printf(m, " ib1=%08x", entry.ib1);
+
+		seq_printf(m, " hw_ib1=%08x\n", raw.ib1);
+	}
+
+	return 0;
+}
+
+static int econet_ppe_debugfs_foe_all_show(struct seq_file *m, void *private)
+{
+	return econet_ppe_debugfs_foe_show(m, false);
+}
+DEFINE_SHOW_ATTRIBUTE(econet_ppe_debugfs_foe_all);
+
+static int econet_ppe_debugfs_foe_bind_show(struct seq_file *m, void *private)
+{
+	return econet_ppe_debugfs_foe_show(m, true);
+}
+DEFINE_SHOW_ATTRIBUTE(econet_ppe_debugfs_foe_bind);
+
+static int econet_ppe_debugfs_foe_raw_show(struct seq_file *m, void *private)
+{
+	struct econet_ppe *ppe = m->private;
+	u32 entries = ppe->eth->soc->ppe_dram_entries;
+	u32 i;
+
+	for (i = 0; i < entries; i++) {
+		struct econet_foe_entry raw;
+		u32 *words = (u32 *)&raw;
+		bool nonzero = false;
+		size_t j;
+
+		spin_lock_bh(&ppe->lock);
+		econet_ppe_read_entry(ppe, i, &raw);
+		spin_unlock_bh(&ppe->lock);
+
+		for (j = 0; j < sizeof(raw) / sizeof(*words); j++) {
+			if (words[j]) {
+				nonzero = true;
+				break;
+			}
+		}
+		if (!nonzero)
+			continue;
+
+		seq_printf(m, "%05x:", i);
+		for (j = 0; j < sizeof(raw) / sizeof(*words); j++)
+			seq_printf(m, " %08x", words[j]);
+		seq_putc(m, '\n');
+	}
+
+	return 0;
+}
+DEFINE_SHOW_ATTRIBUTE(econet_ppe_debugfs_foe_raw);
+
+static int econet_ppe_debugfs_flows_show(struct seq_file *m, void *private)
+{
+	struct econet_ppe *ppe = m->private;
+	struct econet_flow_entry *flow, *snapshot;
+	u32 count = 0, n = 0, i;
+
+	spin_lock_bh(&ppe->lock);
+	list_for_each_entry(flow, &ppe->flows, list)
+		count++;
+	spin_unlock_bh(&ppe->lock);
+
+	if (!count)
+		return 0;
+
+	snapshot = kcalloc(count, sizeof(*snapshot), GFP_KERNEL);
+	if (!snapshot)
+		return -ENOMEM;
+
+	spin_lock_bh(&ppe->lock);
+	list_for_each_entry(flow, &ppe->flows, list) {
+		if (n == count)
+			break;
+		snapshot[n].data = flow->data;
+		snapshot[n].cookie = flow->cookie;
+		snapshot[n].hash = flow->hash;
+		n++;
+	}
+	spin_unlock_bh(&ppe->lock);
+
+	for (i = 0; i < n; i++) {
+		struct econet_foe_entry entry = snapshot[i].data;
+		
+		/* flow->data keeps the pre-swapped EN751221 lookup key. */
+		entry.ipv4.orig.src_ip = swab32(entry.ipv4.orig.src_ip);
+		entry.ipv4.orig.dest_ip = swab32(entry.ipv4.orig.dest_ip);
+		entry.ipv4.orig.ports = swab32(entry.ipv4.orig.ports);
+
+		seq_printf(m, "cookie=%lx hash=%04x", snapshot[i].cookie,
+			   snapshot[i].hash);
+		econet_ppe_debugfs_print_ipv4(m, &entry);
+		seq_putc(m, '\n');
+	}
+
+	kfree(snapshot);
+	return 0;
+}
+DEFINE_SHOW_ATTRIBUTE(econet_ppe_debugfs_flows);
+
+static int econet_ppe_debugfs_regs_show(struct seq_file *m, void *private)
+{
+	struct econet_ppe *ppe = m->private;
+	struct airoha_eth *eth = ppe->eth;
+	struct econet_flow_entry *flow;
+	u32 flows = 0;
+
+	spin_lock_bh(&ppe->lock);
+	list_for_each_entry(flow, &ppe->flows, list)
+		flows++;
+	spin_unlock_bh(&ppe->lock);
+
+	seq_printf(m, "armed=%u\n", READ_ONCE(ppe->armed));
+	seq_printf(m, "flows=%u\n", flows);
+	seq_printf(m, "foe_cpu=%px\n", ppe->foe_table);
+	seq_printf(m, "foe_dma=%pad\n", &ppe->foe_dma);
+	seq_printf(m, "foe_entries=%u\n", eth->soc->ppe_dram_entries);
+	seq_printf(m, "GLO_CFG=%08x\n", airoha_fe_rr(eth, REG_PPE_GLO_CFG(0)));
+	seq_printf(m, "FLOW_CFG=%08x\n", airoha_fe_rr(eth, REG_PPE_PPE_FLOW_CFG(0)));
+	seq_printf(m, "IP_PROTO_CHK=%08x\n", airoha_fe_rr(eth, REG_PPE_IP_PROTO_CHK(0)));
+	seq_printf(m, "TB_CFG=%08x\n", airoha_fe_rr(eth, REG_PPE_TB_CFG(0)));
+	seq_printf(m, "TB_BASE=%08x\n", airoha_fe_rr(eth, REG_PPE_TB_BASE(0)));
+	seq_printf(m, "TB_USED=%08x\n", airoha_fe_rr(eth, REG_PPE_TB_USED(0)));
+	seq_printf(m, "BIND_RATE=%08x\n", airoha_fe_rr(eth, REG_PPE_BIND_RATE(0)));
+	seq_printf(m, "BIND_LIMIT0=%08x\n", airoha_fe_rr(eth, REG_PPE_BIND_LIMIT0(0)));
+	seq_printf(m, "BIND_LIMIT1=%08x\n", airoha_fe_rr(eth, REG_PPE_BIND_LIMIT1(0)));
+	seq_printf(m, "KEEPALIVE=%08x\n", airoha_fe_rr(eth, REG_PPE_KEEPALIVE(0)));
+	seq_printf(m, "UNBIND_AGE=%08x\n", airoha_fe_rr(eth, REG_PPE_UNBIND_AGE(0)));
+	seq_printf(m, "BND_AGE0=%08x\n", airoha_fe_rr(eth, REG_PPE_BND_AGE0(0)));
+	seq_printf(m, "BND_AGE1=%08x\n", airoha_fe_rr(eth, REG_PPE_BND_AGE1(0)));
+	seq_printf(m, "HASH_SEED=%08x\n", airoha_fe_rr(eth, REG_PPE_HASH_SEED(0)));
+	seq_printf(m, "DFT_CPORT=%08x\n", airoha_fe_rr(eth, REG_PPE_DFT_CPORT_BASE(0)));
+	seq_printf(m, "VPM_TPID=%08x\n", airoha_fe_rr(eth, REG_PPE_VPM_TPID(0)));
+	seq_printf(m, "CACHE_CTL=%08x\n", airoha_fe_rr(eth, REG_EN751221_PPE_CACHE_CTL));
+	seq_printf(m, "CACHE_GATE=%08x\n", airoha_fe_rr(eth, REG_EN751221_PPE_CAH_GATE));
+
+	return 0;
+}
+DEFINE_SHOW_ATTRIBUTE(econet_ppe_debugfs_regs);
+
+static int econet_ppe_debugfs_foe_json_show(struct seq_file *m, void *private)
+{
+	struct econet_ppe *ppe = m->private;
+	u32 entries = ppe->eth->soc->ppe_dram_entries;
+	bool first = true;
+	u32 i;
+
+	seq_puts(m, "[\n");
+	for (i = 0; i < entries; i++) {
+		struct econet_foe_entry raw, entry;
+		const struct econet_foe_ipv4 *ipv4;
+		u32 state, type;
+
+		spin_lock_bh(&ppe->lock);
+		econet_ppe_read_entry(ppe, i, &raw);
+		spin_unlock_bh(&ppe->lock);
+
+		econet_ppe_debugfs_decode_entry(&raw, &entry);
+		state = FIELD_GET(AIROHA_FOE_IB1_BIND_STATE, entry.ib1);
+		if (state == AIROHA_FOE_STATE_INVALID)
+			continue;
+
+		type = FIELD_GET(AIROHA_FOE_IB1_BIND_PACKET_TYPE, entry.ib1);
+		if (!first)
+			seq_puts(m, ",\n");
+		first = false;
+
+		seq_printf(m, "  {\"index\":%u,\"state\":\"%s\",\"type\":\"%s\",\"ib1\":\"0x%08x\",\"hw_ib1\":\"0x%08x\"",
+			   i, econet_ppe_debugfs_state_name(state),
+			   econet_ppe_debugfs_type_name(type), entry.ib1, raw.ib1);
+
+		if (type == PPE_PKT_TYPE_IPV4_HNAPT ||
+		    type == PPE_PKT_TYPE_IPV4_ROUTE) {
+			ipv4 = &entry.ipv4;
+			seq_printf(m, ",\"orig_src\":\"%pI4h\",\"orig_src_port\":%u,\"orig_dest\":\"%pI4h\",\"orig_dest_port\":%u,\"new_src\":\"%pI4h\",\"new_src_port\":%u,\"new_dest\":\"%pI4h\",\"new_dest_port\":%u,\"ib2\":\"0x%08x\"",
+				   &ipv4->orig.src_ip, ipv4->orig.src_port,
+				   &ipv4->orig.dest_ip, ipv4->orig.dest_port,
+				   &ipv4->new.src_ip, ipv4->new.src_port,
+				   &ipv4->new.dest_ip, ipv4->new.dest_port,
+				   ipv4->ib2);
+		}
+
+		seq_putc(m, '}');
+	}
+	seq_puts(m, "\n]\n");
+
+	return 0;
+}
+DEFINE_SHOW_ATTRIBUTE(econet_ppe_debugfs_foe_json);
+
+int econet_ppe_debugfs_init(struct econet_ppe *ppe)
+{
+	struct dentry *dir;
+
+	dir = debugfs_create_dir("ppe", NULL);
+	if (IS_ERR(dir))
+		return PTR_ERR(dir);
+
+	ppe->debugfs_dir = dir;
+	debugfs_create_file("entries", 0444, dir, ppe,
+			    &econet_ppe_debugfs_foe_all_fops);
+	debugfs_create_file("entries.json", 0444, dir, ppe,
+			    &econet_ppe_debugfs_foe_json_fops);
+	debugfs_create_file("bind", 0444, dir, ppe,
+			    &econet_ppe_debugfs_foe_bind_fops);
+	debugfs_create_file("raw", 0444, dir, ppe,
+			    &econet_ppe_debugfs_foe_raw_fops);
+	debugfs_create_file("flows", 0444, dir, ppe,
+			    &econet_ppe_debugfs_flows_fops);
+	debugfs_create_file("regs", 0444, dir, ppe,
+			    &econet_ppe_debugfs_regs_fops);
+
+	return 0;
+}
 
 int airoha_ppe_debugfs_init(struct airoha_ppe *ppe)
 {
