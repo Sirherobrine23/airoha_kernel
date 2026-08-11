@@ -71,6 +71,34 @@ void error(char *x)
 
 const unsigned long __stack_chk_guard = 0x000a0dff;
 
+#ifdef CONFIG_SOC_ECONET_EN751221
+static inline unsigned int econet_synci_step(void)
+{
+	unsigned int step;
+
+	asm volatile("rdhwr %0, $1" : "=r" (step));
+
+	return step;
+}
+
+static void econet_sync_icache(void *start, unsigned long len)
+{
+	unsigned long addr = (unsigned long)start;
+	unsigned long end = addr + len;
+	unsigned int step = econet_synci_step();
+
+	if (!step)
+		return;
+
+	do {
+		asm volatile("synci 0(%0)" : : "r" (addr));
+		addr += step;
+	} while (addr < end);
+
+	asm volatile("sync" : : : "memory");
+}
+#endif
+
 void __stack_chk_fail(void)
 {
 	error("stack-protector: Kernel stack is corrupted\n");
@@ -79,6 +107,7 @@ void __stack_chk_fail(void)
 void decompress_kernel(unsigned long boot_heap_start)
 {
 	unsigned long zimage_start, zimage_size;
+	unsigned int image_size = 0;
 
 	zimage_start = (unsigned long)(__image_begin);
 	zimage_size = (unsigned long)(__image_end) -
@@ -105,7 +134,7 @@ void decompress_kernel(unsigned long boot_heap_start)
 
 	if (IS_ENABLED(CONFIG_MIPS_RAW_APPENDED_DTB) &&
 	    fdt_magic((void *)&__appended_dtb) == FDT_MAGIC) {
-		unsigned int image_size, dtb_size;
+		unsigned int dtb_size;
 
 		dtb_size = fdt_totalsize((void *)&__appended_dtb);
 
@@ -123,6 +152,16 @@ void decompress_kernel(unsigned long boot_heap_start)
 		memcpy((void *)VMLINUX_LOAD_ADDRESS_ULL + image_size,
 		       __appended_dtb, dtb_size);
 	}
+
+#ifdef CONFIG_SOC_ECONET_EN751221
+	/*
+	 * The EN751221 boot flow can execute U-Boot from the same KSEG0
+	 * address used as the decompressed kernel load address. Synchronize
+	 * the instruction cache before entering the freshly written kernel.
+	 */
+	if (image_size)
+		econet_sync_icache((void *)VMLINUX_LOAD_ADDRESS_ULL, image_size);
+#endif
 
 	/* FIXME: should we flush cache here? */
 	puts("Now, booting the kernel...\n");
