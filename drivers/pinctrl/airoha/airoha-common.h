@@ -10,6 +10,7 @@
 
 #include <dt-bindings/pinctrl/mt65xx.h>
 #include <linux/bitfield.h>
+#include <linux/bitmap.h>
 #include <linux/bits.h>
 #include <linux/cleanup.h>
 #include <linux/gpio/driver.h>
@@ -113,6 +114,8 @@ struct airoha_pinctrl_conf {
 struct airoha_pinctrl_gpiochip {
 	struct gpio_chip chip;
 
+	unsigned int num_irq;
+
 	/* gpio */
 	const u32 *data;
 	const u32 *dir;
@@ -123,6 +126,11 @@ struct airoha_pinctrl_gpiochip {
 	const u32 *edge;
 
 	u32 irq_type[AIROHA_NUM_PINS];
+};
+
+struct airoha_pinctrl_gpio_mux {
+	u32 pin;
+	struct airoha_pinctrl_reg reg;
 };
 
 struct airoha_pinctrl_confs_info {
@@ -154,6 +162,9 @@ struct airoha_pinctrl {
 
 	struct airoha_pinctrl_gpiochip gpiochip;
 	struct irq_chip gpio_irq_chip;
+
+	const struct airoha_pinctrl_gpio_mux *gpio_muxes;
+	unsigned int num_gpio_muxes;
 };
 
 struct airoha_pinctrl_hwinit_reg {
@@ -173,6 +184,11 @@ struct airoha_pinctrl_match_data {
 	const unsigned int num_funcs;
 	const struct airoha_pinctrl_hwinit_reg *hwinit_regs;
 	const unsigned int num_hwinit_regs;
+
+	unsigned int num_gpio;
+	unsigned int num_irq;
+	const struct airoha_pinctrl_gpio_mux *gpio_muxes;
+	unsigned int num_gpio_muxes;
 
 	u32 force_gpio_reg;
 	const struct airoha_pinctrl_confs_info confs_info[AIROHA_PINCTRL_CONFS_MAX];
