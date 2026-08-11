@@ -258,6 +258,9 @@ static void airoha_ppe_hw_init(struct airoha_ppe *ppe)
 			      FIELD_PREP(PPE_BIND_AGE1_DELTA_TCP, 60));
 
 		switch (eth->soc->version) {
+		case econet_en751221:
+		case econet_en7528:
+			break;
 		case airoha_en7523:
 			/**
 			 * the airoha_en7523 support for 64 and 80 bytes, current use 80 bytes for ppe
