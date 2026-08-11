@@ -1355,6 +1355,28 @@ static int econet_dev_init(struct net_device *dev)
 		port->fport == ETX_FPORT_GDM2 ?
 		ETX_FPORT_QDMA1_CPU : ETX_FPORT_QDMA0_CPU);
 
+	if (port->qdma->soc->en751221_special_tag &&
+	    port->fport == ETX_FPORT_GDM1) {
+		struct g1_cport_cfg cport_cfg;
+		struct gdm_vlan vlan;
+
+		/*
+		 * Match macSetMACCR() in the EN7512 vendor driver. CDMA1
+		 * needs the 0x8100 insertion TPID and the GDM1 CPORT padding
+		 * path is always enabled before LAN traffic is started. Do not
+		 * rely on the bootloader leaving either register initialized.
+		 */
+		scoped_guard(spinlock, &port->reg_lock) {
+			vlan = econet_rreg(&port->regs->vlan);
+			vlan.tpid = ETH_P_8021Q;
+			econet_wreg(vlan, &port->regs->vlan);
+
+			cport_cfg = econet_rreg(&port->regs->g1_cport_cfg);
+			set_gdm_g1_cport_cfg_pad(&cport_cfg, true);
+			econet_wreg(cport_cfg, &port->regs->g1_cport_cfg);
+		}
+	}
+
 	return 0;
 }
 
