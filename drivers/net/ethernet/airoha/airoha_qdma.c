@@ -2035,7 +2035,7 @@ static int airoha_qdma_rx_process(struct airoha_queue *q, int budget)
 
 		if (airoha_qdma_foe_entry_is_valid(eth, hash) &&
 		    airoha_qdma_should_check_ppe_skb(eth, reason))
-			airoha_ppe_check_skb(&eth->ppe->dev, q->skb, hash,
+			airoha_ppe_check_skb(&eth->ppe->common.dev, q->skb, hash,
 					     false);
 
 		done++;
