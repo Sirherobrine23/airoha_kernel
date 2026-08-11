@@ -985,6 +985,9 @@ static void airoha_fe_lro_rxq_enable(struct airoha_eth *eth, int qdma_id,
 				 AIROHA_RXQ_LRO_MAX_AGG_TIME));
 
 	switch (eth->soc->version) {
+	case econet_en751221:
+	case econet_en7528:
+		break;
 	case airoha_en7523: /* airoha_en7523 stores the map in LRO_EN itself: enable (24-27) and qid (0-15) */
 		airoha_fe_rmw(eth, REG_CDM_LRO_EN(id),
 			      EN7523_LRO_EN_MASK(lro_queue_index) |
@@ -1007,6 +1010,9 @@ static void airoha_fe_lro_disable(struct airoha_eth *eth, int qdma_id)
 	int i, id = qdma_id + 1;
 
 	switch (eth->soc->version) {
+	case econet_en751221:
+	case econet_en7528:
+		break;
 	case airoha_en7523:
 		airoha_fe_clear(eth, REG_CDM_LRO_EN(id),
 			EN7523_LRO_RXQ_EN_MASK | EN7523_LRO_ALL_RXQ_MASK);
@@ -1350,7 +1356,10 @@ static struct sk_buff *airoha_qdma_lro_rx_skb(struct airoha_queue *q,
 	struct page *page;
 	bool ipv4, ipv6;
 
-	switch(q->qdma->common.eth->soc->version) {
+	switch (q->qdma->common.eth->soc->version) {
+	case econet_en751221:
+	case econet_en7528:
+		return NULL;
 	case airoha_en7523:
 		ipv4 = FIELD_GET(EN7523_QDMA_ETH_RXMSG_IP4_MASK, msg1);
 		ipv6 = FIELD_GET(EN7523_QDMA_ETH_RXMSG_IP6_MASK, msg1);
@@ -5452,7 +5461,8 @@ static const struct airoha_ppe_host_ops airoha_ppe_host_ops = {
 	.npu_stats_clear = airoha_eth_ppe_npu_stats_clear,
 };
 
-int airoha_eth_gen2_probe(struct platform_device *pdev, struct airoha_eth *eth)
+static int airoha_eth_gen2_probe(struct platform_device *pdev,
+				 struct airoha_eth *eth)
 {
 	struct reset_control_bulk_data *xsi_rsts;
 	struct device_node *np;
@@ -5606,7 +5616,7 @@ error_ports_free:
 	return err;
 }
 
-void airoha_eth_gen2_remove(struct platform_device *pdev,
+static void airoha_eth_gen2_remove(struct platform_device *pdev,
 			    struct airoha_eth *eth)
 {
 	int i;

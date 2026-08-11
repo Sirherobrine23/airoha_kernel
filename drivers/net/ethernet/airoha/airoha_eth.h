@@ -574,6 +574,7 @@ struct airoha_qdma_common {
 	struct airoha_eth *eth;
 	void __iomem *regs;
 	u8 id;
+	u8 num_channels;
 };
 
 struct airoha_qdma {
