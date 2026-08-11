@@ -70,7 +70,6 @@
 
 /* Legacy PPE cache control retained by the generation-1 engine. */
 #define REG_EN751221_PPE_CACHE_CTL	(PPE1_BASE + 0x320)
-#define EN751221_PPE_CACHE_CTL_EN	BIT(0)
 #define EN751221_PPE_CACHE_CTL_REQ	BIT(8)
 #define EN751221_PPE_CACHE_CTL_CMD	GENMASK(14, 12)
 
@@ -408,6 +407,7 @@
 #define PPE_DRAM_TB_NUM_ENTRY_MASK		GENMASK(2, 0)
 
 #define REG_PPE_TB_BASE(_n)			(((_n) ? PPE2_BASE : PPE1_BASE) + 0x220)
+#define REG_PPE_TB_USED(_n)			(((_n) ? PPE2_BASE : PPE1_BASE) + 0x224)
 
 #define REG_PPE_BIND_RATE(_n)			(((_n) ? PPE2_BASE : PPE1_BASE) + 0x228)
 #define PPE_BIND_RATE_L2B_BIND_MASK		GENMASK(31, 16)
