@@ -22,7 +22,8 @@
 #include <net/dsa.h>
 #include <net/page_pool/helpers.h>
 
-#include "econet_eth.h"
+#include "airoha_eth.h"
+#include "airoha_eth_gen1.h"
 
 /* QDMA datapath. */
 /* The non-dma part of RX packet descriptor */
@@ -119,7 +120,7 @@ struct econet_qdma {
 	u32				fwd_buf_size;
 	struct net_device 		*napi_dev;
 	struct econet_qdma_cfg 		cfg;
-	const struct econet_soc_data	*soc;
+	const struct airoha_eth_soc_data	*soc;
 };
 
 static void econet_fill_rx_queue(struct econet_q_rx *q, u32 end_i)
@@ -1136,7 +1137,7 @@ static int econet_init_final(struct econet_qdma *qdma)
 
 	qcfg = (struct qregs_qcfg) { 0 };
 	set_qregs_qcfg_msg_word_swap(&qcfg, true);
-	set_qregs_qcfg_dscp_byte_swap(&qcfg, qdma->soc->dscp_byte_swap);
+	set_qregs_qcfg_dscp_byte_swap(&qcfg, qdma->soc->qdma_dscp_byte_swap);
 	set_qregs_qcfg_payload_byte_sw(&qcfg, true);
 	set_qregs_qcfg_dma_pref(&qcfg, QREGS_QCFG_DMA_PREF_TX1_FRX_TX0);
 	set_qregs_qcfg_rx_2b_offset(&qcfg, qdma->cfg.rx_2b_offset);
@@ -2109,7 +2110,7 @@ free_of_node:
 
 struct econet_eth_pvt {
 	struct econet_eth			pub;
-	const struct econet_soc_data	*soc;
+	const struct airoha_eth_soc_data	*soc;
 	struct net_device		*ports[ECONET_NUM_GDM_PORTS];
 	void __iomem			*fe_base;
 	struct gdm __iomem		*gdm[ECONET_NUM_GDM_PORTS];
@@ -2238,7 +2239,7 @@ static int econet_init_port(struct econet_eth_pvt *eth, struct device_node *np)
 }
 
 static void econet_prepare_qdma_cfg(struct econet_qdma_cfg *cfg,
-				  const struct econet_soc_data *soc, int id)
+				  const struct airoha_eth_soc_data *soc, int id)
 {
 	memset(cfg, 0, sizeof(*cfg));
 	for (int i = 0; i < QDMA_NUM_CHAINS; i++)
@@ -2295,7 +2296,7 @@ static void econet_prepare_qdma_cfg(struct econet_qdma_cfg *cfg,
 	}
 }
 
-static void econet_eth_remove(struct platform_device *pdev)
+void airoha_eth_gen1_remove(struct platform_device *pdev)
 {
 	struct econet_eth_pvt *eth = platform_get_drvdata(pdev);
 	int i;
@@ -2325,7 +2326,7 @@ static void econet_eth_remove(struct platform_device *pdev)
 	platform_set_drvdata(pdev, NULL);
 }
 
-static int econet_eth_probe(struct platform_device *pdev)
+int airoha_eth_gen1_probe(struct platform_device *pdev)
 {
 	static const char * const qdma_names[ECONET_NUM_QDMA] = {
 		"qdma0", "qdma1",
@@ -2443,37 +2444,24 @@ static int econet_eth_probe(struct platform_device *pdev)
 	return 0;
 
 error:
-	econet_eth_remove(pdev);
+	airoha_eth_gen1_remove(pdev);
 	return err;
 }
 
-static const struct econet_soc_data en751221_soc_data = {
-	.dscp_byte_swap = true,
+static const struct airoha_eth_ops airoha_eth_gen1_ops = {
+	.probe = airoha_eth_gen1_probe,
+	.remove = airoha_eth_gen1_remove,
+};
+
+const struct airoha_eth_soc_data econet_en751221_soc_data = {
+	.version = econet_en751221,
+	.eth_ops = &airoha_eth_gen1_ops,
+	.qdma_dscp_byte_swap = true,
 	.en751221_special_tag = true,
 };
 
-static const struct econet_soc_data en7528_soc_data = {
-	.dscp_byte_swap = false,
+const struct airoha_eth_soc_data econet_en7528_soc_data = {
+	.version = econet_en7528,
+	.eth_ops = &airoha_eth_gen1_ops,
+	.qdma_dscp_byte_swap = false,
 };
-
-static const struct of_device_id of_econet_match[] = {
-	{ .compatible = "econet,en751221-eth", .data = &en751221_soc_data },
-	{ .compatible = "econet,en7528-eth", .data = &en7528_soc_data },
-	{ /* sentinel */ }
-};
-MODULE_DEVICE_TABLE(of, of_econet_match);
-
-static struct platform_driver econet_eth_driver = {
-	.probe = econet_eth_probe,
-	.remove = econet_eth_remove,
-	.driver = {
-		.name = KBUILD_MODNAME,
-		.of_match_table = of_econet_match,
-	},
-};
-module_platform_driver(econet_eth_driver);
-
-MODULE_LICENSE("GPL");
-MODULE_AUTHOR("Caleb James DeLisle <cjd@cjdns.fr>");
-MODULE_AUTHOR("Matheus Sampaio Queiroga <srherobrine20@gmail.com>");
-MODULE_DESCRIPTION("Ethernet driver for EcoNet SoC");
