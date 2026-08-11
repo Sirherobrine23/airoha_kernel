@@ -815,6 +815,7 @@ struct airoha_eth {
 
 	unsigned long state;
 	void __iomem *fe_regs;
+	void __iomem *ppe_regs;
 	void __iomem *gdmp_regs;
 
 	struct airoha_npu __rcu *npu;
@@ -883,6 +884,16 @@ static inline bool airoha_is_lan_gdm_dev(struct airoha_gdm_dev *dev)
 	} \
 	_found; \
 })
+
+static inline bool airoha_is_gen1(struct airoha_eth *eth)
+{
+	return airoha_is(eth, econet_en751221, econet_en7528);
+}
+
+static inline bool airoha_is_gen2(struct airoha_eth *eth)
+{
+	return airoha_is(eth, airoha_en7523, airoha_en7581, airoha_an7583);
+}
 
 static inline bool airoha_qdma_is_lro_queue(struct airoha_queue *q)
 {
