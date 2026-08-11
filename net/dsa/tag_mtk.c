@@ -19,6 +19,7 @@
 #define MTK_HDR_RECV_SOURCE_PORT_MASK	GENMASK(2, 0)
 #define MTK_HDR_XMIT_DP_BIT_MASK	GENMASK(5, 0)
 #define MTK_HDR_XMIT_SA_DIS		BIT(6)
+#define MTK_HDR_XMIT_PASSTHROUGH	BIT(7)
 
 static struct sk_buff *mtk_tag_xmit(struct sk_buff *skb,
 				    struct net_device *dev)
@@ -62,6 +63,12 @@ static struct sk_buff *mtk_tag_xmit(struct sk_buff *skb,
 	 */
 	mtk_tag[0] = xmit_tpid;
 	mtk_tag[1] = (1 << dp->index) & MTK_HDR_XMIT_DP_BIT_MASK;
+
+	/* Downstream switches need the tag to pass through the upstream
+	 * switch instead of being consumed as a local destination bitmap.
+	 */
+	if (dp->ds->index)
+		mtk_tag[1] |= MTK_HDR_XMIT_PASSTHROUGH;
 
 	/* Tag control information is kept for 802.1Q */
 	if (xmit_tpid == MTK_HDR_XMIT_UNTAGGED) {
