@@ -3200,7 +3200,7 @@ static int airoha_dev_setup_tc_block_cb(enum tc_setup_type type,
 
 	switch (type) {
 	case TC_SETUP_CLSFLOWER:
-		return airoha_ppe_setup_tc_block_cb(&eth->ppe->dev, type_data);
+		return airoha_ppe_setup_tc_block_cb(&eth->ppe->common.dev, type_data);
 	case TC_SETUP_CLSMATCHALL:
 		return airoha_dev_tc_matchall(netdev, type_data);
 	default:
