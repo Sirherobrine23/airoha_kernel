@@ -136,6 +136,9 @@ u32 airoha_ppe_get_total_num_entries(struct airoha_ppe *ppe)
 
 bool airoha_ppe_is_enabled(struct airoha_eth *eth, int index)
 {
+	if (airoha_is_gen1(eth))
+		return !index && eth->ppe_dev && eth->ppe_dev->enabled;
+
 	if (index >= eth->soc->num_ppe)
 		return false;
 
@@ -2315,8 +2318,13 @@ struct airoha_ppe_dev *airoha_ppe_get_dev(struct device *dev)
 		goto error_module_put;
 	}
 
+	if (!eth->ppe_dev) {
+		dev_err(dev, "Ethernet PPE is not available\n");
+		goto error_module_put;
+	}
+
 	dev_info(dev, "Successfully retrieved PPE device\n");
-	return &eth->ppe->dev;
+	return eth->ppe_dev;
 
 error_module_put:
 	module_put(THIS_MODULE);
@@ -2329,15 +2337,13 @@ EXPORT_SYMBOL_GPL(airoha_ppe_get_dev);
 
 void airoha_ppe_put_dev(struct airoha_ppe_dev *dev)
 {
-	struct airoha_ppe *ppe = dev->priv;
-	struct airoha_eth *eth = ppe->eth;
-
 	module_put(THIS_MODULE);
-	put_device(eth->dev);
+	if (dev->parent)
+		put_device(dev->parent);
 }
 EXPORT_SYMBOL_GPL(airoha_ppe_put_dev);
 
-int airoha_ppe_init(struct airoha_eth *eth)
+static int airoha_ppe_gen2_init(struct airoha_eth *eth)
 {
 	int foe_size, err, ppe_num_stats_entries;
 	u32 ppe_num_entries;
@@ -2357,6 +2363,8 @@ int airoha_ppe_init(struct airoha_eth *eth)
 	ppe->eth = eth;
 	INIT_HLIST_HEAD(&ppe->pending_flows);
 	eth->ppe = ppe;
+	eth->ppe_dev = &ppe->dev;
+	ppe->dev.parent = eth->dev;
 
 	ppe_num_entries = airoha_ppe_get_total_num_entries(ppe);
 	foe_size = ppe_num_entries * sizeof(struct airoha_foe_entry);
@@ -2428,9 +2436,8 @@ error_flow_table_destroy:
 
 	return err;
 }
-EXPORT_SYMBOL_GPL(airoha_ppe_init);
 
-void airoha_ppe_deinit(struct airoha_eth *eth)
+static void airoha_ppe_gen2_deinit(struct airoha_eth *eth)
 {
 	struct airoha_npu *npu;
 
@@ -2449,11 +2456,11 @@ void airoha_ppe_deinit(struct airoha_eth *eth)
 	rhashtable_destroy(&eth->ppe->l2_flows);
 	rhashtable_destroy(&eth->flow_table);
 	debugfs_remove(eth->ppe->debugfs_dir);
+	eth->ppe_dev = NULL;
+	eth->ppe = NULL;
 }
-EXPORT_SYMBOL_GPL(airoha_ppe_deinit);
 
 /* EcoNet EN751221 backend. */
-#if IS_ENABLED(CONFIG_NET_ECONET_PPE)
 
 #define EN75_PPE_ENTRIES		16384
 #define EN75_FOE_ENTRY_SIZE		80
@@ -3325,10 +3332,12 @@ static int en75_ppe_setup_tc(struct airoha_ppe_dev *ppe_dev,
 	}
 }
 
-struct airoha_ppe_dev *
-airoha_ppe_econet_init(struct device *dev, struct device_node *np,
-		       void __iomem *fe_base, void __iomem *ppe_base)
+static int airoha_ppe_gen1_init(struct airoha_eth *eth)
 {
+	struct device *dev = eth->dev;
+	struct device_node *np = eth->dev->of_node;
+	void __iomem *fe_base = eth->fe_regs;
+	void __iomem *ppe_base = eth->ppe_regs;
 	struct device_node *mem_np;
 	struct reserved_mem *rmem;
 	struct en75_ppe *ppe;
@@ -3343,7 +3352,7 @@ airoha_ppe_econet_init(struct device *dev, struct device_node *np,
 		 */
 		if (of_find_property(np, "memory-region-names", NULL)) {
 			dev_info(dev, "PPE disabled: no ppe-foe memory-region\n");
-			return NULL;
+			return 0;
 		}
 		mem_index = 0;
 	}
@@ -3351,28 +3360,28 @@ airoha_ppe_econet_init(struct device *dev, struct device_node *np,
 	mem_np = of_parse_phandle(np, "memory-region", mem_index);
 	if (!mem_np) {
 		dev_info(dev, "PPE disabled: no memory-region for the FoE table\n");
-		return NULL;
+		return 0;
 	}
 	rmem = of_reserved_mem_lookup(mem_np);
 	of_node_put(mem_np);
 	if (!rmem)
-		return ERR_PTR(dev_err_probe(dev, -EINVAL,
-					     "invalid PPE memory-region\n"));
+		return dev_err_probe(dev, -EINVAL,
+				     "invalid PPE memory-region\n");
 	if (rmem->size < EN75_PPE_TABLE_SIZE)
-		return ERR_PTR(dev_err_probe(dev, -EINVAL,
-					     "PPE FoE region is too small (%pa bytes)\n",
-					     &rmem->size));
+		return dev_err_probe(dev, -EINVAL,
+				     "PPE FoE region is too small (%pa bytes)\n",
+				     &rmem->size);
 	if (upper_32_bits(rmem->base))
-		return ERR_PTR(dev_err_probe(dev, -ERANGE,
-					     "PPE FoE table must be below 4 GiB\n"));
+		return dev_err_probe(dev, -ERANGE,
+				     "PPE FoE table must be below 4 GiB\n");
 
 	ppe = devm_kzalloc(dev, sizeof(*ppe), GFP_KERNEL);
 	if (!ppe)
-		return ERR_PTR(-ENOMEM);
+		return -ENOMEM;
 	ppe->foe_table = devm_ioremap(dev, rmem->base, EN75_PPE_TABLE_SIZE);
 	if (!ppe->foe_table)
-		return ERR_PTR(dev_err_probe(dev, -ENOMEM,
-					     "failed to map PPE FoE table\n"));
+		return dev_err_probe(dev, -ENOMEM,
+				     "failed to map PPE FoE table\n");
 
 	ppe->parent = dev;
 	ppe->base = ppe_base;
@@ -3407,18 +3416,20 @@ airoha_ppe_econet_init(struct device *dev, struct device_node *np,
 	       ppe->base + EN75_PPE_GLO_CFG);
 
 	ppe->dev.priv = ppe;
+	ppe->dev.parent = eth->dev;
 	ppe->dev.enabled = true;
 	ppe->dev.ops.check_skb_reason = en75_ppe_check_skb_reason;
 	ppe->dev.ops.setup_tc = en75_ppe_setup_tc;
 
+	eth->ppe_dev = &ppe->dev;
 	dev_info(dev, "PPE FoE table at %pa, %u entries\n",
 		 &rmem->base, EN75_PPE_ENTRIES);
-	return &ppe->dev;
+	return 0;
 }
-EXPORT_SYMBOL_GPL(airoha_ppe_econet_init);
 
-void airoha_ppe_econet_deinit(struct airoha_ppe_dev *ppe_dev)
+static void airoha_ppe_gen1_deinit(struct airoha_eth *eth)
 {
+	struct airoha_ppe_dev *ppe_dev = eth->ppe_dev;
 	struct en75_ppe *ppe;
 
 	if (!ppe_dev)
@@ -3430,10 +3441,26 @@ void airoha_ppe_econet_deinit(struct airoha_ppe_dev *ppe_dev)
 	else
 		en75_ppe_flush(ppe);
 	ppe_dev->enabled = false;
+	eth->ppe_dev = NULL;
 }
-EXPORT_SYMBOL_GPL(airoha_ppe_econet_deinit);
 
-#endif /* CONFIG_NET_ECONET_PPE */
+int airoha_ppe_init(struct airoha_eth *eth)
+{
+	if (airoha_is_gen1(eth))
+		return airoha_ppe_gen1_init(eth);
+
+	return airoha_ppe_gen2_init(eth);
+}
+EXPORT_SYMBOL_GPL(airoha_ppe_init);
+
+void airoha_ppe_deinit(struct airoha_eth *eth)
+{
+	if (airoha_is_gen1(eth))
+		airoha_ppe_gen1_deinit(eth);
+	else
+		airoha_ppe_gen2_deinit(eth);
+}
+EXPORT_SYMBOL_GPL(airoha_ppe_deinit);
 
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("Airoha and EcoNet PPE flow offload");

@@ -55,19 +55,6 @@ config NET_ECONET
 	  The QDMA datapath stays separate from the newer Airoha datapath, while
 	  GDM/phylink and PPE infrastructure are shared.
 
-config NET_ECONET_PPE
-	bool "EcoNet EN751221 PPE hardware flow offload"
-	depends on NET_ECONET != n
-	depends on NET_CLS_ACT != n
-	depends on NF_FLOW_TABLE != n
-	default y
-	help
-	  Enable IPv4 TCP/UDP hardware NAT offload through the EN751221 FoE
-	  table and expose TC_SETUP_FT to the netfilter flowtable infrastructure.
-	  The Ethernet device-tree node must reference a reserved-memory region
-	  of at least 0x140000 bytes through memory-region. Without that region,
-	  the Ethernet driver remains functional but does not advertise HW TC.
-
 config NET_AIROHA_PPE_DEBUGFS
 	bool
 	default y
