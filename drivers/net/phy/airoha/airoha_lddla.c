@@ -276,6 +276,8 @@ int lddla_flash_load(struct airoha_lddla *lddla)
 /* hwmon								      */
 /* ------------------------------------------------------------------ */
 
+#if IS_REACHABLE(CONFIG_HWMON)
+
 static umode_t airoha_lddla_hwmon_is_visible(const void *data,
 					    enum hwmon_sensor_types type,
 					    u32 attr, int channel)
@@ -453,6 +455,15 @@ int lddla_hwmon_register(struct airoha_lddla *lddla)
 							   NULL);
 	return PTR_ERR_OR_ZERO(lddla->hwmon);
 }
+
+#else
+
+int lddla_hwmon_register(struct airoha_lddla *lddla)
+{
+	return 0;
+}
+
+#endif /* CONFIG_HWMON */
 
 /**
  * airoha_lddla_get_telemetry() - refresh optical frontend telemetry
