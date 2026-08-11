@@ -3342,9 +3342,11 @@ struct econet_qdma_cfg {
 	int num_rx_descs[QDMA_NUM_CHAINS];
 	int num_tx_descs[QDMA_NUM_CHAINS];
 	int done_list_size[QDMA_NUM_TX_DONE];
+	int done_list_irq_threshold[QDMA_NUM_TX_DONE];
 	int num_fwd_descs;
 	int fwd_max_packet_size;
 	int fwd_low_threshold;
+	int num_channels;
 	const struct econet_soc_data *soc;
 };
 
