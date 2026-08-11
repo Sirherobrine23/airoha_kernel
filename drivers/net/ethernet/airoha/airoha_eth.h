@@ -844,6 +844,8 @@ struct econet_ppe {
 	struct list_head flows;
 	struct list_head block_cb_list;
 	bool armed;
+
+	struct dentry *debugfs_dir;
 };
 
 enum airoha_ids {
@@ -1109,11 +1111,18 @@ struct airoha_foe_entry *airoha_ppe_foe_get_entry(struct airoha_ppe *ppe,
 						  u32 hash);
 void airoha_ppe_foe_entry_get_stats(struct airoha_ppe *ppe, u32 hash,
 				    struct airoha_foe_stats64 *stats);
+void econet_ppe_read_entry(struct econet_ppe *ppe, u16 hash,
+			   struct econet_foe_entry *entry);
 
 #if IS_ENABLED(CONFIG_NET_AIROHA_PPE_DEBUGFS)
 int airoha_ppe_debugfs_init(struct airoha_ppe *ppe);
+int econet_ppe_debugfs_init(struct econet_ppe *ppe);
 #else
 static inline int airoha_ppe_debugfs_init(struct airoha_ppe *ppe)
+{
+	return 0;
+}
+static inline int econet_ppe_debugfs_init(struct econet_ppe *ppe)
 {
 	return 0;
 }
