@@ -1011,19 +1011,6 @@ static int econet_init_hw_fwd(struct econet_qdma *qdma)
 	return ret;
 }
 
-#define EN751221_PSE_BUF_CTRL_EN		BIT(31)
-#define EN751221_PSE_BUF_PREFETCH_EN	BIT(30)
-#define EN751221_PSE_BUF_ESTIMATE_EN	BIT(29)
-#define EN751221_PSE_BUF_CH_THR_MASK	GENMASK(23, 16)
-#define EN751221_PSE_BUF_TOTAL_THR_MASK	GENMASK(7, 0)
-
-#define EN751221_TX_RATE_METER_EN	BIT(31)
-#define EN751221_TX_RATE_METER_DIV_MASK	GENMASK(17, 16)
-#define EN751221_TX_RATE_METER_SLICE_MASK GENMASK(15, 0)
-
-#define EN751221_TXQ_MAX_THR_MASK	GENMASK(31, 16)
-#define EN751221_TXQ_MIN_THR_MASK	GENMASK(15, 0)
-
 static void econet_init_en751221_qdma(struct econet_qdma *qdma)
 {
 	struct qregs_tx_congest_cfg cngst_cfg;
