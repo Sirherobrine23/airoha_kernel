@@ -2287,8 +2287,7 @@ mt7530_free_mdio_irq(struct mt7530_priv *priv)
 	}
 }
 
-static int
-mt7530_setup_mdio(struct mt7530_priv *priv)
+int mt7530_setup_mdio(struct mt7530_priv *priv)
 {
 	struct device_node *mnp, *np = priv->dev->of_node;
 	struct dsa_switch *ds = priv->ds;
@@ -2296,6 +2295,9 @@ mt7530_setup_mdio(struct mt7530_priv *priv)
 	struct mii_bus *bus;
 	static int idx;
 	int ret = 0;
+
+	if (priv->mdio_bus_registered)
+		return 0;
 
 	mnp = of_get_child_by_name(np, "mdio");
 
@@ -2329,12 +2331,15 @@ mt7530_setup_mdio(struct mt7530_priv *priv)
 		dev_err(dev, "failed to register MDIO bus: %d\n", ret);
 		if (priv->irq_domain && !mnp)
 			mt7530_free_mdio_irq(priv);
+	} else {
+		priv->mdio_bus_registered = true;
 	}
 
 out:
 	of_node_put(mnp);
 	return ret;
 }
+EXPORT_SYMBOL_GPL(mt7530_setup_mdio);
 
 static int
 mt7530_setup(struct dsa_switch *ds)
@@ -2359,6 +2364,24 @@ mt7530_setup(struct dsa_switch *ds)
 		 * their conduits should share the same parent OF node
 		 */
 		break;
+	}
+
+	/*
+	 * A cascaded MT7530 can have only a DSA port locally.  DSA has
+	 * already assigned that port the tree's upstream CPU port by the
+	 * time switch setup runs, so use its inherited conduit in that case.
+	 */
+	if (!dn) {
+		struct dsa_port *dp;
+
+		dsa_switch_for_each_port(dp, ds) {
+			if (!dp->cpu_dp || !dp->cpu_dp->conduit)
+				continue;
+
+			dn = dp->cpu_dp->conduit->dev.of_node->parent;
+			if (dn)
+				break;
+		}
 	}
 
 	if (!dn) {
@@ -2854,6 +2877,44 @@ static void en7528_mac_port_get_caps(struct dsa_switch *ds, int port,
 	}
 }
 
+static void en751221_mac_port_get_caps(struct dsa_switch *ds, int port,
+				       struct phylink_config *config)
+{
+	switch (port) {
+	/* EN751221 ports 0..3 are connected to the integrated FE PHYs. */
+	case 0 ... 3:
+		__set_bit(PHY_INTERFACE_MODE_INTERNAL,
+			  config->supported_interfaces);
+
+		config->mac_capabilities |= MAC_10 | MAC_100;
+		break;
+
+	/* Port 4 is connected to the standalone EN7512/EN7521 GPHY. */
+	case 4:
+		__set_bit(PHY_INTERFACE_MODE_INTERNAL,
+			  config->supported_interfaces);
+
+		config->mac_capabilities |= MAC_10 | MAC_100 | MAC_1000FD;
+		break;
+
+	/* Port 5 is the 1 Gbit/s TRGMII cascade to the external MT7530. */
+	case 5:
+		__set_bit(PHY_INTERFACE_MODE_TRGMII,
+			  config->supported_interfaces);
+
+		config->mac_capabilities |= MAC_1000FD;
+		break;
+
+	/* Port 6 is the 1 Gbit/s CPU link to GDM1. */
+	case 6:
+		__set_bit(PHY_INTERFACE_MODE_INTERNAL,
+			  config->supported_interfaces);
+
+		config->mac_capabilities |= MAC_1000FD;
+		break;
+	}
+}
+
 static void
 mt7530_mac_config(struct dsa_switch *ds, int port, unsigned int mode,
 		  phy_interface_t interface)
@@ -3189,7 +3250,7 @@ mt753x_conduit_state_change(struct dsa_switch *ds,
 	 * interface is up.
 	 */
 	if (priv->id != ID_MT7530 && priv->id != ID_MT7621 &&
-	    priv->id != ID_EN7528)
+	    priv->id != ID_EN7528 && priv->id != ID_EN751221)
 		return;
 
 	mask = BIT(cpu_dp->index);
@@ -3421,6 +3482,16 @@ const struct mt753x_info mt753x_table[] = {
 		.phy_read_c45 = mt7531_ind_c45_phy_read,
 		.phy_write_c45 = mt7531_ind_c45_phy_write,
 		.mac_port_get_caps = en7528_mac_port_get_caps,
+	},
+	[ID_EN751221] = {
+		.id = ID_EN751221,
+		.pcs_ops = &mt7530_pcs_ops,
+		.sw_setup = mt7988_setup,
+		.phy_read_c22 = mt7531_ind_c22_phy_read,
+		.phy_write_c22 = mt7531_ind_c22_phy_write,
+		.phy_read_c45 = mt7531_ind_c45_phy_read,
+		.phy_write_c45 = mt7531_ind_c45_phy_write,
+		.mac_port_get_caps = en751221_mac_port_get_caps,
 	},
 };
 EXPORT_SYMBOL_GPL(mt753x_table);

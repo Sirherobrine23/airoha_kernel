@@ -63,6 +63,26 @@ static void mtk_gephy_config_init(struct phy_device *phydev)
 		       FIELD_PREP(MTK_MCC_NEARECHO_OFFSET_MASK, 0x3));
 }
 
+static int mt7530_match_phy_device(struct phy_device *phydev,
+				   const struct phy_driver *phydrv)
+{
+	int estatus;
+
+	if ((phydev->phy_id & phydrv->phy_id_mask) !=
+	    (phydrv->phy_id & phydrv->phy_id_mask))
+		return 0;
+
+	/*
+	 * EN7512 FE shares the 0x03a29412 PHY ID with MT7530.  The vendor
+	 * SDK distinguishes MT7530 by MII reg 15 bit 13 (1000BASE-T full).
+	 */
+	estatus = phy_read(phydev, MII_ESTATUS);
+	if (estatus < 0)
+		return 0;
+
+	return !!(estatus & ESTATUS_1000_TFULL);
+}
+
 static int mt7530_phy_config_init(struct phy_device *phydev)
 {
 	mtk_gephy_config_init(phydev);
@@ -134,6 +154,7 @@ static struct phy_driver mtk_gephy_driver[] = {
 	{
 		PHY_ID_MATCH_EXACT(MTK_GPHY_ID_MT7530),
 		.name		= "MediaTek MT7530 PHY",
+		.match_phy_device = mt7530_match_phy_device,
 		.config_init	= mt7530_phy_config_init,
 		/* Interrupts are handled by the switch, not the PHY
 		 * itself.
