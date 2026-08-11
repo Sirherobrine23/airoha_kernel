@@ -36,6 +36,7 @@ struct airoha_ppe_dev {
 	} ops;
 
 	void *priv;
+	struct device *parent;
 	bool enabled;
 };
 
@@ -75,23 +76,6 @@ static inline int airoha_ppe_dev_setup_tc(struct airoha_ppe_dev *dev,
 	return dev->ops.setup_tc(dev, netdev, type, type_data);
 }
 
-#if IS_ENABLED(CONFIG_NET_ECONET_PPE)
-struct airoha_ppe_dev *
-airoha_ppe_econet_init(struct device *dev, struct device_node *np,
-		       void __iomem *fe_base, void __iomem *ppe_base);
-void airoha_ppe_econet_deinit(struct airoha_ppe_dev *dev);
-#else
-static inline struct airoha_ppe_dev *
-airoha_ppe_econet_init(struct device *dev, struct device_node *np,
-		       void __iomem *fe_base, void __iomem *ppe_base)
-{
-	return NULL;
-}
-
-static inline void airoha_ppe_econet_deinit(struct airoha_ppe_dev *dev)
-{
-}
-#endif
 #else
 static inline struct airoha_ppe_dev *airoha_ppe_get_dev(struct device *dev)
 {
@@ -128,16 +112,6 @@ static inline int airoha_ppe_dev_setup_tc(struct airoha_ppe_dev *dev,
 	return -EOPNOTSUPP;
 }
 
-static inline struct airoha_ppe_dev *
-airoha_ppe_econet_init(struct device *dev, struct device_node *np,
-		       void __iomem *fe_base, void __iomem *ppe_base)
-{
-	return NULL;
-}
-
-static inline void airoha_ppe_econet_deinit(struct airoha_ppe_dev *dev)
-{
-}
 #endif
 
 #define NPU_NUM_IRQ		6
