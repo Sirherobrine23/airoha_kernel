@@ -2248,6 +2248,22 @@ static int an7583_phy_config_init(struct phy_device *phydev)
 
 static struct phy_driver mtk_socphy_driver[] = {
 	{
+		PHY_ID_MATCH_EXACT(AIROHA_GPHY_ID_EN7512),
+		.name		= "Econet EN7512 PHY",
+		.config_init	= en7523_phy_config_init,
+		.config_intr	= genphy_no_config_intr,
+		.handle_interrupt = genphy_handle_interrupt_no_ack,
+		.probe		= an7581_phy_probe,
+		.led_blink_set	= mt798x_phy_led_blink_set,
+		.led_brightness_set = mt798x_phy_led_brightness_set,
+		.led_hw_is_supported = mt798x_phy_led_hw_is_supported,
+		.led_hw_control_set = mt798x_phy_led_hw_control_set,
+		.led_hw_control_get = mt798x_phy_led_hw_control_get,
+		.led_polarity_set = an7581_phy_led_polarity_set,
+		.read_page	= mtk_phy_read_page,
+		.write_page	= mtk_phy_write_page,
+	},
+	{
 		PHY_ID_MATCH_EXACT(AIROHA_GPHY_ID_EN7523),
 		.name		= "Airoha EN7523 PHY",
 		.config_init	= en7523_phy_config_init,
@@ -2298,6 +2314,7 @@ static struct phy_driver mtk_socphy_driver[] = {
 module_phy_driver(mtk_socphy_driver);
 
 static const struct mdio_device_id __maybe_unused airoha_socphy_tbl[] = {
+	{ PHY_ID_MATCH_EXACT(AIROHA_GPHY_ID_EN7512) },
 	{ PHY_ID_MATCH_EXACT(AIROHA_GPHY_ID_EN7523) },
 	{ PHY_ID_MATCH_EXACT(AIROHA_GPHY_ID_AN7581) },
 	{ PHY_ID_MATCH_EXACT(AIROHA_GPHY_ID_AN7583) },
