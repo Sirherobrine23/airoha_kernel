@@ -8,7 +8,6 @@
 #include <linux/if_vlan.h>
 #include <linux/ipv6.h>
 #include <linux/of_platform.h>
-#include <linux/of_reserved_mem.h>
 #include <linux/platform_device.h>
 #include <linux/rhashtable.h>
 #include <net/ipv6.h>
@@ -338,7 +337,10 @@ static void airoha_ppe_hw_init(struct airoha_ppe *ppe)
 			 *   KA=0xE34(+0x34) MIRROR=0xE54(+0x54)
 			 *   L2B_CFG=0xE88(+0x88) L2B_ETYPE_EN=0xE8C(+0x8c)
 			 */
-			airoha_fe_wr(eth, REG_PPE_GLO_CFG(i) + 0x34, 0x01010001);
+			airoha_fe_wr(eth, REG_PPE_KEEPALIVE(i),
+				     FIELD_PREP(PPE_KEEPALIVE_UDP_MASK, 1) |
+				     FIELD_PREP(PPE_KEEPALIVE_TCP_MASK, 1) |
+				     FIELD_PREP(PPE_KEEPALIVE_NTU_MASK, 1));
 			airoha_fe_wr(eth, REG_PPE_GLO_CFG(i) + 0x54, 0x00000021);
 			airoha_fe_wr(eth, REG_PPE_GLO_CFG(i) + 0x88, 0x001d077f);
 			airoha_fe_wr(eth, REG_PPE_GLO_CFG(i) + 0x8c, 0x0000001b);
@@ -2465,128 +2467,66 @@ static void airoha_ppe_gen2_deinit(struct airoha_eth *eth)
 
 /* EcoNet EN751221 backend. */
 
-struct en75_foe_mac_info {
-	u16 vlan1;
-	u16 etype;
-	u32 dest_mac_hi;
-	u16 vlan2;
-	u16 dest_mac_lo;
-	u32 src_mac_hi;
-	u16 pppoe_id;
-	u16 src_mac_lo;
-	u16 minfo;
-	u16 winfo;
-	u32 w3info;
-	u32 amsdu;
-};
+static_assert(sizeof(struct econet_foe_entry) == EN751221_FOE_ENTRY_SIZE);
 
-struct en75_ipv4_tuple {
-	u32 src_ip;
-	u32 dest_ip;
-	union {
-		struct {
-			u16 dest_port;
-			u16 src_port;
-		};
-		u32 ports;
-	};
-};
-
-struct en75_foe_ipv4 {
-	struct en75_ipv4_tuple orig;
-	u32 ib2;
-	struct en75_ipv4_tuple new;
-	u16 timestamp;
-	u16 reserved[3];
-	u32 udf_tsid;
-	struct en75_foe_mac_info l2;
-};
-
-struct en75_foe_entry {
-	u32 ib1;
-	union {
-		struct en75_foe_ipv4 ipv4;
-		u32 data[19];
-	};
-};
-
-static_assert(sizeof(struct en75_foe_entry) == EN751221_FOE_ENTRY_SIZE);
-
-struct en75_flow_entry {
-	struct list_head list;
-	struct en75_foe_entry data;
-	unsigned long cookie;
-	u32 src_ip;
-	u32 dest_ip;
-	u16 src_port;
-	u16 dest_port;
-	u16 hash;
-};
-
-struct en75_ppe {
-	struct airoha_ppe_dev dev;
-	struct device *parent;
-	void __iomem *base;
-	void __iomem *fe_base;
-	void __iomem *foe_table;
-	phys_addr_t foe_phys;
-	/* Protects flows and FoE slot ownership in RX and TC paths. */
-	spinlock_t lock;
-	struct list_head flows;
-	struct list_head block_cb_list;
-	bool armed;
-};
-
-static void __iomem *en75_ppe_slot(struct en75_ppe *ppe, u16 hash)
+static __le32 *econet_ppe_slot(struct econet_ppe *ppe, u16 hash)
 {
-	return ppe->foe_table + (size_t)hash * EN751221_FOE_ENTRY_SIZE;
+	return (__le32 *)((u8 *)ppe->foe_table +
+			 (size_t)hash * EN751221_FOE_ENTRY_SIZE);
 }
 
-static void en75_ppe_read_entry(struct en75_ppe *ppe, u16 hash,
-				struct en75_foe_entry *entry)
+static void econet_ppe_read_entry(struct econet_ppe *ppe, u16 hash,
+				  struct econet_foe_entry *entry)
 {
-	void __iomem *slot = en75_ppe_slot(ppe, hash);
+	__le32 *slot = econet_ppe_slot(ppe, hash);
 	int i;
 
+	dma_rmb();
 	for (i = 0; i < ARRAY_SIZE(entry->data) + 1; i++)
-		((u32 *)entry)[i] = readl(slot + i * sizeof(u32));
+		((u32 *)entry)[i] = le32_to_cpu(READ_ONCE(slot[i]));
 }
 
-static bool en75_ppe_cache_cmd(struct en75_ppe *ppe, u32 cmd)
+static bool econet_ppe_cache_cmd(struct econet_ppe *ppe, u32 cmd)
 {
+	void __iomem *reg = ppe->eth->fe_regs + REG_EN751221_PPE_CACHE_CTL;
 	u32 val;
 
-	writel((cmd << 12) | BIT(8), ppe->base + EN751221_PPE_CACHE_CTL);
-	return !readl_poll_timeout_atomic(ppe->base + EN751221_PPE_CACHE_CTL,
-					 val, !(val & BIT(8)), 1, 100000);
+	writel(FIELD_PREP(EN751221_PPE_CACHE_CTL_CMD, cmd) |
+	       EN751221_PPE_CACHE_CTL_REQ, reg);
+	return !readl_poll_timeout_atomic(reg, val,
+					 !(val & EN751221_PPE_CACHE_CTL_REQ),
+					 1, 100000);
 }
 
-static void en75_ppe_cache_clean(struct en75_ppe *ppe)
+static void econet_ppe_cache_clean(struct econet_ppe *ppe)
 {
-	u32 gate = readl(ppe->base + EN751221_PPE_CAH_GATE);
+	u32 gate = airoha_fe_rr(ppe->eth, REG_EN751221_PPE_CAH_GATE);
 
-	if (!(gate & BIT(0))) {
-		writel(0x33, ppe->base + EN751221_PPE_CAH_GATE);
-		gate = readl(ppe->base + EN751221_PPE_CAH_GATE);
+	if (!(gate & EN751221_PPE_CAH_GATE_EN)) {
+		airoha_fe_wr(ppe->eth, REG_EN751221_PPE_CAH_GATE,
+			     EN751221_PPE_CAH_GATE_DEFAULT);
+		gate = airoha_fe_rr(ppe->eth, REG_EN751221_PPE_CAH_GATE);
 	}
 
-	writel(gate & ~BIT(0), ppe->base + EN751221_PPE_CAH_GATE);
-	en75_ppe_cache_cmd(ppe, 4);
-	writel(gate | BIT(0), ppe->base + EN751221_PPE_CAH_GATE);
+	airoha_fe_wr(ppe->eth, REG_EN751221_PPE_CAH_GATE,
+		     gate & ~EN751221_PPE_CAH_GATE_EN);
+	econet_ppe_cache_cmd(ppe, 4);
+	airoha_fe_wr(ppe->eth, REG_EN751221_PPE_CAH_GATE,
+		     gate | EN751221_PPE_CAH_GATE_EN);
 }
 
-static void en75_foe_entry_prepare(struct en75_foe_entry *entry, u8 l4proto,
-				   u8 pse_port, const u8 *src_mac,
-				   const u8 *dest_mac)
+static void econet_foe_entry_prepare(struct econet_foe_entry *entry, u8 l4proto,
+				     u8 pse_port, const u8 *src_mac,
+				     const u8 *dest_mac)
 {
 	u32 ib2;
 
 	memset(entry, 0, sizeof(*entry));
-	entry->ib1 = FIELD_PREP(EN751221_FOE_IB1_STATE, EN751221_FOE_STATE_BIND) |
-		FIELD_PREP(EN751221_FOE_IB1_PACKET_TYPE,
-			   EN751221_PPE_PKT_TYPE_IPV4_HNAPT) |
-		FIELD_PREP(EN751221_FOE_IB1_UDP, l4proto == IPPROTO_UDP) |
-		EN751221_FOE_IB1_BIND_CACHE | EN751221_FOE_IB1_BIND_TTL;
+	entry->ib1 = FIELD_PREP(AIROHA_FOE_IB1_BIND_STATE, AIROHA_FOE_STATE_BIND) |
+		FIELD_PREP(AIROHA_FOE_IB1_BIND_PACKET_TYPE,
+			   PPE_PKT_TYPE_IPV4_HNAPT) |
+		FIELD_PREP(AIROHA_FOE_IB1_BIND_UDP, l4proto == IPPROTO_UDP) |
+		EN751221_FOE_IB1_BIND_CACHE | AIROHA_FOE_IB1_BIND_TTL;
 
 	ib2 = FIELD_PREP(EN751221_FOE_IB2_DEST_PORT, pse_port) |
 		FIELD_PREP(EN751221_FOE_IB2_PORT_MG, 0x3f) |
@@ -2602,12 +2542,12 @@ static void en75_foe_entry_prepare(struct en75_foe_entry *entry, u8 l4proto,
 	entry->ipv4.l2.etype = ETH_P_IP;
 }
 
-static void en75_foe_entry_set_ipv4_tuple(struct en75_foe_entry *entry,
-					  bool egress, __be32 src_addr,
-					  __be16 src_port, __be32 dest_addr,
-					  __be16 dest_port)
+static void econet_foe_entry_set_ipv4_tuple(struct econet_foe_entry *entry,
+					    bool egress, __be32 src_addr,
+					    __be16 src_port, __be32 dest_addr,
+					    __be16 dest_port)
 {
-	struct en75_ipv4_tuple *tuple = egress ? &entry->ipv4.new :
+	struct econet_ipv4_tuple *tuple = egress ? &entry->ipv4.new :
 						      &entry->ipv4.orig;
 
 	tuple->src_ip = be32_to_cpu(src_addr);
@@ -2616,7 +2556,7 @@ static void en75_foe_entry_set_ipv4_tuple(struct en75_foe_entry *entry,
 	tuple->dest_port = be16_to_cpu(dest_port);
 }
 
-static void en75_foe_entry_set_pse_port(struct en75_foe_entry *entry, u8 port)
+static void econet_foe_entry_set_pse_port(struct econet_foe_entry *entry, u8 port)
 {
 	entry->ipv4.ib2 &= ~(EN751221_FOE_IB2_DEST_PORT | EN751221_FOE_IB2_PSE_QOS);
 	entry->ipv4.ib2 |= FIELD_PREP(EN751221_FOE_IB2_DEST_PORT, port);
@@ -2624,10 +2564,10 @@ static void en75_foe_entry_set_pse_port(struct en75_foe_entry *entry, u8 port)
 		entry->ipv4.ib2 |= EN751221_FOE_IB2_PSE_QOS;
 }
 
-static void en75_foe_entry_set_dsa(struct en75_foe_entry *entry, int port,
-				   bool passthrough)
+static void econet_foe_entry_set_dsa(struct econet_foe_entry *entry, int port,
+				     bool passthrough)
 {
-	struct en75_foe_mac_info *l2 = &entry->ipv4.l2;
+	struct econet_foe_mac_info *l2 = &entry->ipv4.l2;
 
 	l2->etype = BIT(port) & GENMASK(5, 0);
 	if (passthrough)
@@ -2640,9 +2580,9 @@ static void en75_foe_entry_set_dsa(struct en75_foe_entry *entry, int port,
 	entry->ib1 &= ~EN751221_FOE_IB1_BIND_VLAN_TAG;
 }
 
-static void en75_foe_entry_set_pppoe(struct en75_foe_entry *entry, u16 sid)
+static void econet_foe_entry_set_pppoe(struct econet_foe_entry *entry, u16 sid)
 {
-	struct en75_foe_mac_info *l2 = &entry->ipv4.l2;
+	struct econet_foe_mac_info *l2 = &entry->ipv4.l2;
 
 	if (!(entry->ib1 & EN751221_FOE_IB1_BIND_VLAN_LAYER) ||
 	    (entry->ib1 & EN751221_FOE_IB1_BIND_VLAN_TAG))
@@ -2651,7 +2591,7 @@ static void en75_foe_entry_set_pppoe(struct en75_foe_entry *entry, u16 sid)
 	l2->pppoe_id = sid;
 }
 
-static void en75_foe_entry_set_bind_metadata(struct en75_foe_entry *entry)
+static void econet_foe_entry_set_bind_metadata(struct econet_foe_entry *entry)
 {
 	u8 port = FIELD_GET(EN751221_FOE_IB2_DEST_PORT, entry->ipv4.ib2);
 
@@ -2661,20 +2601,20 @@ static void en75_foe_entry_set_bind_metadata(struct en75_foe_entry *entry)
 	entry->ipv4.udf_tsid |= port + 6;
 }
 
-static void en75_ppe_commit_entry(struct en75_ppe *ppe,
-				  struct en75_foe_entry *entry, u16 hash)
+static void econet_ppe_commit_entry(struct econet_ppe *ppe,
+				    struct econet_foe_entry *entry, u16 hash)
 {
-	void __iomem *slot = en75_ppe_slot(ppe, hash);
-	u16 timestamp = readl(ppe->fe_base + EN751221_FE_TIMESTAMP) &
-			EN751221_FOE_IB1_BIND_TIMESTAMP;
+	__le32 *slot = econet_ppe_slot(ppe, hash);
+	u16 timestamp = airoha_fe_rr(ppe->eth, REG_FE_FOE_TS) &
+			AIROHA_FOE_IB1_BIND_TIMESTAMP;
 	const u32 *src;
 	int i;
 
-	entry->ib1 &= ~EN751221_FOE_IB1_BIND_TIMESTAMP;
-	entry->ib1 |= FIELD_PREP(EN751221_FOE_IB1_BIND_TIMESTAMP, timestamp) |
-		EN751221_FOE_IB1_BIND_CACHE | EN751221_FOE_IB1_BIND_TTL |
-		EN751221_FOE_IB1_BIND_KEEPALIVE;
-	en75_foe_entry_set_bind_metadata(entry);
+	entry->ib1 &= ~AIROHA_FOE_IB1_BIND_TIMESTAMP;
+	entry->ib1 |= FIELD_PREP(AIROHA_FOE_IB1_BIND_TIMESTAMP, timestamp) |
+		EN751221_FOE_IB1_BIND_CACHE | AIROHA_FOE_IB1_BIND_TTL |
+		AIROHA_FOE_IB1_BIND_KEEPALIVE;
+	econet_foe_entry_set_bind_metadata(entry);
 
 	/*
 	 * EN751221 is normally used by a big-endian MIPS CPU while the PPE
@@ -2687,28 +2627,28 @@ static void en75_ppe_commit_entry(struct en75_ppe *ppe,
 
 		if (i == 6 || i == 10 || i == 12 || i == 14)
 			val = rol32(val, 16);
-		writel(swab32(val), slot + sizeof(u32) * (i + 1));
+		WRITE_ONCE(slot[i + 1], cpu_to_le32(swab32(val)));
 	}
 	/* Publish the rewrite payload before marking the entry bound. */
-	wmb();
-	writel(swab32(entry->ib1), slot);
+	dma_wmb();
+	WRITE_ONCE(slot[0], cpu_to_le32(swab32(entry->ib1)));
 	/* Publish the complete entry before invalidating the lookup cache. */
-	wmb();
-	en75_ppe_cache_clean(ppe);
+	dma_wmb();
+	econet_ppe_cache_clean(ppe);
 }
 
-static void en75_ppe_invalidate_entry(struct en75_ppe *ppe, u16 hash)
+static void econet_ppe_invalidate_entry(struct econet_ppe *ppe, u16 hash)
 {
 	if (hash == EN751221_PPE_INVALID_HASH || hash >= EN751221_PPE_ENTRIES)
 		return;
-	writel(0, en75_ppe_slot(ppe, hash));
+	WRITE_ONCE(econet_ppe_slot(ppe, hash)[0], 0);
 	/* Publish the invalid state before the caller clears the cache. */
-	wmb();
+	dma_wmb();
 }
 
-static bool en75_ppe_parse_ipv4_tuple(struct sk_buff *skb, u32 *src_ip,
-				      u32 *dest_ip, u16 *src_port,
-				      u16 *dest_port)
+static bool econet_ppe_parse_ipv4_tuple(struct sk_buff *skb, u32 *src_ip,
+					u32 *dest_ip, u16 *src_port,
+					u16 *dest_port)
 {
 	const u8 *data = skb->data;
 	unsigned int len = skb->len;
@@ -2761,22 +2701,22 @@ static bool en75_ppe_parse_ipv4_tuple(struct sk_buff *skb, u32 *src_ip,
 	return true;
 }
 
-static void en75_ppe_rx_check(struct en75_ppe *ppe, struct sk_buff *skb,
-			      u16 hash, u8 reason)
+static void econet_ppe_rx_check(struct econet_ppe *ppe, struct sk_buff *skb,
+				u16 hash, u8 reason)
 {
-	struct en75_flow_entry *flow;
-	struct en75_foe_entry entry, hardware;
+	struct econet_flow_entry *flow;
+	struct econet_foe_entry entry, hardware;
 	u32 src_ip, dest_ip;
 	u16 src_port, dest_port;
 
 	if (!ppe || !READ_ONCE(ppe->armed) || hash >= EN751221_PPE_ENTRIES)
 		return;
 	if (reason != EN751221_PPE_CPU_REASON_NO_FLOW &&
-	    reason != EN751221_PPE_CPU_REASON_HIT_UNBIND &&
-	    reason != EN751221_PPE_CPU_REASON_BIND_RATE)
+	    reason != AIROHA_PPE_CPU_REASON_HIT_UNBIND &&
+	    reason != AIROHA_PPE_CPU_REASON_HIT_UNBIND_RATE_REACHED)
 		return;
-	if (!en75_ppe_parse_ipv4_tuple(skb, &src_ip, &dest_ip,
-				       &src_port, &dest_port))
+	if (!econet_ppe_parse_ipv4_tuple(skb, &src_ip, &dest_ip,
+					 &src_port, &dest_port))
 		return;
 
 	spin_lock_bh(&ppe->lock);
@@ -2788,7 +2728,7 @@ static void en75_ppe_rx_check(struct en75_ppe *ppe, struct sk_buff *skb,
 			break;
 
 		entry = flow->data;
-		en75_ppe_read_entry(ppe, hash, &hardware);
+		econet_ppe_read_entry(ppe, hash, &hardware);
 		if (hardware.ib1) {
 			/*
 			 * Preserve the exact key generated by the hardware. The commit
@@ -2800,30 +2740,30 @@ static void en75_ppe_rx_check(struct en75_ppe *ppe, struct sk_buff *skb,
 			entry.ipv4.orig.ports = swab32(hardware.ipv4.orig.ports);
 		}
 		if (flow->hash != EN751221_PPE_INVALID_HASH)
-			en75_ppe_invalidate_entry(ppe, flow->hash);
+			econet_ppe_invalidate_entry(ppe, flow->hash);
 		flow->hash = hash;
-		en75_ppe_commit_entry(ppe, &entry, hash);
+		econet_ppe_commit_entry(ppe, &entry, hash);
 		break;
 	}
 	spin_unlock_bh(&ppe->lock);
 }
 
-static void en75_ppe_check_skb_reason(struct airoha_ppe_dev *ppe_dev,
-				      struct sk_buff *skb, u16 hash, u8 reason)
+static void econet_ppe_check_skb_reason(struct airoha_ppe_dev *ppe_dev,
+					struct sk_buff *skb, u16 hash, u8 reason)
 {
-	struct en75_ppe *ppe = ppe_dev->priv;
+	struct econet_ppe *ppe = ppe_dev->priv;
 
-	en75_ppe_rx_check(ppe, skb, hash, reason);
+	econet_ppe_rx_check(ppe, skb, hash, reason);
 }
 
-static void en75_ppe_flush(struct en75_ppe *ppe)
+static void econet_ppe_flush(struct econet_ppe *ppe)
 {
-	struct en75_flow_entry *flow, *tmp;
+	struct econet_flow_entry *flow, *tmp;
 	LIST_HEAD(free_list);
 
 	spin_lock_bh(&ppe->lock);
 	list_for_each_entry(flow, &ppe->flows, list)
-		en75_ppe_invalidate_entry(ppe, flow->hash);
+		econet_ppe_invalidate_entry(ppe, flow->hash);
 	list_splice_init(&ppe->flows, &free_list);
 	spin_unlock_bh(&ppe->lock);
 
@@ -2831,31 +2771,34 @@ static void en75_ppe_flush(struct en75_ppe *ppe)
 		list_del(&flow->list);
 		kfree(flow);
 	}
-	memset_io(ppe->foe_table, 0, EN751221_PPE_TABLE_SIZE);
+	memset(ppe->foe_table, 0, EN751221_PPE_TABLE_SIZE);
 	/* Publish the cleared table before invalidating the lookup cache. */
-	wmb();
-	en75_ppe_cache_clean(ppe);
+	dma_wmb();
+	econet_ppe_cache_clean(ppe);
 }
 
-static int en75_ppe_engine_set(struct en75_ppe *ppe, bool enable)
+static int econet_ppe_engine_set(struct econet_ppe *ppe, bool enable)
 {
+	void __iomem *reg = ppe->eth->fe_regs + REG_PPE_GLO_CFG(0);
 	u32 val;
 
 	if (enable) {
-		if (readl_poll_timeout_atomic(ppe->base + EN751221_PPE_GLO_CFG, val,
-					      !(val & EN751221_PPE_GLO_CFG_BUSY),
+		if (readl_poll_timeout_atomic(reg, val,
+					      !(val & PPE_GLO_CFG_BUSY_MASK),
 					      10, 10000))
 			return -EBUSY;
-		writel(EN751221_PPE_GLO_CFG_ON, ppe->base + EN751221_PPE_GLO_CFG);
+		val = PPE_GLO_CFG_EN_MASK | PPE_GLO_CFG_IP4_L4_CS_DROP_MASK |
+		      PPE_GLO_CFG_IP4_CS_DROP_MASK |
+		      PPE_GLO_CFG_FLOW_DROP_UPDATE_MASK;
+		writel(val, reg);
 	} else {
-		val = readl(ppe->base + EN751221_PPE_GLO_CFG);
-		writel(val & ~EN751221_PPE_GLO_CFG_EN,
-		       ppe->base + EN751221_PPE_GLO_CFG);
+		val = readl(reg);
+		writel(val & ~PPE_GLO_CFG_EN_MASK, reg);
 	}
 	return 0;
 }
 
-static int en75_ppe_engine_arm(struct en75_ppe *ppe)
+static int econet_ppe_engine_arm(struct econet_ppe *ppe)
 {
 	int err;
 
@@ -2864,37 +2807,63 @@ static int en75_ppe_engine_arm(struct en75_ppe *ppe)
 	if (READ_ONCE(ppe->armed))
 		return 0;
 
-	writel(0x0000ffbc, ppe->fe_base + 0xe1c);
-	writel(0x01010001, ppe->fe_base + 0xe34);
-	err = en75_ppe_engine_set(ppe, true);
+	airoha_fe_wr(ppe->eth, REG_PPE_TB_CFG(0),
+		     FIELD_PREP(PPE_TB_CFG_HASH_MODE_MASK, 3) |
+		     FIELD_PREP(PPE_TB_CFG_KEEPALIVE_MASK, 3) |
+		     PPE_TB_CFG_AGE_TCP_FIN_MASK | PPE_TB_CFG_AGE_UDP_MASK |
+		     PPE_TB_CFG_AGE_TCP_MASK | PPE_TB_CFG_AGE_UNBIND_MASK |
+		     PPE_TB_CFG_AGE_NON_L4_MASK |
+		     FIELD_PREP(PPE_TB_CFG_SEARCH_MISS_MASK, 3) |
+		     PPE_TB_ENTRY_SIZE_MASK |
+		     FIELD_PREP(PPE_DRAM_TB_NUM_ENTRY_MASK, 4));
+	airoha_fe_wr(ppe->eth, REG_PPE_KEEPALIVE(0),
+		     FIELD_PREP(PPE_KEEPALIVE_UDP_MASK, 1) |
+		     FIELD_PREP(PPE_KEEPALIVE_TCP_MASK, 1) |
+		     FIELD_PREP(PPE_KEEPALIVE_NTU_MASK, 1));
+	err = econet_ppe_engine_set(ppe, true);
 	if (err)
 		return err;
-	writel(0x33, ppe->base + EN751221_PPE_CAH_GATE);
-	writel(0x0600f700, ppe->fe_base + 0xe04);
-	writel(0x00008100, ppe->fe_base + 0xf18);
-	writel(0x81000001, ppe->fe_base + EN751221_FE_CDMA1_VLAN_CTRL);
-	writel(0x00000001, ppe->fe_base + EN751221_FE_GDM1_VLAN_CHECK);
-	writel(0x03f04004, ppe->fe_base + EN751221_FE_GDM1_FWD_CFG);
-	writel(0x00000500, ppe->fe_base + 0xe48);
+	airoha_fe_wr(ppe->eth, REG_EN751221_PPE_CAH_GATE,
+		     EN751221_PPE_CAH_GATE_DEFAULT);
+	airoha_fe_wr(ppe->eth, REG_PPE_PPE_FLOW_CFG(0),
+		     PPE_FLOW_CFG_IP_MC_HPIT_MASK | PPE_FLOW_CFG_IP6_MC_HPRI_MASK |
+		     PPE_FLOW_CFG_L2_BRIDGE_MASK | PPE_FLOW_CFG_IP4_DSLITE_MASK |
+		     PPE_FLOW_CFG_IP4_NAPT_MASK | PPE_FLOW_CFG_IP4_NAT_MASK |
+		     PPE_FLOW_CFG_IP6_6RD_MASK | PPE_FLOW_CFG_IP6_5T_ROUTE_MASK |
+		     PPE_FLOW_CFG_IP6_3T_ROUTE_MASK);
+	airoha_fe_wr(ppe->eth, REG_PPE_VPM_TPID(0), ETH_P_8021Q);
+	airoha_fe_wr(ppe->eth, REG_CDM_VLAN_CTRL(1),
+		     FIELD_PREP(CDM_VLAN_MASK, ETH_P_8021Q) | STAG_EN);
+	airoha_fe_wr(ppe->eth, REG_GDM_INGRESS_CFG(1), GDM_STAG_EN_MASK);
+	airoha_fe_wr(ppe->eth, REG_GDM_FWD_CFG(1),
+		     GDM_DROP_OVERSIZE_MASK | GDM_DROP_RUNT_MASK |
+		     GDM_DROP_CRC_ERR_MASK | GDM_IP4_CKSUM_MASK |
+		     GDM_TCP_CKSUM_MASK | GDM_UDP_CKSUM_MASK |
+		     FIELD_PREP(GDM_UCFQ_MASK, 4) | FIELD_PREP(GDM_OCFQ_MASK, 4));
+	airoha_fe_wr(ppe->eth, REG_PPE_DFT_CPORT_BASE(0),
+		     FIELD_PREP(DFT_CPORT_MASK(2), 5));
 	WRITE_ONCE(ppe->armed, true);
-	dev_info(ppe->parent, "PPE hardware flow offload enabled\n");
+	dev_info(ppe->eth->dev, "PPE hardware flow offload enabled\n");
 	return 0;
 }
 
-static void en75_ppe_engine_disarm(struct en75_ppe *ppe)
+static void econet_ppe_engine_disarm(struct econet_ppe *ppe)
 {
 	if (!ppe || !READ_ONCE(ppe->armed))
 		return;
 
-	writel(0x03f00000, ppe->fe_base + EN751221_FE_GDM1_FWD_CFG);
+	airoha_fe_wr(ppe->eth, REG_GDM_FWD_CFG(1),
+		     GDM_DROP_OVERSIZE_MASK | GDM_DROP_RUNT_MASK |
+		     GDM_DROP_CRC_ERR_MASK | GDM_IP4_CKSUM_MASK |
+		     GDM_TCP_CKSUM_MASK | GDM_UDP_CKSUM_MASK);
 	WRITE_ONCE(ppe->armed, false);
-	en75_ppe_flush(ppe);
-	en75_ppe_engine_set(ppe, false);
-	dev_info(ppe->parent, "PPE hardware flow offload disabled\n");
+	econet_ppe_flush(ppe);
+	econet_ppe_engine_set(ppe, false);
+	dev_info(ppe->eth->dev, "PPE hardware flow offload disabled\n");
 }
 
-static void en75_flow_mangle_eth(const struct flow_action_entry *act,
-				 void *header)
+static void econet_flow_mangle_eth(const struct flow_action_entry *act,
+				   void *header)
 {
 	u8 *dest = header + act->mangle.offset;
 	const u8 *src = (const u8 *)&act->mangle.val;
@@ -2909,8 +2878,8 @@ static void en75_flow_mangle_eth(const struct flow_action_entry *act,
 		memcpy(dest + 2, src, sizeof(u16));
 }
 
-static int en75_flow_mangle_ports(const struct flow_action_entry *act,
-				  __be16 *src_port, __be16 *dest_port)
+static int econet_flow_mangle_ports(const struct flow_action_entry *act,
+				    __be16 *src_port, __be16 *dest_port)
 {
 	u32 val = ntohl(act->mangle.val);
 
@@ -2929,8 +2898,8 @@ static int en75_flow_mangle_ports(const struct flow_action_entry *act,
 	}
 }
 
-static int en75_flow_mangle_ipv4(const struct flow_action_entry *act,
-				 __be32 *src_addr, __be32 *dest_addr)
+static int econet_flow_mangle_ipv4(const struct flow_action_entry *act,
+				   __be32 *src_addr, __be32 *dest_addr)
 {
 	__be32 *dest;
 
@@ -2948,7 +2917,7 @@ static int en75_flow_mangle_ipv4(const struct flow_action_entry *act,
 	return 0;
 }
 
-static struct en75_ppe *en75_ppe_from_netdev(struct net_device *netdev)
+static struct econet_ppe *econet_ppe_from_netdev(struct net_device *netdev)
 {
 	struct airoha_gdm_common *gdm;
 
@@ -2959,8 +2928,8 @@ static struct en75_ppe *en75_ppe_from_netdev(struct net_device *netdev)
 	return gdm->ppe->priv;
 }
 
-static int en75_flow_set_output(struct en75_foe_entry *entry,
-				struct net_device *odev)
+static int econet_flow_set_output(struct econet_foe_entry *entry,
+				  struct net_device *odev)
 {
 	struct airoha_gdm_common *gdm;
 	struct dsa_port *dp;
@@ -2975,7 +2944,7 @@ static int en75_flow_set_output(struct en75_foe_entry *entry,
 			return PTR_ERR(dp);
 		dsa_port = dp->index;
 		odev = dsa_port_to_conduit(dp);
-		en75_foe_entry_set_dsa(entry, dsa_port, dp->ds->index != 0);
+		econet_foe_entry_set_dsa(entry, dsa_port, dp->ds->index != 0);
 	}
 
 	if (!odev)
@@ -2995,15 +2964,15 @@ static int en75_flow_set_output(struct en75_foe_entry *entry,
 	 * leaving QID at its reset/default value isolates queue selection from
 	 * the hardware forwarding path.
 	 */
-	en75_foe_entry_set_pse_port(entry, gdm->pse_port);
+	econet_foe_entry_set_pse_port(entry, gdm->pse_port);
 
 	return 0;
 }
 
-static struct en75_flow_entry *
-en75_ppe_find_flow(struct en75_ppe *ppe, unsigned long cookie)
+static struct econet_flow_entry *
+econet_ppe_find_flow(struct econet_ppe *ppe, unsigned long cookie)
 {
-	struct en75_flow_entry *flow;
+	struct econet_flow_entry *flow;
 
 	list_for_each_entry(flow, &ppe->flows, list)
 		if (flow->cookie == cookie)
@@ -3011,17 +2980,17 @@ en75_ppe_find_flow(struct en75_ppe *ppe, unsigned long cookie)
 	return NULL;
 }
 
-static int en75_flow_offload_replace(struct net_device *dev,
-				     struct flow_cls_offload *cls)
+static int econet_flow_offload_replace(struct net_device *dev,
+				       struct flow_cls_offload *cls)
 {
-	struct en75_ppe *ppe = en75_ppe_from_netdev(dev);
+	struct econet_ppe *ppe = econet_ppe_from_netdev(dev);
 	struct flow_rule *rule = flow_cls_offload_flow_rule(cls);
 	struct flow_match_basic basic;
 	struct flow_match_ipv4_addrs addrs;
 	struct flow_match_ports ports;
 	struct flow_action_entry *act;
-	struct en75_flow_entry *flow;
-	struct en75_foe_entry entry;
+	struct econet_flow_entry *flow;
+	struct econet_foe_entry entry;
 	struct ethhdr eth = {};
 	struct net_device *odev = NULL;
 	__be32 src_addr, dest_addr, new_src_addr, new_dest_addr;
@@ -3076,18 +3045,18 @@ static int en75_flow_offload_replace(struct net_device *dev,
 		case FLOW_ACTION_MANGLE:
 			switch (act->mangle.htype) {
 			case FLOW_ACT_MANGLE_HDR_TYPE_ETH:
-				en75_flow_mangle_eth(act, &eth);
+				econet_flow_mangle_eth(act, &eth);
 				break;
 			case FLOW_ACT_MANGLE_HDR_TYPE_IP4:
-				err = en75_flow_mangle_ipv4(act, &new_src_addr,
-							    &new_dest_addr);
+				err = econet_flow_mangle_ipv4(act, &new_src_addr,
+							      &new_dest_addr);
 				if (err)
 					return err;
 				break;
 			case FLOW_ACT_MANGLE_HDR_TYPE_TCP:
 			case FLOW_ACT_MANGLE_HDR_TYPE_UDP:
-				err = en75_flow_mangle_ports(act, &new_src_port,
-							     &new_dest_port);
+				err = econet_flow_mangle_ports(act, &new_src_port,
+							       &new_dest_port);
 				if (err)
 					return err;
 				break;
@@ -3117,17 +3086,17 @@ static int en75_flow_offload_replace(struct net_device *dev,
 		return -EOPNOTSUPP;
 	}
 
-	en75_foe_entry_prepare(&entry, l4proto, EN751221_DPORT_GDMA1,
-			       eth.h_source, eth.h_dest);
-	en75_foe_entry_set_ipv4_tuple(&entry, false, src_addr, src_port,
-				      dest_addr, dest_port);
-	en75_foe_entry_set_ipv4_tuple(&entry, true, new_src_addr, new_src_port,
-				      new_dest_addr, new_dest_port);
-	err = en75_flow_set_output(&entry, odev);
+	econet_foe_entry_prepare(&entry, l4proto, FE_PSE_PORT_GDM1,
+				 eth.h_source, eth.h_dest);
+	econet_foe_entry_set_ipv4_tuple(&entry, false, src_addr, src_port,
+					dest_addr, dest_port);
+	econet_foe_entry_set_ipv4_tuple(&entry, true, new_src_addr, new_src_port,
+					new_dest_addr, new_dest_port);
+	err = econet_flow_set_output(&entry, odev);
 	if (err)
 		return err;
 	if (pppoe_sid)
-		en75_foe_entry_set_pppoe(&entry, pppoe_sid);
+		econet_foe_entry_set_pppoe(&entry, pppoe_sid);
 
 	/*
 	 * The engine's lookup key uses the opposite word lane order on the
@@ -3150,7 +3119,7 @@ static int en75_flow_offload_replace(struct net_device *dev,
 	flow->hash = EN751221_PPE_INVALID_HASH;
 
 	spin_lock_bh(&ppe->lock);
-	if (en75_ppe_find_flow(ppe, cls->cookie)) {
+	if (econet_ppe_find_flow(ppe, cls->cookie)) {
 		spin_unlock_bh(&ppe->lock);
 		kfree(flow);
 		return -EEXIST;
@@ -3160,19 +3129,19 @@ static int en75_flow_offload_replace(struct net_device *dev,
 	return 0;
 }
 
-static int en75_flow_offload_destroy(struct net_device *dev,
-				     struct flow_cls_offload *cls)
+static int econet_flow_offload_destroy(struct net_device *dev,
+				       struct flow_cls_offload *cls)
 {
-	struct en75_ppe *ppe = en75_ppe_from_netdev(dev);
-	struct en75_flow_entry *flow;
+	struct econet_ppe *ppe = econet_ppe_from_netdev(dev);
+	struct econet_flow_entry *flow;
 
 	if (!ppe)
 		return -EOPNOTSUPP;
 	spin_lock_bh(&ppe->lock);
-	flow = en75_ppe_find_flow(ppe, cls->cookie);
+	flow = econet_ppe_find_flow(ppe, cls->cookie);
 	if (flow) {
-		en75_ppe_invalidate_entry(ppe, flow->hash);
-		en75_ppe_cache_clean(ppe);
+		econet_ppe_invalidate_entry(ppe, flow->hash);
+		econet_ppe_cache_clean(ppe);
 		list_del(&flow->list);
 	}
 	spin_unlock_bh(&ppe->lock);
@@ -3180,43 +3149,43 @@ static int en75_flow_offload_destroy(struct net_device *dev,
 	return 0;
 }
 
-static int en75_flow_offload_stats(struct flow_cls_offload *cls)
+static int econet_flow_offload_stats(struct flow_cls_offload *cls)
 {
 	flow_stats_update(&cls->stats, 0, 0, 0, jiffies,
 			  FLOW_ACTION_HW_STATS_DELAYED);
 	return 0;
 }
 
-static int en75_flow_offload_cmd(struct net_device *dev,
-				 struct flow_cls_offload *cls)
+static int econet_flow_offload_cmd(struct net_device *dev,
+				   struct flow_cls_offload *cls)
 {
 	switch (cls->command) {
 	case FLOW_CLS_REPLACE:
-		return en75_flow_offload_replace(dev, cls);
+		return econet_flow_offload_replace(dev, cls);
 	case FLOW_CLS_DESTROY:
-		return en75_flow_offload_destroy(dev, cls);
+		return econet_flow_offload_destroy(dev, cls);
 	case FLOW_CLS_STATS:
-		return en75_flow_offload_stats(cls);
+		return econet_flow_offload_stats(cls);
 	default:
 		return -EOPNOTSUPP;
 	}
 }
 
-static int en75_setup_tc_block_cb(enum tc_setup_type type, void *type_data,
-				  void *cb_priv)
+static int econet_setup_tc_block_cb(enum tc_setup_type type, void *type_data,
+				    void *cb_priv)
 {
 	struct net_device *dev = cb_priv;
 
 	if (type != TC_SETUP_CLSFLOWER)
 		return -EOPNOTSUPP;
-	return en75_flow_offload_cmd(dev, type_data);
+	return econet_flow_offload_cmd(dev, type_data);
 }
 
-static int en75_setup_tc_block(struct net_device *dev,
-			       struct flow_block_offload *offload)
+static int econet_setup_tc_block(struct net_device *dev,
+				 struct flow_block_offload *offload)
 {
-	struct en75_ppe *ppe = en75_ppe_from_netdev(dev);
-	flow_setup_cb_t *cb = en75_setup_tc_block_cb;
+	struct econet_ppe *ppe = econet_ppe_from_netdev(dev);
+	flow_setup_cb_t *cb = econet_setup_tc_block_cb;
 	struct flow_block_cb *block_cb;
 	int err;
 
@@ -3231,13 +3200,13 @@ static int en75_setup_tc_block(struct net_device *dev,
 			flow_block_cb_incref(block_cb);
 			return 0;
 		}
-		err = en75_ppe_engine_arm(ppe);
+		err = econet_ppe_engine_arm(ppe);
 		if (err)
 			return err;
 		block_cb = flow_block_cb_alloc(cb, dev, dev, NULL);
 		if (IS_ERR(block_cb)) {
 			if (list_empty(&ppe->block_cb_list))
-				en75_ppe_engine_disarm(ppe);
+				econet_ppe_engine_disarm(ppe);
 			return PTR_ERR(block_cb);
 		}
 		flow_block_cb_incref(block_cb);
@@ -3253,24 +3222,24 @@ static int en75_setup_tc_block(struct net_device *dev,
 			list_del(&block_cb->driver_list);
 		}
 		if (list_empty(&ppe->block_cb_list))
-			en75_ppe_engine_disarm(ppe);
+			econet_ppe_engine_disarm(ppe);
 		return 0;
 	default:
 		return -EOPNOTSUPP;
 	}
 }
 
-static int en75_ppe_setup_tc(struct airoha_ppe_dev *ppe_dev,
-			     struct net_device *dev,
-			      enum tc_setup_type type, void *type_data)
+static int econet_ppe_setup_tc(struct airoha_ppe_dev *ppe_dev,
+			       struct net_device *dev,
+			       enum tc_setup_type type, void *type_data)
 {
-	if (en75_ppe_from_netdev(dev) != ppe_dev->priv)
+	if (econet_ppe_from_netdev(dev) != ppe_dev->priv)
 		return -EOPNOTSUPP;
 
 	switch (type) {
 	case TC_SETUP_BLOCK:
 	case TC_SETUP_FT:
-		return en75_setup_tc_block(dev, type_data);
+		return econet_setup_tc_block(dev, type_data);
 	default:
 		return -EOPNOTSUPP;
 	}
@@ -3279,111 +3248,91 @@ static int en75_ppe_setup_tc(struct airoha_ppe_dev *ppe_dev,
 static int airoha_ppe_gen1_init(struct airoha_eth *eth)
 {
 	struct device *dev = eth->dev;
-	struct device_node *np = eth->dev->of_node;
-	void __iomem *fe_base = eth->fe_regs;
-	void __iomem *ppe_base = eth->ppe_regs;
-	struct device_node *mem_np;
-	struct reserved_mem *rmem;
-	struct en75_ppe *ppe;
-	int mem_index;
+	struct econet_ppe *ppe;
 	u32 tb_cfg;
-
-	mem_index = of_property_match_string(np, "memory-region-names",
-					     "ppe-foe");
-	if (mem_index < 0) {
-		/* Keep compatibility with the original single-region binding, but
-		 * never mistake named QDMA buffers for the FoE table.
-		 */
-		if (of_find_property(np, "memory-region-names", NULL)) {
-			dev_info(dev, "PPE disabled: no ppe-foe memory-region\n");
-			return 0;
-		}
-		mem_index = 0;
-	}
-
-	mem_np = of_parse_phandle(np, "memory-region", mem_index);
-	if (!mem_np) {
-		dev_info(dev, "PPE disabled: no memory-region for the FoE table\n");
-		return 0;
-	}
-	rmem = of_reserved_mem_lookup(mem_np);
-	of_node_put(mem_np);
-	if (!rmem)
-		return dev_err_probe(dev, -EINVAL,
-				     "invalid PPE memory-region\n");
-	if (rmem->size < EN751221_PPE_TABLE_SIZE)
-		return dev_err_probe(dev, -EINVAL,
-				     "PPE FoE region is too small (%pa bytes)\n",
-				     &rmem->size);
-	if (upper_32_bits(rmem->base))
-		return dev_err_probe(dev, -ERANGE,
-				     "PPE FoE table must be below 4 GiB\n");
 
 	ppe = devm_kzalloc(dev, sizeof(*ppe), GFP_KERNEL);
 	if (!ppe)
 		return -ENOMEM;
-	ppe->foe_table = devm_ioremap(dev, rmem->base, EN751221_PPE_TABLE_SIZE);
+
+	ppe->foe_table = dmam_alloc_coherent(dev, EN751221_PPE_TABLE_SIZE,
+					     &ppe->foe_dma, GFP_KERNEL);
 	if (!ppe->foe_table)
 		return dev_err_probe(dev, -ENOMEM,
-				     "failed to map PPE FoE table\n");
+				     "failed to allocate PPE FoE table\n");
 
-	ppe->parent = dev;
-	ppe->base = ppe_base;
-	ppe->fe_base = fe_base;
-	ppe->foe_phys = rmem->base;
+	ppe->eth = eth;
 	spin_lock_init(&ppe->lock);
 	INIT_LIST_HEAD(&ppe->flows);
 	INIT_LIST_HEAD(&ppe->block_cb_list);
-	memset_io(ppe->foe_table, 0, EN751221_PPE_TABLE_SIZE);
+	memset(ppe->foe_table, 0, EN751221_PPE_TABLE_SIZE);
+	dma_wmb();
 
-	writel(lower_32_bits(ppe->foe_phys), ppe->base + EN751221_PPE_TB_BASE);
-	tb_cfg = GENMASK(11, 7) |
-		 FIELD_PREP(GENMASK(5, 4), 3) |
-		 FIELD_PREP(GENMASK(15, 14), 3) |
-		 BIT(16) | FIELD_PREP(GENMASK(2, 0), 4) | BIT(3);
-	writel(tb_cfg, ppe->base + EN751221_PPE_TB_CFG);
-	writel(0xffffffff, ppe->base + EN751221_PPE_IP_PROTO_CHK);
-	writel(BIT(0), ppe->base + EN751221_PPE_CACHE_CTL);
-	writel(BIT(8) | BIT(9) | BIT(10) | BIT(12) | BIT(13) | BIT(17),
-	       ppe->base + EN751221_PPE_FLOW_CFG);
-	writel((1000 << 16) | 3, ppe->base + EN751221_PPE_UNBIND_AGE);
-	writel(12 | BIT(16), ppe->base + EN751221_PPE_BIND_AGE0);
-	writel(7 | BIT(16), ppe->base + EN751221_PPE_BIND_AGE1);
-	writel(GENMASK(13, 0) | GENMASK(29, 16),
-	       ppe->base + EN751221_PPE_BIND_LIMIT0);
-	writel(GENMASK(13, 0) | BIT(16),
-	       ppe->base + EN751221_PPE_BIND_LIMIT1);
-	writel(30 | BIT(16), ppe->base + EN751221_PPE_BIND_RATE);
-	writel(0x12345678, ppe->base + EN751221_PPE_HASH_SEED);
-	writel(0, ppe->base + EN751221_PPE_DEFAULT_CPU_PORT);
-	writel(readl(ppe->base + EN751221_PPE_GLO_CFG) & ~EN751221_PPE_GLO_CFG_EN,
-	       ppe->base + EN751221_PPE_GLO_CFG);
+	airoha_fe_wr(eth, REG_PPE_TB_BASE(0), lower_32_bits(ppe->foe_dma));
+	tb_cfg = PPE_TB_CFG_AGE_TCP_FIN_MASK | PPE_TB_CFG_AGE_UDP_MASK |
+		 PPE_TB_CFG_AGE_TCP_MASK | PPE_TB_CFG_AGE_UNBIND_MASK |
+		 PPE_TB_CFG_AGE_NON_L4_MASK |
+		 FIELD_PREP(PPE_TB_CFG_SEARCH_MISS_MASK, 3) |
+		 FIELD_PREP(PPE_TB_CFG_HASH_MODE_MASK, 3) |
+		 FIELD_PREP(PPE_TB_CFG_SCAN_MODE_MASK, 1) |
+		 FIELD_PREP(PPE_DRAM_TB_NUM_ENTRY_MASK, 4) |
+		 PPE_TB_ENTRY_SIZE_MASK;
+	airoha_fe_wr(eth, REG_PPE_TB_CFG(0), tb_cfg);
+	airoha_fe_wr(eth, REG_PPE_IP_PROTO_CHK(0),
+		     PPE_IP_PROTO_CHK_IPV4_MASK | PPE_IP_PROTO_CHK_IPV6_MASK);
+	airoha_fe_wr(eth, REG_EN751221_PPE_CACHE_CTL,
+		     EN751221_PPE_CACHE_CTL_EN);
+	airoha_fe_wr(eth, REG_PPE_PPE_FLOW_CFG(0),
+		     PPE_FLOW_CFG_IP6_3T_ROUTE_MASK |
+		     PPE_FLOW_CFG_IP6_5T_ROUTE_MASK |
+		     PPE_FLOW_CFG_IP6_6RD_MASK | PPE_FLOW_CFG_IP4_NAT_MASK |
+		     PPE_FLOW_CFG_IP4_NAPT_MASK | PPE_FLOW_CFG_IP4_NAT_FRAG_MASK);
+	airoha_fe_wr(eth, REG_PPE_UNBIND_AGE(0),
+		     FIELD_PREP(PPE_UNBIND_AGE_MIN_PACKETS_MASK, 1000) |
+		     FIELD_PREP(PPE_UNBIND_AGE_DELTA_MASK, 3));
+	airoha_fe_wr(eth, REG_PPE_BND_AGE0(0),
+		     FIELD_PREP(PPE_BIND_AGE0_DELTA_NON_L4, 1) |
+		     FIELD_PREP(PPE_BIND_AGE0_DELTA_UDP, 12));
+	airoha_fe_wr(eth, REG_PPE_BND_AGE1(0),
+		     FIELD_PREP(PPE_BIND_AGE1_DELTA_TCP_FIN, 1) |
+		     FIELD_PREP(PPE_BIND_AGE1_DELTA_TCP, 7));
+	airoha_fe_wr(eth, REG_PPE_BIND_LIMIT0(0),
+		     PPE_BIND_LIMIT0_QUARTER_MASK | PPE_BIND_LIMIT0_HALF_MASK);
+	airoha_fe_wr(eth, REG_PPE_BIND_LIMIT1(0),
+		     PPE_BIND_LIMIT1_FULL_MASK |
+		     FIELD_PREP(PPE_BIND_LIMIT1_NON_L4_MASK, 1));
+	airoha_fe_wr(eth, REG_PPE_BIND_RATE(0),
+		     FIELD_PREP(PPE_BIND_RATE_L2B_BIND_MASK, 1) |
+		     FIELD_PREP(PPE_BIND_RATE_BIND_MASK, 30));
+	airoha_fe_wr(eth, REG_PPE_HASH_SEED(0), PPE_HASH_SEED);
+	airoha_fe_wr(eth, REG_PPE_DFT_CPORT_BASE(0), 0);
+	airoha_fe_clear(eth, REG_PPE_GLO_CFG(0), PPE_GLO_CFG_EN_MASK);
 
 	ppe->dev.priv = ppe;
-	ppe->dev.parent = eth->dev;
+	ppe->dev.parent = dev;
 	ppe->dev.enabled = true;
-	ppe->dev.ops.check_skb_reason = en75_ppe_check_skb_reason;
-	ppe->dev.ops.setup_tc = en75_ppe_setup_tc;
+	ppe->dev.ops.check_skb_reason = econet_ppe_check_skb_reason;
+	ppe->dev.ops.setup_tc = econet_ppe_setup_tc;
 
 	eth->ppe_dev = &ppe->dev;
-	dev_info(dev, "PPE FoE table at %pa, %u entries\n",
-		 &rmem->base, EN751221_PPE_ENTRIES);
+	dev_info(dev, "PPE FoE table at %pad, %u entries\n",
+		 &ppe->foe_dma, EN751221_PPE_ENTRIES);
 	return 0;
 }
 
 static void airoha_ppe_gen1_deinit(struct airoha_eth *eth)
 {
 	struct airoha_ppe_dev *ppe_dev = eth->ppe_dev;
-	struct en75_ppe *ppe;
+	struct econet_ppe *ppe;
 
 	if (!ppe_dev)
 		return;
 
 	ppe = ppe_dev->priv;
 	if (READ_ONCE(ppe->armed))
-		en75_ppe_engine_disarm(ppe);
+		econet_ppe_engine_disarm(ppe);
 	else
-		en75_ppe_flush(ppe);
+		econet_ppe_flush(ppe);
 	ppe_dev->enabled = false;
 	eth->ppe_dev = NULL;
 }
