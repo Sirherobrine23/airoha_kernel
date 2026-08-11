@@ -476,8 +476,17 @@ static bool mt7530_is_en751221_mcm(struct mt7530_priv *priv)
 
 static void mt7530_en751221_mcm_restore_p6_pvc(struct mt7530_priv *priv)
 {
-	if (mt7530_is_en751221_mcm(priv))
-		mt7530_write(priv, MT7530_PVC_P(6), EN751221_MCM_P6_PVC);
+	if (mt7530_is_en751221_mcm(priv)) {
+		u32 pvc = EN751221_MCM_P6_PVC;
+
+		/* Port 6 is the child's DSA upstream port. Keep the vendor VPID
+		 * fields, but enable MT7530 chained-special-tag passthrough.
+		 */
+		if (priv->ds && dsa_is_dsa_port(priv->ds, 6))
+			pvc |= PVC_PASSTHROUGH;
+
+		mt7530_write(priv, MT7530_PVC_P(6), pvc);
+	}
 }
 
 static struct mt7530_priv *
@@ -667,14 +676,16 @@ static void en751221_trgmii_pair_setup(struct mt7530_priv *ext,
 	mt7530_write(ondie, MT7530_PSC_P(6), 0x000fff10);
 
 	/*
-	 * Make the on-die switch a transparent 6 <-> 5 transport. It must not
-	 * consume the MTK special tag; the external MT7530 is the tag endpoint.
+	 * Match MT7530 DSA chaining: the downstream DSA link parses/stores
+	 * the child's special tag, while the CPU port is in special-tag mode.
 	 */
 	mt7530_rmw(ondie, MT7530_PVC_P(5),
 		   PORT_SPEC_TAG | VLAN_ATTR_MASK | PVC_EG_TAG_MASK,
+		   PORT_SPEC_TAG | VLAN_ATTR(MT7530_VLAN_USER) |
 		   PVC_EG_TAG(MT7530_VLAN_EG_CONSISTENT));
 	mt7530_rmw(ondie, MT7530_PVC_P(6),
 		   PORT_SPEC_TAG | VLAN_ATTR_MASK | PVC_EG_TAG_MASK,
+		   PORT_SPEC_TAG |
 		   PVC_EG_TAG(MT7530_VLAN_EG_CONSISTENT));
 	mt7530_rmw(ondie, MT7530_PCR_P(5), PCR_MATRIX_MASK | PCR_PORT_VLAN_MASK,
 		   PCR_MATRIX(BIT(6)) | MT7530_PORT_FALLBACK_MODE);
@@ -1574,13 +1585,11 @@ mt753x_cpu_port_enable(struct dsa_switch *ds, int port)
 {
 	struct mt7530_priv *priv = ds->priv;
 
-	/*
-	 * EN751221 uses the on-die switch only as a transparent transport to
-	 * the companion MT7530. The companion port 6, not this CPU port, is
-	 * the MTK special-tag endpoint.
+	/* Child switches use their DSA upstream port as the CPU-facing port.
+	 * Chained MT7530 special tags require PVC_PASSTHROUGH there.
 	 */
-	if (priv->id != ID_EN751221)
-		mt7530_write(priv, MT7530_PVC_P(port), PORT_SPEC_TAG);
+	mt7530_write(priv, MT7530_PVC_P(port), PORT_SPEC_TAG |
+		     (dsa_is_dsa_port(ds, port) ? PVC_PASSTHROUGH : 0));
 
 	/* Enable flooding on the CPU port */
 	mt7530_set(priv, MT753X_MFC, BC_FFP(BIT(port)) | UNM_FFP(BIT(port)) |
@@ -1611,25 +1620,33 @@ static int
 mt7530_port_enable(struct dsa_switch *ds, int port,
 		   struct phy_device *phy)
 {
+	int upstream_pt = dsa_switch_upstream_port(ds);
 	struct dsa_port *dp = dsa_to_port(ds, port);
 	struct mt7530_priv *priv = ds->priv;
 
-	mutex_lock(&priv->reg_mutex);
-
-	/* Allow the user port gets connected to the cpu port and also
-	 * restore the port matrix if the port is the member of a certain
-	 * bridge.
+	/* User and downstream DSA ports both forward towards the tree's
+	 * upstream port. Downstream DSA links additionally need special-tag
+	 * parsing so source-port metadata survives the parent switch.
 	 */
-	if (dsa_port_is_user(dp)) {
-		struct dsa_port *cpu_dp = dp->cpu_dp;
+	if (dp->index != upstream_pt) {
+		mutex_lock(&priv->reg_mutex);
 
-		priv->ports[port].pm |= PCR_MATRIX(BIT(cpu_dp->index));
+		priv->ports[port].pm |= PCR_MATRIX(BIT(upstream_pt));
+		priv->ports[port].enable = true;
+		mt7530_rmw(priv, MT7530_PCR_P(port), PCR_MATRIX_MASK,
+			   priv->ports[port].pm);
+
+		if (dsa_port_is_dsa(dp)) {
+			mt7530_rmw(priv, MT7530_PVC_P(port),
+				   VLAN_ATTR_MASK | PORT_SPEC_TAG,
+				   VLAN_ATTR(MT7530_VLAN_USER) |
+				   PORT_SPEC_TAG);
+			mt7530_set(priv, MT753X_MFC, BC_FFP(BIT(port)) |
+				   UNM_FFP(BIT(port)) | UNU_FFP(BIT(port)));
+		}
+
+		mutex_unlock(&priv->reg_mutex);
 	}
-	priv->ports[port].enable = true;
-	mt7530_rmw(priv, MT7530_PCR_P(port), PCR_MATRIX_MASK,
-		   priv->ports[port].pm);
-
-	mutex_unlock(&priv->reg_mutex);
 
 	if (priv->id != ID_MT7530 && priv->id != ID_MT7621)
 		return 0;
@@ -2803,7 +2820,7 @@ mt7530_setup(struct dsa_switch *ds)
 		/* Disable learning by default on all ports */
 		mt7530_set(priv, MT7530_PSC_P(i), SA_DIS);
 
-		if (dsa_is_cpu_port(ds, i)) {
+		if (dsa_is_upstream_port(ds, i)) {
 			mt753x_cpu_port_enable(ds, i);
 		} else {
 			mt7530_port_disable(ds, i);
