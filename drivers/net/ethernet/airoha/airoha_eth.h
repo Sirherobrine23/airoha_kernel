@@ -777,8 +777,18 @@ enum airoha_ids {
 	airoha_an7583 = 0x7583,
 };
 
+struct platform_device;
+
+struct airoha_eth_ops {
+	int (*probe)(struct platform_device *pdev);
+	void (*remove)(struct platform_device *pdev);
+};
+
 struct airoha_eth_soc_data {
 	enum airoha_ids version;
+	const struct airoha_eth_ops *eth_ops;
+	bool qdma_dscp_byte_swap;
+	bool en751221_special_tag;
 	const char * const *xsi_rsts_names;
 	int num_xsi_rsts;
 	int num_ppe;
@@ -891,6 +901,12 @@ static inline bool airoha_qdma_is_lro_queue(struct airoha_queue *q)
 		return false;
 	}
 }
+
+extern const struct airoha_eth_soc_data econet_en751221_soc_data;
+extern const struct airoha_eth_soc_data econet_en7528_soc_data;
+extern const struct airoha_eth_soc_data airoha_en7523_soc_data;
+extern const struct airoha_eth_soc_data airoha_en7581_soc_data;
+extern const struct airoha_eth_soc_data airoha_an7583_soc_data;
 
 struct net_device *airoha_eth_get_xpon_netdev(void);
 int airoha_eth_register_xpon(struct net_device *netdev,
