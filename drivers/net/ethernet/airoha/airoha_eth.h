@@ -779,9 +779,11 @@ enum airoha_ids {
 
 struct platform_device;
 
+struct airoha_eth;
+
 struct airoha_eth_ops {
-	int (*probe)(struct platform_device *pdev);
-	void (*remove)(struct platform_device *pdev);
+	int (*probe)(struct platform_device *pdev, struct airoha_eth *eth);
+	void (*remove)(struct platform_device *pdev, struct airoha_eth *eth);
 };
 
 struct airoha_eth_soc_data {
@@ -818,6 +820,7 @@ struct airoha_eth {
 	struct airoha_npu __rcu *npu;
 
 	struct airoha_ppe *ppe;
+	struct airoha_ppe_dev *ppe_dev;
 	const struct airoha_ppe_host_ops *ppe_host_ops;
 	struct rhashtable flow_table;
 
@@ -828,6 +831,9 @@ struct airoha_eth {
 
 	struct airoha_qdma qdma[AIROHA_MAX_NUM_QDMA];
 	struct airoha_gdm_port **ports;
+
+	/* Generation-private host state. */
+	void *priv;
 };
 
 #define airoha_fe_rr(eth, offset)				\

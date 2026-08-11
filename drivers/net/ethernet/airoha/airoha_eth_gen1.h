@@ -12,6 +12,7 @@
 
 #include "airoha_common.h"
 
+struct airoha_eth;
 struct airoha_eth_soc_data;
 
 /* QDMA packet descriptors and descriptor messages. */
@@ -3326,13 +3327,8 @@ enum econet_fport {
 	DPORT_DISCARD		= 7,
 };
 
-struct econet_eth {
-	struct device *dev;
-	struct airoha_ppe_dev *ppe;
-};
-
 /* Called in softirq context */
-int econet_rx_before_recv(struct econet_eth *eth, struct sk_buff *skb,
+int econet_rx_before_recv(struct airoha_eth *eth, struct sk_buff *skb,
 			u8 sport);
 
 struct econet_qdma_cfg {
@@ -3350,7 +3346,7 @@ struct econet_qdma_cfg {
 
 struct econet_qdma;
 
-struct econet_qdma *econet_qdma_new(struct econet_eth *eth,
+struct econet_qdma *econet_qdma_new(struct airoha_eth *eth,
 				void __iomem *qdma_regs,
 				int id,
 				int *irqs,
@@ -3364,7 +3360,7 @@ int econet_qdma_xmit(struct econet_qdma *qdma, struct sk_buff *skb,
 		   union desc_msg *msg, int qid);
 
 
-struct net_device *econet_alloc_gdm_port(struct econet_eth *eth,
+struct net_device *econet_alloc_gdm_port(struct airoha_eth *eth,
 				       struct device_node *np,
 				       struct gdm __iomem *regs,
 				       struct econet_qdma *qdma,
