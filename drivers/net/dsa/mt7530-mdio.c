@@ -129,6 +129,8 @@ mt7531_create_sgmii(struct mt7530_priv *priv)
 }
 
 static const struct of_device_id mt7530_of_match[] = {
+	/* EN751221 companion MT7530 is wired as a 1 Gbit/s MCM. */
+	{ .compatible = "econet,en751221-switch", .data = &mt753x_table[ID_MT7621], },
 	{ .compatible = "mediatek,mt7621", .data = &mt753x_table[ID_MT7621], },
 	{ .compatible = "mediatek,mt7530", .data = &mt753x_table[ID_MT7530], },
 	{ .compatible = "mediatek,mt7531", .data = &mt753x_table[ID_MT7531], },
@@ -149,9 +151,11 @@ mt7530_probe(struct mdio_device *mdiodev)
 {
 	struct mt7530_priv *priv;
 	struct device_node *dn;
+	bool en751221_mcm;
 	int ret;
 
 	dn = mdiodev->dev.of_node;
+	en751221_mcm = of_device_is_compatible(dn, "econet,en751221-switch");
 
 	priv = devm_kzalloc(&mdiodev->dev, sizeof(*priv), GFP_KERNEL);
 	if (!priv)
@@ -176,7 +180,14 @@ mt7530_probe(struct mdio_device *mdiodev)
 	if (priv->mcm) {
 		dev_info(&mdiodev->dev, "MT7530 adapts as multi-chip module\n");
 
-		priv->rstc = devm_reset_control_get(&mdiodev->dev, "mcm");
+		/*
+		 * EN751221 boards reset the on-die switch and companion MT7530
+		 * together.  There is no independently controllable MCM reset.
+		 */
+		if (en751221_mcm)
+			priv->rstc = devm_reset_control_get_optional(&mdiodev->dev, "mcm");
+		else
+			priv->rstc = devm_reset_control_get(&mdiodev->dev, "mcm");
 		if (IS_ERR(priv->rstc)) {
 			dev_err(&mdiodev->dev, "Couldn't get our reset line\n");
 			return PTR_ERR(priv->rstc);

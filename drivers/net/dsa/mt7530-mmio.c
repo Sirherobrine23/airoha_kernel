@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
+#include <linux/delay.h>
 #include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
@@ -14,6 +15,7 @@ static const struct of_device_id mt7988_of_match[] = {
 	{ .compatible = "airoha,en7523-switch", .data = &mt753x_table[ID_EN7523], },
 	{ .compatible = "airoha,an7583-switch", .data = &mt753x_table[ID_AN7583], },
 	{ .compatible = "airoha,en7581-switch", .data = &mt753x_table[ID_EN7581], },
+	{ .compatible = "econet,en751221-switch", .data = &mt753x_table[ID_EN751221], },
 	{ .compatible = "econet,en7528-switch", .data = &mt753x_table[ID_EN7528], },
 	{ .compatible = "mediatek,mt7988-switch", .data = &mt753x_table[ID_MT7988], },
 	{ /* sentinel */ },
@@ -62,6 +64,25 @@ mt7988_probe(struct platform_device *pdev)
 					     &sw_regmap_config);
 	if (IS_ERR(priv->regmap))
 		return PTR_ERR(priv->regmap);
+
+	/*
+	 * EN751221 reaches the external MT7530 through the internal switch
+	 * MDIO controller.  That external switch is part of the same DSA tree,
+	 * so waiting until .setup() to register the MDIO bus creates a cycle:
+	 * the tree waits for the external switch while the bus waits for the
+	 * tree to become complete.
+	 */
+	if (priv->id == ID_EN751221) {
+		ret = reset_control_deassert(priv->rstc);
+		if (ret)
+			return ret;
+
+		usleep_range(20, 50);
+
+		ret = mt7530_setup_mdio(priv);
+		if (ret)
+			return ret;
+	}
 
 	return dsa_register_switch(priv->ds);
 }
