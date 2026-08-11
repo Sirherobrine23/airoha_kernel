@@ -10,7 +10,38 @@
 struct device;
 struct device_node;
 struct ethtool_drvinfo;
+struct sk_buff;
 struct airoha_ppe_dev;
+
+#define AIROHA_MTK_INVALID_CHANNEL		7
+
+enum airoha_mtk_tag_mode {
+	AIROHA_MTK_TAG_IN_SKB,
+	AIROHA_MTK_TAG_TO_DESC,
+};
+
+/**
+ * struct airoha_qdma_skb_meta - common QDMA metadata derived from an skb
+ * @mtk_tag: first 16 bits of the MediaTek DSA special tag
+ * @port_mask: destination-port bitmap carried by @mtk_tag
+ * @channel: first destination port, or AIROHA_MTK_INVALID_CHANNEL
+ * @has_mtk_tag: skb belongs to a MediaTek DSA conduit and carries a tag
+ *
+ * EcoNet and newer Airoha frame engines carry the same logical packet
+ * metadata even though their descriptor bit layouts differ. Keep skb
+ * classification common and leave raw descriptor encoding to each backend.
+ */
+struct airoha_qdma_skb_meta {
+	u16 mtk_tag;
+	u8 port_mask;
+	u8 channel;
+	bool has_mtk_tag;
+};
+
+void airoha_qdma_skb_get_mtk_meta(struct sk_buff *skb,
+				  struct net_device *netdev,
+				  enum airoha_mtk_tag_mode mode,
+				  struct airoha_qdma_skb_meta *meta);
 
 enum airoha_eth_family {
 	AIROHA_ETH_FAMILY_AIROHA,

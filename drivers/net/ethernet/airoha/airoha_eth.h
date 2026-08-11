@@ -90,10 +90,6 @@
 #define PPE_ENTRY_SIZE			64
 #define PPE_RAM_NUM_ENTRIES_SHIFT(_n)	((_n) == 512 ? 7 : __ffs((_n) >> 10))
 
-#define MTK_HDR_LEN			4
-#define MTK_HDR_XMIT_TAGGED_TPID_8100	1
-#define MTK_HDR_XMIT_TAGGED_TPID_88A8	2
-
 enum {
 	QDMA_INT_REG_IDX0,
 	QDMA_INT_REG_IDX1,
