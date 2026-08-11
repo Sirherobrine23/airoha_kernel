@@ -30,6 +30,11 @@
 		#interrupt-cells = <1>;
 	};
 
+	chip_scu: syscon@1fa20000 {
+		compatible = "airoha,chip-scu", "syscon";
+		reg = <0x1fa20000 0x200>;
+	};
+
 	intc: interrupt-controller@1fb40000 {
 		compatible = "econet,en751221-intc";
 		reg = <0x1fb40000 0x100>;
@@ -39,6 +44,27 @@
 		interrupt-controller;
 		#interrupt-cells = <1>;
 		econet,shadow-interrupts = <7 2>, <8 3>, <13 12>, <30 29>;
+	};
+
+	gpio_syscon: system-controller@1fbf0200 {
+		compatible = "econet,en751221-gpio-sysctl", "syscon",
+			     "simple-mfd";
+		reg = <0x1fbf0200 0x7c>;
+
+		pinctrl: pinctrl {
+			compatible = "econet,en751221-pinctrl";
+			airoha,chip-scu = <&chip_scu>;
+
+			interrupt-parent = <&intc>;
+			interrupts = <10>;
+
+			gpio-controller;
+			#gpio-cells = <2>;
+			gpio-ranges = <&pinctrl 0 0 64>;
+
+			interrupt-controller;
+			#interrupt-cells = <2>;
+		};
 	};
 
 	uart: serial@1fbf0000 {
