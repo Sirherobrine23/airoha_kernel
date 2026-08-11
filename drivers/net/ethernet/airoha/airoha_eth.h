@@ -791,9 +791,41 @@ struct airoha_eth_ops {
 	void (*remove)(struct platform_device *pdev, struct airoha_eth *eth);
 };
 
+struct airoha_eth_xpon_ops {
+	int (*set_mode)(struct net_device *netdev, enum airoha_xpon_mode mode);
+	int (*set_datapath)(struct net_device *netdev, enum airoha_xpon_mode mode,
+			    bool enable);
+	int (*set_tcont_channel)(struct net_device *netdev, unsigned int channel,
+				 bool enable);
+	int (*register_link)(struct net_device *netdev, enum airoha_xpon_mode mode,
+			     const struct airoha_xpon_link_ops *ops, void *priv);
+	void (*unregister_link)(struct net_device *netdev,
+			       const struct airoha_xpon_link_ops *ops, void *priv);
+	void (*update_link)(struct net_device *netdev,
+			    const struct airoha_xpon_link_state *state);
+	int (*control_start)(struct net_device *netdev);
+	void (*control_stop)(struct net_device *netdev);
+	void (*dump_oam_rx_state)(struct net_device *netdev);
+	int (*register_oam)(struct net_device *netdev,
+			    struct airoha_xpon_oam_handler *handler);
+	void (*unregister_oam)(struct net_device *netdev,
+			       struct airoha_xpon_oam_handler *handler);
+	int (*xmit_oam)(struct net_device *netdev, struct sk_buff *skb,
+			u16 gem_port_id);
+	int (*add_service)(struct net_device *netdev,
+			   const struct airoha_xpon_service_cfg *cfg);
+	int (*get_tx_info)(struct net_device *netdev, bool vlan_valid, u16 vlan_id,
+			   bool pcp_valid, u8 pcp,
+			   struct airoha_xpon_tx_info *info);
+	bool (*del_service)(struct net_device *netdev, u32 cookie, u16 *gem_port_id);
+	bool (*has_gem_service)(struct net_device *netdev, u16 gem_port_id);
+	void (*flush_services)(struct net_device *netdev);
+};
+
 struct airoha_eth_soc_data {
 	enum airoha_ids version;
 	const struct airoha_eth_ops *eth_ops;
+	const struct airoha_eth_xpon_ops *xpon_ops;
 	const char * const *xsi_rsts_names;
 	int num_xsi_rsts;
 	int num_ppe;
