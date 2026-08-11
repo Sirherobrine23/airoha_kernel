@@ -1175,8 +1175,11 @@ static void probe_pcache(void)
 		break;
 
 	default:
-		if (!(config & MIPS_CONF_M))
+		if (!(config & MIPS_CONF_M)) {
+			pr_emerg("EN751221: P-cache probe failed: Config0=%08x PRId=%08x CPU=%u\n",
+				 config, prid, current_cpu_type());
 			panic("Don't know how to probe P-caches on this cpu.");
+		}
 
 		/*
 		 * So we seem to be a MIPS32 or MIPS64 CPU
