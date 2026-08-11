@@ -34,12 +34,13 @@
 
 	chip_scu: syscon@1fa20000 {
 		compatible = "airoha,chip-scu", "syscon";
-		reg = <0x1fa20000 0x200>;
+		reg = <0x1fa20000 0x400>;
 	};
 
 	scuclk: system-controller@1fb00000 {
 		compatible = "econet,en751221-scu", "syscon";
 		reg = <0x1fb00000 0x1000>;
+		airoha,chip-scu = <&chip_scu>;
 
 		#clock-cells = <1>;
 		#reset-cells = <1>;
@@ -104,6 +105,14 @@
 		 * uart is fixed at 115200 baud.
 		 */
 		clock-frequency = <1843200>;
+	};
+
+	watchdog: watchdog@1fbf0100 {
+		compatible = "econet,en751221-wdt";
+		reg = <0x1fbf0100 0x3c>;
+
+		clocks = <&scuclk EN751221_CLK_BUS>;
+		clock-names = "bus";
 	};
 
 	timer_hpt: timer@1fbf0400 {
