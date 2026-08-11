@@ -1,14 +1,14 @@
 # SPDX-License-Identifier: GPL-2.0-only
 config AIROHA_GE_SOC_PHY
 	tristate "Airoha SoC Ethernet PHYs"
-	depends on ARCH_AIROHA || COMPILE_TEST
+	depends on ARCH_AIROHA || ECONET || COMPILE_TEST
 	select MTK_NET_PHYLIB
 	select PHY_PACKAGE
 	help
 	  Supports Airoha SoC built-in Gigabit Ethernet PHYs.
 
 	  Include support for built-in Ethernet PHYs which are present in
-	  the AN7581 and AN7583 SoCs. These PHYs d will dynamically
+	  the Airoha and Econet SoCs. These PHYs d will dynamically
 	  calibrate during startup.
 
 config MEDIATEK_2P5GE_PHY
