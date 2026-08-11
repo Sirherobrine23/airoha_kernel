@@ -1285,6 +1285,9 @@ static int econet_dev_set_macaddr(struct net_device *dev, void *p)
 	return 0;
 }
 
+#define EN751221_CDM_STAG_EN		BIT(0)
+#define EN751221_GDM_STAG_EN		BIT(24)
+
 static void econet_set_gdm_port_fwd_cfg(struct econet_gdm_port *port,
 				      enum etx_fport val)
 {
@@ -1296,7 +1299,13 @@ static void econet_set_gdm_port_fwd_cfg(struct econet_gdm_port *port,
 	set_gdm_fwd_cfg_mcast_fport(&fc, val);
 	set_gdm_fwd_cfg_bcast_fport(&fc, val);
 	set_gdm_fwd_cfg_default_fport(&fc, val);
-	set_gdm_fwd_cfg_drop_oversize(&fc, true);
+	/*
+	 * Bit 25 is DROP_OVERSIZE on newer Airoha GDMs, but GDM_UNTAG_EN
+	 * on EN751221. Keep it untouched there so the MTK special tag from
+	 * the companion MT7530 reaches the DSA tagger intact.
+	 */
+	if (!port->qdma->soc->en751221_special_tag)
+		set_gdm_fwd_cfg_drop_oversize(&fc, true);
 	econet_wreg(fc, &port->regs->fwd_cfg);
 }
 
@@ -1327,10 +1336,28 @@ static int econet_dev_open(struct net_device *dev)
 
 	/* The MT7530 CPU port is represented by ethernet = <&gdm1>. Keep
 	 * the MTK special tag on the DSA conduit and disable it on a direct
-	 * PHY/WAN GDM, mirroring the newer Airoha datapath.
+	 * PHY/WAN GDM. EN751221 additionally needs the legacy CDM/GDM bits
+	 * used by the vendor special-tag datapath.
 	 */
 	scoped_guard(spinlock, &port->reg_lock) {
-		econet_wreg((u32)netdev_uses_dsa(dev), &port->regs->stag_en);
+		bool dsa = netdev_uses_dsa(dev);
+
+		if (port->qdma->soc->en751221_special_tag &&
+		    port->fport == ETX_FPORT_GDM1) {
+			struct fwd_cfg fc = econet_rreg(&port->regs->fwd_cfg);
+
+			if (dsa)
+				fc.word |= EN751221_GDM_STAG_EN;
+			else
+				fc.word &= ~EN751221_GDM_STAG_EN;
+			econet_wreg(fc, &port->regs->fwd_cfg);
+
+			/* CDMA_CSG_CFG is at offset 0 from the GDM1 window. */
+			airoha_rmw(port->regs, 0, EN751221_CDM_STAG_EN,
+				   dsa ? EN751221_CDM_STAG_EN : 0);
+		}
+
+		econet_wreg((u32)dsa, &port->regs->stag_en);
 		rlt = econet_rreg(&port->regs->rx_len_threshold);
 		set_gdm_len_th_runt_len(&rlt, 60);
 		set_gdm_len_th_oversize_len(&rlt,
@@ -1358,8 +1385,17 @@ static int econet_dev_stop(struct net_device *dev)
 	netif_tx_disable(dev);
 	airoha_gdm_phylink_disconnect(&port->common);
 
-	scoped_guard(spinlock, &port->reg_lock)
+	scoped_guard(spinlock, &port->reg_lock) {
 		econet_wreg(0U, &port->regs->stag_en);
+		if (port->qdma->soc->en751221_special_tag &&
+		    port->fport == ETX_FPORT_GDM1) {
+			struct fwd_cfg fc = econet_rreg(&port->regs->fwd_cfg);
+
+			fc.word &= ~EN751221_GDM_STAG_EN;
+			econet_wreg(fc, &port->regs->fwd_cfg);
+			airoha_rmw(port->regs, 0, EN751221_CDM_STAG_EN, 0);
+		}
+	}
 
 	return econet_qdma_unuse(port->qdma);
 }
@@ -2031,6 +2067,7 @@ error:
 
 static const struct econet_soc_data en751221_soc_data = {
 	.dscp_byte_swap = true,
+	.en751221_special_tag = true,
 };
 
 static const struct econet_soc_data en7528_soc_data = {

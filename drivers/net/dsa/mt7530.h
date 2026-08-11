@@ -927,6 +927,7 @@ struct mt7530_priv {
 	u8 active_cpu_ports;
 	struct mdio_device *mdiodev;
 	bool			mdio_bus_registered;
+	bool			en751221_trgmii_ready;
 };
 
 struct mt7530_hw_vlan_entry {
