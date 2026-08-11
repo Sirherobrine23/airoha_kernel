@@ -19,7 +19,6 @@
 #include <linux/skbuff.h>
 #include <linux/spinlock.h>
 #include <linux/types.h>
-#include <linux/unaligned.h>
 #include <net/dsa.h>
 #include <net/page_pool/helpers.h>
 
@@ -1321,7 +1320,6 @@ static int econet_dev_set_macaddr(struct net_device *dev, void *p)
 #define EN751221_CDM_STAG_EN		BIT(0)
 #define EN751221_GDM_STAG_EN		BIT(24)
 #define EN751221_GDM_UNTAG_EN		BIT(25)
-#define EN751221_STAG_PORT_MASK	GENMASK(5, 0)
 
 static void econet_set_gdm_port_fwd_cfg(struct econet_gdm_port *port,
 				      enum etx_fport val)
@@ -1465,6 +1463,7 @@ static int econet_dev_change_mtu(struct net_device *dev, int mtu)
 static netdev_tx_t econet_dev_xmit(struct sk_buff *skb, struct net_device *dev)
 {
 	struct econet_gdm_port *port = netdev_priv(dev);
+	struct airoha_qdma_skb_meta skb_meta;
 	int qid, ret = 0, len = skb->len;
 	struct netdev_queue *txq;
 	union desc_msg msg = {0};
@@ -1483,19 +1482,16 @@ static netdev_tx_t econet_dev_xmit(struct sk_buff *skb, struct net_device *dev)
 		goto drop;
 
 	/*
-	 * The EN7512 vendor driver derives the LAN QDMA channel from the
-	 * destination bitmap in the in-band MTK special tag. DSA already
-	 * inserted that tag at bytes 12..15. Keeping channel 0 for every
-	 * DSA packet lets QDMA report TX completion while GDMA1 never drives
-	 * the selected companion-switch port.
+	 * EN751221 keeps the MediaTek DSA special tag in-band, unlike newer
+	 * Airoha QDMA which can move it to descriptor metadata. The logical
+	 * port-mask/channel classification is nevertheless shared.
 	 */
-	if (port->qdma->soc->en751221_special_tag &&
-	    netdev_uses_dsa(dev) && skb_headlen(skb) >= ETH_HLEN + 4) {
-		u16 stag = get_unaligned_be16(skb->data + 2 * ETH_ALEN);
-		u8 port_mask = stag & EN751221_STAG_PORT_MASK;
-
-		if (port_mask)
-			channel = __ffs(port_mask);
+	if (port->qdma->soc->en751221_special_tag) {
+		airoha_qdma_skb_get_mtk_meta(skb, dev, AIROHA_MTK_TAG_IN_SKB,
+					     &skb_meta);
+		if (skb_meta.has_mtk_tag &&
+		    skb_meta.channel != AIROHA_MTK_INVALID_CHANNEL)
+			channel = skb_meta.channel;
 	}
 
 	set_etx_channel(&msg.etx, channel);
