@@ -8,18 +8,6 @@ config NET_VENDOR_AIROHA
 
 if NET_VENDOR_AIROHA
 
-config NET_AIROHA_ETH_CORE
-	tristate
-	select NET_AIROHA_COMMON
-	select PAGE_POOL
-
-config NET_AIROHA_COMMON
-	tristate
-	select PHYLINK
-	help
-	  Common GDM, phylink and PPE infrastructure shared by the Airoha ARM
-	  and EcoNet MIPS Ethernet datapaths.
-
 config NET_AIROHA_NPU
 	tristate "Airoha NPU support"
 	depends on ARCH_AIROHA || COMPILE_TEST
@@ -32,37 +20,26 @@ config NET_AIROHA_NPU
 	  available and PPE statistics or firmware-assisted commits are needed.
 
 config NET_AIROHA
-	tristate "Airoha SoC Gigabit Ethernet support"
-	select NET_AIROHA_ETH_CORE
-	select NET_AIROHA_COMMON
+	tristate "Airoha/EcoNet frame-engine Ethernet support"
+	depends on OF
+	select PHYLINK
 	select PAGE_POOL
 	imply NET_AIROHA_NPU if ARCH_AIROHA
 	help
-	  Support the EN7523/EN7581-family Ethernet datapath. GDM/phylink and
-	  PPE infrastructure are provided by the shared Airoha common module.
-
-config NET_ECONET
-	tristate "EcoNet SoC Gigabit Ethernet support"
-	depends on ECONET || COMPILE_TEST
-	depends on OF
-	select NET_AIROHA_ETH_CORE
-	select NET_AIROHA_COMMON
-	select PAGE_POOL
-	help
-	  Support the dual-QDMA, dual-GDM frame engine found in EcoNet EN7512,
-	  EN7521, EN7526 and related EN751221-family MIPS SoCs.
-
-	  The generation-1 and generation-2 datapaths share the Ethernet host,
-	  QDMA classification, GDM/phylink and PPE infrastructure while keeping
-	  generation-specific descriptor/register handling isolated.
+	  Support the shared Airoha/EcoNet frame-engine Ethernet datapath,
+	  including generation-1 EN751221/EN7528 and generation-2
+	  EN7523/EN7581/AN7583 SoCs. The hardware generation is selected
+	  from the device-tree compatible and SoC data at runtime. QDMA, GDM,
+	  PPE and phylink infrastructure are built as one driver so both
+	  generations follow the same lifecycle and common interfaces.
 
 config NET_AIROHA_PPE_DEBUGFS
 	bool
 	default y
 	depends on NET_AIROHA && DEBUG_FS
 	help
-	  Build the EN7523/EN7581 PPE debugfs interface. EcoNet uses the
-	  shared PPE module without registering or building this interface.
+	  Build the PPE debugfs interface for the shared Airoha/EcoNet
+	  Ethernet driver.
 
 config NET_AIROHA_FLOW_STATS
 	default y
@@ -85,7 +62,7 @@ config NET_AIROHA_SOC_WED
 config AIROHA_XPON_V1
 	tristate "Airoha/EcoNet xPON MAC driver"
 	depends on ARCH_AIROHA || ECONET || COMPILE_TEST
-	depends on NET_AIROHA || NET_ECONET
+	depends on NET_AIROHA
 	depends on OF
 	depends on SFP
 	depends on AIROHA_LDDLA_PHY || AIROHA_LDDLA_PHY=n

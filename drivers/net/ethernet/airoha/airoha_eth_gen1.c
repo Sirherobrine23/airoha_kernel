@@ -13,7 +13,6 @@
 #include <linux/module.h>
 #include <linux/netdevice.h>
 #include <linux/of_net.h>
-#include <linux/of_reserved_mem.h>
 #include <linux/platform_device.h>
 #include <linux/reset.h>
 #include <linux/skbuff.h>
@@ -710,7 +709,6 @@ free_of_node:
 struct airoha_eth_gen1 {
 	struct net_device		*ports[ECONET_NUM_GDM_PORTS];
 	struct gdm __iomem		*gdm[ECONET_NUM_GDM_PORTS];
-	void __iomem			*ppe_base;
 	struct qregs __iomem		*qdma_regs[ECONET_NUM_QDMA];
 	struct reset_control		*reset;
 	int				qdma_irq[ECONET_NUM_QDMA * QDMA_NUM_IRQS];
@@ -944,8 +942,6 @@ static int airoha_eth_gen1_probe(struct platform_device *pdev,
 
 	eth->fe_regs = fe_base;
 	priv->gdm[0] = fe_base + EN751221_FE_GDM1_OFFSET;
-	priv->ppe_base = fe_base + EN751221_FE_PPE_OFFSET;
-	eth->ppe_regs = priv->ppe_base;
 	priv->gdm[1] = fe_base + EN751221_FE_GDM2_OFFSET;
 
 	eth->gdmp_regs = devm_platform_ioremap_resource_byname(pdev, "gdmp");
