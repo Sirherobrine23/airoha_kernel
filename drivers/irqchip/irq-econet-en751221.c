@@ -40,6 +40,10 @@
 #define REG_PENDING0		0x08
 #define REG_PENDING1		0x54
 
+#define REG_IVSR0		0x30
+#define REG_IVSR8		0x60
+#define IVSR_VPE_BIT		4
+
 /**
  * @membase: Base address of the interrupt controller registers
  * @interrupt_shadows: Array of all interrupts, for each value,
@@ -152,6 +156,72 @@ static void econet_intc_from_parent(struct irq_desc *desc)
 
 static const struct irq_chip econet_irq_chip;
 
+static int econet_intc_ivsr_reg_bit(u32 hwirq, u32 *reg, u32 *bit)
+{
+	u32 offset;
+
+	if (hwirq > 32 && hwirq <= IRQ_COUNT) {
+		offset = 40 - hwirq;
+		*reg = REG_IVSR8 + ((offset >> 2) << 2);
+		*bit = ((hwirq - 33) % 4) * 8 + IVSR_VPE_BIT;
+		return 0;
+	}
+
+	if (hwirq > 0 && hwirq <= 32) {
+		offset = 32 - hwirq;
+		*reg = REG_IVSR0 + ((offset >> 2) << 2);
+		*bit = ((hwirq - 1) % 4) * 8 + IVSR_VPE_BIT;
+		return 0;
+	}
+
+	return -EINVAL;
+}
+
+static void econet_intc_route_vpe(u32 hwirq, unsigned int vpe)
+{
+	u32 reg, bit, mask;
+
+	if (econet_intc_ivsr_reg_bit(hwirq, &reg, &bit))
+		return;
+
+	mask = BIT(bit);
+	econet_wreg(reg, vpe ? mask : 0, mask);
+}
+
+#ifdef CONFIG_SMP
+static int econet_intc_set_affinity(struct irq_data *d,
+				    const struct cpumask *dest, bool force)
+{
+	unsigned int cpu, vpe;
+	u32 hwirq = irqd_to_hwirq(d);
+
+	if (hwirq >= IRQ_COUNT)
+		return -EINVAL;
+
+	/*
+	 * The EN751221 IVSR layout matches the OEM 2.6.36 code: bit 4 in
+	 * each 8-bit IRQ slot selects VPE1 when set and VPE0 when clear.
+	 */
+	cpu = cpumask_any_and(dest, cpu_online_mask);
+	if (cpu >= nr_cpu_ids) {
+		if (!force)
+			return -EINVAL;
+
+		cpu = cpumask_first(cpu_online_mask);
+		if (cpu >= nr_cpu_ids)
+			return -EINVAL;
+	}
+
+	vpe = cpu ? 1 : 0;
+	econet_intc_route_vpe(hwirq, vpe);
+	irq_data_update_effective_affinity(d, cpumask_of(cpu));
+
+	return IRQ_SET_MASK_OK;
+}
+#else
+#define econet_intc_set_affinity NULL
+#endif
+
 static int econet_intc_map(struct irq_domain *d, u32 irq, irq_hw_number_t hwirq)
 {
 	int ret;
@@ -182,6 +252,7 @@ static const struct irq_chip econet_irq_chip = {
 	.irq_unmask	= econet_intc_unmask,
 	.irq_mask	= econet_intc_mask,
 	.irq_mask_ack	= econet_intc_mask,
+	.irq_set_affinity = econet_intc_set_affinity,
 };
 
 static const struct irq_domain_ops econet_domain_ops = {

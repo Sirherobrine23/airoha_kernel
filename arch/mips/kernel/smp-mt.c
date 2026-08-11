@@ -115,7 +115,7 @@ static void vsmp_init_secondary(void)
 					 STATUSF_IP6 | STATUSF_IP7);
 	else
 		change_c0_status(ST0_IM, STATUSF_IP0 | STATUSF_IP1 |
-					 STATUSF_IP6 | STATUSF_IP7);
+					 STATUSF_IP2); /* econet EN751221: IPI(IP0/1)+intc cascade(IP2); NOT Malta IP6(perf-storm)/IP7 */
 }
 
 static void vsmp_smp_finish(void)
