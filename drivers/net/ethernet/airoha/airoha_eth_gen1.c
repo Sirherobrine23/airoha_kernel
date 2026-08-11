@@ -24,8 +24,41 @@
 
 #include "airoha_eth.h"
 #include "airoha_eth_gen1.h"
+#include "airoha_regs.h"
 
 /* Generation-1 GDM/netdev backend. */
+struct econet_hw_stats {
+	/* protect concurrent hw_stats accesses */
+	spinlock_t lock;
+	struct u64_stats_sync syncp;
+
+	/* EN751221 gdm1 has only limited stats, gdm2 has all */
+	bool g2_stats;
+
+	/* get_stats64 */
+	u64 rx_ok_pkts;
+	u64 tx_ok_pkts;
+	u64 rx_ok_bytes;
+	u64 tx_ok_bytes;
+	u64 rx_errors;
+	u64 rx_drops;
+	u64 tx_drops;
+	u64 rx_over_errors;
+
+	/* get_stats64 (requires gdm2 extended stats) */
+	u64 rx_crc_error;
+	u64 rx_multicast;
+
+	/* ethtool stats (all require gdm2 extended stats) */
+	u64 tx_broadcast;
+	u64 tx_multicast;
+	u64 tx_len[7];
+	u64 rx_broadcast;
+	u64 rx_fragment;
+	u64 rx_jabber;
+	u64 rx_len[7];
+};
+
 struct econet_gdm_port {
 	/* Must stay first for common GDM/phylink and PPE metadata. */
 	struct airoha_gdm_common common;
@@ -591,8 +624,10 @@ struct net_device *econet_alloc_gdm_port(struct airoha_eth *eth,
 	int err;
 
 	ndev = devm_alloc_etherdev_mqs(eth->dev, sizeof(*port),
-				       qdma->cfg.num_channels * ECONET_NUM_QUEUES,
-				       qdma->cfg.num_channels * ECONET_NUM_QUEUES);
+				       airoha_qdma_gen1_common(qdma)->num_channels *
+				       ECONET_NUM_QUEUES,
+				       airoha_qdma_gen1_common(qdma)->num_channels *
+				       ECONET_NUM_QUEUES);
 	if (!ndev) {
 		dev_err(eth->dev, "alloc_etherdev failed\n");
 		return ERR_PTR(-ENOMEM);
@@ -841,7 +876,7 @@ static void econet_prepare_qdma_cfg(struct econet_qdma_cfg *cfg,
 	}
 }
 
-void airoha_eth_gen1_remove(struct platform_device *pdev,
+static void airoha_eth_gen1_remove(struct platform_device *pdev,
 			    struct airoha_eth *eth)
 {
 	struct airoha_eth_gen1 *priv = airoha_eth_gen1_priv(eth);
@@ -872,7 +907,8 @@ void airoha_eth_gen1_remove(struct platform_device *pdev,
 	eth->priv = NULL;
 }
 
-int airoha_eth_gen1_probe(struct platform_device *pdev, struct airoha_eth *eth)
+static int airoha_eth_gen1_probe(struct platform_device *pdev,
+				 struct airoha_eth *eth)
 {
 	static const char * const qdma_names[ECONET_NUM_QDMA] = {
 		"qdma0", "qdma1",
