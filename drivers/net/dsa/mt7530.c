@@ -461,6 +461,10 @@ mt7530_setup_port6(struct dsa_switch *ds, phy_interface_t interface)
 #define EN751221_TRGMII_FE_PHY_DISABLE	GENMASK(3, 0)
 #define EN751221_TRGMII_TD(i)		(0x7a50 + (i) * 8)
 #define EN751221_TRGMII_TCK_ODT	0x7a7c
+#define EN751221_TRGMII_ONDIE_TD_ODT	0x88
+#define EN751221_TRGMII_ONDIE_TCK_ODT	0x77
+#define EN751221_TRGMII_MCM_TD_ODT	0xbb
+#define EN751221_TRGMII_MCM_TCK_ODT	0xff
 #define EN751221_TRGMII_RX_VALUE_MASK	GENMASK(23, 16)
 #define EN751221_TRGMII_RX_ERR_MASK	GENMASK(11, 8)
 #define EN751221_AGC_L2LEN_CHK		BIT(4)
@@ -612,13 +616,21 @@ static void en751221_trgmii_calibrate(struct mt7530_priv *ext,
 
 static void en751221_trgmii_set_drive_strength(struct mt7530_priv *priv)
 {
+	u32 data_odt, clk_odt;
 	int i;
 
-	/* Exact P6 TRGMII drive-strength values from the EN7512 SDK. */
-	for (i = 0; i < NUM_TRGMII_CTRL; i++)
-		mt7530_write(priv, MT7530_TRGMII_TD_ODT(i), 0x88);
+	if (mt7530_is_en751221_mcm(priv)) {
+		data_odt = EN751221_TRGMII_MCM_TD_ODT;
+		clk_odt = EN751221_TRGMII_MCM_TCK_ODT;
+	} else {
+		data_odt = EN751221_TRGMII_ONDIE_TD_ODT;
+		clk_odt = EN751221_TRGMII_ONDIE_TCK_ODT;
+	}
 
-	mt7530_write(priv, EN751221_TRGMII_TCK_ODT, 0x77);
+	for (i = 0; i < NUM_TRGMII_CTRL; i++)
+		mt7530_write(priv, MT7530_TRGMII_TD_ODT(i), data_odt);
+
+	mt7530_write(priv, EN751221_TRGMII_TCK_ODT, clk_odt);
 }
 
 static void en751221_trgmii_pair_setup(struct mt7530_priv *ext,
@@ -658,6 +670,12 @@ static void en751221_trgmii_pair_setup(struct mt7530_priv *ext,
 
 	mt7530_set(ext, MT7530_TRGMII_RCK_CTRL, RX_RST);
 	mt7530_set(ondie, MT7530_TRGMII_RCK_CTRL, RX_RST);
+	/*
+	 * The production EN7512 firmware uses asymmetric TRGMII output drive:
+	 * the companion MT7530 drives the MCM -> SoC direction harder than the
+	 * on-die switch. Program the final drive values before training so the
+	 * calibrated RX taps are selected against the runtime signal levels.
+	 */
 	en751221_trgmii_set_drive_strength(ext);
 	en751221_trgmii_set_drive_strength(ondie);
 	mt7530_write(ext, MT7530_P6ECR, P6_INTF_MODE(1));
