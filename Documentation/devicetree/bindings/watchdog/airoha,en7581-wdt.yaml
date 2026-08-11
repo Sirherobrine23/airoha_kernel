@@ -4,7 +4,7 @@
 $id: http://devicetree.org/schemas/watchdog/airoha,en7581-wdt.yaml#
 $schema: http://devicetree.org/meta-schemas/core.yaml#
 
-title: Airoha EN7581 Watchdog Timer
+title: Airoha and EcoNet Watchdog Timer
 
 maintainers:
   - Christian Marangi <ansuelsmth@gmail.com>
@@ -14,7 +14,9 @@ allOf:
 
 properties:
   compatible:
-    const: airoha,en7581-wdt
+    enum:
+      - airoha,en7581-wdt
+      - econet,en751221-wdt
 
   reg:
     maxItems: 1
