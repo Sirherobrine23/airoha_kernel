@@ -90,10 +90,6 @@ static int econet_dev_set_macaddr(struct net_device *dev, void *p)
 	return 0;
 }
 
-#define EN751221_CDM_STAG_EN		BIT(0)
-#define EN751221_GDM_STAG_EN		BIT(24)
-#define EN751221_GDM_UNTAG_EN		BIT(25)
-#define EN751221_GDM1_LONG_LEN		1700
 
 static u16 econet_gdm_oversize_len(struct econet_gdm_port *port, int mtu)
 {
