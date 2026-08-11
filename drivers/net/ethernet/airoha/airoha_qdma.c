@@ -16,6 +16,7 @@
 
 #include "airoha_eth.h"
 #include "airoha_eth_gen1.h"
+#include "airoha_regs.h"
 
 void airoha_qdma_common_init(struct airoha_qdma_common *qdma,
 			     struct airoha_eth *eth, void __iomem *regs, u8 id)
@@ -525,9 +526,6 @@ static irqreturn_t econet_irq_handler(int irq_num, void *dev_instance)
 	return IRQ_HANDLED;
 }
 
-#define IRQ_RING_IDX_MASK		BIT(16)
-#define IRQ_DESC_IDX_MASK		GENMASK(11, 0)
-
 static int econet_poll_tx_complete(struct napi_struct *napi, int budget)
 {
 	struct qregs_doneq_state state;
@@ -562,7 +560,7 @@ static int econet_poll_tx_complete(struct napi_struct *napi, int budget)
 		irq_queued--;
 		done++;
 
-		qid = FIELD_GET(IRQ_RING_IDX_MASK, val);
+		qid = FIELD_GET(EN751221_QDMA_IRQ_RING_IDX_MASK, val);
 		if (WARN_ON_ONCE(qid >= ARRAY_SIZE(qdma->q_tx)))
 			continue;
 
@@ -570,7 +568,7 @@ static int econet_poll_tx_complete(struct napi_struct *napi, int budget)
 		if (WARN_ON_ONCE(!q->ndesc))
 			continue;
 
-		index = FIELD_GET(IRQ_DESC_IDX_MASK, val);
+		index = FIELD_GET(EN751221_QDMA_IRQ_DESC_IDX_MASK, val);
 		if (WARN_ON_ONCE(index >= q->ndesc))
 			continue;
 
@@ -1462,6 +1460,7 @@ struct econet_qdma *airoha_qdma_gen1_new(struct airoha_eth *eth,
 
 	qdma->dev = eth->dev;
 	airoha_qdma_common_init(&qdma->common, eth, qdma_regs, id);
+	qdma->common.num_channels = cfg->num_channels;
 	mutex_init(&qdma->lock);
 	qdma->regs = qdma_regs;
 	memcpy(&qdma->cfg, cfg, sizeof(*cfg));
@@ -1484,41 +1483,3 @@ struct econet_qdma *airoha_qdma_gen1_new(struct airoha_eth *eth,
 
 	return qdma;
 }
-
-/*
- * EcoNet EN751221 has 2 GDM ports, one for LAN and one for WAN.
- * Each port has it's own registers and MAC address, and it's own
- * net_device instance.
- */
-
-struct econet_hw_stats {
-	/* protect concurrent hw_stats accesses */
-	spinlock_t lock;
-	struct u64_stats_sync syncp;
-
-	/* EN751221 gdm1 has only limited stats, gdm1 has all */
-	bool g2_stats;
-
-	/* get_stats64 */
-	u64 rx_ok_pkts;
-	u64 tx_ok_pkts;
-	u64 rx_ok_bytes;
-	u64 tx_ok_bytes;
-	u64 rx_errors;
-	u64 rx_drops;
-	u64 tx_drops;
-	u64 rx_over_errors;
-
-	/* get_stats64 (requires gdm2 extended stats) */
-	u64 rx_crc_error;
-	u64 rx_multicast;
-
-	/* ethtool stats (all requires gdm2 extended stats) */
-	u64 tx_broadcast;
-	u64 tx_multicast;
-	u64 tx_len[7];
-	u64 rx_broadcast;
-	u64 rx_fragment;
-	u64 rx_jabber;
-	u64 rx_len[7];
-};
