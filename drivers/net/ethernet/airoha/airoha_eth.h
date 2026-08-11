@@ -619,6 +619,11 @@ struct airoha_xpon_oam_handler {
 struct airoha_xpon_link_ops {
 	int (*start)(void *priv);
 	void (*stop)(void *priv);
+	/* Generation-1 EcoNet routes the GPON/EPON MAC interrupt through
+	 * QDMA1 instead of exposing a dedicated platform IRQ.  Providers that
+	 * need that path publish the hard-IRQ callback here.
+	 */
+	void (*mac_irq)(void *priv);
 };
 
 /**

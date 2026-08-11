@@ -285,6 +285,15 @@ static void econet_qdma_rx_process_one(struct econet_q_rx *q, u32 cpu_i,
 	skb_mark_for_recycle(skb);
 	skb->ip_summed = CHECKSUM_NONE;
 
+	/* EN751221 QDMA1 uses PWAN_FERxMsg_T for GPON/EPON OAM.  Word 0
+	 * carries OAM/channel/GEM metadata while words 1..3 retain the regular
+	 * FE RX layout.  Divert management frames before interpreting them as
+	 * Ethernet/PPE traffic.
+	 */
+	if (airoha_eth_gen1_rx_xpon_oam(q->qdma->common.eth,
+					q->qdma->common.id, skb, &desc.msg))
+		return;
+
 	hash = get_erx_ppe_entry(&desc.msg.erx);
 	skb_set_hash(skb, jhash_1word(hash, 0),
 		     PKT_HASH_TYPE_L4);
@@ -455,6 +464,37 @@ static void econet_qdma_set_irqmask(struct econet_qdma *qdma, union irq_bit b, b
 	econet_rreg(irq->mask_reg[b.reg_idx]);
 }
 
+int airoha_qdma_gen1_set_xpon_irq(struct econet_qdma *qdma,
+				  enum airoha_xpon_mode mode, bool enable)
+{
+	union econet_irq_purpose purpose;
+	union irq_bit bit;
+
+	if (!qdma || qdma->common.id != 1)
+		return -EINVAL;
+
+	switch (mode) {
+	case AIROHA_XPON_MODE_GPON:
+		purpose = IRQ_PURPOSE(GPON_INT, UNSPEC, -1);
+		break;
+	case AIROHA_XPON_MODE_EPON:
+		purpose = IRQ_PURPOSE(EPON_INT, UNSPEC, -1);
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	bit = en751221_irq_bit(purpose);
+	if (!en751221_valid_irq_bit(bit))
+		return -EINVAL;
+
+	econet_qdma_set_irqmask(qdma, bit, enable);
+	if (!enable)
+		synchronize_irq(qdma->irqs[bit.irq_idx].irq);
+
+	return 0;
+}
+
 static int econet_qdma_rx_napi_poll(struct napi_struct *napi, int budget)
 {
 	struct econet_q_rx *q = container_of(napi, struct econet_q_rx, napi);
@@ -482,52 +522,75 @@ static irqreturn_t econet_irq_handler(int irq_num, void *dev_instance)
 {
 	struct econet_irq *irq = dev_instance;
 	struct econet_qdma *qdma = irq->qdma;
+	unsigned long xpon_pending = 0;
 	int i;
 
-	guard(spinlock)(&irq->lock_irq);
+	{
+		guard(spinlock)(&irq->lock_irq);
 
-	for (i = 0; i < ARRAY_SIZE(irq->irqmask); i++) {
-		unsigned long regval;
-		u32 disable_int = 0;
-		u8 bit;
+		for (i = 0; i < ARRAY_SIZE(irq->irqmask); i++) {
+			unsigned long regval;
+			u32 disable_int = 0;
+			u8 bit;
 
-		regval = econet_rreg(irq->status_reg[i]);
-		regval &= irq->irqmask[i];
+			regval = econet_rreg(irq->status_reg[i]);
+			regval &= irq->irqmask[i];
 
-		/* You must write the bits back to the status register
-		 * or you will keep receiving the same interrupt. */
-		econet_wreg((u32)regval, irq->status_reg[i]);
+			/* You must write the bits back to the status register
+			 * or you will keep receiving the same interrupt.
+			 */
+			econet_wreg((u32)regval, irq->status_reg[i]);
 
-		for_each_set_bit(bit, &regval, 32) {
-			union econet_irq_purpose p;
+			for_each_set_bit(bit, &regval, 32) {
+				union econet_irq_purpose p;
 
+				p = en751221_irq_purpose((union irq_bit){
+					.irq_idx = irq - &qdma->irqs[0],
+					.reg_idx = i,
+					.bit_idx = bit,
+				});
 
-			p = en751221_irq_purpose((union irq_bit){
-				.irq_idx = irq - &qdma->irqs[0],
-				.reg_idx = i,
-				.bit_idx = bit,
-			});
-
-			if (p.type == IPS_DONE && p.source == IPSC_RX) {
-				napi_schedule_irqoff(&qdma->q_rx[p.chain].napi);
-				disable_int |= BIT(bit);
-				continue;
+				if (p.type == IPS_DONE && p.source == IPSC_RX) {
+					napi_schedule_irqoff(&qdma->q_rx[p.chain].napi);
+					disable_int |= BIT(bit);
+					continue;
+				}
+				if (p.type == IPS_DONE && p.source == IPSC_TX) {
+					napi_schedule_irqoff(&qdma->q_tx_done[i].napi);
+					disable_int |= BIT(bit);
+					continue;
+				}
+				if (p.type == IPS_GPON_INT) {
+					xpon_pending |= BIT(AIROHA_XPON_MODE_GPON);
+					continue;
+				}
+				if (p.type == IPS_EPON_INT) {
+					xpon_pending |= BIT(AIROHA_XPON_MODE_EPON);
+					continue;
+				}
+				dev_dbg_ratelimited(qdma->dev,
+						    "%s IRQ from %s[%d]\n",
+						    econet_irq_purpose_type_str(p.type),
+						    econet_irq_purpose_source_str(p.source),
+						    p.chain);
 			}
-			if (p.type == IPS_DONE && p.source == IPSC_TX) {
-				napi_schedule_irqoff(&qdma->q_tx_done[i].napi);
-				disable_int |= BIT(bit);
-				continue;
-			}
-			dev_dbg_ratelimited(qdma->dev,
-					    "%s IRQ from %s[%d]\n",
-					    econet_irq_purpose_type_str(p.type),
-					    econet_irq_purpose_source_str(p.source),
-					    p.chain);
+
+			irq->irqmask[i] &= ~disable_int;
+			econet_wreg(irq->irqmask[i], irq->mask_reg[i]);
 		}
-
-		irq->irqmask[i] &= ~disable_int;
-		econet_wreg(irq->irqmask[i], irq->mask_reg[i]);
 	}
+
+	/* The EN751221 vendor stack registers GPON/EPON MAC handlers through
+	 * QDMA_WAN.  Invoke the MAC after acknowledging the QDMA aggregator and
+	 * after dropping irq->lock_irq; the MAC ISR performs its own W1C and FIFO
+	 * drain operations.
+	 */
+	if (xpon_pending & BIT(AIROHA_XPON_MODE_GPON))
+		airoha_eth_gen1_xpon_irq(qdma->common.eth, qdma->common.id,
+					 AIROHA_XPON_MODE_GPON);
+	if (xpon_pending & BIT(AIROHA_XPON_MODE_EPON))
+		airoha_eth_gen1_xpon_irq(qdma->common.eth, qdma->common.id,
+					 AIROHA_XPON_MODE_EPON);
 
 	return IRQ_HANDLED;
 }

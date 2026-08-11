@@ -8,13 +8,17 @@
 #include <linux/bitmap.h>
 #include <linux/dev_printk.h>
 #include <linux/etherdevice.h>
+#include <linux/ethtool.h>
 #include <linux/ioport.h>
+#include <linux/if_vlan.h>
 #include <linux/mdio.h>
 #include <linux/module.h>
+#include <linux/mutex.h>
 #include <linux/netdevice.h>
 #include <linux/of_net.h>
 #include <linux/platform_device.h>
 #include <linux/reset.h>
+#include <linux/rcupdate.h>
 #include <linux/skbuff.h>
 #include <linux/spinlock.h>
 #include <linux/types.h>
@@ -79,6 +83,30 @@ struct econet_gdm_port {
 
 	// struct metadata_dst *dsa_meta[AIROHA_MAX_DSA_PORTS];
 
+	/* EN751221 GDM2 xPON host state.  The MAC protocol remains in
+	 * airoha_xpon.c; this block only owns FE/QDMA transport state.
+	 */
+	struct mutex xpon_lock;
+	const struct airoha_xpon_link_ops *xpon_ops;
+	void *xpon_priv;
+	enum airoha_xpon_mode xpon_mode;
+	bool xpon_managed;
+	bool xpon_started;
+	bool xpon_control_started;
+	/* Protects xpon_link. */
+	spinlock_t xpon_state_lock;
+	struct airoha_xpon_link_state xpon_link;
+	struct airoha_xpon_oam_handler __rcu *xpon_oam;
+	atomic64_t xpon_oam_rx_packets;
+	atomic64_t xpon_oam_rx_bytes;
+	atomic64_t xpon_oam_rx_delivered;
+	atomic64_t xpon_oam_rx_dropped;
+	atomic64_t xpon_oam_rx_no_handler;
+	/* Protects xpon_services. */
+	spinlock_t xpon_service_lock;
+	struct airoha_xpon_service_cfg
+		xpon_services[AIROHA_XPON_MAX_SERVICES];
+
 	struct econet_qdma *qdma;
 
 	struct airoha_eth *eth;
@@ -87,6 +115,9 @@ struct econet_gdm_port {
 
 	int qid;
 };
+
+static int econet_xpon_start(struct econet_gdm_port *port);
+static void econet_xpon_stop(struct econet_gdm_port *port);
 
 static void econet_set_macaddr(struct econet_gdm_port *port, const u8 *addr)
 {
@@ -207,11 +238,14 @@ static int econet_dev_open(struct net_device *dev)
 	struct gdm_len_th rlt;
 	int err;
 
-	err = airoha_gdm_phylink_connect(&port->common, false);
+	err = airoha_gdm_phylink_connect(&port->common,
+					 port->xpon_managed);
 	if (err) {
 		netdev_err(dev, "could not attach PHY: %d\n", err);
 		return err;
 	}
+	if (port->xpon_managed)
+		netif_carrier_off(dev);
 
 	/* The MT7530 CPU port is represented by ethernet = <&gdm1>. Keep
 	 * the MTK special tag on the DSA conduit and disable it on a direct
@@ -254,6 +288,14 @@ static int econet_dev_open(struct net_device *dev)
 
 	netif_tx_start_all_queues(dev);
 
+	err = econet_xpon_start(port);
+	if (err) {
+		netif_tx_disable(dev);
+		airoha_qdma_gen1_unuse(port->qdma);
+		airoha_gdm_phylink_disconnect(&port->common);
+		return err;
+	}
+
 	return 0;
 }
 
@@ -262,6 +304,7 @@ static int econet_dev_stop(struct net_device *dev)
 	struct econet_gdm_port *port = netdev_priv(dev);
 
 	netif_tx_disable(dev);
+	econet_xpon_stop(port);
 	airoha_gdm_phylink_disconnect(&port->common);
 
 	scoped_guard(spinlock, &port->reg_lock) {
@@ -294,17 +337,145 @@ static int econet_dev_change_mtu(struct net_device *dev, int mtu)
 	return 0;
 }
 
+#define EN751221_GPON_RX_CHN_MASK	GENMASK(1, 0)
+#define EN751221_EPON_RX_CHN_MASK	GENMASK(7, 0)
+#define EN751221_EPON_TX_CHN_MASK	(GENMASK(7, 0) | GENMASK(23, 16))
+#define EN751221_EPON_HWF_CHN_MASK	GENMASK(7, 0)
+
+static int econet_validate_xpon_gdm2(struct net_device *netdev,
+				     struct econet_gdm_port **gdm)
+{
+	struct econet_gdm_port *port;
+
+	if (!netdev)
+		return -EINVAL;
+
+	port = netdev_priv(netdev);
+	if (!port->eth || !airoha_is(port->eth, econet_en751221) ||
+	    port->fport != ETX_FPORT_GDM2)
+		return -EOPNOTSUPP;
+
+	*gdm = port;
+	return 0;
+}
+
+static int econet_xpon_lookup_service(struct econet_gdm_port *port,
+				      bool vlan_valid, u16 vlan_id,
+				      bool pcp_valid, u8 pcp,
+				      struct airoha_xpon_tx_info *info)
+{
+	const struct airoha_xpon_service_cfg *fallback = NULL;
+	int i;
+
+	spin_lock_bh(&port->xpon_service_lock);
+	for (i = 0; i < AIROHA_XPON_MAX_SERVICES; i++) {
+		const struct airoha_xpon_service_cfg *service;
+
+		service = &port->xpon_services[i];
+		if (!service->valid)
+			continue;
+		if (service->default_service)
+			fallback = service;
+		if (!service->vlan_valid && !service->pcp_valid)
+			continue;
+		if (service->vlan_valid &&
+		    (!vlan_valid || service->vlan_id != vlan_id))
+			continue;
+		if (service->pcp_valid &&
+		    (!pcp_valid || service->pcp != pcp))
+			continue;
+		fallback = service;
+		break;
+	}
+
+	if (fallback) {
+		info->gem_port_id = fallback->gem_port_id;
+		info->tcont = fallback->tcont;
+		info->queue = fallback->queue;
+		info->oam = false;
+	}
+	spin_unlock_bh(&port->xpon_service_lock);
+
+	return fallback ? 0 : -ENOENT;
+}
+
+static int econet_xpon_classify(struct econet_gdm_port *port,
+				struct sk_buff *skb,
+				struct airoha_xpon_tx_info *info)
+{
+	struct vlan_ethhdr vlan_hdr_buf;
+	const struct vlan_ethhdr *vlan_hdr;
+	u16 vlan_id = 0;
+	u8 pcp = 0;
+	bool vlan_valid;
+
+	vlan_valid = skb_vlan_tag_present(skb);
+	if (vlan_valid) {
+		u16 tci = skb_vlan_tag_get(skb);
+
+		vlan_id = tci & VLAN_VID_MASK;
+		pcp = (tci & VLAN_PRIO_MASK) >> VLAN_PRIO_SHIFT;
+	} else {
+		vlan_hdr = skb_header_pointer(skb, 0, sizeof(vlan_hdr_buf),
+					      &vlan_hdr_buf);
+		if (vlan_hdr && eth_type_vlan(vlan_hdr->h_vlan_proto)) {
+			u16 tci = ntohs(vlan_hdr->h_vlan_TCI);
+
+			vlan_id = tci & VLAN_VID_MASK;
+			pcp = (tci & VLAN_PRIO_MASK) >> VLAN_PRIO_SHIFT;
+			vlan_valid = true;
+		}
+	}
+
+	return econet_xpon_lookup_service(port, vlan_valid, vlan_id,
+					  vlan_valid, pcp, info);
+}
+
 static netdev_tx_t econet_dev_xmit(struct sk_buff *skb, struct net_device *dev)
 {
 	struct econet_gdm_port *port = netdev_priv(dev);
 	struct airoha_qdma_skb_meta skb_meta;
 	int qid, ret = 0, len = skb->len;
 	struct netdev_queue *txq;
+	struct airoha_xpon_tx_info xpon_info;
 	union desc_msg msg = {0};
+	bool xpon = false;
 	u8 channel;
 
+	if (READ_ONCE(port->xpon_managed)) {
+		switch (READ_ONCE(port->xpon_mode)) {
+		case AIROHA_XPON_MODE_GPON:
+			if (econet_xpon_classify(port, skb, &xpon_info))
+				goto drop;
+			xpon = true;
+			break;
+		case AIROHA_XPON_MODE_EPON:
+			/* Initial EPON support uses LLID/channel 0. Multi-LLID
+			 * classification can be layered on the service API later; the
+			 * important part here is to emit a PWAN descriptor instead of
+			 * an Ethernet/MT7530 special-tag descriptor.
+			 */
+			memset(&xpon_info, 0, sizeof(xpon_info));
+			xpon_info.queue = skb_get_queue_mapping(skb) %
+					  ECONET_NUM_QUEUES;
+			xpon = true;
+			break;
+		default:
+			goto drop;
+		}
+	}
+
 	qid = skb_get_queue_mapping(skb);
-	if (airoha_is(port->eth, econet_en751221)) {
+	if (xpon) {
+		/* PWAN_FETxMsg_T on EN751221: queue[2:0], channel[10:3],
+		 * OAM[11] and GEM[23:12].  The GEM field overlays the Ethernet
+		 * MediaTek special-tag field and must therefore be programmed only
+		 * for the managed PON datapath.
+		 */
+		channel = xpon_info.tcont;
+		set_etx_queue(&msg.etx, xpon_info.queue);
+		set_etx_xpon_gem(&msg.etx, xpon_info.gem_port_id);
+	} else if (airoha_is(port->eth, econet_en751221)) {
 		/*
 		 * The EN751221 vendor LAN path does not map Linux flow/hash
 		 * queues onto QDMA's eight hardware QoS queues.  Unless QoS
@@ -333,7 +504,7 @@ static netdev_tx_t econet_dev_xmit(struct sk_buff *skb, struct net_device *dev)
 	 * Airoha QDMA which can move it to descriptor metadata. The logical
 	 * port-mask/channel classification is nevertheless shared.
 	 */
-	if (airoha_is(port->eth, econet_en751221)) {
+	if (!xpon && airoha_is(port->eth, econet_en751221)) {
 		airoha_qdma_skb_get_mtk_meta(skb, dev, AIROHA_MTK_TAG_IN_SKB,
 					     &skb_meta);
 		if (skb_meta.has_mtk_tag &&
@@ -555,8 +726,34 @@ static int econet_ethtool_get_link_ksettings(struct net_device *dev,
 					     struct ethtool_link_ksettings *cmd)
 {
 	struct econet_gdm_port *port = netdev_priv(dev);
+	struct airoha_xpon_link_state state;
+	unsigned long flags;
 
-	return phylink_ethtool_ksettings_get(port->common.phylink, cmd);
+	if (!READ_ONCE(port->xpon_managed))
+		return phylink_ethtool_ksettings_get(port->common.phylink, cmd);
+
+	spin_lock_irqsave(&port->xpon_state_lock, flags);
+	state = port->xpon_link;
+	spin_unlock_irqrestore(&port->xpon_state_lock, flags);
+
+	if (!state.valid && port->common.phylink_started)
+		return phylink_ethtool_ksettings_get(port->common.phylink, cmd);
+
+	ethtool_link_ksettings_zero_link_mode(cmd, supported);
+	ethtool_link_ksettings_zero_link_mode(cmd, advertising);
+	ethtool_link_ksettings_zero_link_mode(cmd, lp_advertising);
+	linkmode_set_bit(ETHTOOL_LINK_MODE_FIBRE_BIT,
+			 cmd->link_modes.supported);
+	linkmode_set_bit(ETHTOOL_LINK_MODE_FIBRE_BIT,
+			 cmd->link_modes.advertising);
+
+	cmd->base.speed = state.valid ? state.speed : SPEED_UNKNOWN;
+	cmd->base.duplex = state.valid ? state.duplex : DUPLEX_UNKNOWN;
+	cmd->base.autoneg = AUTONEG_DISABLE;
+	cmd->base.port = state.valid ? state.port : PORT_FIBRE;
+	cmd->base.phy_address = 0xff;
+
+	return 0;
 }
 
 static int econet_ethtool_set_link_ksettings(struct net_device *dev,
@@ -564,12 +761,18 @@ static int econet_ethtool_set_link_ksettings(struct net_device *dev,
 {
 	struct econet_gdm_port *port = netdev_priv(dev);
 
+	if (READ_ONCE(port->xpon_managed))
+		return -EOPNOTSUPP;
+
 	return phylink_ethtool_ksettings_set(port->common.phylink, cmd);
 }
 
 static int econet_ethtool_nway_reset(struct net_device *dev)
 {
 	struct econet_gdm_port *port = netdev_priv(dev);
+
+	if (READ_ONCE(port->xpon_managed))
+		return -EOPNOTSUPP;
 
 	return phylink_ethtool_nway_reset(port->common.phylink);
 }
@@ -667,6 +870,9 @@ struct net_device *econet_alloc_gdm_port(struct airoha_eth *eth,
 	u64_stats_init(&port->stats.syncp);
 	spin_lock_init(&port->stats.lock);
 	spin_lock_init(&port->reg_lock);
+	mutex_init(&port->xpon_lock);
+	spin_lock_init(&port->xpon_state_lock);
+	spin_lock_init(&port->xpon_service_lock);
 	port->stats.g2_stats = has_g2_stats;
 	port->dev = ndev;
 	port->regs = regs;
@@ -773,6 +979,576 @@ int econet_rx_before_recv(struct airoha_eth *eth, struct sk_buff *skb,
 
 	return 0;
 }
+
+static int econet_xpon_start(struct econet_gdm_port *port)
+{
+	int ret = 0;
+
+	mutex_lock(&port->xpon_lock);
+	if (port->xpon_ops && !port->xpon_started) {
+		ret = port->xpon_ops->start(port->xpon_priv);
+		if (!ret)
+			port->xpon_started = true;
+	}
+	mutex_unlock(&port->xpon_lock);
+
+	return ret;
+}
+
+static void econet_xpon_stop(struct econet_gdm_port *port)
+{
+	mutex_lock(&port->xpon_lock);
+	if (port->xpon_ops && port->xpon_started) {
+		port->xpon_started = false;
+		port->xpon_ops->stop(port->xpon_priv);
+	}
+	mutex_unlock(&port->xpon_lock);
+}
+
+static int econet_set_xpon_mode(struct net_device *netdev,
+				enum airoha_xpon_mode mode)
+{
+	struct econet_gdm_port *port;
+	int ret;
+
+	ret = econet_validate_xpon_gdm2(netdev, &port);
+	if (ret)
+		return ret;
+	if (mode != AIROHA_XPON_MODE_GPON && mode != AIROHA_XPON_MODE_EPON)
+		return -EINVAL;
+
+	/* feDevGdm2Cdm2Stop(XPON_ENABLE) starts both protocols from a fully
+	 * quiescent GDM2/CDM2 channel map.  The EN751221 FE register layout is
+	 * the same 0x1500/0x1400 layout described by the shared register file.
+	 */
+	airoha_fe_wr(port->eth, REG_GDM_TXCHN_EN(AIROHA_GDM2_IDX), 0);
+	airoha_fe_wr(port->eth, REG_GDM_RXCHN_EN(AIROHA_GDM2_IDX), 0);
+	airoha_fe_wr(port->eth, REG_CDM_HWF_CHN_EN(2), 0);
+	WRITE_ONCE(port->xpon_mode, mode);
+
+	return 0;
+}
+
+static int econet_set_xpon_datapath(struct net_device *netdev,
+				    enum airoha_xpon_mode mode, bool enable)
+{
+	struct econet_gdm_port *port;
+	int ret;
+
+	ret = econet_validate_xpon_gdm2(netdev, &port);
+	if (ret)
+		return ret;
+
+	switch (mode) {
+	case AIROHA_XPON_MODE_GPON:
+		/* EN7521 feDevGdm2Cdm2Stop(XPON_DISABLE): only downstream
+		 * receive channels 0 and 1 are released here. T-CONT TX/HWF
+		 * channels are enabled when their Alloc-ID is provisioned.
+		 */
+		airoha_fe_rmw(port->eth, REG_GDM_RXCHN_EN(AIROHA_GDM2_IDX),
+			      EN751221_GPON_RX_CHN_MASK,
+			      enable ? EN751221_GPON_RX_CHN_MASK : 0);
+		break;
+	case AIROHA_XPON_MODE_EPON:
+		/* eponFeChannelEnable(): LLID 0..7 plus TX 16..23 used by
+		 * the vendor OAM-favour path.
+		 */
+		airoha_fe_rmw(port->eth, REG_GDM_TXCHN_EN(AIROHA_GDM2_IDX),
+			      EN751221_EPON_TX_CHN_MASK,
+			      enable ? EN751221_EPON_TX_CHN_MASK : 0);
+		airoha_fe_rmw(port->eth, REG_GDM_RXCHN_EN(AIROHA_GDM2_IDX),
+			      EN751221_EPON_RX_CHN_MASK,
+			      enable ? EN751221_EPON_RX_CHN_MASK : 0);
+		airoha_fe_rmw(port->eth, REG_CDM_HWF_CHN_EN(2),
+			      EN751221_EPON_HWF_CHN_MASK,
+			      enable ? EN751221_EPON_HWF_CHN_MASK : 0);
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
+static int econet_set_xpon_tcont_channel(struct net_device *netdev,
+					 unsigned int channel, bool enable)
+{
+	struct econet_gdm_port *port;
+	u32 mask;
+	int ret;
+
+	ret = econet_validate_xpon_gdm2(netdev, &port);
+	if (ret)
+		return ret;
+	if (channel >= 32)
+		return -EINVAL;
+
+	mask = BIT(channel);
+	airoha_fe_rmw(port->eth, REG_GDM_TXCHN_EN(AIROHA_GDM2_IDX), mask,
+		      enable ? mask : 0);
+	airoha_fe_rmw(port->eth, REG_CDM_HWF_CHN_EN(2), mask,
+		      enable ? mask : 0);
+
+	return 0;
+}
+
+static int econet_register_xpon(struct net_device *netdev,
+				enum airoha_xpon_mode mode,
+				const struct airoha_xpon_link_ops *ops,
+				void *priv)
+{
+	struct econet_gdm_port *port;
+	unsigned long flags;
+	int ret;
+
+	if (!ops || !ops->start || !ops->stop || !ops->mac_irq)
+		return -EINVAL;
+
+	ret = econet_validate_xpon_gdm2(netdev, &port);
+	if (ret)
+		return ret;
+
+	mutex_lock(&port->xpon_lock);
+	if (port->xpon_ops) {
+		ret = -EBUSY;
+		goto out_unlock;
+	}
+
+	port->xpon_ops = ops;
+	port->xpon_priv = priv;
+	port->xpon_mode = mode;
+	port->xpon_managed = true;
+	spin_lock_irqsave(&port->xpon_state_lock, flags);
+	memset(&port->xpon_link, 0, sizeof(port->xpon_link));
+	port->xpon_link.mode = mode;
+	spin_unlock_irqrestore(&port->xpon_state_lock, flags);
+	netif_carrier_off(netdev);
+
+	/* EN751221 has no standalone xPON platform IRQ. The MAC interrupt is
+	 * aggregated into QDMA_WAN bits 16/17 and is enabled only after the
+	 * provider callback is fully published.
+	 */
+	ret = airoha_qdma_gen1_set_xpon_irq(port->qdma, mode, true);
+	if (ret) {
+		port->xpon_managed = false;
+		port->xpon_ops = NULL;
+		port->xpon_priv = NULL;
+		goto out_unlock;
+	}
+
+out_unlock:
+	mutex_unlock(&port->xpon_lock);
+	if (ret)
+		return ret;
+
+	if (netif_running(netdev))
+		return econet_xpon_start(port);
+
+	return 0;
+}
+
+static void econet_unregister_xpon(struct net_device *netdev,
+				   const struct airoha_xpon_link_ops *ops,
+				   void *priv)
+{
+	struct econet_gdm_port *port;
+	unsigned long flags;
+
+	if (econet_validate_xpon_gdm2(netdev, &port))
+		return;
+	if (READ_ONCE(port->xpon_ops) != ops || READ_ONCE(port->xpon_priv) != priv)
+		return;
+
+	/* Mask the QDMA aggregator first and wait out an in-flight hard IRQ
+	 * before the provider private pointer can disappear.
+	 */
+	airoha_qdma_gen1_set_xpon_irq(port->qdma, port->xpon_mode, false);
+	econet_xpon_stop(port);
+
+	mutex_lock(&port->xpon_lock);
+	if (port->xpon_ops == ops && port->xpon_priv == priv) {
+		port->xpon_ops = NULL;
+		port->xpon_priv = NULL;
+		port->xpon_managed = false;
+	}
+	mutex_unlock(&port->xpon_lock);
+
+	spin_lock_irqsave(&port->xpon_state_lock, flags);
+	memset(&port->xpon_link, 0, sizeof(port->xpon_link));
+	spin_unlock_irqrestore(&port->xpon_state_lock, flags);
+	netif_carrier_off(netdev);
+}
+
+static void econet_xpon_update_link(struct net_device *netdev,
+				    const struct airoha_xpon_link_state *state)
+{
+	struct airoha_xpon_link_state new_state;
+	struct econet_gdm_port *port;
+	unsigned long flags;
+
+	if (!state || econet_validate_xpon_gdm2(netdev, &port))
+		return;
+	if (!READ_ONCE(port->xpon_managed) ||
+	    state->mode != READ_ONCE(port->xpon_mode))
+		return;
+
+	new_state = *state;
+	new_state.valid = true;
+	spin_lock_irqsave(&port->xpon_state_lock, flags);
+	port->xpon_link = new_state;
+	spin_unlock_irqrestore(&port->xpon_state_lock, flags);
+
+	if (new_state.link && netif_running(netdev))
+		netif_carrier_on(netdev);
+	else
+		netif_carrier_off(netdev);
+}
+
+static int econet_xpon_control_start(struct net_device *netdev)
+{
+	struct econet_gdm_port *port;
+	int ret;
+
+	ret = econet_validate_xpon_gdm2(netdev, &port);
+	if (ret)
+		return ret;
+
+	mutex_lock(&port->xpon_lock);
+	if (port->xpon_control_started) {
+		ret = 0;
+		goto out;
+	}
+
+	/* OMCI activation is allowed while pon0 is administratively down. Keep
+	 * QDMA1 alive independently from ndo_open(), mirroring the vendor WAN
+	 * QDMA control-plane ownership.
+	 */
+	ret = airoha_qdma_gen1_use(port->qdma);
+	if (!ret)
+		port->xpon_control_started = true;
+out:
+	mutex_unlock(&port->xpon_lock);
+	return ret;
+}
+
+static void econet_xpon_control_stop(struct net_device *netdev)
+{
+	struct econet_gdm_port *port;
+
+	if (econet_validate_xpon_gdm2(netdev, &port))
+		return;
+
+	mutex_lock(&port->xpon_lock);
+	if (port->xpon_control_started) {
+		port->xpon_control_started = false;
+		airoha_qdma_gen1_unuse(port->qdma);
+	}
+	mutex_unlock(&port->xpon_lock);
+}
+
+static void econet_xpon_dump_oam_rx_state(struct net_device *netdev)
+{
+	struct econet_gdm_port *port;
+
+	if (econet_validate_xpon_gdm2(netdev, &port))
+		return;
+
+	netdev_info(netdev,
+		    "xPON OAM RX: packets=%lld bytes=%lld delivered=%lld dropped=%lld no-handler=%lld txchn=%#010x rxchn=%#010x hwf=%#010x\n",
+		    (long long)atomic64_read(&port->xpon_oam_rx_packets),
+		    (long long)atomic64_read(&port->xpon_oam_rx_bytes),
+		    (long long)atomic64_read(&port->xpon_oam_rx_delivered),
+		    (long long)atomic64_read(&port->xpon_oam_rx_dropped),
+		    (long long)atomic64_read(&port->xpon_oam_rx_no_handler),
+		    airoha_fe_rr(port->eth, REG_GDM_TXCHN_EN(AIROHA_GDM2_IDX)),
+		    airoha_fe_rr(port->eth, REG_GDM_RXCHN_EN(AIROHA_GDM2_IDX)),
+		    airoha_fe_rr(port->eth, REG_CDM_HWF_CHN_EN(2)));
+}
+
+static int econet_register_xpon_oam(struct net_device *netdev,
+				    struct airoha_xpon_oam_handler *handler)
+{
+	struct econet_gdm_port *port;
+	int ret;
+
+	if (!handler || !handler->rx)
+		return -EINVAL;
+	ret = econet_validate_xpon_gdm2(netdev, &port);
+	if (ret)
+		return ret;
+	if (rcu_access_pointer(port->xpon_oam))
+		return -EBUSY;
+
+	rcu_assign_pointer(port->xpon_oam, handler);
+	return 0;
+}
+
+static void econet_unregister_xpon_oam(struct net_device *netdev,
+				       struct airoha_xpon_oam_handler *handler)
+{
+	struct econet_gdm_port *port;
+
+	if (econet_validate_xpon_gdm2(netdev, &port))
+		return;
+	if (rcu_access_pointer(port->xpon_oam) != handler)
+		return;
+
+	RCU_INIT_POINTER(port->xpon_oam, NULL);
+	synchronize_rcu();
+}
+
+static int econet_xmit_xpon_oam(struct net_device *netdev, struct sk_buff *skb,
+				u16 gem_port_id)
+{
+	struct econet_gdm_port *port;
+	struct netdev_queue *txq;
+	union desc_msg msg = {};
+	int len, ret;
+
+	ret = econet_validate_xpon_gdm2(netdev, &port);
+	if (ret)
+		return ret;
+	if (!skb || gem_port_id > FIELD_MAX(ETX_XPON_GEM_MASK) ||
+	    !READ_ONCE(port->xpon_control_started))
+		return -EINVAL;
+	if (skb_linearize(skb))
+		return -ENOMEM;
+
+	set_etx_queue(&msg.etx, 0);
+	set_etx_channel(&msg.etx, 0);
+	set_etx_oam(&msg.etx, true);
+	set_etx_xpon_gem(&msg.etx, gem_port_id);
+	set_etx_fport(&msg.etx, ETX_FPORT_GDM2);
+
+	skb->dev = netdev;
+	skb_set_queue_mapping(skb, 0);
+	len = skb->len;
+	txq = netdev_get_tx_queue(netdev, 0);
+	netdev_tx_sent_queue(txq, len);
+
+	ret = airoha_qdma_gen1_xmit(port->qdma, skb, &msg, 0);
+	if (ret < 0) {
+		netdev_tx_completed_queue(txq, 1, len);
+		return ret;
+	}
+
+	return 0;
+}
+
+static int econet_xpon_get_tx_info(struct net_device *netdev, bool vlan_valid,
+				   u16 vlan_id, bool pcp_valid, u8 pcp,
+				   struct airoha_xpon_tx_info *info)
+{
+	struct econet_gdm_port *port;
+	int ret;
+
+	if (!info)
+		return -EINVAL;
+	ret = econet_validate_xpon_gdm2(netdev, &port);
+	if (ret)
+		return ret;
+	if (!READ_ONCE(port->xpon_managed) ||
+	    READ_ONCE(port->xpon_mode) != AIROHA_XPON_MODE_GPON)
+		return -EOPNOTSUPP;
+
+	return econet_xpon_lookup_service(port, vlan_valid, vlan_id,
+					  pcp_valid, pcp, info);
+}
+
+static int econet_xpon_add_service(struct net_device *netdev,
+				   const struct airoha_xpon_service_cfg *cfg)
+{
+	struct econet_gdm_port *port;
+	int empty = -1, i, ret;
+
+	if (!cfg || cfg->gem_port_id > FIELD_MAX(ETX_XPON_GEM_MASK) ||
+	    cfg->tcont >= 32 || cfg->queue >= ECONET_NUM_QUEUES)
+		return -EINVAL;
+	ret = econet_validate_xpon_gdm2(netdev, &port);
+	if (ret)
+		return ret;
+
+	spin_lock_bh(&port->xpon_service_lock);
+	for (i = 0; i < AIROHA_XPON_MAX_SERVICES; i++) {
+		if (!port->xpon_services[i].valid && empty < 0)
+			empty = i;
+		if (port->xpon_services[i].valid &&
+		    port->xpon_services[i].cookie == cfg->cookie) {
+			empty = i;
+			break;
+		}
+	}
+	if (empty < 0) {
+		spin_unlock_bh(&port->xpon_service_lock);
+		return -ENOSPC;
+	}
+	if (cfg->default_service)
+		for (i = 0; i < AIROHA_XPON_MAX_SERVICES; i++)
+			port->xpon_services[i].default_service = false;
+	port->xpon_services[empty] = *cfg;
+	port->xpon_services[empty].valid = true;
+	spin_unlock_bh(&port->xpon_service_lock);
+
+	return 0;
+}
+
+static bool econet_xpon_del_service(struct net_device *netdev, u32 cookie,
+				    u16 *gem_port_id)
+{
+	struct econet_gdm_port *port;
+	bool found = false;
+	int i;
+
+	if (econet_validate_xpon_gdm2(netdev, &port))
+		return false;
+
+	spin_lock_bh(&port->xpon_service_lock);
+	for (i = 0; i < AIROHA_XPON_MAX_SERVICES; i++) {
+		if (!port->xpon_services[i].valid ||
+		    port->xpon_services[i].cookie != cookie)
+			continue;
+		if (gem_port_id)
+			*gem_port_id = port->xpon_services[i].gem_port_id;
+		memset(&port->xpon_services[i], 0, sizeof(port->xpon_services[i]));
+		found = true;
+		break;
+	}
+	spin_unlock_bh(&port->xpon_service_lock);
+
+	return found;
+}
+
+static bool econet_xpon_has_gem_service(struct net_device *netdev,
+					u16 gem_port_id)
+{
+	struct econet_gdm_port *port;
+	bool found = false;
+	int i;
+
+	if (econet_validate_xpon_gdm2(netdev, &port))
+		return false;
+
+	spin_lock_bh(&port->xpon_service_lock);
+	for (i = 0; i < AIROHA_XPON_MAX_SERVICES; i++)
+		if (port->xpon_services[i].valid &&
+		    port->xpon_services[i].gem_port_id == gem_port_id) {
+			found = true;
+			break;
+		}
+	spin_unlock_bh(&port->xpon_service_lock);
+
+	return found;
+}
+
+static void econet_xpon_flush_services(struct net_device *netdev)
+{
+	struct econet_gdm_port *port;
+
+	if (econet_validate_xpon_gdm2(netdev, &port))
+		return;
+
+	spin_lock_bh(&port->xpon_service_lock);
+	memset(port->xpon_services, 0, sizeof(port->xpon_services));
+	spin_unlock_bh(&port->xpon_service_lock);
+}
+
+bool airoha_eth_gen1_rx_xpon_oam(struct airoha_eth *eth, u8 qdma_id,
+				 struct sk_buff *skb, union desc_msg *msg)
+{
+	struct airoha_eth_gen1 *priv = airoha_eth_gen1_priv(eth);
+	struct airoha_xpon_oam_handler *handler;
+	struct econet_gdm_port *port;
+	u32 raw0, flags = 0;
+	u16 gem_port_id;
+	u32 skb_len;
+	bool consumed = false;
+
+	if (!airoha_is(eth, econet_en751221) || qdma_id != 1 || !priv->ports[1])
+		return false;
+
+	raw0 = READ_ONCE(msg->raw[0]);
+	if (!(raw0 & ERX_XPON_OAM))
+		return false;
+
+	port = netdev_priv(priv->ports[1]);
+	if (!READ_ONCE(port->xpon_managed))
+		return false;
+
+	gem_port_id = FIELD_GET(ERX_XPON_GEM_MASK, raw0);
+	if (raw0 & ERX_XPON_CRC_ERROR)
+		flags |= AIROHA_XPON_OAM_RX_F_CRC_ERROR;
+
+	skb->dev = port->dev;
+	skb_len = skb->len;
+	atomic64_inc(&port->xpon_oam_rx_packets);
+	atomic64_add(skb_len, &port->xpon_oam_rx_bytes);
+
+	rcu_read_lock();
+	handler = rcu_dereference(port->xpon_oam);
+	if (handler && handler->rx)
+		consumed = handler->rx(handler->priv, skb, gem_port_id, flags);
+	else
+		atomic64_inc(&port->xpon_oam_rx_no_handler);
+	rcu_read_unlock();
+
+	if (consumed) {
+		atomic64_inc(&port->xpon_oam_rx_delivered);
+	} else {
+		atomic64_inc(&port->xpon_oam_rx_dropped);
+		dev_kfree_skb_any(skb);
+	}
+
+	dev_dbg_ratelimited(eth->dev,
+			    "EN751221 xPON OAM RX: len=%u msg0=%#010x channel=%u gem=%u crc=%u runt=%u long=%u consumed=%u\n",
+			    skb_len, raw0,
+			    (unsigned int)FIELD_GET(ERX_XPON_CHANNEL_MASK, raw0),
+			    gem_port_id, !!(raw0 & ERX_XPON_CRC_ERROR),
+			    !!(raw0 & ERX_XPON_RUNT), !!(raw0 & ERX_XPON_LONG),
+			    consumed);
+
+	return true;
+}
+
+void airoha_eth_gen1_xpon_irq(struct airoha_eth *eth, u8 qdma_id,
+			      enum airoha_xpon_mode mode)
+{
+	struct airoha_eth_gen1 *priv = airoha_eth_gen1_priv(eth);
+	const struct airoha_xpon_link_ops *ops;
+	struct econet_gdm_port *port;
+	void *xpon_priv;
+
+	if (!airoha_is(eth, econet_en751221) || qdma_id != 1 || !priv->ports[1])
+		return;
+
+	port = netdev_priv(priv->ports[1]);
+	if (!READ_ONCE(port->xpon_managed) || READ_ONCE(port->xpon_mode) != mode)
+		return;
+
+	ops = READ_ONCE(port->xpon_ops);
+	xpon_priv = READ_ONCE(port->xpon_priv);
+	if (ops && ops->mac_irq)
+		ops->mac_irq(xpon_priv);
+}
+
+static const struct airoha_eth_xpon_ops econet_xpon_ops = {
+	.set_mode = econet_set_xpon_mode,
+	.set_datapath = econet_set_xpon_datapath,
+	.set_tcont_channel = econet_set_xpon_tcont_channel,
+	.register_link = econet_register_xpon,
+	.unregister_link = econet_unregister_xpon,
+	.update_link = econet_xpon_update_link,
+	.control_start = econet_xpon_control_start,
+	.control_stop = econet_xpon_control_stop,
+	.dump_oam_rx_state = econet_xpon_dump_oam_rx_state,
+	.register_oam = econet_register_xpon_oam,
+	.unregister_oam = econet_unregister_xpon_oam,
+	.xmit_oam = econet_xmit_xpon_oam,
+	.add_service = econet_xpon_add_service,
+	.get_tx_info = econet_xpon_get_tx_info,
+	.del_service = econet_xpon_del_service,
+	.has_gem_service = econet_xpon_has_gem_service,
+	.flush_services = econet_xpon_flush_services,
+};
 
 static int econet_init_port(struct airoha_eth *eth, struct device_node *np)
 {
@@ -1028,6 +1804,7 @@ static const struct airoha_eth_ops airoha_eth_gen1_ops = {
 const struct airoha_eth_soc_data econet_en751221_soc_data = {
 	.version = econet_en751221,
 	.eth_ops = &airoha_eth_gen1_ops,
+	.xpon_ops = &econet_xpon_ops,
 	.num_ppe = 1,
 	.ppe_dram_entries = 16 * 1024,
 };
