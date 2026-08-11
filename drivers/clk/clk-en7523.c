@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
+#if defined(CONFIG_ARM) || defined(CONFIG_ARM64)
 #include <linux/arm-smccc.h>
+#endif
 #include <linux/bitfield.h>
 #include <linux/delay.h>
 #include <linux/clk-provider.h>
@@ -1061,6 +1063,7 @@ static const struct clk_ops en75xx_clk_ops = {
 
 #define to_en7523_cpu_clk(_hw) container_of(_hw, struct en7523_cpu_clk, hw)
 
+#if defined(CONFIG_ARM) || defined(CONFIG_ARM64)
 static unsigned long en7523_cpu_smc_get_rate(void)
 {
 	struct arm_smccc_res res;
@@ -1073,6 +1076,12 @@ static unsigned long en7523_cpu_smc_get_rate(void)
 
 	return (unsigned long)res.a0 * 1000000UL;
 }
+#else
+static unsigned long en7523_cpu_smc_get_rate(void)
+{
+	return 0;
+}
+#endif
 
 static bool en7523_cpu_smc_available(void)
 {
@@ -1091,6 +1100,7 @@ static int en7523_cpu_rate_to_state(unsigned long rate, unsigned int *state)
 	return 0;
 }
 
+#if defined(CONFIG_ARM) || defined(CONFIG_ARM64)
 static int en7523_cpu_smc_set_rate(unsigned long rate)
 {
 	struct arm_smccc_res res;
@@ -1107,6 +1117,12 @@ static int en7523_cpu_smc_set_rate(unsigned long rate)
 
 	return res.a0 & BIT(0) ? -EINVAL : 0;
 }
+#else
+static int en7523_cpu_smc_set_rate(unsigned long rate)
+{
+	return -EOPNOTSUPP;
+}
+#endif
 
 static u32 en7523_cpu_xtal_mhz(struct en7523_cpu_clk *cpu_clk)
 {
