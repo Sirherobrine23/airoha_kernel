@@ -903,6 +903,16 @@ struct airoha_eth {
 
 void airoha_qdma_common_init(struct airoha_qdma_common *qdma,
 			     struct airoha_eth *eth, void __iomem *regs, u8 id);
+int airoha_qdma_init(struct platform_device *pdev, struct airoha_eth *eth,
+		     struct airoha_qdma *qdma);
+void airoha_qdma_cleanup(struct airoha_qdma *qdma);
+void airoha_qdma_cleanup_tx_queue(struct airoha_queue *q);
+void airoha_qdma_unmap_tx_entry(struct airoha_eth *eth,
+				struct airoha_queue_entry *e);
+void airoha_qdma_start_napi(struct airoha_qdma *qdma);
+void airoha_qdma_stop_napi(struct airoha_qdma *qdma);
+void airoha_qdma_start(struct airoha_qdma *qdma);
+void airoha_qdma_stop(struct airoha_qdma *qdma);
 
 static inline u16 airoha_qdma_get_txq(struct airoha_qdma *qdma, u16 qid)
 {
