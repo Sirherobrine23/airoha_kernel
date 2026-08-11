@@ -52,20 +52,18 @@ properties:
 
   memory-region:
     minItems: 1
-    maxItems: 3
+    maxItems: 2
     description: |
-      Optional reserved memory regions. The qdma0-buf and qdma1-buf regions
-      are reserved for QDMA packet memory. Hardware flow offload requires a
-      ppe-foe region of at least 0x140000 bytes below 4 GiB.
+      Optional reserved memory regions for the QDMA packet buffers. The PPE
+      FoE table is allocated through the DMA API by the Ethernet driver.
 
   memory-region-names:
     minItems: 1
-    maxItems: 3
+    maxItems: 2
     items:
       enum:
         - qdma0-buf
         - qdma1-buf
-        - ppe-foe
 
   "#address-cells":
     const: 1
