@@ -1716,11 +1716,11 @@ static inline void set_qregs_debug_mem_ctl_elem(struct mem_ctl *x, u16 v)
 /**
  * Bitfield accessors for: qregs_doneq_cfg
  * Register layout (32-bit word):
- * - Bits 31-16: INT_THRESHOLD (when done queue is this full, fire interrupt)
- * - Bits 15-0: SIZE (size of done queue buffer in 4-byte units)
+ * - Bits 27-16: INT_THRESHOLD (when done queue is this full, fire interrupt)
+ * - Bits 11-0: SIZE (size of done queue buffer in 4-byte units)
  */
-#define QREGS_DONEQ_CFG_INT_THRESHOLD_MASK		GENMASK(31, 16)
-#define QREGS_DONEQ_CFG_SIZE_MASK			GENMASK(15, 0)
+#define QREGS_DONEQ_CFG_INT_THRESHOLD_MASK		GENMASK(27, 16)
+#define QREGS_DONEQ_CFG_SIZE_MASK			GENMASK(11, 0)
 
 static inline u16 get_qregs_doneq_cfg_int_threshold(struct qregs_doneq_cfg *x)
 {
@@ -1742,11 +1742,11 @@ static inline void set_qregs_doneq_cfg_size(struct qregs_doneq_cfg *x, u16 v)
 /**
  * Bitfield accessors for: qregs_doneq_state
  * Register layout (32-bit word):
- * - Bits 31-16: LENGTH (number of items waiting in the queue)
- * - Bits 15-0: HEAD_INDEX (index of the first item in the list)
+ * - Bits 27-16: LENGTH (number of items waiting in the queue)
+ * - Bits 11-0: HEAD_INDEX (index of the first item in the list)
  */
-#define QREGS_DONEQ_STATE_LENGTH_MASK			GENMASK(31, 16)
-#define QREGS_DONEQ_STATE_HEAD_INDEX_MASK		GENMASK(15, 0)
+#define QREGS_DONEQ_STATE_LENGTH_MASK			GENMASK(27, 16)
+#define QREGS_DONEQ_STATE_HEAD_INDEX_MASK		GENMASK(11, 0)
 
 static inline u16 get_qregs_doneq_state_length(struct qregs_doneq_state *x)
 {
@@ -1760,11 +1760,11 @@ static inline u16 get_qregs_doneq_state_head_index(struct qregs_doneq_state *x)
 /**
  * Bitfield accessors for: qregs_rxring_size
  * Register layout (32-bit word):
- * - Bits 31-16: RING0_SIZE (size of RX ring 0, max 4095)
- * - Bits 15-0: RING1_SIZE (size of RX ring 1, max 4095)
+ * - Bits 11-0: RING0_SIZE (size of RX ring 0, max 4095)
+ * - Bits 27-16: RING1_SIZE (size of RX ring 1, max 4095)
  */
-#define QREGS_RXRING_SIZE_RING0_MASK			GENMASK(31, 16)
-#define QREGS_RXRING_SIZE_RING1_MASK			GENMASK(15, 0)
+#define QREGS_RXRING_SIZE_RING0_MASK			GENMASK(11, 0)
+#define QREGS_RXRING_SIZE_RING1_MASK			GENMASK(27, 16)
 
 static inline u16 get_qregs_rxring_size_ring0(struct qregs_rxring_size *x)
 {
@@ -1786,11 +1786,11 @@ static inline void set_qregs_rxring_size_ring1(struct qregs_rxring_size *x, u16 
 /**
  * Bitfield accessors for: qregs_rxring_low
  * Register layout (32-bit word):
- * - Bits 31-16: RING0_LOW (interrupt threshold for ring 0, max 4095)
- * - Bits 15-0: RING1_LOW (interrupt threshold for ring 1, max 4095)
+ * - Bits 11-0: RING0_LOW (interrupt threshold for ring 0, max 4095)
+ * - Bits 27-16: RING1_LOW (interrupt threshold for ring 1, max 4095)
  */
-#define QREGS_RXRING_LOW_RING0_MASK			GENMASK(31, 16)
-#define QREGS_RXRING_LOW_RING1_MASK			GENMASK(15, 0)
+#define QREGS_RXRING_LOW_RING0_MASK			GENMASK(11, 0)
+#define QREGS_RXRING_LOW_RING1_MASK			GENMASK(27, 16)
 
 static inline u16 get_qregs_rxring_low_ring0(struct qregs_rxring_low *x)
 {
