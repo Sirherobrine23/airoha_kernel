@@ -321,6 +321,7 @@ enum mt7530_port_mode {
 
 /* Register for port vlan control */
 #define MT7530_PVC_P(x)			(0x2010 + ((x) * 0x100))
+#define  PVC_PASSTHROUGH		BIT(11)
 #define  PORT_SPEC_TAG			BIT(5)
 #define  PVC_EG_TAG(x)			(((x) & 0x7) << 8)
 #define  PVC_EG_TAG_MASK		PVC_EG_TAG(7)
