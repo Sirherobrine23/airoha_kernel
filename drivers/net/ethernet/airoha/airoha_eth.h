@@ -750,12 +750,18 @@ struct airoha_ppe_host_ops {
 	void (*npu_stats_clear)(struct airoha_npu *npu, u32 index);
 };
 
-struct airoha_ppe {
+struct airoha_ppe_common {
 	struct airoha_ppe_dev dev;
 	struct airoha_eth *eth;
 
 	void *foe;
 	dma_addr_t foe_dma;
+
+	struct dentry *debugfs_dir;
+};
+
+struct airoha_ppe {
+	struct airoha_ppe_common common;
 
 	struct rhashtable l2_flows;
 	struct hlist_head pending_flows;
@@ -771,8 +777,6 @@ struct airoha_ppe {
 	 * the airoha-npu module) on every flow.
 	 */
 	bool offload_setup_done;
-
-	struct dentry *debugfs_dir;
 };
 
 /* EcoNet generation-1 PPE/FoE layout. */
@@ -833,19 +837,13 @@ struct econet_flow_entry {
 };
 
 struct econet_ppe {
-	struct airoha_ppe_dev dev;
-	struct airoha_eth *eth;
-
-	void *foe_table;
-	dma_addr_t foe_dma;
+	struct airoha_ppe_common common;
 
 	/* Protects flows and FoE slot ownership in RX and TC paths. */
 	spinlock_t lock;
 	struct list_head flows;
 	struct list_head block_cb_list;
 	bool armed;
-
-	struct dentry *debugfs_dir;
 };
 
 enum airoha_ids {
@@ -1115,14 +1113,9 @@ void econet_ppe_read_entry(struct econet_ppe *ppe, u16 hash,
 			   struct econet_foe_entry *entry);
 
 #if IS_ENABLED(CONFIG_NET_AIROHA_PPE_DEBUGFS)
-int airoha_ppe_debugfs_init(struct airoha_ppe *ppe);
-int econet_ppe_debugfs_init(struct econet_ppe *ppe);
+int airoha_ppe_debugfs_init(struct airoha_ppe_common *ppe);
 #else
-static inline int airoha_ppe_debugfs_init(struct airoha_ppe *ppe)
-{
-	return 0;
-}
-static inline int econet_ppe_debugfs_init(struct econet_ppe *ppe)
+static inline int airoha_ppe_debugfs_init(struct airoha_ppe_common *ppe)
 {
 	return 0;
 }

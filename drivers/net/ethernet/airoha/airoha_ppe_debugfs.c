@@ -7,9 +7,55 @@
 #include "airoha_eth.h"
 #include "airoha_regs.h"
 
+static const char *const airoha_ppe_debugfs_type_str[] = {
+	[PPE_PKT_TYPE_IPV4_HNAPT] = "IPv4 5T",
+	[PPE_PKT_TYPE_IPV4_ROUTE] = "IPv4 3T",
+	[PPE_PKT_TYPE_BRIDGE] = "L2B",
+	[PPE_PKT_TYPE_IPV4_DSLITE] = "DS-LITE",
+	[PPE_PKT_TYPE_IPV6_ROUTE_3T] = "IPv6 3T",
+	[PPE_PKT_TYPE_IPV6_ROUTE_5T] = "IPv6 5T",
+	[PPE_PKT_TYPE_IPV6_6RD] = "6RD",
+};
+
+static const char *const airoha_ppe_debugfs_state_short[] = {
+	[AIROHA_FOE_STATE_INVALID] = "INV",
+	[AIROHA_FOE_STATE_UNBIND] = "UNB",
+	[AIROHA_FOE_STATE_BIND] = "BND",
+	[AIROHA_FOE_STATE_FIN] = "FIN",
+};
+
+static const char *const airoha_ppe_debugfs_state_long[] = {
+	[AIROHA_FOE_STATE_INVALID] = "Invalid",
+	[AIROHA_FOE_STATE_UNBIND] = "Unbind",
+	[AIROHA_FOE_STATE_BIND] = "Bind",
+	[AIROHA_FOE_STATE_FIN] = "FIN",
+};
+
+static const char *airoha_ppe_debugfs_type_name(u32 type)
+{
+	if (type < ARRAY_SIZE(airoha_ppe_debugfs_type_str) &&
+	    airoha_ppe_debugfs_type_str[type])
+		return airoha_ppe_debugfs_type_str[type];
+
+	return "UNKNOWN";
+}
+
+static const char *airoha_ppe_debugfs_state_name(u32 state, bool short_name)
+{
+	const char *const *names = short_name ? airoha_ppe_debugfs_state_short :
+					       airoha_ppe_debugfs_state_long;
+
+	if (state < ARRAY_SIZE(airoha_ppe_debugfs_state_short) && names[state])
+		return names[state];
+
+	return "???";
+}
+
 static void airoha_debugfs_ppe_print_tuple(struct seq_file *m,
-					   void *src_addr, void *dest_addr,
-					   u16 *src_port, u16 *dest_port,
+					   const void *src_addr,
+					   const void *dest_addr,
+					   const u16 *src_port,
+					   const u16 *dest_port,
 					   bool ipv6)
 {
 	__be32 n_addr[IPV6_ADDR_WORDS];
@@ -37,8 +83,10 @@ static void airoha_debugfs_ppe_print_tuple(struct seq_file *m,
 
 static void airoha_debugfs_ppe_print_tuple_json(struct seq_file *m,
 					   const char *prefix,
-					   void *src_addr, void *dest_addr,
-					   u16 *src_port, u16 *dest_port,
+					   const void *src_addr,
+					   const void *dest_addr,
+					   const u16 *src_port,
+					   const u16 *dest_port,
 					   bool ipv6)
 {
 	__be32 n_addr[IPV6_ADDR_WORDS];
@@ -61,21 +109,6 @@ static void airoha_debugfs_ppe_print_tuple_json(struct seq_file *m,
 
 static int airoha_ppe_debugfs_foe_json_show(struct seq_file *m, void *private)
 {
-	static const char *const ppe_type_str[] = {
-		[PPE_PKT_TYPE_IPV4_HNAPT] = "IPv4 5T",
-		[PPE_PKT_TYPE_IPV4_ROUTE] = "IPv4 3T",
-		[PPE_PKT_TYPE_BRIDGE] = "L2B",
-		[PPE_PKT_TYPE_IPV4_DSLITE] = "DS-LITE",
-		[PPE_PKT_TYPE_IPV6_ROUTE_3T] = "IPv6 3T",
-		[PPE_PKT_TYPE_IPV6_ROUTE_5T] = "IPv6 5T",
-		[PPE_PKT_TYPE_IPV6_6RD] = "6RD",
-	};
-	static const char *const ppe_state_str[] = {
-		[AIROHA_FOE_STATE_INVALID] = "Invalid",
-		[AIROHA_FOE_STATE_UNBIND] = "Unbind",
-		[AIROHA_FOE_STATE_BIND] = "Bind",
-		[AIROHA_FOE_STATE_FIN] = "FIN",
-	};
 	struct airoha_ppe *ppe = m->private;
 	u32 ppe_num_entries = airoha_ppe_get_total_num_entries(ppe);
 	bool first_entry = true;
@@ -103,10 +136,9 @@ static int airoha_ppe_debugfs_foe_json_show(struct seq_file *m, void *private)
 		if (!state)
 			continue;
 
-		state_str = ppe_state_str[state % ARRAY_SIZE(ppe_state_str)];
+		state_str = airoha_ppe_debugfs_state_name(state, false);
 		type = FIELD_GET(AIROHA_FOE_IB1_BIND_PACKET_TYPE, hwe->ib1);
-		if (type < ARRAY_SIZE(ppe_type_str) && ppe_type_str[type])
-			type_str = ppe_type_str[type];
+		type_str = airoha_ppe_debugfs_type_name(type);
 
 		if (!first_entry)
 			seq_puts(m, ",\n");
@@ -201,21 +233,6 @@ DEFINE_SHOW_ATTRIBUTE(airoha_ppe_debugfs_foe_json);
 static int airoha_ppe_debugfs_foe_show(struct seq_file *m, void *private,
 				       bool bind)
 {
-	static const char *const ppe_type_str[] = {
-		[PPE_PKT_TYPE_IPV4_HNAPT] = "IPv4 5T",
-		[PPE_PKT_TYPE_IPV4_ROUTE] = "IPv4 3T",
-		[PPE_PKT_TYPE_BRIDGE] = "L2B",
-		[PPE_PKT_TYPE_IPV4_DSLITE] = "DS-LITE",
-		[PPE_PKT_TYPE_IPV6_ROUTE_3T] = "IPv6 3T",
-		[PPE_PKT_TYPE_IPV6_ROUTE_5T] = "IPv6 5T",
-		[PPE_PKT_TYPE_IPV6_6RD] = "6RD",
-	};
-	static const char *const ppe_state_str[] = {
-		[AIROHA_FOE_STATE_INVALID] = "INV",
-		[AIROHA_FOE_STATE_UNBIND] = "UNB",
-		[AIROHA_FOE_STATE_BIND] = "BND",
-		[AIROHA_FOE_STATE_FIN] = "FIN",
-	};
 	struct airoha_ppe *ppe = m->private;
 	u32 ppe_num_entries = airoha_ppe_get_total_num_entries(ppe);
 	int i;
@@ -243,10 +260,9 @@ static int airoha_ppe_debugfs_foe_show(struct seq_file *m, void *private,
 		if (bind && state != AIROHA_FOE_STATE_BIND)
 			continue;
 
-		state_str = ppe_state_str[state % ARRAY_SIZE(ppe_state_str)];
+		state_str = airoha_ppe_debugfs_state_name(state, true);
 		type = FIELD_GET(AIROHA_FOE_IB1_BIND_PACKET_TYPE, hwe->ib1);
-		if (type < ARRAY_SIZE(ppe_type_str) && ppe_type_str[type])
-			type_str = ppe_type_str[type];
+		type_str = airoha_ppe_debugfs_type_name(type);
 
 		seq_printf(m, "%05x %s %7s", i, state_str, type_str);
 
@@ -343,44 +359,6 @@ static int airoha_ppe_debugfs_foe_bind_show(struct seq_file *m, void *private)
 DEFINE_SHOW_ATTRIBUTE(airoha_ppe_debugfs_foe_bind);
 
 
-static const char *econet_ppe_debugfs_state_name(u32 state)
-{
-	switch (state) {
-	case AIROHA_FOE_STATE_INVALID:
-		return "INV";
-	case AIROHA_FOE_STATE_UNBIND:
-		return "UNB";
-	case AIROHA_FOE_STATE_BIND:
-		return "BND";
-	case AIROHA_FOE_STATE_FIN:
-		return "FIN";
-	default:
-		return "???";
-	}
-}
-
-static const char *econet_ppe_debugfs_type_name(u32 type)
-{
-	switch (type) {
-	case PPE_PKT_TYPE_IPV4_HNAPT:
-		return "IPv4 5T";
-	case PPE_PKT_TYPE_IPV4_ROUTE:
-		return "IPv4 3T";
-	case PPE_PKT_TYPE_BRIDGE:
-		return "L2B";
-	case PPE_PKT_TYPE_IPV4_DSLITE:
-		return "DS-LITE";
-	case PPE_PKT_TYPE_IPV6_ROUTE_3T:
-		return "IPv6 3T";
-	case PPE_PKT_TYPE_IPV6_ROUTE_5T:
-		return "IPv6 5T";
-	case PPE_PKT_TYPE_IPV6_6RD:
-		return "6RD";
-	default:
-		return "UNKNOWN";
-	}
-}
-
 /*
  * econet_ppe_commit_entry() stores EN751221 FoE words in the byte/halfword
  * layout consumed by the PPE. Convert a CPU snapshot of that DMA memory back
@@ -404,7 +382,6 @@ econet_ppe_debugfs_decode_entry(const struct econet_foe_entry *raw,
 
 		entry->data[i] = val;
 	}
-
 }
 
 static void econet_ppe_debugfs_mac(const struct econet_foe_mac_info *l2,
@@ -423,12 +400,18 @@ static void econet_ppe_debugfs_print_ipv4(struct seq_file *m,
 	u8 src[ETH_ALEN], dest[ETH_ALEN];
 
 	econet_ppe_debugfs_mac(&ipv4->l2, src, dest);
+	seq_puts(m, " orig=");
+	airoha_debugfs_ppe_print_tuple(m, &ipv4->orig.src_ip,
+				       &ipv4->orig.dest_ip,
+				       &ipv4->orig.src_port,
+				       &ipv4->orig.dest_port, false);
+	seq_puts(m, " new=");
+	airoha_debugfs_ppe_print_tuple(m, &ipv4->new.src_ip,
+				       &ipv4->new.dest_ip,
+				       &ipv4->new.src_port,
+				       &ipv4->new.dest_port, false);
 	seq_printf(m,
-		   " orig=%pI4h:%u->%pI4h:%u new=%pI4h:%u->%pI4h:%u eth=%pM->%pM etype=%04x vlan=%u,%u pppoe=%u ib1=%08x ib2=%08x",
-		   &ipv4->orig.src_ip, ipv4->orig.src_port,
-		   &ipv4->orig.dest_ip, ipv4->orig.dest_port,
-		   &ipv4->new.src_ip, ipv4->new.src_port,
-		   &ipv4->new.dest_ip, ipv4->new.dest_port,
+		   " eth=%pM->%pM etype=%04x vlan=%u,%u pppoe=%u ib1=%08x ib2=%08x",
 		   src, dest, ipv4->l2.etype, ipv4->l2.vlan1, ipv4->l2.vlan2,
 		   ipv4->l2.pppoe_id, entry->ib1, ipv4->ib2);
 }
@@ -436,7 +419,7 @@ static void econet_ppe_debugfs_print_ipv4(struct seq_file *m,
 static int econet_ppe_debugfs_foe_show(struct seq_file *m, bool bind_only)
 {
 	struct econet_ppe *ppe = m->private;
-	u32 entries = ppe->eth->soc->ppe_dram_entries;
+	u32 entries = ppe->common.eth->soc->ppe_dram_entries;
 	u32 i;
 
 	for (i = 0; i < entries; i++) {
@@ -456,8 +439,8 @@ static int econet_ppe_debugfs_foe_show(struct seq_file *m, bool bind_only)
 
 		type = FIELD_GET(AIROHA_FOE_IB1_BIND_PACKET_TYPE, entry.ib1);
 		seq_printf(m, "%05x %s %7s", i,
-			   econet_ppe_debugfs_state_name(state),
-			   econet_ppe_debugfs_type_name(type));
+			   airoha_ppe_debugfs_state_name(state, true),
+			   airoha_ppe_debugfs_type_name(type));
 
 		if (type == PPE_PKT_TYPE_IPV4_HNAPT ||
 		    type == PPE_PKT_TYPE_IPV4_ROUTE)
@@ -486,7 +469,7 @@ DEFINE_SHOW_ATTRIBUTE(econet_ppe_debugfs_foe_bind);
 static int econet_ppe_debugfs_foe_raw_show(struct seq_file *m, void *private)
 {
 	struct econet_ppe *ppe = m->private;
-	u32 entries = ppe->eth->soc->ppe_dram_entries;
+	u32 entries = ppe->common.eth->soc->ppe_dram_entries;
 	u32 i;
 
 	for (i = 0; i < entries; i++) {
@@ -569,7 +552,7 @@ DEFINE_SHOW_ATTRIBUTE(econet_ppe_debugfs_flows);
 static int econet_ppe_debugfs_regs_show(struct seq_file *m, void *private)
 {
 	struct econet_ppe *ppe = m->private;
-	struct airoha_eth *eth = ppe->eth;
+	struct airoha_eth *eth = ppe->common.eth;
 	struct econet_flow_entry *flow;
 	u32 flows = 0;
 
@@ -580,8 +563,8 @@ static int econet_ppe_debugfs_regs_show(struct seq_file *m, void *private)
 
 	seq_printf(m, "armed=%u\n", READ_ONCE(ppe->armed));
 	seq_printf(m, "flows=%u\n", flows);
-	seq_printf(m, "foe_cpu=%px\n", ppe->foe_table);
-	seq_printf(m, "foe_dma=%pad\n", &ppe->foe_dma);
+	seq_printf(m, "foe_cpu=%px\n", ppe->common.foe);
+	seq_printf(m, "foe_dma=%pad\n", &ppe->common.foe_dma);
 	seq_printf(m, "foe_entries=%u\n", eth->soc->ppe_dram_entries);
 	seq_printf(m, "GLO_CFG=%08x\n", airoha_fe_rr(eth, REG_PPE_GLO_CFG(0)));
 	seq_printf(m, "FLOW_CFG=%08x\n", airoha_fe_rr(eth, REG_PPE_PPE_FLOW_CFG(0)));
@@ -609,7 +592,7 @@ DEFINE_SHOW_ATTRIBUTE(econet_ppe_debugfs_regs);
 static int econet_ppe_debugfs_foe_json_show(struct seq_file *m, void *private)
 {
 	struct econet_ppe *ppe = m->private;
-	u32 entries = ppe->eth->soc->ppe_dram_entries;
+	u32 entries = ppe->common.eth->soc->ppe_dram_entries;
 	bool first = true;
 	u32 i;
 
@@ -634,18 +617,25 @@ static int econet_ppe_debugfs_foe_json_show(struct seq_file *m, void *private)
 		first = false;
 
 		seq_printf(m, "  {\"index\":%u,\"state\":\"%s\",\"type\":\"%s\",\"ib1\":\"0x%08x\",\"hw_ib1\":\"0x%08x\"",
-			   i, econet_ppe_debugfs_state_name(state),
-			   econet_ppe_debugfs_type_name(type), entry.ib1, raw.ib1);
+			   i, airoha_ppe_debugfs_state_name(state, true),
+			   airoha_ppe_debugfs_type_name(type), entry.ib1, raw.ib1);
 
 		if (type == PPE_PKT_TYPE_IPV4_HNAPT ||
 		    type == PPE_PKT_TYPE_IPV4_ROUTE) {
 			ipv4 = &entry.ipv4;
-			seq_printf(m, ",\"orig_src\":\"%pI4h\",\"orig_src_port\":%u,\"orig_dest\":\"%pI4h\",\"orig_dest_port\":%u,\"new_src\":\"%pI4h\",\"new_src_port\":%u,\"new_dest\":\"%pI4h\",\"new_dest_port\":%u,\"ib2\":\"0x%08x\"",
-				   &ipv4->orig.src_ip, ipv4->orig.src_port,
-				   &ipv4->orig.dest_ip, ipv4->orig.dest_port,
-				   &ipv4->new.src_ip, ipv4->new.src_port,
-				   &ipv4->new.dest_ip, ipv4->new.dest_port,
-				   ipv4->ib2);
+			seq_putc(m, ',');
+			airoha_debugfs_ppe_print_tuple_json(
+				m, "orig", &ipv4->orig.src_ip,
+				&ipv4->orig.dest_ip,
+				&ipv4->orig.src_port,
+				&ipv4->orig.dest_port, false);
+			seq_putc(m, ',');
+			airoha_debugfs_ppe_print_tuple_json(
+				m, "new", &ipv4->new.src_ip,
+				&ipv4->new.dest_ip,
+				&ipv4->new.src_port,
+				&ipv4->new.dest_port, false);
+			seq_printf(m, ",\"ib2\":\"0x%08x\"", ipv4->ib2);
 		}
 
 		seq_putc(m, '}');
@@ -656,40 +646,50 @@ static int econet_ppe_debugfs_foe_json_show(struct seq_file *m, void *private)
 }
 DEFINE_SHOW_ATTRIBUTE(econet_ppe_debugfs_foe_json);
 
-int econet_ppe_debugfs_init(struct econet_ppe *ppe)
+static int
+airoha_ppe_debugfs_create_common(struct airoha_ppe_common *common,
+				 const struct file_operations *entries_fops,
+				 const struct file_operations *json_fops,
+				 const struct file_operations *bind_fops)
 {
 	struct dentry *dir;
+	void *priv = common->dev.priv;
 
 	dir = debugfs_create_dir("ppe", NULL);
 	if (IS_ERR(dir))
 		return PTR_ERR(dir);
 
-	ppe->debugfs_dir = dir;
-	debugfs_create_file("entries", 0444, dir, ppe,
-			    &econet_ppe_debugfs_foe_all_fops);
-	debugfs_create_file("entries.json", 0444, dir, ppe,
-			    &econet_ppe_debugfs_foe_json_fops);
-	debugfs_create_file("bind", 0444, dir, ppe,
-			    &econet_ppe_debugfs_foe_bind_fops);
-	debugfs_create_file("raw", 0444, dir, ppe,
-			    &econet_ppe_debugfs_foe_raw_fops);
-	debugfs_create_file("flows", 0444, dir, ppe,
-			    &econet_ppe_debugfs_flows_fops);
-	debugfs_create_file("regs", 0444, dir, ppe,
-			    &econet_ppe_debugfs_regs_fops);
+	common->debugfs_dir = dir;
+	debugfs_create_file("entries", 0444, dir, priv, entries_fops);
+	debugfs_create_file("entries.json", 0444, dir, priv, json_fops);
+	debugfs_create_file("bind", 0444, dir, priv, bind_fops);
 
 	return 0;
 }
 
-int airoha_ppe_debugfs_init(struct airoha_ppe *ppe)
+int airoha_ppe_debugfs_init(struct airoha_ppe_common *common)
 {
-	ppe->debugfs_dir = debugfs_create_dir("ppe", NULL);
-	debugfs_create_file("entries", 0444, ppe->debugfs_dir, ppe,
-			    &airoha_ppe_debugfs_foe_all_fops);
-	debugfs_create_file("entries.json", 0444, ppe->debugfs_dir, ppe,
-			    &airoha_ppe_debugfs_foe_json_fops);
-	debugfs_create_file("bind", 0444, ppe->debugfs_dir, ppe,
-			    &airoha_ppe_debugfs_foe_bind_fops);
+	int err;
+
+	if (!airoha_is_gen1(common->eth))
+		return airoha_ppe_debugfs_create_common(common,
+			&airoha_ppe_debugfs_foe_all_fops,
+			&airoha_ppe_debugfs_foe_json_fops,
+			&airoha_ppe_debugfs_foe_bind_fops);
+
+	err = airoha_ppe_debugfs_create_common(common,
+		&econet_ppe_debugfs_foe_all_fops,
+		&econet_ppe_debugfs_foe_json_fops,
+		&econet_ppe_debugfs_foe_bind_fops);
+	if (err)
+		return err;
+
+	debugfs_create_file("raw", 0444, common->debugfs_dir,
+			    common->dev.priv, &econet_ppe_debugfs_foe_raw_fops);
+	debugfs_create_file("flows", 0444, common->debugfs_dir,
+			    common->dev.priv, &econet_ppe_debugfs_flows_fops);
+	debugfs_create_file("regs", 0444, common->debugfs_dir,
+			    common->dev.priv, &econet_ppe_debugfs_regs_fops);
 
 	return 0;
 }
