@@ -78,7 +78,8 @@ struct airoha_xpon_match_data {
 	u8 gpon_fine_delay;
 	bool en7523_gpon_defaults;
 	bool mac_irq_via_eth;
-	bool reset_before_mmio;
+	bool prepare_before_mmio;
+	bool gpon_reset_on_start;
 };
 
 static struct device *airoha_xpon_find_lddla(struct device *dev)
@@ -2351,13 +2352,17 @@ static int gpon_enable(struct xpon_priv *priv)
 		 gpon_state_name(ploam_get_state(priv->ploam)));
 
 	/*
-	 * Every GPON session starts from a hardware reset. This covers initial
-	 * activation, OLT deactivation recovery, LOS recovery and all runtime
-	 * configuration changes requested through net/omci.
+	 * EN7523 starts each GPON session from a MAC reset.  The EN7521 SDK
+	 * initial-enable path instead calls gponDevResetCtrl(XPON_DISABLE),
+	 * which releases MBI without asserting RST_CTRL1[31].  A real gen1
+	 * recovery reset also stops MBI before asserting that bit, so do not
+	 * issue a bare reset here on EN751221.
 	 */
-	ret = airoha_xpon_reset_mac(priv);
-	if (ret)
-		return ret;
+	if (priv->match_data->gpon_reset_on_start) {
+		ret = airoha_xpon_reset_mac(priv);
+		if (ret)
+			return ret;
+	}
 
 	ret = airoha_xpon_phy_start(priv->dev, priv->phy,
 				    AIROHA_XPON_MODE_GPON,
@@ -3902,6 +3907,7 @@ static const struct airoha_xpon_match_data en7523_xpon_data = {
 	.wan_mode_mask = EN7523_SCU_WAN_MODE_MASK,
 	.gpon_fine_delay = DBG_DLY_FINE_INT_DEFAULT,
 	.en7523_gpon_defaults = true,
+	.gpon_reset_on_start = true,
 };
 
 static const struct airoha_xpon_match_data en7523_gpon_data = {
@@ -3909,6 +3915,7 @@ static const struct airoha_xpon_match_data en7523_gpon_data = {
 	.wan_mode_mask = EN7523_SCU_WAN_MODE_MASK,
 	.gpon_fine_delay = DBG_DLY_FINE_INT_DEFAULT,
 	.en7523_gpon_defaults = true,
+	.gpon_reset_on_start = true,
 };
 
 static const struct airoha_xpon_match_data en7523_epon_data = {
@@ -3924,7 +3931,7 @@ static const struct airoha_xpon_match_data en751221_xpon_data = {
 	.wan_mode_mask = EN751221_SCU_WAN_MODE_MASK,
 	.gpon_fine_delay = 0x1c,
 	.mac_irq_via_eth = true,
-	.reset_before_mmio = true,
+	.prepare_before_mmio = true,
 };
 
 static const struct airoha_xpon_match_data en751221_gpon_data = {
@@ -3932,7 +3939,7 @@ static const struct airoha_xpon_match_data en751221_gpon_data = {
 	.wan_mode_mask = EN751221_SCU_WAN_MODE_MASK,
 	.gpon_fine_delay = 0x1c,
 	.mac_irq_via_eth = true,
-	.reset_before_mmio = true,
+	.prepare_before_mmio = true,
 };
 
 static const struct airoha_xpon_match_data en751221_epon_data = {
@@ -3940,7 +3947,7 @@ static const struct airoha_xpon_match_data en751221_epon_data = {
 	.wan_mode_mask = EN751221_SCU_WAN_MODE_MASK,
 	.gpon_fine_delay = 0x1c,
 	.mac_irq_via_eth = true,
-	.reset_before_mmio = true,
+	.prepare_before_mmio = true,
 };
 
 static bool airoha_xpon_is_gpon(struct xpon_priv *priv)
@@ -4262,18 +4269,23 @@ static int airoha_xpon_probe(struct platform_device *pdev)
 	}
 
 	/*
-	 * EN751221 can leave the xPON MAC reset domain in a state where the
-	 * first access to the GPON/EPON register window stalls the MIPS bus.
-	 * The vendor gpon_dev_init_reset() pulses RST_CTRL1[31] before normal
-	 * MAC initialization. Do the same before airoha_xpon_init_*() touches
-	 * GPON_INT_ENABLE/EPON_INT_EN for the first time.
+	 * The EN751221 xPON_1g SDK selects the shared WAN mux before the
+	 * first GPON/EPON MAC register initialization.  Keep that ordering:
+	 * RST_CTRL1[31] is a runtime MAC reset, not a prerequisite for mapping
+	 * or quiescing the interrupt registers during probe.
 	 */
-	if (data->reset_before_mmio) {
-		dev_info(dev, "resetting %s MAC before first register access\n",
+	if (data->prepare_before_mmio) {
+		dev_info(dev, "selecting %s WAN mode before first MAC access\n",
 			 airoha_xpon_mode_name(priv->mode));
-		ret = airoha_xpon_reset_mac(priv);
-		if (ret)
+		ret = airoha_xpon_select_wan(priv->scu, data, priv->mode);
+		if (ret) {
+			ret = dev_err_probe(dev, ret,
+					    "failed to prepare EN751221 xPON WAN mux\n");
 			goto err_put_gdm;
+		}
+
+		dev_info(dev, "%s WAN mode selected before first MAC access\n",
+			 airoha_xpon_mode_name(priv->mode));
 	}
 
 	switch (priv->mode) {
