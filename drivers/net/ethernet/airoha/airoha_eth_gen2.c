@@ -5481,23 +5481,13 @@ static const struct airoha_ppe_host_ops airoha_ppe_host_ops = {
 	.npu_stats_clear = airoha_eth_ppe_npu_stats_clear,
 };
 
-int airoha_eth_gen2_probe(struct platform_device *pdev)
+int airoha_eth_gen2_probe(struct platform_device *pdev, struct airoha_eth *eth)
 {
 	struct reset_control_bulk_data *xsi_rsts;
 	struct device_node *np;
-	struct airoha_eth *eth;
 	int i, err;
 
-	eth = devm_kzalloc(&pdev->dev, sizeof(*eth), GFP_KERNEL);
-	if (!eth)
-		return -ENOMEM;
-
-	eth->soc = of_device_get_match_data(&pdev->dev);
-	if (!eth->soc)
-		return -EINVAL;
 	eth->ppe_host_ops = &airoha_ppe_host_ops;
-
-	eth->dev = &pdev->dev;
 
 	err = airoha_eth_set_dma_mask(eth->dev);
 	if (err)
@@ -5550,7 +5540,6 @@ int airoha_eth_gen2_probe(struct platform_device *pdev)
 	eth->napi_dev = airoha_eth_alloc_napi_dev("qdma_eth");
 	if (!eth->napi_dev)
 		return -ENOMEM;
-	platform_set_drvdata(pdev, eth);
 
 	/* Allocate the GDM ports before bringing up the QDMA hardware. This
 	 * reads the port MAC address, which may be supplied by a late nvmem
@@ -5642,14 +5631,12 @@ error_ports_free:
 		airoha_metadata_dst_free(port);
 	}
 	free_netdev(eth->napi_dev);
-	platform_set_drvdata(pdev, NULL);
-
 	return err;
 }
 
-void airoha_eth_gen2_remove(struct platform_device *pdev)
+void airoha_eth_gen2_remove(struct platform_device *pdev,
+			    struct airoha_eth *eth)
 {
-	struct airoha_eth *eth = platform_get_drvdata(pdev);
 	int i;
 
 	airoha_wed_exit();
@@ -5680,7 +5667,6 @@ void airoha_eth_gen2_remove(struct platform_device *pdev)
 	airoha_hw_cleanup(eth);
 
 	free_netdev(eth->napi_dev);
-	platform_set_drvdata(pdev, NULL);
 }
 
 static const char * const en7523_xsi_rsts_names[] = {
