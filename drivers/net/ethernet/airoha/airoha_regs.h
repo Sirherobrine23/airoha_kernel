@@ -143,9 +143,9 @@
 	GENMASK(4 + (((_n) % 4) << 3),	(((_n) % 4) << 3))
 #define EN7523_CDM_CRSN_QSEL_REASON_MASK(_n)	\
 	GENMASK(4 + (((_n) % 4) << 2),	(((_n) % 4) << 2))
-#define CDM_CRSN_QSEL_REASON_MASK_TARGET(_eth, _n) airoha_is(_eth, en7523) ? \
+#define CDM_CRSN_QSEL_REASON_MASK_TARGET(_eth, _n) airoha_is(_eth, airoha_en7523) ? \
 	EN7523_CDM_CRSN_QSEL_REASON_MASK(_n) : CDM_CRSN_QSEL_REASON_MASK(_n)
-#define CDM_CRSN_QSEL_REASON_MASK_FIELD_PREP(_eth, _n1, _n2) airoha_is(_eth, en7523) ? \
+#define CDM_CRSN_QSEL_REASON_MASK_FIELD_PREP(_eth, _n1, _n2) airoha_is(_eth, airoha_en7523) ? \
 	FIELD_PREP(EN7523_CDM_CRSN_QSEL_REASON_MASK(_n1), _n2) : \
 	FIELD_PREP(CDM_CRSN_QSEL_REASON_MASK(_n1), _n2)
 	
