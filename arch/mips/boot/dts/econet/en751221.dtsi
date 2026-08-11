@@ -56,6 +56,11 @@
 		#reset-cells = <1>;
 	};
 
+	chip_scu: syscon@1fa20000 {
+		compatible = "airoha,chip-scu", "syscon";
+		reg = <0x1fa20000 0x200>;
+	};
+
 	intc: interrupt-controller@1fb40000 {
 		compatible = "econet,en751221-intc";
 		reg = <0x1fb40000 0x100>;
@@ -152,6 +157,27 @@
 			#address-cells = <3>;
 			#size-cells = <2>;
 			ranges;
+		};
+	};
+
+	gpio_syscon: system-controller@1fbf0200 {
+		compatible = "econet,en751221-gpio-sysctl", "syscon",
+			     "simple-mfd";
+		reg = <0x1fbf0200 0x7c>;
+
+		pinctrl: pinctrl {
+			compatible = "econet,en751221-pinctrl";
+			airoha,chip-scu = <&chip_scu>;
+
+			interrupt-parent = <&intc>;
+			interrupts = <10>;
+
+			gpio-controller;
+			#gpio-cells = <2>;
+			gpio-ranges = <&pinctrl 0 0 64>;
+
+			interrupt-controller;
+			#interrupt-cells = <2>;
 		};
 	};
 
