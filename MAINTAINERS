@@ -20320,7 +20320,7 @@ S:	Maintained
 F:	Documentation/devicetree/bindings/mfd/econet,en751221-gpio-sysctl.yaml
 F:	Documentation/devicetree/bindings/pinctrl/airoha,en7581-pinctrl.yaml
 F:	Documentation/devicetree/bindings/pinctrl/econet,en751221-pinctrl.yaml
-F:	drivers/pinctrl/airoha/pinctrl-airoha.c
+F:	drivers/pinctrl/airoha/
 
 PIN CONTROLLER - AMD
 M:	Basavaraj Natikar <Basavaraj.Natikar@amd.com>
