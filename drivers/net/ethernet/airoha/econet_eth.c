@@ -1677,8 +1677,21 @@ static netdev_tx_t econet_dev_xmit(struct sk_buff *skb, struct net_device *dev)
 	u8 channel;
 
 	qid = skb_get_queue_mapping(skb);
-	channel = qid / ECONET_NUM_QUEUES;
-	set_etx_queue(&msg.etx, qid % ECONET_NUM_QUEUES);
+	if (port->qdma->soc->en751221_special_tag) {
+		/*
+		 * The EN751221 vendor LAN path does not map Linux flow/hash
+		 * queues onto QDMA's eight hardware QoS queues.  Unless QoS
+		 * explicitly marks txq_is_valid, qdma_transmit_packet() forces
+		 * queue 0 and selects the channel from the destination switch
+		 * port.  Keep that policy here; Linux qid is still used for BQL
+		 * accounting and queue stop/wake.
+		 */
+		channel = 0;
+		set_etx_queue(&msg.etx, 0);
+	} else {
+		channel = qid / ECONET_NUM_QUEUES;
+		set_etx_queue(&msg.etx, qid % ECONET_NUM_QUEUES);
+	}
 	set_etx_fport(&msg.etx, port->fport);
 
 	txq = netdev_get_tx_queue(dev, qid);
