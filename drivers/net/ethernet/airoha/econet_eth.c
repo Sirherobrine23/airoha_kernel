@@ -621,7 +621,8 @@ static int econet_init_rx_queue(struct econet_q_rx *q,
 		.dev = qdma->dev,
 		.napi = &q->napi,
 	};
-	int threshold = clamp(ndesc >> 3, 1, 32);
+	int threshold = qdma->soc->en751221_special_tag && qdma->id == 0 ?
+			32 : clamp(ndesc >> 3, 1, 32);
 	struct qregs_rxring_size rrs;
 	struct qregs_rxring_low rrl;
 	dma_addr_t dma_addr;
@@ -653,7 +654,12 @@ static int econet_init_rx_queue(struct econet_q_rx *q,
 
 	memset(q->desc, 0, q->ndesc * sizeof(*q->desc));
 
-	netif_napi_add(qdma->napi_dev, &q->napi, econet_qdma_rx_napi_poll);
+	if (qdma->soc->en751221_special_tag)
+		netif_napi_add_weight(qdma->napi_dev, &q->napi,
+				      econet_qdma_rx_napi_poll, 128);
+	else
+		netif_napi_add(qdma->napi_dev, &q->napi,
+			       econet_qdma_rx_napi_poll);
 
 	econet_wreg(lower_32_bits(dma_addr), &q->qchain_regs->rxbase);
 
@@ -1346,6 +1352,14 @@ struct econet_qdma *econet_qdma_new(struct econet_eth *eth,
 	}
 	if (!qdma->napi_dev)
 		return ERR_PTR(-ENOMEM);
+
+	/*
+	 * The EN7512/EN7521 SDK runs Ethernet NAPI from softirq context. The
+	 * common Airoha helper defaults to threaded NAPI for the newer ARM SoCs,
+	 * which adds avoidable scheduler wakeups to the MIPS packet path.
+	 */
+	if (qdma->soc->en751221_special_tag)
+		qdma->napi_dev->threaded = false;
 
 	err = econet_init(eth->dev, qdma, irqs, num_irqs);
 	if (err) {
