@@ -1,5 +1,6 @@
 config AIROHA_LDDLA_PHY
 	tristate "Airoha EN757x xPON PHY lddla devices"
+	select HWMON
 	select PHY_COMMON_PROPS
 	default n
 	help
