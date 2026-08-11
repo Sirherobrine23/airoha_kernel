@@ -5497,6 +5497,7 @@ int airoha_eth_gen2_probe(struct platform_device *pdev, struct airoha_eth *eth)
 	if (IS_ERR(eth->fe_regs))
 		return dev_err_probe(eth->dev, PTR_ERR(eth->fe_regs),
 				     "failed to iomap fe regs\n");
+	eth->ppe_regs = eth->fe_regs;
 
 	eth->gdmp_regs = devm_platform_ioremap_resource_byname(pdev, "gdmp");
 	if (IS_ERR(eth->gdmp_regs))

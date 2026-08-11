@@ -2301,8 +2301,7 @@ void airoha_eth_gen1_remove(struct platform_device *pdev,
 		priv->ports[i]->dev.of_node = NULL;
 	}
 
-	airoha_ppe_econet_deinit(eth->ppe_dev);
-	eth->ppe_dev = NULL;
+	airoha_ppe_deinit(eth);
 
 	for (i = 0; i < ARRAY_SIZE(priv->qdma); i++)
 		if (priv->qdma[i])
@@ -2348,6 +2347,7 @@ int airoha_eth_gen1_probe(struct platform_device *pdev, struct airoha_eth *eth)
 	eth->fe_regs = fe_base;
 	priv->gdm[0] = fe_base + ECONET_FE_GDM1_OFFSET;
 	priv->ppe_base = fe_base + ECONET_FE_PPE_OFFSET;
+	eth->ppe_regs = priv->ppe_base;
 	priv->gdm[1] = fe_base + ECONET_FE_GDM2_OFFSET;
 
 	eth->gdmp_regs = devm_platform_ioremap_resource_byname(pdev, "gdmp");
@@ -2403,13 +2403,9 @@ int airoha_eth_gen1_probe(struct platform_device *pdev, struct airoha_eth *eth)
 		}
 	}
 
-	eth->ppe_dev = airoha_ppe_econet_init(eth->dev, eth->dev->of_node,
-					      eth->fe_regs, priv->ppe_base);
-	if (IS_ERR(eth->ppe_dev)) {
-		err = PTR_ERR(eth->ppe_dev);
-		eth->ppe_dev = NULL;
+	err = airoha_ppe_init(eth);
+	if (err)
 		goto error;
-	}
 
 	for_each_available_child_of_node(eth->dev->of_node, np) {
 		if (!of_device_is_compatible(np, "econet,eth-mac"))
@@ -2437,6 +2433,8 @@ static const struct airoha_eth_ops airoha_eth_gen1_ops = {
 const struct airoha_eth_soc_data econet_en751221_soc_data = {
 	.version = econet_en751221,
 	.eth_ops = &airoha_eth_gen1_ops,
+	.num_ppe = 1,
+	.ppe_dram_entries = 16 * 1024,
 	.qdma_dscp_byte_swap = true,
 	.en751221_special_tag = true,
 };
@@ -2444,5 +2442,7 @@ const struct airoha_eth_soc_data econet_en751221_soc_data = {
 const struct airoha_eth_soc_data econet_en7528_soc_data = {
 	.version = econet_en7528,
 	.eth_ops = &airoha_eth_gen1_ops,
+	.num_ppe = 1,
+	.ppe_dram_entries = 16 * 1024,
 	.qdma_dscp_byte_swap = false,
 };
