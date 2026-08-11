@@ -1162,7 +1162,7 @@ static const struct airoha_pinctrl_match_data pinctrl_match_data = {
 	.funcs = pinctrl_funcs,
 	.num_funcs = ARRAY_SIZE(pinctrl_funcs),
 	/* only GPIO0-GPIO15 can raise an interrupt */
-	.num_irq_pins = 16,
+	.num_irq = 16,
 	.confs_info = {
 		[AIROHA_PINCTRL_CONFS_PULLUP] = {
 			.confs = pinctrl_pullup_conf,
