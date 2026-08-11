@@ -12,6 +12,7 @@ struct device_node;
 struct ethtool_drvinfo;
 struct sk_buff;
 struct airoha_ppe_dev;
+struct airoha_eth;
 
 #define AIROHA_MTK_INVALID_CHANNEL		7
 
@@ -77,6 +78,7 @@ struct airoha_gdm_mac_ops {
  * @family: frame-engine generation
  * @id: one-based GDM identifier
  * @pse_port: PPE/PSE destination port used by the backend
+ * @eth: common frame-engine host
  * @netdev: associated Linux network device
  * @ppe: optional common PPE frontend
  * @priv: backend GDM object passed to @mac_ops
@@ -90,6 +92,7 @@ struct airoha_gdm_common {
 	enum airoha_eth_family family;
 	u8 id;
 	u8 pse_port;
+	struct airoha_eth *eth;
 	struct net_device *netdev;
 	struct airoha_ppe_dev *ppe;
 	void *priv;
@@ -113,7 +116,7 @@ void airoha_eth_get_drvinfo(struct net_device *netdev,
 			    struct ethtool_drvinfo *info);
 
 void airoha_gdm_common_init(struct airoha_gdm_common *gdm,
-			    struct net_device *netdev,
+			    struct airoha_eth *eth, struct net_device *netdev,
 			    enum airoha_eth_family family, u8 id,
 			    u8 pse_port, void *priv,
 			    const struct airoha_gdm_mac_ops *mac_ops);
