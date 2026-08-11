@@ -65,7 +65,8 @@ patternProperties:
         properties:
           function:
             enum: [sipo, tod_1pps, pcie_reset, spi, uart, pon, pcm,
-                   pcm_spi, phy_led, gpio]
+                   pcm_spi, gpio, phy1_led0, phy2_led0, phy3_led0,
+                   phy4_led0, gsw_port4_led0]
 
           groups: true
 
@@ -144,11 +145,43 @@ patternProperties:
           - if:
               properties:
                 function:
-                  const: phy_led
+                  const: phy1_led0
             then:
               properties:
                 groups:
-                  enum: [phy0_led, phy1_led, phy2_led, phy3_led, phy4_led]
+                  enum: [gpio10]
+          - if:
+              properties:
+                function:
+                  const: phy2_led0
+            then:
+              properties:
+                groups:
+                  enum: [gpio9]
+          - if:
+              properties:
+                function:
+                  const: phy3_led0
+            then:
+              properties:
+                groups:
+                  enum: [gpio8]
+          - if:
+              properties:
+                function:
+                  const: phy4_led0
+            then:
+              properties:
+                groups:
+                  enum: [gpio7]
+          - if:
+              properties:
+                function:
+                  const: gsw_port4_led0
+            then:
+              properties:
+                groups:
+                  enum: [gpio3]
           - if:
               properties:
                 function:
