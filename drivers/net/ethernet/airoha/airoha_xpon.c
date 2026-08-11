@@ -4312,7 +4312,7 @@ static void airoha_xpon_remove(struct platform_device *pdev)
 }
 
 static const struct of_device_id airoha_xpon_of_match[] = {
-	{ .compatible = "airoha,en7523-xpon", .data = &xpon_data },
+	{ .compatible = "airoha,airoha_en7523-xpon", .data = &xpon_data },
 	{ .compatible = "econet,en7521-xpon", .data = &xpon_data },
 	{ .compatible = "econet,en7526-xpon", .data = &xpon_data },
 	{ .compatible = "econet,en751221-xpon", .data = &xpon_data },
