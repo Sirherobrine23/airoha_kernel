@@ -1013,21 +1013,40 @@ static int econet_init_final(struct econet_qdma *qdma)
 
 				p = en751221_irq_purpose(bit);
 
-				/* RX and TX done */
-				en |= (p.type == IPS_DONE);
+				if (qdma->soc->en751221_special_tag) {
+					/*
+					 * Match qdma_dev.c's production mask. HWF
+					 * EMPTY/LOW are status/debug conditions, not
+					 * runtime interrupts; keeping them enabled while
+					 * PPE consumes LMGR descriptors can cause a hard
+					 * IRQ storm. Bit 9 is the vendor IRQ_FULL event,
+					 * represented as NO_DSCP/DONE in our map.
+					 */
+					en |= p.type == IPS_DONE;
+					en |= p.type == IPS_NO_DSCP &&
+					      (p.source == IPSC_RX ||
+					       p.source == IPSC_DONE);
+					en |= p.type == IPS_ERR_COHERENT;
+					en |= p.type == IPS_OVERFLOW;
+				} else {
+					/* RX and TX done */
+					en |= (p.type == IPS_DONE);
 
-				/* Running out of resources */
-				en |= (p.type == IPS_NO_DSCP && p.source != IPSC_TX);
-				en |= (p.type == IPS_LOW_DSCP && p.source != IPSC_TX);
+					/* Running out of resources */
+					en |= (p.type == IPS_NO_DSCP &&
+					       p.source != IPSC_TX);
+					en |= (p.type == IPS_LOW_DSCP &&
+					       p.source != IPSC_TX);
 
-				/* Error conditions */
-				en |= (p.type == IPS_ERR_COHERENT);
-				en |= (p.type == IPS_OVERFLOW);
+					/* Error conditions */
+					en |= (p.type == IPS_ERR_COHERENT);
+					en |= (p.type == IPS_OVERFLOW);
 
-				/* External hardware */
-				en |= (p.type == IPS_GPON_INT);
-				en |= (p.type == IPS_EPON_INT);
-				en |= (p.type == IPS_XPON_INT);
+					/* External hardware */
+					en |= (p.type == IPS_GPON_INT);
+					en |= (p.type == IPS_EPON_INT);
+					en |= (p.type == IPS_XPON_INT);
+				}
 
 				mask |= en << k;
 			}
