@@ -3346,17 +3346,17 @@ struct econet_qdma_cfg {
 
 struct econet_qdma;
 
-struct econet_qdma *econet_qdma_new(struct airoha_eth *eth,
+struct econet_qdma *airoha_qdma_gen1_new(struct airoha_eth *eth,
 				void __iomem *qdma_regs,
 				int id,
 				int *irqs,
 				int num_irqs,
 				struct econet_qdma_cfg *cfg);
 
-int econet_qdma_use(struct econet_qdma *qdma);
-int econet_qdma_unuse(struct econet_qdma *qdma);
-int econet_qdma_destroy(struct econet_qdma *qdma);
-int econet_qdma_xmit(struct econet_qdma *qdma, struct sk_buff *skb,
+int airoha_qdma_gen1_use(struct econet_qdma *qdma);
+int airoha_qdma_gen1_unuse(struct econet_qdma *qdma);
+int airoha_qdma_gen1_destroy(struct econet_qdma *qdma);
+int airoha_qdma_gen1_xmit(struct econet_qdma *qdma, struct sk_buff *skb,
 		   union desc_msg *msg, int qid);
 
 
