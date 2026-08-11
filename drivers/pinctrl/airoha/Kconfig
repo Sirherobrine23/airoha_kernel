@@ -6,6 +6,7 @@ config PINCTRL_AIROHA
 	tristate "Airoha pin control"
 	depends on OF
 	depends on ARCH_AIROHA || ECONET || COMPILE_TEST
+	select MFD_SYSCON
 	select PINMUX
 	select GENERIC_PINCONF
 	select GENERIC_PINCTRL_GROUPS
