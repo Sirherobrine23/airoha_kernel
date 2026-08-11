@@ -691,10 +691,6 @@ static inline struct airoha_eth_gen1 *airoha_eth_gen1_priv(struct airoha_eth *et
 	return eth->priv;
 }
 
-#define ECONET_FE_GDM1_OFFSET	0x0400
-#define ECONET_FE_PPE_OFFSET	0x0c00
-#define ECONET_FE_GDM2_OFFSET	0x1400
-#define ECONET_FE_MIN_SIZE	0x2600
 
 #define EN751221_DSA_SPORT_BASE		8
 #define EN751221_DSA_NUM_PORTS		5
@@ -903,7 +899,7 @@ int airoha_eth_gen1_probe(struct platform_device *pdev, struct airoha_eth *eth)
 	if (!fe_res)
 		return dev_err_probe(eth->dev, -EINVAL,
 				     "missing fe register resource\n");
-	if (resource_size(fe_res) < ECONET_FE_MIN_SIZE)
+	if (resource_size(fe_res) < EN751221_FE_MIN_SIZE)
 		return dev_err_probe(eth->dev, -EINVAL,
 				     "fe register resource is too small\n");
 
@@ -913,10 +909,10 @@ int airoha_eth_gen1_probe(struct platform_device *pdev, struct airoha_eth *eth)
 				     "failed to map fe registers\n");
 
 	eth->fe_regs = fe_base;
-	priv->gdm[0] = fe_base + ECONET_FE_GDM1_OFFSET;
-	priv->ppe_base = fe_base + ECONET_FE_PPE_OFFSET;
+	priv->gdm[0] = fe_base + EN751221_FE_GDM1_OFFSET;
+	priv->ppe_base = fe_base + EN751221_FE_PPE_OFFSET;
 	eth->ppe_regs = priv->ppe_base;
-	priv->gdm[1] = fe_base + ECONET_FE_GDM2_OFFSET;
+	priv->gdm[1] = fe_base + EN751221_FE_GDM2_OFFSET;
 
 	eth->gdmp_regs = devm_platform_ioremap_resource_byname(pdev, "gdmp");
 	if (IS_ERR(eth->gdmp_regs))
