@@ -935,10 +935,7 @@ static int econet_init_hw_fwd(struct econet_qdma *qdma)
 	return ret;
 }
 
-#define EN751221_PSE_BUF_CTRL_EN		BIT(31)
 #define EN751221_PSE_BUF_ESTIMATE_EN	BIT(29)
-#define EN751221_PSE_BUF_CH_THR_MASK	GENMASK(23, 16)
-#define EN751221_PSE_BUF_TOTAL_THR_MASK	GENMASK(7, 0)
 
 #define EN751221_TX_RATE_METER_EN	BIT(31)
 #define EN751221_TX_RATE_METER_DIV_MASK	GENMASK(17, 16)
@@ -955,15 +952,14 @@ static void econet_init_en751221_qdma(struct econet_qdma *qdma)
 	u32 total_max, channel_max, queue_max;
 	u32 physical_size, val;
 
-	/* Vendor eth_lan qdma_reg_init(): QDMA_LAN-only PSE accounting. */
+	/*
+	 * qdma_dev_init() only disables TX buffer estimation for QDMA_LAN.
+	 * PSE buffer usage control and its thresholds are configured through
+	 * qdma_set_txbuf_threshold() on demand, not during Ethernet bring-up.
+	 */
 	if (qdma->id == 0) {
 		val = econet_rreg(&qdma->regs->buf_usage_cfg);
-		val &= ~(EN751221_PSE_BUF_ESTIMATE_EN |
-			 EN751221_PSE_BUF_CH_THR_MASK |
-			 EN751221_PSE_BUF_TOTAL_THR_MASK);
-		val |= EN751221_PSE_BUF_CTRL_EN |
-		       FIELD_PREP(EN751221_PSE_BUF_CH_THR_MASK, 6) |
-		       FIELD_PREP(EN751221_PSE_BUF_TOTAL_THR_MASK, 24);
+		val &= ~EN751221_PSE_BUF_ESTIMATE_EN;
 		econet_wreg(val, &qdma->regs->buf_usage_cfg);
 	}
 
