@@ -55,6 +55,7 @@ config NET_DSA_MT7530_MMIO
 	tristate "MediaTek MT7530 MMIO interface driver"
 	depends on NET_DSA_MT7530
 	depends on HAS_IOMEM
+	select RESET_CONTROLLER
 	imply MEDIATEK_GE_SOC_PHY
 	help
 	  This enables support for the built-in Ethernet switch found
