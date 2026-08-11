@@ -3347,6 +3347,7 @@ struct econet_qdma_cfg {
 	int fwd_max_packet_size;
 	int fwd_low_threshold;
 	int num_channels;
+	bool rx_2b_offset;
 	const struct econet_soc_data *soc;
 };
 
