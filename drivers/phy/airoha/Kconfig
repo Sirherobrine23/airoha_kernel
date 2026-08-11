@@ -23,16 +23,15 @@ config PHY_AIROHA_USB
 	  callback for USB port.
 
 config PHY_AIROHA_XPON
-	tristate "Airoha EN7523 xPON PHY driver"
-	depends on ARCH_AIROHA || COMPILE_TEST
+	tristate "Airoha/EcoNet xPON PHY driver"
+	depends on ARCH_AIROHA || ECONET || COMPILE_TEST
 	depends on OF
 	depends on MFD_SYSCON
 	select GENERIC_PHY
 	help
-	  Enable the digital GPON/EPON PHY found in Airoha EN7523-family
-	  SoCs. The driver programs the xPON receiver and SerDes, controls
-	  the PHY reset and selects the protocol mode. The xPON MAC consumer
-	  is started only after the receiver reports PHY_READY.
+	  Enable the digital GPON/EPON PHY found in Airoha EN7523-family and
+	  EcoNet EN751221 SoCs. The driver programs the common xPON receiver,
+	  selects the protocol mode and runs the SoC-specific PHY bring-up.
 
 config PHY_AIROHA_AN7583_USB
 	tristate "Airoha AN7583 USB PHY Driver"
