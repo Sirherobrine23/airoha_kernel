@@ -2673,12 +2673,6 @@ static void en75_foe_entry_set_pse_port(struct en75_foe_entry *entry, u8 port)
 		entry->ipv4.ib2 |= EN75_FOE_IB2_PSE_QOS;
 }
 
-static void en75_foe_entry_set_queue(struct en75_foe_entry *entry, u8 queue)
-{
-	entry->ipv4.ib2 &= ~EN75_FOE_IB2_QID;
-	entry->ipv4.ib2 |= FIELD_PREP(EN75_FOE_IB2_QID, queue);
-}
-
 static void en75_foe_entry_set_dsa(struct en75_foe_entry *entry, int port,
 				   bool passthrough)
 {
@@ -3040,9 +3034,17 @@ static int en75_flow_set_output(struct en75_foe_entry *entry,
 	if (!gdm || gdm->family != AIROHA_ETH_FAMILY_ECONET)
 		return -EOPNOTSUPP;
 
+	/*
+	 * Keep direct GDM egress on the default queue. The EN751221 PPE
+	 * flow path does not enable PSE_QOS for GDM1/GDM2 destinations,
+	 * and the previous 3 + DSA-port QID mapping is not part of the
+	 * vendor DSA special-tag programming.
+	 *
+	 * The DSA destination is still selected by the in-band special tag;
+	 * leaving QID at its reset/default value isolates queue selection from
+	 * the hardware forwarding path.
+	 */
 	en75_foe_entry_set_pse_port(entry, gdm->pse_port);
-	if (dsa_port >= 0)
-		en75_foe_entry_set_queue(entry, 3 + dsa_port);
 
 	return 0;
 }
