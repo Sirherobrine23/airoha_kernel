@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Airoha/EcoNet EN7523 xPON MAC driver
+ * Airoha/EcoNet xPON MAC driver
  *
- * Unified GPON/EPON driver for the shared EN7523 xPON MAC complex.
+ * Unified GPON/EPON driver for the shared EN751221/EN7523 xPON MAC complex.
  * The mode-specific protocol engines remain separate inside this file,
  * while probe/remove, DT matching and FE/GDM2 ownership are shared.
  *
@@ -63,15 +63,22 @@
 #define XGSPON_REG_OFFSET		0x00005000
 #define EPON_REG_OFFSET			0x00006000
 
-#define EN7523_SCU_WAN_CONF             0x070
-#define EN7523_SCU_WAN_MODE_MASK        GENMASK(7, 0)
-#define EN7523_SCU_WAN_MODE_GPON        0x00
-#define EN7523_SCU_WAN_MODE_EPON        0x01
+#define XPON_SCU_WAN_CONF              0x070
+#define EN7523_SCU_WAN_MODE_MASK       GENMASK(7, 0)
+#define EN751221_SCU_WAN_MODE_MASK     GENMASK(2, 0)
+#define XPON_SCU_WAN_MODE_GPON         0x00
+#define XPON_SCU_WAN_MODE_EPON         0x01
 
 static const u8 airoha_default_vendor_id[4] = {'M', 'T', 'K', 'G'};
 
 struct airoha_xpon_match_data {
 	enum airoha_xpon_mode mode;
+	bool mode_from_dt;
+	u32 wan_mode_mask;
+	u8 gpon_fine_delay;
+	bool en7523_gpon_defaults;
+	bool mac_irq_via_eth;
+	bool reset_before_mmio;
 };
 
 static struct device *airoha_xpon_find_lddla(struct device *dev)
@@ -142,6 +149,30 @@ static const char *airoha_xpon_mode_name(enum airoha_xpon_mode mode)
 	default:
 		return "unknown";
 	}
+}
+
+static int airoha_xpon_get_mode(struct device *dev,
+				const struct airoha_xpon_match_data *data,
+				enum airoha_xpon_mode *mode)
+{
+	const char *name;
+
+	*mode = data->mode;
+	if (!data->mode_from_dt)
+		return 0;
+
+	if (device_property_read_string(dev, "airoha,pon-mode", &name))
+		return 0;
+
+	if (!strcmp(name, "gpon"))
+		*mode = AIROHA_XPON_MODE_GPON;
+	else if (!strcmp(name, "epon"))
+		*mode = AIROHA_XPON_MODE_EPON;
+	else
+		return dev_err_probe(dev, -EINVAL,
+				     "invalid airoha,pon-mode '%s'\n", name);
+
+	return 0;
 }
 
 static void airoha_xpon_update_netdev_link(struct net_device *netdev,
@@ -222,13 +253,16 @@ static int airoha_xpon_set_fe_datapath(struct device *dev,
 }
 
 static int airoha_xpon_select_wan(struct regmap *scu,
+				  const struct airoha_xpon_match_data *data,
 				  enum airoha_xpon_mode mode)
 {
-	return regmap_update_bits(scu, EN7523_SCU_WAN_CONF,
-				  EN7523_SCU_WAN_MODE_MASK,
-				  mode == AIROHA_XPON_MODE_GPON ?
-				  EN7523_SCU_WAN_MODE_GPON :
-				  EN7523_SCU_WAN_MODE_EPON);
+	u32 value;
+
+	value = mode == AIROHA_XPON_MODE_GPON ?
+		XPON_SCU_WAN_MODE_GPON : XPON_SCU_WAN_MODE_EPON;
+
+	return regmap_update_bits(scu, XPON_SCU_WAN_CONF,
+				  data->wan_mode_mask, value);
 }
 
 static int airoha_xpon_phy_start(struct device *dev, struct phy *phy,
@@ -622,6 +656,7 @@ struct xpon_priv {
 	void __iomem		*epon_reset_reg;
 	struct device		*dev;
 	struct regmap		*scu;
+	const struct airoha_xpon_match_data *match_data;
 	struct reset_control	*mac_reset;
 	struct phy		*phy;
 	enum airoha_xpon_mode	mode;
@@ -863,7 +898,8 @@ static int gpon_prepare_hardware(struct xpon_priv *priv)
 
 	/* Select GPON instead of EPON on the shared xPON WAN interface. */
 	dev_info(priv->dev, "selecting GPON on SCU WAN mux\n");
-	ret = airoha_xpon_select_wan(priv->scu, AIROHA_XPON_MODE_GPON);
+	ret = airoha_xpon_select_wan(priv->scu, priv->match_data,
+				     AIROHA_XPON_MODE_GPON);
 	if (ret)
 		return dev_err_probe(priv->dev, ret,
 				     "failed to select GPON WAN mode\n");
@@ -888,29 +924,26 @@ static int gpon_prepare_hardware(struct xpon_priv *priv)
 	gpon_write(priv, GPON_DBG_GRP_1, ~0U);
 
 	/*
-	 * Restore the complete EN7523 ASIC burst-delay value before applying
-	 * the runtime fine-delay value. Preserving bootloader leftovers here
-	 * changes the fixed RX delay and TX delay fields and makes upstream
-	 * burst timing depend on the previous firmware.
+	 * EN7523 resets the complete 0x4208 delay register and applies two
+	 * additional DBA/BWmap defaults.  The older EN7521/EN751221 path does
+	 * not execute those writes; only its 0x1c fine internal delay is common
+	 * to the configuration data.  Keep the generation-specific writes out
+	 * of the common MAC path.
 	 */
-	gpon_write(priv, GPON_DBG_DLY, DBG_DLY_RESET_DEFAULT);
+	if (priv->match_data->en7523_gpon_defaults)
+		gpon_write(priv, GPON_DBG_DLY, DBG_DLY_RESET_DEFAULT);
 	gpon_rmw(priv, GPON_DBG_DLY, DBG_DLY_FINE_INT_MASK,
-		 FIELD_PREP(DBG_DLY_FINE_INT_MASK, DBG_DLY_FINE_INT_DEFAULT));
+		 FIELD_PREP(DBG_DLY_FINE_INT_MASK,
+			    priv->match_data->gpon_fine_delay));
 	gpon_rmw(priv, GPON_DBG_IDLE_GEM_THLD, GENMASK(15, 0),
 		 GPON_IDLE_GEM_THLD_DEFAULT);
 
-	/*
-	 * DBRu reports queue occupancy in units selected by sr_blk_size.  The
-	 * EN7523 SDK always selects 48-byte blocks before activation.  Leaving
-	 * the reset/bootloader value here causes the OLT to underestimate the
-	 * upstream backlog and grant only the minimum assured bandwidth.
-	 */
-	gpon_rmw(priv, GPON_GBL_CFG, GBL_CFG_SR_BLK_SIZE_MASK,
-		 GPON_DBRU_BLOCK_SIZE_48B);
-
-	/* Apply the vendor workaround for invalid BWmap length filtering. */
-	gpon_clear_bits(priv, GPON_DBG_BWM_FILTER_CTRL,
-			BWM_FILTER_LEN_VALID_CHECK_EN);
+	if (priv->match_data->en7523_gpon_defaults) {
+		gpon_rmw(priv, GPON_GBL_CFG, GBL_CFG_SR_BLK_SIZE_MASK,
+			 GPON_DBRU_BLOCK_SIZE_48B);
+		gpon_clear_bits(priv, GPON_DBG_BWM_FILTER_CTRL,
+				BWM_FILTER_LEN_VALID_CHECK_EN);
+	}
 
 	mbi = gpon_read(priv, GPON_MBI_MPI_STOP);
 	if (mbi & (MBI_RX_STOP | MBI_TX_STOP))
@@ -3031,9 +3064,15 @@ static void gpon_link_stop(void *data)
 	gpon_refresh_netdev_link(priv, true);
 }
 
+static void gpon_mac_irq(void *data)
+{
+	gpon_isr(0, data);
+}
+
 static const struct airoha_xpon_link_ops gpon_link_ops = {
 	.start = gpon_link_start,
 	.stop = gpon_link_stop,
+	.mac_irq = gpon_mac_irq,
 };
 
 /* -------------------------------------------------------------------------
@@ -3382,7 +3421,8 @@ static int epon_prepare_hardware(struct xpon_priv *priv)
 		return ret;
 
 	dev_info(priv->dev, "selecting EPON on SCU WAN mux\n");
-	ret = airoha_xpon_select_wan(priv->scu, AIROHA_XPON_MODE_EPON);
+	ret = airoha_xpon_select_wan(priv->scu, priv->match_data,
+				     AIROHA_XPON_MODE_EPON);
 	if (ret)
 		return dev_err_probe(priv->dev, ret,
 				     "failed to select EPON WAN mode\n");
@@ -3841,17 +3881,66 @@ static void epon_link_stop(void *data)
 	/* Keep optical activation alive while userspace cycles pon0. */
 }
 
+static void epon_mac_irq(void *data)
+{
+	epon_isr(0, data);
+}
+
 static const struct airoha_xpon_link_ops epon_link_ops = {
 	.start = epon_link_start,
 	.stop = epon_link_stop,
+	.mac_irq = epon_mac_irq,
 };
 
 /* -------------------------------------------------------------------------
  * Unified platform driver
  * ------------------------------------------------------------------------- */
 
-static const struct airoha_xpon_match_data xpon_data = {
+static const struct airoha_xpon_match_data en7523_xpon_data = {
 	.mode = AIROHA_XPON_MODE_GPON,
+	.mode_from_dt = true,
+	.wan_mode_mask = EN7523_SCU_WAN_MODE_MASK,
+	.gpon_fine_delay = DBG_DLY_FINE_INT_DEFAULT,
+	.en7523_gpon_defaults = true,
+};
+
+static const struct airoha_xpon_match_data en7523_gpon_data = {
+	.mode = AIROHA_XPON_MODE_GPON,
+	.wan_mode_mask = EN7523_SCU_WAN_MODE_MASK,
+	.gpon_fine_delay = DBG_DLY_FINE_INT_DEFAULT,
+	.en7523_gpon_defaults = true,
+};
+
+static const struct airoha_xpon_match_data en7523_epon_data = {
+	.mode = AIROHA_XPON_MODE_EPON,
+	.wan_mode_mask = EN7523_SCU_WAN_MODE_MASK,
+	.gpon_fine_delay = DBG_DLY_FINE_INT_DEFAULT,
+	.en7523_gpon_defaults = true,
+};
+
+static const struct airoha_xpon_match_data en751221_xpon_data = {
+	.mode = AIROHA_XPON_MODE_GPON,
+	.mode_from_dt = true,
+	.wan_mode_mask = EN751221_SCU_WAN_MODE_MASK,
+	.gpon_fine_delay = 0x1c,
+	.mac_irq_via_eth = true,
+	.reset_before_mmio = true,
+};
+
+static const struct airoha_xpon_match_data en751221_gpon_data = {
+	.mode = AIROHA_XPON_MODE_GPON,
+	.wan_mode_mask = EN751221_SCU_WAN_MODE_MASK,
+	.gpon_fine_delay = 0x1c,
+	.mac_irq_via_eth = true,
+	.reset_before_mmio = true,
+};
+
+static const struct airoha_xpon_match_data en751221_epon_data = {
+	.mode = AIROHA_XPON_MODE_EPON,
+	.wan_mode_mask = EN751221_SCU_WAN_MODE_MASK,
+	.gpon_fine_delay = 0x1c,
+	.mac_irq_via_eth = true,
+	.reset_before_mmio = true,
 };
 
 static bool airoha_xpon_is_gpon(struct xpon_priv *priv)
@@ -3883,6 +3972,14 @@ static int airoha_xpon_request_mac_irq(struct platform_device *pdev,
 {
 	struct device *dev = &pdev->dev;
 	int ret;
+
+	if (priv->match_data->mac_irq_via_eth) {
+		priv->irq = -1;
+		dev_info(dev,
+			 "%s MAC interrupt is routed through the EN751221 QDMA1 aggregator\n",
+			 airoha_xpon_mode_name(priv->mode));
+		return 0;
+	}
 
 	priv->irq = platform_get_irq_byname(pdev, "mac");
 	if (priv->irq < 0)
@@ -4083,7 +4180,10 @@ static int airoha_xpon_probe(struct platform_device *pdev)
 	if (!priv)
 		return -ENOMEM;
 	priv->dev = dev;
-	priv->mode = data->mode;
+	priv->match_data = data;
+	ret = airoha_xpon_get_mode(dev, data, &priv->mode);
+	if (ret)
+		return ret;
 	INIT_DELAYED_WORK(&priv->phy_link_work,
 			  airoha_xpon_phy_link_work_fn);
 
@@ -4160,8 +4260,23 @@ static int airoha_xpon_probe(struct platform_device *pdev)
 				    res);
 		goto err_put_gdm;
 	}
-	
-	switch (data->mode) {
+
+	/*
+	 * EN751221 can leave the xPON MAC reset domain in a state where the
+	 * first access to the GPON/EPON register window stalls the MIPS bus.
+	 * The vendor gpon_dev_init_reset() pulses RST_CTRL1[31] before normal
+	 * MAC initialization. Do the same before airoha_xpon_init_*() touches
+	 * GPON_INT_ENABLE/EPON_INT_EN for the first time.
+	 */
+	if (data->reset_before_mmio) {
+		dev_info(dev, "resetting %s MAC before first register access\n",
+			 airoha_xpon_mode_name(priv->mode));
+		ret = airoha_xpon_reset_mac(priv);
+		if (ret)
+			goto err_put_gdm;
+	}
+
+	switch (priv->mode) {
 	case AIROHA_XPON_MODE_XGSPON:
 		priv->xgspon_reg = priv->base + XGSPON_REG_OFFSET;
 		fallthrough;
@@ -4312,10 +4427,8 @@ static void airoha_xpon_remove(struct platform_device *pdev)
 }
 
 static const struct of_device_id airoha_xpon_of_match[] = {
-	{ .compatible = "airoha,airoha_en7523-xpon", .data = &xpon_data },
-	{ .compatible = "econet,en7521-xpon", .data = &xpon_data },
-	{ .compatible = "econet,en7526-xpon", .data = &xpon_data },
-	{ .compatible = "econet,en751221-xpon", .data = &xpon_data },
+	{ .compatible = "airoha,en7523-xpon", .data = &en7523_xpon_data },
+	{ .compatible = "econet,en751221-xpon", .data = &en751221_xpon_data },
 	{}
 };
 MODULE_DEVICE_TABLE(of, airoha_xpon_of_match);

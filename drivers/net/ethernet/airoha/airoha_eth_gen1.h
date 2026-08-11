@@ -67,6 +67,11 @@ struct etx {
 
 #define ETX_UNKNOWN0_MASK				GENMASK(31, 28)
 #define ETX_SP_TAG_MASK					GENMASK(27, 12)
+/* EN751221 xPON TX message word 0 overlays the Ethernet special-tag field. */
+#define ETX_XPON_GEM_MASK				GENMASK(23, 12)
+#define ETX_XPON_DEI					BIT(24)
+#define ETX_XPON_TSE					BIT(25)
+#define ETX_XPON_TSID_MASK				GENMASK(30, 26)
 #define ETX_OAM						BIT(11)
 #define ETX_CHANNEL_MASK				GENMASK(10, 3)
 #define ETX_QUEUE_MASK					GENMASK(2, 0)
@@ -93,6 +98,16 @@ static inline u16 get_etx_sp_tag(struct etx *x)
 static inline void set_etx_sp_tag(struct etx *x, u16 v)
 {
 	x->bitfield_0 = FIELD_SET(x->bitfield_0, ETX_SP_TAG_MASK, v);
+}
+
+static inline u16 get_etx_xpon_gem(struct etx *x)
+{
+	return FIELD_GET(ETX_XPON_GEM_MASK, x->bitfield_0);
+}
+
+static inline void set_etx_xpon_gem(struct etx *x, u16 v)
+{
+	x->bitfield_0 = FIELD_SET(x->bitfield_0, ETX_XPON_GEM_MASK, v);
 }
 
 /** OAM (management) frame, never used with Ethernet transmissions */
@@ -297,6 +312,16 @@ struct qdma_desc_erx {
 };
 
 /* qdma_desc_erx bitfield_0 */
+
+/* EN751221 xPON RX message word 0.  The remaining words overlap the
+ * regular Ethernet RX metadata and are deliberately kept in qdma_desc_erx.
+ */
+#define ERX_XPON_CRC_ERROR				BIT(0)
+#define ERX_XPON_RUNT					BIT(1)
+#define ERX_XPON_LONG					BIT(2)
+#define ERX_XPON_CHANNEL_MASK				GENMASK(10, 3)
+#define ERX_XPON_OAM					BIT(11)
+#define ERX_XPON_GEM_MASK				GENMASK(23, 12)
 
 #define ERX_UNKNOWN1_MASK				GENMASK(31, 29)
 #define ERX_IP6						BIT(28)
@@ -3347,6 +3372,12 @@ struct econet_qdma_cfg {
 struct econet_qdma;
 
 struct airoha_qdma_common *airoha_qdma_gen1_common(struct econet_qdma *qdma);
+int airoha_qdma_gen1_set_xpon_irq(struct econet_qdma *qdma,
+				  enum airoha_xpon_mode mode, bool enable);
+bool airoha_eth_gen1_rx_xpon_oam(struct airoha_eth *eth, u8 qdma_id,
+				 struct sk_buff *skb, union desc_msg *msg);
+void airoha_eth_gen1_xpon_irq(struct airoha_eth *eth, u8 qdma_id,
+			      enum airoha_xpon_mode mode);
 struct econet_qdma *airoha_qdma_gen1_new(struct airoha_eth *eth,
 				void __iomem *qdma_regs,
 				int id,
