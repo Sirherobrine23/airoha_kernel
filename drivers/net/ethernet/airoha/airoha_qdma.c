@@ -17,6 +17,14 @@
 #include "airoha_eth.h"
 #include "airoha_eth_gen1.h"
 
+void airoha_qdma_common_init(struct airoha_qdma_common *qdma,
+			     struct airoha_eth *eth, void __iomem *regs, u8 id)
+{
+	qdma->eth = eth;
+	qdma->regs = regs;
+	qdma->id = id;
+}
+
 #define AIROHA_MTK_HDR_LEN			4
 #define AIROHA_MTK_STAG_PORT_MASK		GENMASK(5, 0)
 #define AIROHA_MTK_HDR_XMIT_TAGGED_TPID_8100	1
@@ -165,8 +173,11 @@ struct econet_tx_doneq {
 };
 
 struct econet_qdma {
+	struct airoha_qdma_common	common;
+
 	/* Protects register programming and users. */
 	struct mutex			lock;
+	/* Typed generation-1 view of common.regs. */
 	struct qregs __iomem		*regs;
 	int				users;
 
@@ -177,9 +188,7 @@ struct econet_qdma {
 	struct econet_q_rx 		q_rx[QDMA_NUM_CHAINS];
 
 	/* Not modified after init */
-	struct airoha_eth 		*eth;
 	struct device 			*dev;
-	int 				id;
 	struct fwdesc 			*hwf_desc;
 	int				num_fwd_descs;
 	u32				fwd_buf_size;
@@ -272,11 +281,11 @@ static void econet_qdma_rx_process_one(struct econet_q_rx *q, u32 cpu_i,
 	hash = get_erx_ppe_entry(&desc.msg.erx);
 	skb_set_hash(skb, jhash_1word(hash, 0),
 		     PKT_HASH_TYPE_L4);
-	airoha_ppe_dev_check_skb_reason(q->qdma->eth->ppe_dev, skb, hash,
+	airoha_ppe_dev_check_skb_reason(q->qdma->common.eth->ppe_dev, skb, hash,
 					get_erx_crsn(&desc.msg.erx));
 
 	sport = get_erx_sport(&desc.msg.erx);
-	if (econet_rx_before_recv(q->qdma->eth, skb, sport)) {
+	if (econet_rx_before_recv(q->qdma->common.eth, skb, sport)) {
 		dev_kfree_skb(skb);
 	} else {
 		if ((skb->dev->features & NETIF_F_RXCSUM) &&
@@ -710,9 +719,9 @@ static int econet_init_rx_queue(struct econet_q_rx *q,
 	q->ndesc = ndesc;
 	q->qdma = qdma;
 
-	if (airoha_is(qdma->eth, econet_en751221))
+	if (airoha_is(qdma->common.eth, econet_en751221))
 		/* QDMA_LAN uses 32 for both rings; QDMA_WAN uses ring_size / 4. */
-		threshold = qdma->id == 0 ? 32 : ndesc >> 2;
+		threshold = qdma->common.id == 0 ? 32 : ndesc >> 2;
 	else
 		threshold = clamp(ndesc >> 3, 1, 32);
 	q->qchain_regs = (q == &qdma->q_rx[0]) ?
@@ -800,7 +809,7 @@ static int econet_init_irqs(struct device *dev, struct econet_qdma *qdma,
 		}
 
 		name = devm_kasprintf(dev, GFP_KERNEL,
-				      KBUILD_MODNAME "-%d.%d", qdma->id, i);
+				      KBUILD_MODNAME "-%d.%d", qdma->common.id, i);
 		if (!name)
 			return -ENOMEM;
 
@@ -892,7 +901,7 @@ static int econet_init_hw_fwd(struct econet_qdma *qdma)
 	struct hwf_cfg cfg;
 	const char *name;
 
-	name = devm_kasprintf(qdma->dev, GFP_KERNEL, "qdma%d-buf", qdma->id);
+	name = devm_kasprintf(qdma->dev, GFP_KERNEL, "qdma%d-buf", qdma->common.id);
 	if (!name)
 		return -ENOMEM;
 
@@ -955,7 +964,7 @@ static int econet_init_hw_fwd(struct econet_qdma *qdma)
 		 * keep the exact 4096-entry profile whenever the region exists,
 		 * otherwise use a conservative fallback pool.
 		 */
-		if (airoha_is(qdma->eth, econet_en751221) && qdma->id == 1 &&
+		if (airoha_is(qdma->common.eth, econet_en751221) && qdma->common.id == 1 &&
 		    num_desc > 256)
 			num_desc = 256;
 
@@ -987,7 +996,7 @@ static int econet_init_hw_fwd(struct econet_qdma *qdma)
 	cfg1 = econet_rreg(&qdma->regs->hwf_cfg1);
 	set_qregs_hwf_cfg1_fwd_desc_n(&cfg1, num_desc);
 	set_qregs_hwf_cfg1_overhead_en(&cfg1, true);
-	set_qregs_hwf_cfg1_overhead(&cfg1, qdma->id == 0 ? 0x14 : 0x18);
+	set_qregs_hwf_cfg1_overhead(&cfg1, qdma->common.id == 0 ? 0x14 : 0x18);
 	set_qregs_hwf_cfg1_start(&cfg1, true);
 	econet_wreg(cfg1, &qdma->regs->hwf_cfg1);
 
@@ -1036,7 +1045,7 @@ static void econet_init_en751221_qdma(struct econet_qdma *qdma)
 		 EN751221_PSE_BUF_CH_THR_MASK |
 		 EN751221_PSE_BUF_TOTAL_THR_MASK);
 	val |= EN751221_PSE_BUF_CTRL_EN | EN751221_PSE_BUF_ESTIMATE_EN;
-	if (qdma->id == 0) {
+	if (qdma->common.id == 0) {
 		val |= FIELD_PREP(EN751221_PSE_BUF_CH_THR_MASK, 16) |
 		       FIELD_PREP(EN751221_PSE_BUF_TOTAL_THR_MASK, 128);
 	} else {
@@ -1081,13 +1090,13 @@ static void econet_init_en751221_qdma(struct econet_qdma *qdma)
 	 * firmware.  Keep the auto profile for reduced/no-reserved-memory
 	 * fallback pools, where these full-size thresholds would be invalid.
 	 */
-	if (qdma->fwd_buf_size == 2048 && qdma->id == 0 &&
+	if (qdma->fwd_buf_size == 2048 && qdma->common.id == 0 &&
 	    qdma->num_fwd_descs == 1024) {
 		total_min = 5120;
 		total_max = 7680;
 		channel_max = 7680;
 		queue_max = 204;
-	} else if (qdma->fwd_buf_size == 2048 && qdma->id == 1 &&
+	} else if (qdma->fwd_buf_size == 2048 && qdma->common.id == 1 &&
 		   qdma->num_fwd_descs == 4096) {
 		total_min = 2048;
 		total_max = 15360;
@@ -1157,7 +1166,7 @@ static int econet_init_final(struct econet_qdma *qdma)
 
 				p = en751221_irq_purpose(bit);
 
-				if (airoha_is(qdma->eth, econet_en751221)) {
+				if (airoha_is(qdma->common.eth, econet_en751221)) {
 					/*
 					 * Match qdma_dev.c's production mask. HWF
 					 * EMPTY/LOW are status/debug conditions, not
@@ -1202,21 +1211,21 @@ static int econet_init_final(struct econet_qdma *qdma)
 
 	qcfg = (struct qregs_qcfg) { 0 };
 	set_qregs_qcfg_msg_word_swap(&qcfg, true);
-	set_qregs_qcfg_dscp_byte_swap(&qcfg, airoha_is(qdma->eth, econet_en751221));
+	set_qregs_qcfg_dscp_byte_swap(&qcfg, airoha_is(qdma->common.eth, econet_en751221));
 	set_qregs_qcfg_payload_byte_sw(&qcfg, true);
 	set_qregs_qcfg_dma_pref(&qcfg, QREGS_QCFG_DMA_PREF_TX1_FRX_TX0);
 	set_qregs_qcfg_rx_2b_offset(&qcfg, qdma->cfg.rx_2b_offset);
 	set_qregs_qcfg_irq_en(&qcfg, true);
-	set_qregs_qcfg_check_done(&qcfg, !airoha_is(qdma->eth, econet_en751221));
+	set_qregs_qcfg_check_done(&qcfg, !airoha_is(qdma->common.eth, econet_en751221));
 	set_qregs_qcfg_tx_wb_done(&qcfg, true);
-	if (airoha_is(qdma->eth, econet_en751221) && qdma->id == 0)
+	if (airoha_is(qdma->common.eth, econet_en751221) && qdma->common.id == 0)
 		set_qregs_qcfg_tx_immediate_done(&qcfg, true);
 	set_qregs_qcfg_burst_size(&qcfg, QREGS_QCFG_BURST_SIZE_128_BYTES);
 	econet_wreg(qcfg, &qdma->regs->qdma_cfg);
 
 	econet_wreg(0U, &qdma->regs->rx_int_delay);
 
-	if (airoha_is(qdma->eth, econet_en751221)) {
+	if (airoha_is(qdma->common.eth, econet_en751221)) {
 		econet_init_en751221_qdma(qdma);
 	} else {
 		struct qregs_tx_congest_cfg cngst_cfg = { 0 };
@@ -1445,6 +1454,11 @@ int airoha_qdma_gen1_unuse(struct econet_qdma *qdma)
 	return 0;
 }
 
+struct airoha_qdma_common *airoha_qdma_gen1_common(struct econet_qdma *qdma)
+{
+	return &qdma->common;
+}
+
 struct econet_qdma *airoha_qdma_gen1_new(struct airoha_eth *eth,
 				void __iomem *qdma_regs,
 				int id,
@@ -1460,12 +1474,11 @@ struct econet_qdma *airoha_qdma_gen1_new(struct airoha_eth *eth,
 		return ERR_PTR(-ENOMEM);
 
 	qdma->dev = eth->dev;
-	qdma->id = id;
+	airoha_qdma_common_init(&qdma->common, eth, qdma_regs, id);
 	mutex_init(&qdma->lock);
 	qdma->regs = qdma_regs;
 	memcpy(&qdma->cfg, cfg, sizeof(*cfg));
 	qdma->soc = cfg->soc;
-	qdma->eth = eth;
 
 	{
 		char name[IFNAMSIZ];

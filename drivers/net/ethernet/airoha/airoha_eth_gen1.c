@@ -867,9 +867,11 @@ void airoha_eth_gen1_remove(struct platform_device *pdev,
 
 	airoha_ppe_deinit(eth);
 
-	for (i = 0; i < ARRAY_SIZE(priv->qdma); i++)
+	for (i = 0; i < ARRAY_SIZE(priv->qdma); i++) {
+		eth->qdma_common[i] = NULL;
 		if (priv->qdma[i])
 			airoha_qdma_gen1_destroy(priv->qdma[i]);
+	}
 
 	eth->priv = NULL;
 }
@@ -965,6 +967,7 @@ int airoha_eth_gen1_probe(struct platform_device *pdev, struct airoha_eth *eth)
 			priv->qdma[i] = NULL;
 			goto error;
 		}
+		eth->qdma_common[i] = airoha_qdma_gen1_common(priv->qdma[i]);
 	}
 
 	err = airoha_ppe_init(eth);
