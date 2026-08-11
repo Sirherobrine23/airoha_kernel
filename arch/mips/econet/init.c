@@ -68,6 +68,10 @@ void __init device_tree_init(void)
 	if (!register_cps_smp_ops())
 		return;
 
+	/* EN751221: single-core 34Kc with MT ASE -> 2 VPEs via VSMP (SMVP) */
+	if (!register_vsmp_smp_ops())
+		return;
+
 	register_up_smp_ops();
 }
 
