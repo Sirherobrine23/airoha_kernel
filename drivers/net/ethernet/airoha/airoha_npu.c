@@ -1709,9 +1709,9 @@ static const struct airoha_npu_soc_data an7583_npu_soc_data = {
 };
 
 static const struct of_device_id of_airoha_npu_match[] = {
-	{ .compatible = "airoha,en7523-npu", .data = &en7523_npu_soc_data },
-	{ .compatible = "airoha,en7581-npu", .data = &en7581_npu_soc_data },
-	{ .compatible = "airoha,an7583-npu", .data = &an7583_npu_soc_data },
+	{ .compatible = "airoha,airoha_en7523-npu", .data = &en7523_npu_soc_data },
+	{ .compatible = "airoha,airoha_en7581-npu", .data = &en7581_npu_soc_data },
+	{ .compatible = "airoha,airoha_an7583-npu", .data = &an7583_npu_soc_data },
 	{ /* sentinel */ }
 };
 MODULE_DEVICE_TABLE(of, of_airoha_npu_match);
