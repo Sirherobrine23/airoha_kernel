@@ -3346,6 +3346,7 @@ struct econet_qdma_cfg {
 
 struct econet_qdma;
 
+struct airoha_qdma_common *airoha_qdma_gen1_common(struct econet_qdma *qdma);
 struct econet_qdma *airoha_qdma_gen1_new(struct airoha_eth *eth,
 				void __iomem *qdma_regs,
 				int id,

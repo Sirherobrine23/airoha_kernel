@@ -52,8 +52,9 @@ config NET_ECONET
 	  Support the dual-QDMA, dual-GDM frame engine found in EcoNet EN7512,
 	  EN7521, EN7526 and related EN751221-family MIPS SoCs.
 
-	  The QDMA datapath stays separate from the newer Airoha datapath, while
-	  GDM/phylink and PPE infrastructure are shared.
+	  The generation-1 and generation-2 datapaths share the Ethernet host,
+	  QDMA classification, GDM/phylink and PPE infrastructure while keeping
+	  generation-specific descriptor/register handling isolated.
 
 config NET_AIROHA_PPE_DEBUGFS
 	bool

@@ -1072,11 +1072,11 @@ static bool airoha_fe_lro_is_enabled(struct airoha_eth *eth, int qdma_id)
 static void airoha_dev_lro_enable(struct airoha_gdm_dev *dev)
 {
 	struct airoha_qdma *qdma = airoha_qdma_deref(dev);
-	struct airoha_eth *eth = qdma->eth;
+	struct airoha_eth *eth = qdma->common.eth;
 	int qdma_id = qdma - &eth->qdma[0];
 	int i, lro_queue_index = 0;
 
-	for (i = 0; i < qdma->eth->soc->rx_ring; i++) {
+	for (i = 0; i < qdma->common.eth->soc->rx_ring; i++) {
 		struct airoha_queue *q = &qdma->q_rx[i];
 		u32 size;
 
@@ -1293,7 +1293,7 @@ static int airoha_qdma_fill_rx_queue(struct airoha_queue *q)
 		e->dma_len = SKB_WITH_OVERHEAD(q->buf_size);
 
 		WRITE_ONCE(desc->tcp_ts_reply, 0);
-		val = airoha_is(qdma->eth, airoha_en7523) ?
+		val = airoha_is(qdma->common.eth, airoha_en7523) ?
 			FIELD_PREP(EN7523_QDMA_DESC_LEN_MASK, e->dma_len) :
 			FIELD_PREP(QDMA_DESC_LEN_MASK, e->dma_len);
 		WRITE_ONCE(desc->ctrl, cpu_to_le32(val));
@@ -1378,7 +1378,7 @@ static struct sk_buff *airoha_qdma_lro_rx_skb(struct airoha_queue *q,
 	struct page *page;
 	bool ipv4, ipv6;
 
-	switch(q->qdma->eth->soc->version) {
+	switch(q->qdma->common.eth->soc->version) {
 	case airoha_en7523:
 		ipv4 = FIELD_GET(EN7523_QDMA_ETH_RXMSG_IP4_MASK, msg1);
 		ipv6 = FIELD_GET(EN7523_QDMA_ETH_RXMSG_IP6_MASK, msg1);
@@ -1543,7 +1543,7 @@ static struct sk_buff *airoha_qdma_build_rx_skb(struct airoha_queue *q,
 
 		__skb_put(skb, len);
 		if ((netdev->features & NETIF_F_RXCSUM) &&
-		    airoha_qdma_rx_checksum_ok(q->qdma->eth, desc))
+		    airoha_qdma_rx_checksum_ok(q->qdma->common.eth, desc))
 			skb->ip_summed = CHECKSUM_UNNECESSARY;
 		else
 			skb->ip_summed = CHECKSUM_NONE;
@@ -1587,7 +1587,7 @@ static bool airoha_qdma_should_check_ppe_skb(struct airoha_eth *eth,
 static int airoha_qdma_rx_process(struct airoha_queue *q, int budget)
 {
 	enum dma_data_direction dir = page_pool_get_dma_dir(q->page_pool);
-	struct airoha_eth *eth = q->qdma->eth;
+	struct airoha_eth *eth = q->qdma->common.eth;
 	int done = 0;
 
 	while (done < budget) {
@@ -1806,7 +1806,7 @@ static int airoha_qdma_rx_napi_poll(struct napi_struct *napi, int budget)
 		int intr_reg = qid < RX_DONE_HIGH_OFFSET ? QDMA_INT_REG_IDX1
 							 : QDMA_INT_REG_IDX2;
 
-		for (i = 0; i < qdma->eth->soc->irq_banks; i++) {
+		for (i = 0; i < qdma->common.eth->soc->irq_banks; i++) {
 			if (!(BIT(qid) & RX_IRQ_BANK_PIN_MASK(i)))
 				continue;
 
@@ -1826,10 +1826,10 @@ static int airoha_qdma_init_rx_queue(struct airoha_queue *q,
 		.flags = PP_FLAG_DMA_MAP | PP_FLAG_DMA_SYNC_DEV,
 		.dma_dir = DMA_FROM_DEVICE,
 		.nid = NUMA_NO_NODE,
-		.dev = qdma->eth->dev,
+		.dev = qdma->common.eth->dev,
 		.napi = &q->napi,
 	};
-	struct airoha_eth *eth = qdma->eth;
+	struct airoha_eth *eth = qdma->common.eth;
 	int qid = q - &qdma->q_rx[0], thr;
 	dma_addr_t dma_addr;
 	bool lro_q;
@@ -1892,7 +1892,7 @@ static int airoha_qdma_init_rx_queue(struct airoha_queue *q,
 static void airoha_qdma_cleanup_rx_queue(struct airoha_queue *q)
 {
 	struct airoha_qdma *qdma = q->qdma;
-	struct airoha_eth *eth = qdma->eth;
+	struct airoha_eth *eth = qdma->common.eth;
 	int qid = q - &qdma->q_rx[0];
 
 	while (q->queued) {
@@ -1931,7 +1931,7 @@ static int airoha_qdma_init_rx(struct airoha_qdma *qdma)
 {
 	int i;
 
-	for (i = 0; i < qdma->eth->soc->rx_ring; i++) {
+	for (i = 0; i < qdma->common.eth->soc->rx_ring; i++) {
 		int err;
 
 		if (!(RX_DONE_INT_MASK & BIT(i))) {
@@ -1951,7 +1951,7 @@ static int airoha_qdma_init_rx(struct airoha_qdma *qdma)
 static void airoha_qdma_wake_netdev_txqs(struct airoha_queue *q)
 {
 	struct airoha_qdma *qdma = q->qdma;
-	struct airoha_eth *eth = qdma->eth;
+	struct airoha_eth *eth = qdma->common.eth;
 	int i, qid = q - &qdma->q_tx[0];
 
 	for (i = 0; i < eth->soc->max_gdm_ports; i++) {
@@ -2011,7 +2011,7 @@ static int airoha_qdma_tx_napi_poll(struct napi_struct *napi, int budget)
 	irq_q = container_of(napi, struct airoha_tx_irq_queue, napi);
 	qdma = irq_q->qdma;
 	id = irq_q - &qdma->q_tx_irq[0];
-	eth = qdma->eth;
+	eth = qdma->common.eth;
 
 	status = airoha_qdma_rr(qdma, REG_IRQ_STATUS(id));
 	head = FIELD_GET(IRQ_HEAD_IDX_MASK, status);
@@ -2143,7 +2143,7 @@ consume:
 static int airoha_qdma_init_tx_queue(struct airoha_queue *q,
 				     struct airoha_qdma *qdma, int size)
 {
-	struct airoha_eth *eth = qdma->eth;
+	struct airoha_eth *eth = qdma->common.eth;
 	int i, qid = q - &qdma->q_tx[0];
 	dma_addr_t dma_addr;
 
@@ -2188,7 +2188,7 @@ static int airoha_qdma_tx_irq_init(struct airoha_tx_irq_queue *irq_q,
 				   struct airoha_qdma *qdma, int size)
 {
 	int id = irq_q - &qdma->q_tx_irq[0];
-	struct airoha_eth *eth = qdma->eth;
+	struct airoha_eth *eth = qdma->common.eth;
 	dma_addr_t dma_addr;
 
 	irq_q->q = dmam_alloc_coherent(eth->dev, size * sizeof(u32),
@@ -2223,7 +2223,7 @@ static int airoha_qdma_init_tx(struct airoha_qdma *qdma)
 			return err;
 	}
 
-	for (i = 0; i < qdma->eth->soc->tx_ring; i++) {
+	for (i = 0; i < qdma->common.eth->soc->tx_ring; i++) {
 		err = airoha_qdma_init_tx_queue(&qdma->q_tx[i], qdma,
 						TX_DSCP_NUM(i));
 		if (err)
@@ -2236,7 +2236,7 @@ static int airoha_qdma_init_tx(struct airoha_qdma *qdma)
 static void airoha_qdma_cleanup_tx_queue(struct airoha_queue *q)
 {
 	struct airoha_qdma *qdma = q->qdma;
-	struct airoha_eth *eth = qdma->eth;
+	struct airoha_eth *eth = qdma->common.eth;
 	int i, qid = q - &qdma->q_tx[0];
 	u16 index = 0;
 
@@ -2285,7 +2285,7 @@ static void airoha_qdma_cleanup_tx_queue(struct airoha_queue *q)
 static int airoha_qdma_init_hfwd_queues(struct airoha_qdma *qdma)
 {
 	int size, index, num_desc = HW_DSCP_NUM;
-	struct airoha_eth *eth = qdma->eth;
+	struct airoha_eth *eth = qdma->common.eth;
 	int id = qdma - &eth->qdma[0];
 	u32 status, buf_size;
 	dma_addr_t dma_addr;
@@ -2362,7 +2362,7 @@ static int airoha_qdma_init_hfwd_queues(struct airoha_qdma *qdma)
 
 static void airoha_qdma_init_qos(struct airoha_qdma *qdma)
 {
-	struct airoha_eth *eth = qdma->eth;
+	struct airoha_eth *eth = qdma->common.eth;
 	u32 meter_cfg, meter_window, meter_timeslice;
 	int id = qdma - &eth->qdma[0];
 
@@ -2462,7 +2462,7 @@ static int airoha_qdma_hw_init(struct airoha_qdma *qdma)
 {
 	int i;
 
-	for (i = 0; i < qdma->eth->soc->irq_banks; i++) {
+	for (i = 0; i < qdma->common.eth->soc->irq_banks; i++) {
 		/* clear pending irqs */
 		airoha_qdma_wr(qdma, REG_INT_STATUS(i), 0xffffffff);
 		/* setup rx irqs */
@@ -2481,7 +2481,7 @@ static int airoha_qdma_hw_init(struct airoha_qdma *qdma)
 	airoha_qdma_irq_enable(&qdma->irq_banks[0], QDMA_INT_REG_IDX4,
 			       TX_COHERENT_HIGH_INT_MASK);
 
-	if (airoha_is(qdma->eth, airoha_en7523)) {
+	if (airoha_is(qdma->common.eth, airoha_en7523)) {
 		airoha_qdma_wr(qdma, 0x30, 0x7C000000);
 		airoha_qdma_wr(qdma, 0x34, 0x7C007C00);
 		airoha_qdma_wr(qdma, 0x38, 0x00200000);
@@ -2491,7 +2491,7 @@ static int airoha_qdma_hw_init(struct airoha_qdma *qdma)
 	}
 
 	/* setup irq binding */
-	for (i = 0; i < qdma->eth->soc->tx_ring; i++) {
+	for (i = 0; i < qdma->common.eth->soc->tx_ring; i++) {
 		if (!qdma->q_tx[i].ndesc)
 			continue;
 
@@ -2502,7 +2502,7 @@ static int airoha_qdma_hw_init(struct airoha_qdma *qdma)
 			airoha_qdma_clear(qdma, REG_TX_RING_BLOCKING(i),
 					  TX_RING_IRQ_BLOCKING_CFG_MASK);
 
-		if (airoha_is(qdma->eth, airoha_en7523)) {
+		if (airoha_is(qdma->common.eth, airoha_en7523)) {
 			if (i == 0)
 				airoha_qdma_set(qdma, REG_TX_RING_BLOCKING(i),
 						TX_RING_IRQ_BLOCKING_TX_DROP_EN_MASK);
@@ -2525,7 +2525,7 @@ static int airoha_qdma_hw_init(struct airoha_qdma *qdma)
 	airoha_qdma_init_qos(qdma);
 
 	/* disable qdma rx delay interrupt */
-	for (i = 0; i < qdma->eth->soc->rx_ring; i++) {
+	for (i = 0; i < qdma->common.eth->soc->rx_ring; i++) {
 		if (!qdma->q_rx[i].ndesc)
 			continue;
 
@@ -2554,7 +2554,7 @@ static irqreturn_t airoha_irq_handler(int irq, void *dev_instance)
 		airoha_qdma_wr(qdma, REG_INT_STATUS(i), intr[i]);
 	}
 
-	if (!test_bit(DEV_STATE_INITIALIZED, &qdma->eth->state))
+	if (!test_bit(DEV_STATE_INITIALIZED, &qdma->common.eth->state))
 		return IRQ_NONE;
 
 	rx_intr1 = intr[1] & RX_DONE_LOW_INT_MASK;
@@ -2569,7 +2569,7 @@ static irqreturn_t airoha_irq_handler(int irq, void *dev_instance)
 		rx_intr_mask |= (rx_intr2 << 16);
 	}
 
-	for (i = 0; rx_intr_mask && i < qdma->eth->soc->rx_ring; i++) {
+	for (i = 0; rx_intr_mask && i < qdma->common.eth->soc->rx_ring; i++) {
 		if (!qdma->q_rx[i].ndesc)
 			continue;
 
@@ -2594,7 +2594,7 @@ static irqreturn_t airoha_irq_handler(int irq, void *dev_instance)
 static int airoha_qdma_init_irq_banks(struct platform_device *pdev,
 				      struct airoha_qdma *qdma)
 {
-	struct airoha_eth *eth = qdma->eth;
+	struct airoha_eth *eth = qdma->common.eth;
 	int i, id = qdma - &eth->qdma[0];
 	qdma->irq_banks = devm_kzalloc(&pdev->dev,
 		sizeof(*qdma->irq_banks) * eth->soc->irq_banks, GFP_KERNEL);
@@ -2635,15 +2635,17 @@ static int airoha_qdma_init(struct platform_device *pdev,
 	int err, id = qdma - &eth->qdma[0];
 	const char *res;
 
-	qdma->eth = eth;
 	res = devm_kasprintf(eth->dev, GFP_KERNEL, "qdma%d", id);
 	if (!res)
 		return -ENOMEM;
 
-	qdma->regs = devm_platform_ioremap_resource_byname(pdev, res);
-	if (IS_ERR(qdma->regs))
-		return dev_err_probe(eth->dev, PTR_ERR(qdma->regs),
+	qdma->common.regs = devm_platform_ioremap_resource_byname(pdev, res);
+	if (IS_ERR(qdma->common.regs))
+		return dev_err_probe(eth->dev, PTR_ERR(qdma->common.regs),
 				     "failed to iomap qdma%d regs\n", id);
+
+	airoha_qdma_common_init(&qdma->common, eth, qdma->common.regs, id);
+	eth->qdma_common[id] = &qdma->common;
 
 	err = airoha_qdma_init_irq_banks(pdev, qdma);
 	if (err)
@@ -2666,9 +2668,10 @@ static int airoha_qdma_init(struct platform_device *pdev,
 
 static void airoha_qdma_cleanup(struct airoha_qdma *qdma)
 {
+	struct airoha_eth *eth = qdma->common.eth;
 	int i;
 
-	for (i = 0; i < qdma->eth->soc->rx_ring; i++) {
+	for (i = 0; i < qdma->common.eth->soc->rx_ring; i++) {
 		if (!qdma->q_rx[i].ndesc)
 			continue;
 
@@ -2687,12 +2690,15 @@ static void airoha_qdma_cleanup(struct airoha_qdma *qdma)
 		netif_napi_del(&qdma->q_tx_irq[i].napi);
 	}
 
-	for (i = 0; i < qdma->eth->soc->tx_ring; i++) {
+	for (i = 0; i < qdma->common.eth->soc->tx_ring; i++) {
 		if (!qdma->q_tx[i].ndesc)
 			continue;
 
 		airoha_qdma_cleanup_tx_queue(&qdma->q_tx[i]);
 	}
+
+	if (eth && qdma->common.id < ARRAY_SIZE(eth->qdma_common))
+		eth->qdma_common[qdma->common.id] = NULL;
 }
 
 static int airoha_hw_init(struct platform_device *pdev,
@@ -2775,7 +2781,7 @@ static void airoha_qdma_start_napi(struct airoha_qdma *qdma)
 	for (i = 0; i < ARRAY_SIZE(qdma->q_tx_irq); i++)
 		napi_enable(&qdma->q_tx_irq[i].napi);
 
-	for (i = 0; i < qdma->eth->soc->rx_ring; i++) {
+	for (i = 0; i < qdma->common.eth->soc->rx_ring; i++) {
 		if (!qdma->q_rx[i].ndesc)
 			continue;
 
@@ -2790,7 +2796,7 @@ static void airoha_qdma_stop_napi(struct airoha_qdma *qdma)
 	for (i = 0; i < ARRAY_SIZE(qdma->q_tx_irq); i++)
 		napi_disable(&qdma->q_tx_irq[i].napi);
 
-	for (i = 0; i < qdma->eth->soc->rx_ring; i++) {
+	for (i = 0; i < qdma->common.eth->soc->rx_ring; i++) {
 		if (!qdma->q_rx[i].ndesc)
 			continue;
 
@@ -3019,9 +3025,9 @@ static void airoha_qdma_stop(struct airoha_qdma *qdma)
 					  GLOBAL_CFG_RX_DMA_BUSY_MASK)),
 			      USEC_PER_MSEC, 50 * USEC_PER_MSEC, true,
 			      qdma, REG_QDMA_GLOBAL_CFG))
-		dev_warn(qdma->eth->dev, "QDMA DMA engine busy timeout\n");
+		dev_warn(qdma->common.eth->dev, "QDMA DMA engine busy timeout\n");
 
-	for (int i = 0; i < qdma->eth->soc->tx_ring; i++) {
+	for (int i = 0; i < qdma->common.eth->soc->tx_ring; i++) {
 		if (!qdma->q_tx[i].ndesc)
 			continue;
 
@@ -3216,7 +3222,7 @@ static int airoha_dev_stop(struct net_device *netdev)
 	if (--port->users)
 		airoha_ppe_set_mtu(dev);
 	else if (!xpon_control)
-		airoha_set_gdm_port_fwd_cfg(qdma->eth,
+		airoha_set_gdm_port_fwd_cfg(qdma->common.eth,
 					    REG_GDM_FWD_CFG(port->id),
 					    FE_PSE_PORT_DROP);
 	airoha_qdma_stop(qdma);
@@ -3391,7 +3397,7 @@ static void airoha_dev_set_qdma(struct airoha_gdm_dev *dev)
 	netdev->irq = qdma->irq_banks[0].irq;
 
 	/* Set GSW P0 as WAN1 */
-	if (airoha_is(dev->qdma->eth, airoha_en7523)) {
+	if (airoha_is(dev->qdma->common.eth, airoha_en7523)) {
 		airoha_fe_rmw(eth, REG_FE_WAN_PORT, WAN1_MASK,
 				FIELD_PREP(WAN1_MASK, 0x10));
 		airoha_fe_rmw(eth, REG_FE_WAN_PORT, WAN1_EN_MASK,
@@ -3811,7 +3817,7 @@ static netdev_tx_t __airoha_dev_xmit(struct sk_buff *skb,
 	qid = airoha_qdma_get_txq(qdma, xpon ? xpon->queue :
 				    skb_get_queue_mapping(skb));
 	if (xpon) {
-		if (!airoha_is(qdma->eth, airoha_en7523))
+		if (!airoha_is(qdma->common.eth, airoha_en7523))
 			goto error;
 
 		msg0 = FIELD_PREP(QDMA_ETH_TXMSG_QUEUE_MASK, xpon->queue) |
@@ -3820,7 +3826,7 @@ static netdev_tx_t __airoha_dev_xmit(struct sk_buff *skb,
 				  xpon->gem_port_id);
 		if (xpon->oam)
 			msg0 |= QDMA_ETH_TXMSG_OAM_MASK;
-	} else if (airoha_is(qdma->eth, airoha_en7523)) {
+	} else if (airoha_is(qdma->common.eth, airoha_en7523)) {
 		airoha_qdma_skb_get_mtk_meta(skb, netdev,
 					     AIROHA_MTK_TAG_TO_DESC,
 					     &skb_meta);
@@ -3921,7 +3927,7 @@ static netdev_tx_t __airoha_dev_xmit(struct sk_buff *skb,
 				     list);
 		index = e - q->entry;
 
-		val = airoha_is(qdma->eth, airoha_en7523) ?
+		val = airoha_is(qdma->common.eth, airoha_en7523) ?
 			FIELD_PREP(EN7523_QDMA_DESC_LEN_MASK, len) :
 			FIELD_PREP(QDMA_DESC_LEN_MASK, len);
 		if (i < nr_frags - 1)
@@ -3932,7 +3938,7 @@ static netdev_tx_t __airoha_dev_xmit(struct sk_buff *skb,
 		WRITE_ONCE(desc->data, cpu_to_le32(val));
 		WRITE_ONCE(desc->msg0, cpu_to_le32(msg0));
 		WRITE_ONCE(desc->msg1, cpu_to_le32(msg1));
-		if (!airoha_is(qdma->eth, airoha_en7523))
+		if (!airoha_is(qdma->common.eth, airoha_en7523))
 			WRITE_ONCE(desc->msg2, cpu_to_le32(0xffff));
 
 		i++;
@@ -3960,7 +3966,7 @@ error_unmap:
 	list_for_each_entry(e, &tx_list, list) {
 		struct airoha_qdma_desc *desc = &q->desc[e - q->entry];
 
-		airoha_qdma_unmap_tx_entry(qdma->eth, e);
+		airoha_qdma_unmap_tx_entry(qdma->common.eth, e);
 		e->skb = NULL;
 		WRITE_ONCE(desc->ctrl, 0);
 		WRITE_ONCE(desc->addr, 0);
@@ -4631,7 +4637,7 @@ static int airoha_qdma_set_rx_meter(struct airoha_gdm_dev *dev,
 	struct airoha_qdma *qdma = airoha_qdma_deref(dev);
 	int i;
 
-	for (i = 0; i < qdma->eth->soc->rx_ring; i++) {
+	for (i = 0; i < qdma->common.eth->soc->rx_ring; i++) {
 		int err;
 
 		if (!qdma->q_rx[i].ndesc)
