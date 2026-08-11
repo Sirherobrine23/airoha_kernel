@@ -104,6 +104,10 @@
 #define EN751221_REG_BUS_MASK		GENMASK(21, 12)
 #define EN751221_REG_SSR3		0x094
 #define EN751221_REG_SSR3_GSW_MASK	GENMASK(9, 8)
+#define EN751221_REG_NP_PER_DOM_CLK_GAT_1	0x0e4
+#define   EN751221_XPON_TOD_CLK_EN	BIT(8)
+#define EN751221_REG_TOD_DIVIDER_ENABLE	0x0ec
+#define   EN751221_XPON_TOD_DIV_EN	BIT(1)
 #define EN751221_MAX_CLKS		5
 
 enum en_hir {
@@ -1813,6 +1817,29 @@ static int en751221_clk_hw_init(struct platform_device *pdev,
 	err = en751221_register_clocks(&pdev->dev, clk_data, map, clk_map);
 	if (err)
 		return err;
+
+	/*
+	 * The EN751221 xPON_1g SDK enables these CHIP-SCU gates during
+	 * gpon_init() before normal GPON MAC bring-up:
+	 *
+	 *   0x1fa200e4 |= BIT(8);
+	 *   0x1fa200ec |= BIT(1);
+	 *
+	 * Program them from the SCU provider so xPON consumers cannot reach
+	 * the MAC reset/register path with the vendor-required ToD clock path
+	 * still gated.
+	 */
+	err = regmap_set_bits(map, EN751221_REG_NP_PER_DOM_CLK_GAT_1,
+			      EN751221_XPON_TOD_CLK_EN);
+	if (err)
+		return dev_err_probe(&pdev->dev, err,
+				     "failed to enable EN751221 xPON ToD clock\n");
+
+	err = regmap_set_bits(map, EN751221_REG_TOD_DIVIDER_ENABLE,
+			      EN751221_XPON_TOD_DIV_EN);
+	if (err)
+		return dev_err_probe(&pdev->dev, err,
+				     "failed to enable EN751221 xPON ToD divider\n");
 
 	return register_resets(&pdev->dev, clk_map, soc_data);
 }
