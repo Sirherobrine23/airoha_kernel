@@ -10,6 +10,7 @@
 
 #include <dt-bindings/pinctrl/mt65xx.h>
 #include <linux/bitfield.h>
+#include <linux/bitmap.h>
 #include <linux/bits.h>
 #include <linux/cleanup.h>
 #include <linux/gpio/driver.h>
@@ -90,6 +91,11 @@ struct airoha_pinctrl_conf {
 	struct airoha_pinctrl_reg reg;
 };
 
+struct airoha_pinctrl_gpio_mux {
+	u32 pin;
+	struct airoha_pinctrl_reg reg;
+};
+
 struct airoha_gpiochip_regs {
 	/* gpio */
 	const u32 *data;
@@ -126,6 +132,9 @@ struct airoha_pinctrl {
 
 	struct regmap *chip_scu;
 	u32 force_gpio_reg;
+	const struct airoha_pinctrl_gpio_mux *gpio_muxes;
+	unsigned int num_gpio_muxes;
+	unsigned int num_irq;
 	struct regmap *regmap;
 
 	struct gpio_chip gpiochip;
@@ -151,6 +160,10 @@ struct airoha_pinctrl_match_data {
 	const struct airoha_pinctrl_hwinit_regs *hwinit_regs;
 	const unsigned int num_hwinit_regs;
 
+	unsigned int num_gpio;
+	unsigned int num_irq;
+	const struct airoha_pinctrl_gpio_mux *gpio_muxes;
+	unsigned int num_gpio_muxes;
 	u32 force_gpio_reg;
 };
 
