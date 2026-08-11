@@ -628,7 +628,7 @@ struct net_device *econet_alloc_gdm_port(struct airoha_eth *eth,
 		return ERR_PTR(err);
 
 	port = netdev_priv(ndev);
-	airoha_gdm_common_init(&port->common, ndev,
+	airoha_gdm_common_init(&port->common, eth, ndev,
 			       AIROHA_ETH_FAMILY_ECONET, fport,
 			       fport == ETX_FPORT_GDM2 ? DPORT_GDMA2 :
 						      DPORT_GDMA1,
