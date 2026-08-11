@@ -1446,6 +1446,25 @@ static int econet_dev_set_macaddr(struct net_device *dev, void *p)
 #define EN751221_CDM_STAG_EN		BIT(0)
 #define EN751221_GDM_STAG_EN		BIT(24)
 #define EN751221_GDM_UNTAG_EN		BIT(25)
+#define EN751221_GDM1_LONG_LEN		1700
+
+static u16 econet_gdm_oversize_len(struct econet_gdm_port *port, int mtu)
+{
+	u16 len = ETH_HLEN + mtu + ETH_FCS_LEN;
+
+	/*
+	 * The EN7512/EN7521 SDK programs GDM1_LONG_LEN_VALUE to 1700, not to
+	 * the bare 1518-byte Ethernet size. GDM1 sees the in-band MT7530
+	 * special tag and can also see customer/service VLAN tags, so using the
+	 * bare MTU wire length causes otherwise valid full-sized frames to be
+	 * classified as long packets and dropped before they reach QDMA/PPE.
+	 */
+	if (port->qdma->soc->en751221_special_tag &&
+	    port->fport == ETX_FPORT_GDM1)
+		len = max_t(u16, len, EN751221_GDM1_LONG_LEN);
+
+	return len;
+}
 
 static void econet_set_gdm_port_fwd_cfg(struct econet_gdm_port *port,
 				      enum etx_fport val)
@@ -1546,7 +1565,7 @@ static int econet_dev_open(struct net_device *dev)
 		rlt = econet_rreg(&port->regs->rx_len_threshold);
 		set_gdm_len_th_runt_len(&rlt, 60);
 		set_gdm_len_th_oversize_len(&rlt,
-					 ETH_HLEN + dev->mtu + ETH_FCS_LEN);
+					 econet_gdm_oversize_len(port, dev->mtu));
 		econet_wreg(rlt, &port->regs->rx_len_threshold);
 	}
 
@@ -1592,7 +1611,7 @@ static int econet_dev_change_mtu(struct net_device *dev, int mtu)
 
 	guard(spinlock)(&port->reg_lock);
 	rlt = econet_rreg(&port->regs->rx_len_threshold);
-	set_gdm_len_th_oversize_len(&rlt, ETH_HLEN + mtu + ETH_FCS_LEN);
+	set_gdm_len_th_oversize_len(&rlt, econet_gdm_oversize_len(port, mtu));
 	econet_wreg(rlt, &port->regs->rx_len_threshold);
 
 	WRITE_ONCE(dev->mtu, mtu);
