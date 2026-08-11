@@ -3336,7 +3336,7 @@ struct econet_eth {
 
 /* Called in softirq context */
 int econet_rx_before_recv(struct econet_eth *eth, struct sk_buff *skb,
-			enum etx_fport sport);
+			u8 sport, u16 sp_tag, u16 tci);
 
 struct econet_qdma_cfg {
 	int num_rx_descs[QDMA_NUM_CHAINS];
