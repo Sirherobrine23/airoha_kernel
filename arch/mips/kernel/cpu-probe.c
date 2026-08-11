@@ -1442,7 +1442,13 @@ static inline void cpu_probe_mips(struct cpuinfo_mips *c, unsigned int cpu)
 
 	spram_config();
 
+	pr_emerg("EN751221: Config0 before mm_config = %08x, PRId = %08x, CPU type = %u\n",
+		 read_c0_config(), read_c0_prid(), c->cputype);
+	
 	mm_config(c);
+	
+	pr_emerg("EN751221: Config0 after mm_config = %08x\n",
+		 read_c0_config());
 
 	switch (__get_cpu_type(c->cputype)) {
 	case CPU_M5150:
