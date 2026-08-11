@@ -5287,7 +5287,7 @@ static int airoha_alloc_gdm_device(struct airoha_eth *eth,
 
 	netdev->dev.of_node = of_node_get(np);
 	dev = netdev_priv(netdev);
-	airoha_gdm_common_init(&dev->common, netdev,
+	airoha_gdm_common_init(&dev->common, eth, netdev,
 			       AIROHA_ETH_FAMILY_AIROHA, port->id, 0,
 			       dev, &airoha_gdm_mac_ops);
 	u64_stats_init(&dev->stats.syncp);
