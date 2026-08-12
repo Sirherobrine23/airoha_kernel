@@ -28,6 +28,7 @@ config EN7572_PHY
 config GN25L95_PHY
 	bool "Semtech GN25L95 xPON optical frontend"
 	depends on AIROHA_LDDLA_PHY
+	select FW_LOADER
 	select REGMAP_I2C
 	help
 	  Support the Semtech GN25L95 2.5 Gbit/s burst-mode laser driver
