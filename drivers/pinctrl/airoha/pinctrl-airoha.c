@@ -483,8 +483,12 @@ airoha_pinmux_gpio_request_enable(struct pinctrl_dev *pctrl_dev,
 		if (mux->pin != gpio)
 			continue;
 
-		err = regmap_clear_bits(pinctrl->chip_scu, mux->reg.offset,
-					mux->reg.mask);
+		if (mux->mux == AIROHA_FUNC_MUX)
+			err = regmap_clear_bits(pinctrl->chip_scu, mux->reg.offset,
+						mux->reg.mask);
+		else
+			err = regmap_clear_bits(pinctrl->regmap, mux->reg.offset,
+						mux->reg.mask);
 		if (err)
 			return err;
 	}
@@ -634,13 +638,14 @@ static int airoha_pinconf_get(struct pinctrl_dev *pctrl_dev,
 		break;
 	}
 	case PIN_CONFIG_DRIVE_STRENGTH: {
-		u32 e2, e4;
+		u32 e2, e4, level;
 
 		if (airoha_pinctrl_get_drive_e2_conf(pinctrl, pin, &e2) ||
 		    airoha_pinctrl_get_drive_e4_conf(pinctrl, pin, &e4))
 			return -EINVAL;
 
-		arg = e4 << 1 | e2;
+		level = e4 << 1 | e2;
+		arg = (level + 1) * pinctrl->drive_strength_step_ma;
 		break;
 	}
 	case PIN_CONFIG_DRIVE_OPEN_DRAIN:
@@ -721,32 +726,24 @@ static int airoha_pinconf_set(struct pinctrl_dev *pctrl_dev,
 
 			break;
 		case PIN_CONFIG_DRIVE_STRENGTH: {
-			u32 e2 = 0, e4 = 0;
+			u32 e2, e4, level;
 
-			switch (arg) {
-			case MTK_DRIVE_2mA:
-				break;
-			case MTK_DRIVE_4mA:
-				e2 = 1;
-				break;
-			case MTK_DRIVE_6mA:
-				e4 = 1;
-				break;
-			case MTK_DRIVE_8mA:
-				e2 = 1;
-				e4 = 1;
-				break;
-			default:
+			if (!arg || arg % pinctrl->drive_strength_step_ma)
 				return -EINVAL;
-			}
 
-			err = airoha_pinctrl_set_drive_e2_conf(pinctrl,
-							       pin, e2);
+			level = arg / pinctrl->drive_strength_step_ma;
+			if (level < 1 || level > 4)
+				return -EINVAL;
+
+			level--;
+			e2 = level & 1;
+			e4 = (level >> 1) & 1;
+
+			err = airoha_pinctrl_set_drive_e2_conf(pinctrl, pin, e2);
 			if (err)
 				return err;
 
-			err = airoha_pinctrl_set_drive_e4_conf(pinctrl,
-							       pin, e4);
+			err = airoha_pinctrl_set_drive_e4_conf(pinctrl, pin, e4);
 			if (err)
 				return err;
 
@@ -875,6 +872,7 @@ int airoha_pinctrl_probe(struct platform_device *pdev)
 	pinctrl->force_gpio_reg = data->force_gpio_reg;
 	pinctrl->gpio_muxes = data->gpio_muxes;
 	pinctrl->num_gpio_muxes = data->num_gpio_muxes;
+	pinctrl->drive_strength_step_ma = data->drive_strength_step_ma ?: 2;
 	pinctrl->gpiochip.ngpio = data->num_gpio ?: AIROHA_NUM_PINS;
 	pinctrl->num_irq = data->num_irq ?: AIROHA_NUM_PINS;
 	if (pinctrl->gpiochip.ngpio > AIROHA_NUM_PINS ||
