@@ -24,6 +24,14 @@ properties:
     description:
       I2C address of the GN25L95 A2 host page, normally 0x51.
 
+  firmware-name:
+    $ref: /schemas/types.yaml#/definitions/string
+    description: |
+      Name of the 2048-byte board-specific BOSA calibration image. The image
+      uses the MediaTek/EcoNet vendor /bosa/hwconfig layout and is required
+      when STATUS_0 reports that no external EEPROM is present. If omitted,
+      the driver requests semtech/gn25l95-hwconfig.bin.
+
   i2c-sfp:
     type: object
     description:
@@ -59,6 +67,7 @@ examples:
         optical-frontend@51 {
             compatible = "semtech,gn25l95";
             reg = <0x51>;
+            firmware-name = "semtech/gpt2741-gn25l95-hwconfig.bin";
 
             sfp_i2c: i2c-sfp {
                 #address-cells = <1>;
