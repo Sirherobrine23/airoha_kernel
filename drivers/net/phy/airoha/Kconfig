@@ -1,9 +1,9 @@
 config AIROHA_LDDLA_PHY
-	tristate "Airoha EN757x xPON PHY lddla devices"
+	tristate "xPON laser-driver / limiting-amplifier devices"
 	select PHY_COMMON_PROPS
 	default n
 	help
-	  Currently supports the Airoha EN757x PHY.
+	  Support optical front-end controllers used with Airoha/EcoNet xPON MACs.
 
 if AIROHA_LDDLA_PHY
 
@@ -24,5 +24,15 @@ config EN7572_PHY
 	depends on AIROHA_LDDLA_PHY
 	help
 	 en7572
+
+config GN25L95_PHY
+	bool "Semtech GN25L95 xPON optical frontend"
+	depends on AIROHA_LDDLA_PHY
+	select REGMAP_I2C
+	help
+	  Support the Semtech GN25L95 2.5 Gbit/s burst-mode laser driver
+	  and limiting post amplifier. The device exposes SFF-8472 DDMI
+	  measurements over I2C and is used in GPON/EPON BOSA-on-board
+	  optical frontends.
 
 endif
