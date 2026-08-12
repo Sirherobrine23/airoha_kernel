@@ -9,11 +9,12 @@ title: EcoNet EN7512/EN7521 Pin Controller
 maintainers:
   - Matheus Sampaio Queiroga <srherobrine20@gmail.com>
 
-description:
-  The pin controller and GPIO block used by the EcoNet EN7512, EN7513,
-  EN7521 and EN7526 SoC families. The first 16 GPIO lines can generate
-  interrupts. GPIOs 2 through 31 also provide a set of SoC-specific muxed
-  functions.
+description: |
+  Pin controller and GPIO block used by the EcoNet EN7512, EN7513, EN7521
+  and EN7526 SoC families. The pin numbering follows the hardware pad map:
+  GPIO0 starts at pinctrl pin 13. GPIO0 through GPIO28 are exposed by the
+  GPIO controller through gpio-ranges, while additional pads can still be
+  selected by pinmux functions.
 
 properties:
   compatible:
@@ -22,7 +23,7 @@ properties:
   airoha,chip-scu:
     $ref: /schemas/types.yaml#/definitions/phandle
     description:
-      Phandle to the chip system controller containing the I/O mux register.
+      Phandle to the chip system controller containing the I/O mux registers.
 
   interrupts:
     maxItems: 1
@@ -64,9 +65,24 @@ patternProperties:
 
         properties:
           function:
-            enum: [sipo, tod_1pps, pcie_reset, spi, uart, pon, pcm,
-                   pcm_spi, gpio, phy1_led0, phy2_led0, phy3_led0,
-                   phy4_led0, gsw_port4_led0]
+            enum:
+              - pon
+              - tod_1pps
+              - sipo
+              - uart
+              - pon_i2c
+              - dmt_i2c
+              - ejtag
+              - pcm
+              - spi
+              - pcm_spi
+              - pcie_reset
+              - pwm
+              - phy0_led
+              - phy1_led
+              - phy2_led
+              - phy3_led
+              - phy4_led
 
           groups: true
 
@@ -78,11 +94,11 @@ patternProperties:
           - if:
               properties:
                 function:
-                  const: sipo
+                  const: pon
             then:
               properties:
                 groups:
-                  enum: [sipo, sipo_rclk]
+                  enum: [pon]
           - if:
               properties:
                 function:
@@ -90,23 +106,24 @@ patternProperties:
             then:
               properties:
                 groups:
-                  enum: [dmt_tod_1pps, pon_tod_1pps, gsw_tod_1pps]
+                  items:
+                    enum:
+                      - pon_tod_1pps
+                      - gsw_tod_1pps
+                      - dmt_tod_1pps
+                  maxItems: 3
           - if:
               properties:
                 function:
-                  const: pcie_reset
+                  const: sipo
             then:
               properties:
                 groups:
-                  enum: [pcie_reset0, pcie_reset1]
-          - if:
-              properties:
-                function:
-                  const: spi
-            then:
-              properties:
-                groups:
-                  enum: [spi_quad]
+                  items:
+                    enum:
+                      - sipo
+                      - sipo_rclk
+                  maxItems: 2
           - if:
               properties:
                 function:
@@ -118,11 +135,27 @@ patternProperties:
           - if:
               properties:
                 function:
-                  const: pon
+                  const: pon_i2c
             then:
               properties:
                 groups:
-                  enum: [pon]
+                  enum: [pon_i2c]
+          - if:
+              properties:
+                function:
+                  const: dmt_i2c
+            then:
+              properties:
+                groups:
+                  enum: [dmt_i2c]
+          - if:
+              properties:
+                function:
+                  const: ejtag
+            then:
+              properties:
+                groups:
+                  enum: [ejtag]
           - if:
               properties:
                 function:
@@ -130,7 +163,25 @@ patternProperties:
             then:
               properties:
                 groups:
-                  enum: [pcm1, pcm2]
+                  items:
+                    enum:
+                      - pcm1
+                      - pcm2
+                  maxItems: 2
+          - if:
+              properties:
+                function:
+                  const: spi
+            then:
+              properties:
+                groups:
+                  items:
+                    enum:
+                      - spi_quad
+                      - spi2
+                      - spi_cs3
+                      - spi_cs4
+                  maxItems: 4
           - if:
               properties:
                 function:
@@ -139,62 +190,142 @@ patternProperties:
               properties:
                 groups:
                   items:
-                    enum: [pcm_spi, pcm_spi_int, pcm_spi_rst, pcm_spi_cs3,
-                           pcm_spi_cs4]
+                    enum:
+                      - pcm_spi
+                      - pcm_spi_int
+                      - pcm_spi_rst
+                      - pcm_spi_cs3
+                      - pcm_spi_cs4
                   maxItems: 5
           - if:
               properties:
                 function:
-                  const: phy1_led0
-            then:
-              properties:
-                groups:
-                  enum: [gpio10]
-          - if:
-              properties:
-                function:
-                  const: phy2_led0
-            then:
-              properties:
-                groups:
-                  enum: [gpio9]
-          - if:
-              properties:
-                function:
-                  const: phy3_led0
-            then:
-              properties:
-                groups:
-                  enum: [gpio8]
-          - if:
-              properties:
-                function:
-                  const: phy4_led0
-            then:
-              properties:
-                groups:
-                  enum: [gpio7]
-          - if:
-              properties:
-                function:
-                  const: gsw_port4_led0
-            then:
-              properties:
-                groups:
-                  enum: [gpio3]
-          - if:
-              properties:
-                function:
-                  const: gpio
+                  const: pcie_reset
             then:
               properties:
                 groups:
                   items:
-                    enum: [gpio2, gpio3, gpio4, gpio5, gpio6, gpio7,
-                           gpio8, gpio9, gpio10, gpio11, gpio12, gpio13,
-                           gpio14, gpio15, gpio16, gpio17, gpio18, gpio19,
-                           gpio20, gpio22, gpio30, gpio31]
-                  maxItems: 22
+                    enum:
+                      - pcie_reset0
+                      - pcie_reset1
+                  maxItems: 2
+          - if:
+              properties:
+                function:
+                  const: pwm
+            then:
+              properties:
+                groups:
+                  items:
+                    enum:
+                      - gpio0
+                      - gpio1
+                      - gpio2
+                      - gpio3
+                      - gpio4
+                      - gpio5
+                      - gpio6
+                      - gpio7
+                      - gpio8
+                      - gpio9
+                      - gpio10
+                      - gpio11
+                      - gpio12
+                      - gpio13
+                      - gpio14
+                      - gpio15
+                      - gpio16
+                      - gpio17
+                      - gpio18
+                      - gpio19
+                      - gpio20
+                      - gpio21
+                      - gpio22
+                      - gpio23
+                      - gpio24
+                      - gpio25
+                      - gpio26
+                      - gpio27
+                      - gpio28
+                      - gpio29
+                      - gpio30
+                      - gpio31
+                  maxItems: 32
+          - if:
+              properties:
+                function:
+                  const: phy0_led
+            then:
+              properties:
+                groups:
+                  items:
+                    enum:
+                      - gpio3
+                      - gpio7
+                      - gpio8
+                      - gpio9
+                      - gpio10
+                  maxItems: 5
+          - if:
+              properties:
+                function:
+                  const: phy1_led
+            then:
+              properties:
+                groups:
+                  items:
+                    enum:
+                      - gpio3
+                      - gpio7
+                      - gpio8
+                      - gpio9
+                      - gpio10
+                  maxItems: 5
+          - if:
+              properties:
+                function:
+                  const: phy2_led
+            then:
+              properties:
+                groups:
+                  items:
+                    enum:
+                      - gpio3
+                      - gpio7
+                      - gpio8
+                      - gpio9
+                      - gpio10
+                  maxItems: 5
+          - if:
+              properties:
+                function:
+                  const: phy3_led
+            then:
+              properties:
+                groups:
+                  items:
+                    enum:
+                      - gpio3
+                      - gpio7
+                      - gpio8
+                      - gpio9
+                      - gpio10
+                  maxItems: 5
+          - if:
+              properties:
+                function:
+                  const: phy4_led
+            then:
+              properties:
+                groups:
+                  items:
+                    enum:
+                      - gpio3
+                      - gpio7
+                      - gpio8
+                      - gpio9
+                      - gpio10
+                  maxItems: 5
 
         additionalProperties: false
 
@@ -205,20 +336,57 @@ patternProperties:
         properties:
           pins:
             items:
-              enum: [gpio0, gpio1, gpio2, gpio3, gpio4, gpio5, gpio6,
-                     gpio7, gpio8, gpio9, gpio10, gpio11, gpio12, gpio13,
-                     gpio14, gpio15, gpio16, gpio17, gpio18, gpio19,
-                     gpio20, gpio21, gpio22, gpio23, gpio24, gpio25,
-                     gpio26, gpio27, gpio28, gpio29, gpio30, gpio31,
-                     gpio32, gpio33, gpio34, gpio35, gpio36, gpio37,
-                     gpio38, gpio39, gpio40, gpio41, gpio42, gpio43,
-                     gpio44, gpio45, gpio46, gpio47, gpio48, gpio49,
-                     gpio50, gpio51, gpio52, gpio53, gpio54, gpio55,
-                     gpio56, gpio57, gpio58, gpio59, gpio60, gpio61,
-                     gpio62, gpio63]
+              enum:
+                - uart1_txd
+                - uart1_rxd
+                - i2c_scl
+                - i2c_sda
+                - spi_cs
+                - spi_clk
+                - spi_mosi
+                - spi_miso
+                - mdio
+                - mdc
+                - gpio0
+                - gpio1
+                - gpio2
+                - gpio3
+                - gpio4
+                - gpio5
+                - gpio6
+                - gpio7
+                - gpio8
+                - gpio9
+                - gpio10
+                - gpio11
+                - gpio12
+                - gpio13
+                - gpio14
+                - gpio15
+                - gpio16
+                - gpio17
+                - gpio18
+                - gpio19
+                - gpio20
+                - gpio21
+                - gpio22
+                - gpio23
+                - gpio24
+                - gpio25
+                - gpio26
+                - gpio27
+                - gpio28
+                - gpio29
+                - pcie_reset0
+                - pcie_reset1
             minItems: 1
-            maxItems: 64
+            maxItems: 42
 
+          bias-disable: true
+          bias-pull-down: true
+          bias-pull-up: true
+          drive-strength:
+            enum: [4, 8, 12, 16]
           input-enable: true
           output-enable: true
           output-low: true
@@ -244,7 +412,7 @@ examples:
 
       gpio-controller;
       #gpio-cells = <2>;
-      gpio-ranges = <&pinctrl 0 0 64>;
+      gpio-ranges = <&pinctrl 0 13 29>;
 
       interrupt-controller;
       #interrupt-cells = <2>;
