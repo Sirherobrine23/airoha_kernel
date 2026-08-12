@@ -1,16 +1,15 @@
 /* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Shared core for the Airoha xPON LDDLA controller drivers (EN7570, EN7571).
+ * Shared core for xPON laser-driver / limiting-amplifier frontends.
  *
- * The two chips share the same host integration: an I2C-attached register
- * file at slave 0x70 with a 2-byte big-endian pointer and little-endian data,
- * a 100-word calibration firmware blob, a 1 Hz control worker, and SFF-8472
- * digital diagnostics exported through hwmon and a virtual SFP bus.
+ * The Airoha EN7570/EN7571 devices use the shared 0x70 transport helpers
+ * below, while newer/different frontends can provide their own I2C transport
+ * and only reuse the telemetry, hwmon and virtual-SFP integration.
  *
  * This header defines the common per-device state object, the per-chip
- * operations table the shared code calls back into, the shared I2C transport,
- * the calibration store, and the shared SFF-8472 unit constants.  Each chip
- * embeds struct airoha_lddla as the first member of its private structure.
+ * operations table, the EN757x I2C transport helpers, the calibration store,
+ * and the shared SFF-8472 unit constants.  Each chip embeds
+ * struct airoha_lddla as the first member of its private structure.
  *
  * Fixed-point unit conventions:
  *   - temperature    : milli-degrees Celsius (m degC)
@@ -68,7 +67,9 @@ struct airoha_lddla;
 
 /**
  * struct airoha_lddla_ops - per-chip callbacks invoked by the shared core.
- * @name: hwmon / i2c driver name ("en7570" / "en7571").
+ * @name: hwmon / i2c driver name.
+ * @vendor_name: SFP MSA vendor name; NULL keeps the Airoha default.
+ * @vendor_oui: SFP MSA vendor OUI used when @vendor_name is non-NULL.
  * @part_number: SFP MSA vendor part-number string.
  * @serial: SFP MSA vendor serial-number string.
  * @date_code: SFP MSA date code (6 chars).
@@ -86,6 +87,8 @@ struct airoha_lddla;
  */
 struct airoha_lddla_ops {
 	const char *name;
+	const char *vendor_name;
+	u8 vendor_oui[3];
 	const char *part_number;
 	const char *serial;
 	const char *date_code;
@@ -102,7 +105,7 @@ struct airoha_lddla_ops {
 
 /**
  * struct airoha_lddla - shared per-device state, embedded first in each chip priv.
- * @client: backing I2C client (slave 0x70).
+ * @client: backing I2C client.
  * @dev: device for logging and firmware/sysfs registration.
  * @ops: per-chip operations table.
  * @lock: serialises every I2C transaction so the multi-step shared-ADC

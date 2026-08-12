@@ -1,0 +1,68 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/net/semtech,gn25l95.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Semtech GN25L95 xPON optical frontend
+
+maintainers:
+  - Matheus Sampaio Queiroga <srherobrine20@gmail.com>
+
+description: |
+  The GN25L95 is a 2.5 Gbit/s burst-mode laser driver and limiting post
+  amplifier intended for GPON and EPON optical network units.  It provides
+  SFF-8472 compatible digital diagnostics over I2C.  The host A2 page normally
+  appears at 7-bit address 0x51; the address can be changed by device NVM.
+
+properties:
+  compatible:
+    const: semtech,gn25l95
+
+  reg:
+    maxItems: 1
+    description:
+      I2C address of the GN25L95 A2 host page, normally 0x51.
+
+  i2c-sfp:
+    type: object
+    description:
+      Firmware node assigned to the virtual SFP I2C adapter exported by the
+      driver.  A soldered optical frontend can reference this node from an
+      sff,sfp node using its i2c-bus property.
+
+    properties:
+      '#address-cells':
+        const: 1
+
+      '#size-cells':
+        const: 0
+
+    required:
+      - '#address-cells'
+      - '#size-cells'
+
+    additionalProperties: false
+
+required:
+  - compatible
+  - reg
+
+additionalProperties: false
+
+examples:
+  - |
+    i2c {
+        #address-cells = <1>;
+        #size-cells = <0>;
+
+        optical-frontend@51 {
+            compatible = "semtech,gn25l95";
+            reg = <0x51>;
+
+            sfp_i2c: i2c-sfp {
+                #address-cells = <1>;
+                #size-cells = <0>;
+            };
+        };
+    };
