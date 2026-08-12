@@ -85,7 +85,7 @@
 
 			gpio-controller;
 			#gpio-cells = <2>;
-			gpio-ranges = <&pinctrl 0 0 64>;
+			gpio-ranges = <&pinctrl 0 13 29>;
 
 			interrupt-controller;
 			#interrupt-cells = <2>;
