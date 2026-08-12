@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * Shared core for the Airoha xPON LDDLA (laser-diode driver + limiting
- * amplifier) controllers (EN7570, EN7571).
+ * Shared core for xPON LDDLA (laser-diode driver + limiting amplifier)
+ * controllers used with Airoha/EcoNet xPON MACs.
  *
  * Provides the common I2C transport, the bounded ADC/I2C lock, the calibration
  * firmware store, the hwmon registration, the virtual SFP bus and the single
@@ -52,9 +52,10 @@
 /* ------------------------------------------------------------------ */
 
 /*
- * I2C register addressing
- * =======================
- * The LDDLA is a 7-bit I2C slave at address 0x70.  Its register file is reached
+ * EN7570/EN7571 I2C register addressing
+ * ======================================
+ * These LDDLA devices are 7-bit I2C slaves at address 0x70.  Their register
+ * file is reached
  * through a 16-bit register pointer that is sent as the first two data bytes of
  * every transaction, most-significant byte first (big-endian on the wire):
  *
@@ -702,10 +703,17 @@ static void airoha_sfp_build_rom(struct airoha_sfp *sfp)
 	r[12] = gpon ? 0x19 : 0x0d;	/* BR nominal: ~2.5G GPON / 1.25G EPON */
 	put_be16(r, 14, 1490);		/* downstream wavelength (nm) */
 
-	put_ascii(r, 20, "Airoha", 16);			/* vendor name */
-	r[37] = 0x00;					/* vendor OUI */
-	r[38] = 0x0c;
-	r[39] = 0xe7;
+	if (ops->vendor_name) {
+		put_ascii(r, 20, ops->vendor_name, 16);
+		r[37] = ops->vendor_oui[0];
+		r[38] = ops->vendor_oui[1];
+		r[39] = ops->vendor_oui[2];
+	} else {
+		put_ascii(r, 20, "Airoha", 16);
+		r[37] = 0x00;
+		r[38] = 0x0c;
+		r[39] = 0xe7;
+	}
 	put_ascii(r, 40, ops->part_number, 16);		/* vendor part number */
 	put_ascii(r, 56, "0001", 4);			/* vendor revision */
 	put_be16(r, 60, 1490);				/* wavelength (nm) */
@@ -859,7 +867,7 @@ int lddla_sfp_init(struct airoha_lddla *lddla)
 	sfp->adapter.dev.of_node =
 		of_get_child_by_name(lddla->dev->of_node, "i2c-sfp");
 	sfp->adapter.class = 0;
-	strscpy(sfp->adapter.name, "Airoha LDDLA virtual SFP",
+	strscpy(sfp->adapter.name, "xPON LDDLA virtual SFP",
 		sizeof(sfp->adapter.name));
 	i2c_set_adapdata(&sfp->adapter, sfp);
 
@@ -896,6 +904,9 @@ extern struct i2c_driver en7571_i2c_driver;
 #if IS_ENABLED(CONFIG_EN7572_PHY)
 extern struct i2c_driver en7572_i2c_driver;
 #endif
+#if IS_ENABLED(CONFIG_GN25L95_PHY)
+extern struct i2c_driver gn25l95_i2c_driver;
+#endif
 
 static int __init airoha_lddla_init(void)
 {
@@ -916,7 +927,19 @@ static int __init airoha_lddla_init(void)
 	if (ret)
 		goto err_7572;
 #endif
+#if IS_ENABLED(CONFIG_GN25L95_PHY)
+	ret = i2c_add_driver(&gn25l95_i2c_driver);
+	if (ret)
+		goto err_gn25l95;
+#endif
 	return ret;
+
+#if IS_ENABLED(CONFIG_GN25L95_PHY)
+err_gn25l95:
+#if IS_ENABLED(CONFIG_EN7572_PHY)
+	i2c_del_driver(&en7572_i2c_driver);
+#endif
+#endif
 
 #if IS_ENABLED(CONFIG_EN7572_PHY)
 err_7572:
@@ -936,6 +959,9 @@ module_init(airoha_lddla_init);
 
 static void __exit airoha_lddla_exit(void)
 {
+#if IS_ENABLED(CONFIG_GN25L95_PHY)
+	i2c_del_driver(&gn25l95_i2c_driver);
+#endif
 #if IS_ENABLED(CONFIG_EN7572_PHY)
 	i2c_del_driver(&en7572_i2c_driver);
 #endif
@@ -948,6 +974,6 @@ static void __exit airoha_lddla_exit(void)
 }
 module_exit(airoha_lddla_exit);
 
-MODULE_DESCRIPTION("Airoha EN7570/EN7571/EN7572 xPON LDDLA controller driver");
+MODULE_DESCRIPTION("xPON LDDLA controller driver for Airoha EN757x and Semtech GN25L95");
 MODULE_AUTHOR("Benjamin Larsson <benjamin.larsson@genexis.eu>");
 MODULE_LICENSE("GPL");

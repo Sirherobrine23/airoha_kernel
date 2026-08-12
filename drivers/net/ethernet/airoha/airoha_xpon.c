@@ -106,7 +106,8 @@ static struct device *airoha_xpon_find_lddla(struct device *dev)
 
 	if (!of_device_is_compatible(lddla_node, "airoha,en7570") &&
 	    !of_device_is_compatible(lddla_node, "airoha,en7571") &&
-	    !of_device_is_compatible(lddla_node, "airoha,en7572")) {
+	    !of_device_is_compatible(lddla_node, "airoha,en7572") &&
+	    !of_device_is_compatible(lddla_node, "semtech,gn25l95")) {
 		of_node_put(lddla_node);
 		return NULL;
 	}
