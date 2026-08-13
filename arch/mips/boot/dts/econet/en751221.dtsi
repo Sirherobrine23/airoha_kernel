@@ -50,6 +50,9 @@
 		compatible = "econet,en751221-xpon-phy";
 		reg = <0x1faf0000 0x600>;
 
+		pinctrl-names = "default";
+		pinctrl-0 = <&pon_pinctrl>;
+
 		resets = <&scuclk EN751221_XPON_PHY_RST>;
 		reset-names = "phy";
 
@@ -89,6 +92,13 @@
 
 			interrupt-controller;
 			#interrupt-cells = <2>;
+
+			pon_pinctrl: pon-pins {
+				mux {
+					function = "pon";
+					groups = "pon";
+				};
+			};
 		};
 	};
 
