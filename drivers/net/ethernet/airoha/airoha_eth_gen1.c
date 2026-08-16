@@ -427,8 +427,16 @@ static int econet_xpon_classify(struct econet_gdm_port *port,
 		}
 	}
 
+	/*
+	 * An untagged frame still carries a priority: it is the default of
+	 * zero, and the 802.1p mapper an OLT provisions has an entry for it.
+	 * Treating such a frame as having no priority at all leaves it
+	 * matching no service on an OLT that expresses its whole service graph
+	 * through that mapper, and it is then dropped before ever reaching the
+	 * hardware.
+	 */
 	return econet_xpon_lookup_service(port, vlan_valid, vlan_id,
-					  vlan_valid, pcp, info);
+					  true, pcp, info);
 }
 
 static netdev_tx_t econet_dev_xmit(struct sk_buff *skb, struct net_device *dev)
