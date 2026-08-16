@@ -322,6 +322,17 @@ static u16 en7570_op_rx_power(struct airoha_lddla *lddla)
 	return en7570_rx_power_ddmi(container_of(lddla, struct en7570_priv, lddla));
 }
 
+static int en7570_op_tx_rearm(struct airoha_lddla *lddla)
+{
+	if (lddla->pon_mode != AIROHA_PON_GPON &&
+	    lddla->pon_mode != AIROHA_PON_EPON)
+		return -ENODATA;
+
+	return lddla_update8(lddla, EN7570_SAFE_PROTECT + 1,
+			     EN7570_SAFE_CIRCUIT_MASK,
+			     EN7570_SAFE_CIRCUIT_RESET);
+}
+
 static void en7570_op_diag(struct airoha_lddla *lddla, struct seq_file *s)
 {
 	struct en7570_priv *priv = container_of(lddla, struct en7570_priv, lddla);
@@ -355,6 +366,7 @@ static const struct airoha_lddla_ops en7570_ops = {
 	.tx_power_refresh = en7570_op_tx_power,
 	.rx_power_refresh = en7570_op_rx_power,
 	.diag_show = en7570_op_diag,
+	.tx_rearm = en7570_op_tx_rearm,
 };
 
 static int en7570_lut_show(struct seq_file *s, void *unused)
