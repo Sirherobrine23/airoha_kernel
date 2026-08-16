@@ -1757,7 +1757,7 @@ static void gpon_cb_set_t3_preamble(void *hw_priv, u8 o3_t3, u8 o5_t3)
 	 * and O5=56.  BIT(16) writes a reserved field and leaves EBL off.
 	 */
 	val = BIT(24) | ((u32)o5_t3 << 8) | o3_t3;
-	dev_info(priv->dev, "GPON T3 preamble: O3=%u O5=%u reg=%#08x\n",
+	dev_dbg(priv->dev, "GPON T3 preamble: O3=%u O5=%u reg=%#08x\n",
 		 o3_t3, o5_t3, val);
 	gpon_write(priv, GPON_PLOu_PRMBL_TYPE3, val);
 
@@ -2865,8 +2865,8 @@ static void gpon_irq_work_fn(struct work_struct *work)
 			sn_cfg = gpon_read(priv, GPON_SN_MSG_CFG);
 			phy_ret = airoha_xpon_phy_get_gpon_tx_counters(
 				priv->phy, &phy_tx_frames, &phy_tx_bursts);
-			dev_info(priv->dev,
-				 "GPON SN event: irq=%#08x cfg=%#010x threshold=%lu tx_power=%lu random_delay=%lu rsp=%#06x act=%u serial=%#010x/%#010x guard=%#010x type12=%#010x type3=%#010x pre_delay=%#010x dbg_dly=%#010x tx_sync=%#010x phy_tx=%#010x/%#010x phy_ret=%d\n",
+			dev_dbg(priv->dev,
+				"GPON SN event: irq=%#08x cfg=%#010x threshold=%lu tx_power=%lu random_delay=%lu rsp=%#06x act=%u serial=%#010x/%#010x guard=%#010x type12=%#010x type3=%#010x pre_delay=%#010x dbg_dly=%#010x tx_sync=%#010x phy_tx=%#010x/%#010x phy_ret=%d\n",
 				 active, sn_cfg,
 				 FIELD_GET(SN_MSG_CFG_SN_REQ_THR_MASK, sn_cfg),
 				 FIELD_GET(SN_MSG_CFG_TX_POWER_MODE_MASK, sn_cfg),
