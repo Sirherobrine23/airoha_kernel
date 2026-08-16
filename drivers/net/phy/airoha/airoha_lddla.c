@@ -253,7 +253,7 @@ int lddla_flash_load(struct airoha_lddla *lddla)
 	size_t words, i;
 	int ret;
 
-	ret = request_firmware(&fw, lddla->fw_name, lddla->dev);
+	ret = request_firmware_direct(&fw, lddla->fw_name, lddla->dev);
 	if (ret) {
 		dev_warn(lddla->dev,
 			 "calibration NVM '%s' not found (%d); using defaults\n",
