@@ -612,9 +612,10 @@ static void airoha_xpon_phy_stop(struct device *dev, struct phy *phy,
 #define GPON_PLOAM_TX_TIMEOUT_US	1000
 
 /*
- * Effective TX-enable guard observed on the stock RTF8225VW SDK.
- * The generic v1 source uses 24, but the board firmware programs 20 in
- * both the GPON MAC and digital PHY after Upstream_Overhead.
+ * Fallback TX-enable guard, used only when an OLT announces none.  The guard
+ * time is the OLT's to choose: it sizes the quiet period between upstream
+ * bursts, and every ONU on the PON is told the same value in
+ * Upstream_Overhead.
  */
 #define GPON_PHY_GUARD_BIT_NUM	20
 
@@ -1692,25 +1693,30 @@ static void gpon_cb_set_overhead(void *hw_priv,
 	int ret;
 
 	dev_info(priv->dev,
-		 "GPON overhead: OLT guard=%u SDK guard=%u t1=%u t2=%u t3=%u delay_mode=%u delay=%u delim=%02x:%02x:%02x\n",
+		 "GPON overhead: OLT guard=%u fallback guard=%u t1=%u t2=%u t3=%u delay_mode=%u delay=%u delim=%02x:%02x:%02x\n",
 		 guard_bits, GPON_PHY_GUARD_BIT_NUM, t1_pbits, t2_pbits,
 		 t3_pbits, delay_mode, delay_time,
 		 delim[0], delim[1], delim[2]);
 
 	/*
-	 * Match the effective RTF8225VW stock configuration:
-	 * use the 20-bit TX-enable guard, map PLOAM T2 to PHY T1 and
+	 * Program the guard the OLT asked for.  Overriding it with a value
+	 * taken from another board's firmware leaves every ranged burst
+	 * misaligned with the window the OLT reserved for this ONU, so the
+	 * burst is transmitted and never received.  Map PLOAM T2 to PHY T1 and
 	 * PLOAM T1 to PHY T2, and preserve explicit zero values.
 	 */
+	if (!guard_bits)
+		guard_bits = GPON_PHY_GUARD_BIT_NUM;
+
 	ret = airoha_xpon_phy_set_gpon_overhead(priv->phy,
-					       GPON_PHY_GUARD_BIT_NUM,
+					       guard_bits,
 					       t1_pbits, t2_pbits,
 					       t3_pbits, delim);
 	if (ret)
 		dev_warn(priv->dev,
 			 "failed to program GPON PHY overhead: %d\n", ret);
 
-	gpon_write(priv, GPON_PLOu_GUARD_BIT, GPON_PHY_GUARD_BIT_NUM);
+	gpon_write(priv, GPON_PLOu_GUARD_BIT, guard_bits);
 
 	/* G_PLOu_PRMBL_TYPE1_2: t1 in upper 16 bits, t2 in lower 16 bits */
 	prmbl = ((u32)t1_pbits << 16) | t2_pbits;
