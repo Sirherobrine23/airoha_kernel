@@ -114,6 +114,21 @@
 #define XPON_FEC_STATUS_ACTIVE	BIT(15)
 
 #define XPON_SETTING_EN7571		0x0000014f
+/*
+ * XPON_SETTING also selects the pin conventions of the attached optical
+ * transceiver.  Each of these bits inverts one signal, so RX_SD_INV turns a
+ * receive signal-detect input into a receive loss-of-signal input.  The right
+ * combination is a property of the board's optics rather than of the SoC, so
+ * it is described in the devicetree.
+ */
+#define XPON_SETTING_TX_SD_INV		BIT(4)
+#define XPON_SETTING_TX_FAULT_INV	BIT(5)
+#define XPON_SETTING_RX_SD_INV		BIT(6)
+#define XPON_SETTING_BURST_EN_INV	BIT(7)
+#define XPON_SETTING_INV_MASK		(XPON_SETTING_TX_SD_INV | \
+					 XPON_SETTING_TX_FAULT_INV | \
+					 XPON_SETTING_RX_SD_INV | \
+					 XPON_SETTING_BURST_EN_INV)
 #define XPON_TDCSET2_EN7571		0x0000002d
 #define XPON_GPON_DELIMITER_DEFAULT	0xaaab5983
 #define XPON_READY_RECOVERY_MS		5000
@@ -136,6 +151,7 @@ struct airoha_xpon_phy {
 	struct regmap *scu;
 	struct regmap *chip_scu;
 	struct reset_control *reset;
+	u32 trans_invert;
 	enum airoha_xpon_phy_submode submode;
 	struct delayed_work ready_work;
 	bool initialized;
@@ -709,6 +725,15 @@ static int econet_en751221_xpon_phy_configure(struct airoha_xpon_phy *priv)
 			    priv->submode == AIROHA_XPON_PHY_SUBMODE_GPON ?
 			     XPON_PHYSET10_GPON : 0);
 
+	/*
+	 * Apply the transceiver pin conventions before the PLL and counter
+	 * reset, so they are in place when the reset is released.  The reset
+	 * default inverts receive signal detect, which reports a permanent LOS
+	 * on a board whose optics drive it in the default sense.
+	 */
+	airoha_xpon_phy_rmw(priv, XPON_SETTING, XPON_SETTING_INV_MASK,
+			    priv->trans_invert);
+
 	val = airoha_xpon_phy_read(priv, XPON_PHYSET3);
 	airoha_xpon_phy_write(priv, XPON_PHYSET3,
 			      val | XPON_PHYSET3_PLL_RST |
@@ -724,8 +749,8 @@ static int econet_en751221_xpon_phy_configure(struct airoha_xpon_phy *priv)
 	 * and PHY_READY by delayed work.  Keep interrupts masked until an IRQ
 	 * consumer is added instead of enabling an unhandled source.
 	 *
-	 * XPON_SETTING is deliberately not overwritten on EN751221: the vendor
-	 * chooses it from the optical transceiver model (0x10f/0x14f/0x1cf...).
+	 * Only the pin-convention bits of XPON_SETTING are written on EN751221;
+	 * the vendor derives the rest from the optical transceiver model.
 	 */
 	val = airoha_xpon_phy_read(priv, XPON_INT_STATUS);
 	airoha_xpon_phy_write(priv, XPON_INT_STATUS_CLR, val);
@@ -881,6 +906,31 @@ static const struct phy_ops airoha_xpon_phy_ops = {
 	.owner = THIS_MODULE,
 };
 
+/*
+ * Collect the transceiver pin conventions described by the board.  A property
+ * that is absent leaves its signal in the default, non-inverted sense.
+ */
+static u32 airoha_xpon_phy_trans_invert(struct device *dev)
+{
+	static const struct {
+		const char *name;
+		u32 bit;
+	} signals[] = {
+		{ "airoha,tx-sd-inverted", XPON_SETTING_TX_SD_INV },
+		{ "airoha,tx-fault-inverted", XPON_SETTING_TX_FAULT_INV },
+		{ "airoha,rx-sd-inverted", XPON_SETTING_RX_SD_INV },
+		{ "airoha,burst-enable-inverted", XPON_SETTING_BURST_EN_INV },
+	};
+	u32 invert = 0;
+	size_t i;
+
+	for (i = 0; i < ARRAY_SIZE(signals); i++)
+		if (device_property_read_bool(dev, signals[i].name))
+			invert |= signals[i].bit;
+
+	return invert;
+}
+
 static int airoha_xpon_phy_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
@@ -901,6 +951,7 @@ static int airoha_xpon_phy_probe(struct platform_device *pdev)
 	priv->dev = dev;
 	priv->soc = soc;
 	priv->submode = AIROHA_XPON_PHY_SUBMODE_GPON;
+	priv->trans_invert = airoha_xpon_phy_trans_invert(dev);
 	INIT_DELAYED_WORK(&priv->ready_work, airoha_xpon_phy_ready_work);
 
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
