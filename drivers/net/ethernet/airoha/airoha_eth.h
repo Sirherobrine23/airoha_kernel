@@ -34,7 +34,13 @@
 #define AIROHA_FE_MC_MAX_VLAN_TABLE	64
 #define AIROHA_FE_MC_MAX_VLAN_PORT	16
 #define AIROHA_NUM_TX_IRQ		2
-#define AIROHA_XPON_MAX_SERVICES	32
+/*
+ * Software classification rules rather than a hardware table: one entry per
+ * UNI and priority combination, all of which can share a single GEM port and
+ * T-CONT. An OLT mapping eight priorities across several UNIs, plus a virtual
+ * Ethernet interface point, needs far more than the thirty-two this started with.
+ */
+#define AIROHA_XPON_MAX_SERVICES	256
 #define HW_DSCP_NUM			2048
 #define IRQ_QUEUE_LEN(_n)		((_n) ? 1024 : 2048)
 #define TX_DSCP_NUM(_n) 	\
