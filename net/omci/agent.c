@@ -2492,8 +2492,16 @@ static int omci_agent_apply_services_locked(struct omci_device *odev,
 	/* Add or replace all desired rules while the previous set remains live. */
 	xa_for_each(desired, index, state) {
 		ret = odev->ops->replace_service(odev, &state->config);
-		if (ret)
+		if (ret) {
+			dev_warn(odev->parent,
+				 "OMCI install failed for service %#x (UNI %#x GEM %u T-CONT %#x queue %u): %d; rolling back\n",
+				 state->config.cookie,
+				 state->config.uni_entity_id,
+				 state->config.gem_port_id,
+				 state->config.tcont_entity_id,
+				 state->config.queue, ret);
 			goto rollback_hardware;
+		}
 	}
 
 	/* Delete rules that are no longer part of the resolved service graph. */
@@ -2686,6 +2694,19 @@ omci_agent_stage_service_rule_locked(struct omci_device *odev,
 	}
 	service.cookie = omci_agent_service_cookie(lan_port_entity,
 			gem_ctp_entity, service.gem_port_id, selector);
+
+	/*
+	 * Trace every rule the resolver wants, not only the ones the backend
+	 * accepts, so an install failure can be attributed to a specific rule.
+	 */
+	dev_dbg(odev->parent,
+		"OMCI stage service %#x: UNI %#x (raw %#x) LAN port %#x GEM %u T-CONT %#x queue %u PCP %s%u VLAN %s%u selector %u%s%s\n",
+		service.cookie, service.uni_entity_id, uni_entity,
+		lan_port_entity, service.gem_port_id, service.tcont_entity_id,
+		service.queue, service.pcp_valid ? "" : "any/", service.pcp,
+		service.vlan_valid ? "" : "any/", service.vlan_id, selector,
+		service.multicast ? " multicast" : "",
+		service.default_service ? " default" : "");
 
 	return omci_agent_stage_service(services, &service);
 }
