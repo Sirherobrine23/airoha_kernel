@@ -76,6 +76,7 @@ struct airoha_xpon_match_data {
 	bool mode_from_dt;
 	u32 wan_mode_mask;
 	u8 gpon_fine_delay;
+	u16 gpon_rsp_time_activation;
 	bool en7523_gpon_defaults;
 	bool mac_irq_via_eth;
 	bool prepare_before_mmio;
@@ -571,11 +572,19 @@ static void airoha_xpon_phy_stop(struct device *dev, struct phy *phy,
 #define DBG_TX_SYNC_OFFSET_MASK	GENMASK(1, 0)
 
 /*
- * The EN7523 vendor driver keeps 0x058b while the MAC is reset/O1, then
- * switches to 0x0577 before serial-number activation in O2.
+ * G_RSP_TIME carries the ONU response time in units of 32 bits, so one unit is
+ * 25.72ns at the 1.24416Gbit/s upstream rate and the 0x0551 reset value is the
+ * 35us of G.984.3.  The MAC is held at 0x058b while it is reset or in O1.
+ *
+ * The activation value is generation-specific.  The EN7523 vendor driver
+ * switches to 0x0577 before serial-number activation in O2, while the EN751221
+ * driver programs its configured response time of 0x058b there and leaves the
+ * FEC-adjusted variant disabled.  Responding 0x14 units early on EN751221 does
+ * not match the timing the OLT ranges against.
  */
 #define GPON_RSP_TIME_RESET		0x058b
-#define GPON_RSP_TIME_ACTIVATION	0x0577
+#define GPON_RSP_TIME_ACT_EN7523	0x0577
+#define GPON_RSP_TIME_ACT_EN751221	0x058b
 #define GPON_IDLE_GEM_THLD_DEFAULT	0x001A
 
 /* TO1 timer: 10 seconds in O3/O4 without Ranging_Time → return to O2 */
@@ -2259,10 +2268,12 @@ static void gpon_cb_state_changed(void *hw_priv, enum gpon_state state)
 	switch (state) {
 	case GPON_O2_STANDBY:
 		/*
-		 * Match the stock SDK: 0x058b is the reset/O1 value, while
-		 * activation starts from O2 with 0x0577.
+		 * Match the stock SDK for this generation: 0x058b is the
+		 * reset/O1 value, and activation starts from O2 with the
+		 * generation's own response time.
 		 */
-		gpon_write(priv, GPON_RSP_TIME, GPON_RSP_TIME_ACTIVATION);
+		gpon_write(priv, GPON_RSP_TIME,
+			   priv->match_data->gpon_rsp_time_activation);
 		dev_info(priv->dev,
 			 "GPON O2 activation response time=%#06x\n",
 			 gpon_read(priv, GPON_RSP_TIME));
@@ -3907,6 +3918,7 @@ static const struct airoha_xpon_match_data en7523_xpon_data = {
 	.mode_from_dt = true,
 	.wan_mode_mask = EN7523_SCU_WAN_MODE_MASK,
 	.gpon_fine_delay = DBG_DLY_FINE_INT_DEFAULT,
+	.gpon_rsp_time_activation = GPON_RSP_TIME_ACT_EN7523,
 	.en7523_gpon_defaults = true,
 	.gpon_reset_on_start = true,
 };
@@ -3915,6 +3927,7 @@ static const struct airoha_xpon_match_data en7523_gpon_data = {
 	.mode = AIROHA_XPON_MODE_GPON,
 	.wan_mode_mask = EN7523_SCU_WAN_MODE_MASK,
 	.gpon_fine_delay = DBG_DLY_FINE_INT_DEFAULT,
+	.gpon_rsp_time_activation = GPON_RSP_TIME_ACT_EN7523,
 	.en7523_gpon_defaults = true,
 	.gpon_reset_on_start = true,
 };
@@ -3923,6 +3936,7 @@ static const struct airoha_xpon_match_data en7523_epon_data = {
 	.mode = AIROHA_XPON_MODE_EPON,
 	.wan_mode_mask = EN7523_SCU_WAN_MODE_MASK,
 	.gpon_fine_delay = DBG_DLY_FINE_INT_DEFAULT,
+	.gpon_rsp_time_activation = GPON_RSP_TIME_ACT_EN7523,
 	.en7523_gpon_defaults = true,
 };
 
@@ -3931,6 +3945,7 @@ static const struct airoha_xpon_match_data en751221_xpon_data = {
 	.mode_from_dt = true,
 	.wan_mode_mask = EN751221_SCU_WAN_MODE_MASK,
 	.gpon_fine_delay = 0x1c,
+	.gpon_rsp_time_activation = GPON_RSP_TIME_ACT_EN751221,
 	.mac_irq_via_eth = true,
 	.prepare_before_mmio = true,
 };
@@ -3939,6 +3954,7 @@ static const struct airoha_xpon_match_data en751221_gpon_data = {
 	.mode = AIROHA_XPON_MODE_GPON,
 	.wan_mode_mask = EN751221_SCU_WAN_MODE_MASK,
 	.gpon_fine_delay = 0x1c,
+	.gpon_rsp_time_activation = GPON_RSP_TIME_ACT_EN751221,
 	.mac_irq_via_eth = true,
 	.prepare_before_mmio = true,
 };
@@ -3947,6 +3963,7 @@ static const struct airoha_xpon_match_data en751221_epon_data = {
 	.mode = AIROHA_XPON_MODE_EPON,
 	.wan_mode_mask = EN751221_SCU_WAN_MODE_MASK,
 	.gpon_fine_delay = 0x1c,
+	.gpon_rsp_time_activation = GPON_RSP_TIME_ACT_EN751221,
 	.mac_irq_via_eth = true,
 	.prepare_before_mmio = true,
 };
