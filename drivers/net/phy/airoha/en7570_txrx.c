@@ -354,7 +354,15 @@ static int en7570_apd_voltage_to_code(struct en7570_priv *priv, s32 v_mv)
 	u32 w2 = lddla_flash_read(&priv->lddla, EN7570_FL_APD_VOLTAGE_2);
 	s32 step, code;
 
-	if ((w1 & 0xffff0000) && (w2 & 0xffff0000)) {
+	/*
+	 * Erased flash reads as all ones, which passes a test for the upper
+	 * half being populated and then decodes as four identical 6553.5V
+	 * anchors. Treat it as absent so a board whose factory data omits the
+	 * anchors falls back to the legacy slope instead of leaving the APD
+	 * bias unprogrammed.
+	 */
+	if (w1 != EN7570_FLASH_ERASED && w2 != EN7570_FLASH_ERASED &&
+	    (w1 & 0xffff0000) && (w2 & 0xffff0000)) {
 		/* Four-segment piecewise-linear over 64 codes per segment. */
 		s32 v00 = (s32)(w1 >> 16) * 100;
 		s32 v40 = (s32)(w1 & 0xffff) * 100;
