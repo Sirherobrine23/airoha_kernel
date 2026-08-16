@@ -360,8 +360,8 @@ int airoha_xpon_phy_set_gpon_extended_preamble(struct phy *phy,
 			 AIROHA_XPON_PHY_GPON_OPER_RANGING);
 
 	airoha_xpon_phy_rmw(priv, XPON_GPON_EXT_PREAMBLE, mask, val);
-	dev_info(priv->dev,
-		 "GPON PHY extended preamble programmed: O3/O4=%u O5=%u reg=%#010x\n",
+	dev_dbg(priv->dev,
+		"GPON PHY extended preamble programmed: O3/O4=%u O5=%u reg=%#010x\n",
 		 o3_o4_preamble, o5_preamble,
 		 airoha_xpon_phy_read(priv, XPON_GPON_EXT_PREAMBLE));
 	return 0;
