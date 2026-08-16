@@ -39,6 +39,32 @@ properties:
     description:
       Phandle to the EN751221 CHIP-SCU syscon used for the PON I/O mux.
 
+  airoha,tx-sd-inverted:
+    type: boolean
+    description:
+      The optical transceiver drives transmit signal detect in the inverted
+      sense.
+
+  airoha,tx-fault-inverted:
+    type: boolean
+    description:
+      The optical transceiver drives transmit fault in the inverted sense.
+
+  airoha,rx-sd-inverted:
+    type: boolean
+    description: |
+      The optical transceiver drives receive loss-of-signal rather than
+      receive signal detect, so an asserted pin means light has been lost
+      instead of light being present. Setting this on a board whose optics
+      drive receive signal detect, or leaving it unset on a board whose
+      optics drive loss-of-signal, makes the PHY report the optical link
+      state inverted.
+
+  airoha,burst-enable-inverted:
+    type: boolean
+    description:
+      The optical transceiver expects burst enable in the inverted sense.
+
   '#phy-cells':
     const: 0
 
