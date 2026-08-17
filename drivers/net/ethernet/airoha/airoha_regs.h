@@ -66,6 +66,11 @@
 #define EN751221_QDMA_IRQ_DESC_IDX_MASK	GENMASK(11, 0)
 
 #define EN751221_PPE_INVALID_HASH	0xffff
+
+/* EN751221 GDM FWD_CFG destination-port coding. */
+#define EN751221_GDM_FPORT_QDMA0_CPU	0
+#define EN751221_GDM_FPORT_PPE		4
+#define EN751221_GDM_FPORT_QDMA1_CPU	5
 #define EN751221_DPORT_QDMA_HW		6
 
 /* Legacy PPE cache control retained by the generation-1 engine. */

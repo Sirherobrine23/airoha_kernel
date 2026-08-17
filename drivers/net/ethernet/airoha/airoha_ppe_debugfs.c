@@ -581,6 +581,8 @@ static int econet_ppe_debugfs_regs_show(struct seq_file *m, void *private)
 	seq_printf(m, "BND_AGE1=%08x\n", airoha_fe_rr(eth, REG_PPE_BND_AGE1(0)));
 	seq_printf(m, "HASH_SEED=%08x\n", airoha_fe_rr(eth, REG_PPE_HASH_SEED(0)));
 	seq_printf(m, "DFT_CPORT=%08x\n", airoha_fe_rr(eth, REG_PPE_DFT_CPORT_BASE(0)));
+	seq_printf(m, "GDM1_FWD_CFG=%08x\n", airoha_fe_rr(eth, REG_GDM_FWD_CFG(1)));
+	seq_printf(m, "GDM2_FWD_CFG=%08x\n", airoha_fe_rr(eth, REG_GDM_FWD_CFG(2)));
 	seq_printf(m, "VPM_TPID=%08x\n", airoha_fe_rr(eth, REG_PPE_VPM_TPID(0)));
 	seq_printf(m, "CACHE_CTL=%08x\n", airoha_fe_rr(eth, REG_EN751221_PPE_CACHE_CTL));
 	seq_printf(m, "CACHE_GATE=%08x\n", airoha_fe_rr(eth, REG_EN751221_PPE_CAH_GATE));
