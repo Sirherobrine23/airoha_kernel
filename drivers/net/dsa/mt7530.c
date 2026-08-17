@@ -566,8 +566,11 @@ en751221_trgmii_calibrate_direction(struct mt7530_priv *tx,
 	for (channel = 0; channel < NUM_TRGMII_CTRL; channel++) {
 		u32 rx_reg = MT7530_TRGMII_RD(channel);
 		u32 tx_reg = EN751221_TRGMII_TD(channel);
+		u32 old_tap;
 		int first = -1, last = -1;
 		int dac, tap;
+
+		old_tap = FIELD_GET(RD_TAP_MASK, mt7530_read(rx, rx_reg));
 
 		for (dac = 1; dac <= 127; dac++) {
 			mt7530_rmw(tx, tx_reg, GENMASK(7, 0), 0x55);
@@ -585,7 +588,7 @@ en751221_trgmii_calibrate_direction(struct mt7530_priv *tx,
 		if (first >= 0 && last > first)
 			tap = (first + last) / 2;
 		else
-			tap = 0;
+			tap = old_tap;
 
 		mt7530_rmw(rx, rx_reg, RD_TAP_MASK, RD_TAP(tap));
 
@@ -595,8 +598,8 @@ en751221_trgmii_calibrate_direction(struct mt7530_priv *tx,
 				 name, channel, first, last, tap);
 		else
 			dev_warn(rx->dev,
-				 "EN751221 TRGMII %s lane %d calibration failed, tap 0\n",
-				 name, channel);
+				 "EN751221 TRGMII %s lane %d calibration failed, preserving tap %u\n",
+				 name, channel, old_tap);
 	}
 
 	mt7530_clear(tx, MT7530_TRGMII_TXCTRL, TRAIN_TXEN);
