@@ -2912,6 +2912,23 @@ static int econet_ppe_engine_set(struct econet_ppe *ppe, bool enable)
 	return 0;
 }
 
+static void econet_ppe_set_gdm_ingress(struct econet_ppe *ppe, int gdm,
+				       u8 fport)
+{
+	u32 mask = GDM_UCFQ_MASK | GDM_OCFQ_MASK;
+	u32 val = FIELD_PREP(GDM_UCFQ_MASK, fport) |
+		  FIELD_PREP(GDM_OCFQ_MASK, fport);
+
+	/*
+	 * Do not rewrite the complete FWD_CFG register here. EN751221 shares
+	 * some of these bits with its legacy special-tag/UNTAG controls, and
+	 * replacing the whole word breaks the DSA conduit. Only redirect the
+	 * unicast/my-MAC and default paths; broadcast/multicast stay on the
+	 * CPU path configured by the netdev.
+	 */
+	airoha_fe_rmw(ppe->common.eth, REG_GDM_FWD_CFG(gdm), mask, val);
+}
+
 static int econet_ppe_engine_arm(struct econet_ppe *ppe)
 {
 	int err;
@@ -2949,14 +2966,16 @@ static int econet_ppe_engine_arm(struct econet_ppe *ppe)
 	airoha_fe_wr(ppe->common.eth, REG_CDM_VLAN_CTRL(1),
 		     FIELD_PREP(CDM_VLAN_MASK, ETH_P_8021Q) | STAG_EN);
 	/*
-	 * GDM1 is owned by the EcoNet netdev/DSA path.  In particular bit 25
-	 * of FWD_CFG is UNTAG_EN on EN751221, while the common Airoha mask
-	 * names the same bit DROP_OVERSIZE.  Rewriting GDM1 here used to
-	 * destroy the MT7530 special-tag state whenever flow offload armed.
-	 * PPE only needs its own engine/VPM/CPU-port programming here.
+	 * Route normal unicast ingress through the PPE without touching the
+	 * EN751221 special-tag state. GDM1 covers LAN/DSA -> WAN and GDM2
+	 * covers WAN/xPON -> LAN. PPE misses are returned to each GDM's CPU
+	 * QDMA through the default CPU-port map below.
 	 */
 	airoha_fe_wr(ppe->common.eth, REG_PPE_DFT_CPORT_BASE(0),
-		     FIELD_PREP(DFT_CPORT_MASK(2), 5));
+		     FIELD_PREP(DFT_CPORT_MASK(2),
+				EN751221_GDM_FPORT_QDMA1_CPU));
+	econet_ppe_set_gdm_ingress(ppe, 1, EN751221_GDM_FPORT_PPE);
+	econet_ppe_set_gdm_ingress(ppe, 2, EN751221_GDM_FPORT_PPE);
 	WRITE_ONCE(ppe->armed, true);
 	return 0;
 }
@@ -2966,7 +2985,9 @@ static void econet_ppe_engine_disarm(struct econet_ppe *ppe)
 	if (!ppe || !READ_ONCE(ppe->armed))
 		return;
 
-	/* Leave GDM1 forwarding and DSA special-tag state to the netdev. */
+	/* Restore the CPU ingress paths while preserving STAG/UNTAG state. */
+	econet_ppe_set_gdm_ingress(ppe, 1, EN751221_GDM_FPORT_QDMA0_CPU);
+	econet_ppe_set_gdm_ingress(ppe, 2, EN751221_GDM_FPORT_QDMA1_CPU);
 	WRITE_ONCE(ppe->armed, false);
 	econet_ppe_flush(ppe);
 	econet_ppe_engine_set(ppe, false);
