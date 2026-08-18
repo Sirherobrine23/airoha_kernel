@@ -399,6 +399,30 @@ static void econet_ppe_debugfs_print_ipv4(struct seq_file *m,
 	seq_printf(m, " ib1=%08x ib2=%08x", entry->ib1, ipv4->ib2);
 }
 
+static void econet_ppe_debugfs_print_ipv6(struct seq_file *m,
+					  const struct econet_foe_entry *entry)
+{
+	const struct econet_foe_ipv6 *ipv6 = &entry->ipv6;
+	u8 src[ETH_ALEN], dest[ETH_ALEN];
+
+	econet_ppe_debugfs_mac(&ipv6->l2, src, dest);
+	seq_puts(m, " orig=");
+	airoha_debugfs_ppe_print_tuple(m, ipv6->src_ip, ipv6->dest_ip,
+				       &ipv6->src_port, &ipv6->dest_port, true);
+	seq_printf(m,
+		   " eth=%pM->%pM etype=%04x vlan=%u,%u pppoe=%u",
+		   src, dest, ipv6->l2.etype, ipv6->l2.vlan1, ipv6->l2.vlan2,
+		   ipv6->l2.pppoe_id);
+	seq_printf(m, " act_dp=%lu tsid=%lu ch=%lu fp=%lu fqos=%d qid=%lu",
+		   FIELD_GET(EN751221_FOE_UDF_ACT_DP, ipv6->udf_tsid),
+		   FIELD_GET(EN751221_FOE_UDF_TSID, ipv6->udf_tsid),
+		   FIELD_GET(EN751221_FOE_UDF_CHANNEL, ipv6->udf_tsid),
+		   FIELD_GET(EN751221_FOE_IB2_DEST_PORT, ipv6->ib2),
+		   !!(ipv6->ib2 & EN751221_FOE_IB2_PSE_QOS),
+		   FIELD_GET(EN751221_FOE_IB2_QID, ipv6->ib2));
+	seq_printf(m, " ib1=%08x ib2=%08x", entry->ib1, ipv6->ib2);
+}
+
 static int econet_ppe_debugfs_foe_show(struct seq_file *m, bool bind_only)
 {
 	struct econet_ppe *ppe = m->private;
@@ -428,6 +452,8 @@ static int econet_ppe_debugfs_foe_show(struct seq_file *m, bool bind_only)
 		if (type == PPE_PKT_TYPE_IPV4_HNAPT ||
 		    type == PPE_PKT_TYPE_IPV4_ROUTE)
 			econet_ppe_debugfs_print_ipv4(m, &entry);
+		else if (type == PPE_PKT_TYPE_IPV6_ROUTE_5T)
+			econet_ppe_debugfs_print_ipv6(m, &entry);
 		else
 			seq_printf(m, " ib1=%08x", entry.ib1);
 
@@ -514,9 +540,15 @@ static int econet_ppe_debugfs_flows_show(struct seq_file *m, void *private)
 	spin_unlock_bh(&ppe->lock);
 
 	for (i = 0; i < n; i++) {
+		u32 type = FIELD_GET(AIROHA_FOE_IB1_BIND_PACKET_TYPE,
+				     snapshot[i].data.ib1);
+
 		seq_printf(m, "cookie=%lx hash=%04x", snapshot[i].cookie,
 			   snapshot[i].hash);
-		econet_ppe_debugfs_print_ipv4(m, &snapshot[i].data);
+		if (type == PPE_PKT_TYPE_IPV6_ROUTE_5T)
+			econet_ppe_debugfs_print_ipv6(m, &snapshot[i].data);
+		else
+			econet_ppe_debugfs_print_ipv4(m, &snapshot[i].data);
 		seq_putc(m, '\n');
 	}
 
@@ -614,6 +646,15 @@ static int econet_ppe_debugfs_foe_json_show(struct seq_file *m, void *private)
 				&ipv4->new.src_port,
 				&ipv4->new.dest_port, false);
 			seq_printf(m, ",\"ib2\":\"0x%08x\"", ipv4->ib2);
+		} else if (type == PPE_PKT_TYPE_IPV6_ROUTE_5T) {
+			const struct econet_foe_ipv6 *ipv6 = &entry.ipv6;
+
+			seq_putc(m, ',');
+			airoha_debugfs_ppe_print_tuple_json(m, "orig", ipv6->src_ip,
+							    ipv6->dest_ip,
+							    &ipv6->src_port,
+							    &ipv6->dest_port, true);
+			seq_printf(m, ",\"ib2\":\"0x%08x\"", ipv6->ib2);
 		}
 
 		seq_putc(m, '}');
