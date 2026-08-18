@@ -106,8 +106,8 @@ examples:
     ethernet@1fb50000 {
         compatible = "econet,en751221-eth";
         reg = <0x1fb50000 0x2600>,
-              <0x1fb54000 0x2000>,
-              <0x1fb56000 0x2000>;
+              <0x1fb54000 0x1000>,
+              <0x1fb55000 0x1000>;
         reg-names = "fe", "qdma0", "qdma1";
 
         interrupt-parent = <&intc>;
