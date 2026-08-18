@@ -68,6 +68,7 @@ struct omci_agent_config {
 	u8 password_source;
 	u8 traffic_mgmt_option;
 	u8 onu_type;
+	u8 onu_type_source;
 	u8 uni_count;
 	u8 olt_profile;
 	u8 olt_profile_force;
@@ -113,6 +114,7 @@ struct omci_agent {
 struct omci_device {
 	struct list_head list;
 	struct device *parent;
+	struct device *class_dev;
 	const struct omci_device_ops *ops;
 	void *priv;
 	u32 id;
@@ -162,6 +164,8 @@ int omci_agent_config_get(struct omci_device *odev, u16 key,
 			  void *value, size_t *len);
 int omci_agent_config_set(struct omci_device *odev, u16 key,
 			  const void *value, size_t len);
+int omci_agent_config_set_userspace(struct omci_device *odev, u16 key,
+				    const void *value, size_t len, u8 source);
 int omci_agent_config_set_source(struct omci_device *odev, u16 key,
 				 const void *value, size_t len, u8 source);
 int omci_agent_config_source_get(struct omci_device *odev, u16 key, u8 *source);
@@ -177,6 +181,7 @@ void omci_agent_mib_reset(struct omci_device *odev, bool all);
 int omci_agent_mib_next(struct omci_device *odev, u32 index,
 			struct omci_mib_object *object, u32 *next_index,
 			const char **name);
+int omci_agent_olt_g_get(struct omci_device *odev, struct omci_olt_g *olt);
 
 bool omci_profile_valid(u8 profile);
 bool omci_profile_forceable(u8 profile);
@@ -189,5 +194,10 @@ void omci_profile_normalize_vlan_rule(u8 profile,
 int omci_profile_resolve_multicast_ani(u8 profile,
 				       u16 bridge_port_entity_id,
 				       u16 *ani_entity_id);
+
+int omci_sysfs_init(void);
+void omci_sysfs_exit(void);
+int omci_sysfs_register(struct omci_device *odev);
+void omci_sysfs_unregister(struct omci_device *odev);
 
 #endif /* _NET_OMCI_INTERNAL_H */

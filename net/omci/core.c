@@ -36,6 +36,7 @@ static const struct nla_policy omci_policy[OMCI_ATTR_MAX + 1] = {
 	[OMCI_ATTR_AGENT_PERMISSIVE] = { .type = NLA_U8 },
 	[OMCI_ATTR_AGENT_FAKE_OMCI] = { .type = NLA_U8 },
 	[OMCI_ATTR_AGENT_DYING_GASP] = { .type = NLA_U8 },
+	[OMCI_ATTR_ONU_TYPE] = { .type = NLA_U8 },
 	[OMCI_ATTR_CLASS_ID] = { .type = NLA_U16 },
 	[OMCI_ATTR_ENTITY_ID] = { .type = NLA_U16 },
 	[OMCI_ATTR_ATTR_MASK] = { .type = NLA_U16 },
@@ -1334,6 +1335,13 @@ omci_device_register(struct device *parent, u32 ifindex, u32 capabilities,
 			kfree(odev);
 			return ERR_PTR(ret);
 		}
+
+		ret = omci_sysfs_register(odev);
+		if (ret) {
+			omci_agent_cleanup(odev);
+			kfree(odev);
+			return ERR_PTR(ret);
+		}
 	}
 
 	mutex_lock(&omci_devices_lock);
@@ -1412,6 +1420,7 @@ void omci_device_unregister(struct omci_device *odev)
 	mutex_unlock(&odev->owner_lock);
 	if (owner_net)
 		put_net(owner_net);
+	omci_sysfs_unregister(odev);
 	omci_agent_cleanup(odev);
 	kfree(odev);
 }
@@ -1492,7 +1501,7 @@ int omci_device_set_dying_gasp_enabled(struct omci_device *odev,
 {
 	u8 value = enabled;
 
-	if (!odev || source > OMCI_CONFIG_SOURCE_NETLINK)
+	if (!odev || source > OMCI_CONFIG_SOURCE_SYSFS)
 		return -EINVAL;
 
 	return omci_agent_config_set_source(odev,
@@ -1640,14 +1649,24 @@ static int __init omci_init(void)
 {
 	int ret;
 
-	ret = genl_register_family(&omci_genl_family);
+	ret = omci_sysfs_init();
 	if (ret)
 		return ret;
 
+	ret = genl_register_family(&omci_genl_family);
+	if (ret)
+		goto err_sysfs;
+
 	ret = netlink_register_notifier(&omci_netlink_nb);
 	if (ret)
-		genl_unregister_family(&omci_genl_family);
+		goto err_genl;
 
+	return 0;
+
+err_genl:
+	genl_unregister_family(&omci_genl_family);
+err_sysfs:
+	omci_sysfs_exit();
 	return ret;
 }
 module_init(omci_init);
@@ -1656,6 +1675,7 @@ static void __exit omci_exit(void)
 {
 	netlink_unregister_notifier(&omci_netlink_nb);
 	genl_unregister_family(&omci_genl_family);
+	omci_sysfs_exit();
 }
 module_exit(omci_exit);
 

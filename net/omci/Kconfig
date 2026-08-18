@@ -6,7 +6,9 @@ config OMCI
 	  Provides an in-kernel baseline OMCI agent for GPON devices. The
 	  subsystem parses OMCI requests, maintains the operational managed-
 	  entity database, generates OLT responses, and exposes configuration,
-	  MIB objects, events, and statistics through Generic Netlink.
+	  MIB objects, events, and statistics through Generic Netlink. A small
+	  stable subset of configuration, identity, channel state, and counters is
+	  also available under /sys/class/omci for simple userspace consumers.
 
 	  Extended OMCI parsing and hardware-specific provisioning remain
 	  optional capabilities supplied by the GPON hardware driver.

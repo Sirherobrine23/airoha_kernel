@@ -734,6 +734,25 @@ static struct omci_olt_g *omci_agent_olt_g_locked(struct omci_agent *agent)
 	return &object->olt_g;
 }
 
+int omci_agent_olt_g_get(struct omci_device *odev, struct omci_olt_g *olt)
+{
+	struct omci_olt_g *stored;
+	int ret = 0;
+
+	if (!olt)
+		return -EINVAL;
+
+	mutex_lock(&odev->agent.lock);
+	stored = omci_agent_olt_g_locked(&odev->agent);
+	if (!stored)
+		ret = -ENODATA;
+	else
+		*olt = *stored;
+	mutex_unlock(&odev->agent.lock);
+
+	return ret;
+}
+
 static void
 omci_agent_profile_state_locked(struct omci_agent *agent,
 				const struct omci_olt_g *olt,
@@ -1596,7 +1615,8 @@ int omci_agent_init(struct omci_device *odev)
 	agent->dying_gasp = false;
 	agent->config.dying_gasp_source = OMCI_CONFIG_SOURCE_DEFAULT;
 	agent->config.uni_count = 4;
-	agent->config.onu_type = 2;
+	agent->config.onu_type = OMCI_ONU_TYPE_HGU;
+	agent->config.onu_type_source = OMCI_CONFIG_SOURCE_DEFAULT;
 	agent->config.traffic_mgmt_option = 0;
 	agent->config.olt_profile = OMCI_OLT_PROFILE_AUTO;
 	agent->config.olt_profile_force = OMCI_OLT_PROFILE_UNSPEC;
@@ -4100,6 +4120,7 @@ int omci_agent_put_status(struct sk_buff *msg, struct omci_device *odev)
 	u8 profile_configured;
 	u8 profile_effective;
 	u8 profile_forced;
+	u8 onu_type;
 	bool enabled;
 	bool permissive;
 	bool fake_omci;
@@ -4117,6 +4138,7 @@ int omci_agent_put_status(struct sk_buff *msg, struct omci_device *odev)
 	profile_configured = agent->config.olt_profile;
 	profile_effective = agent->profile_effective;
 	profile_forced = agent->config.olt_profile_force;
+	onu_type = agent->config.onu_type;
 	profile_quirks = agent->profile_quirks;
 	mutex_unlock(&agent->lock);
 
@@ -4125,6 +4147,7 @@ int omci_agent_put_status(struct sk_buff *msg, struct omci_device *odev)
 	    nla_put_u8(msg, OMCI_ATTR_AGENT_PERMISSIVE, permissive) ||
 	    nla_put_u8(msg, OMCI_ATTR_AGENT_FAKE_OMCI, fake_omci) ||
 	    nla_put_u8(msg, OMCI_ATTR_AGENT_DYING_GASP, dying_gasp) ||
+	    nla_put_u8(msg, OMCI_ATTR_ONU_TYPE, onu_type) ||
 	    nla_put_u8(msg, OMCI_ATTR_OLT_PROFILE_CONFIGURED,
 		       profile_configured) ||
 	    nla_put_u8(msg, OMCI_ATTR_OLT_PROFILE_EFFECTIVE,
@@ -4447,8 +4470,13 @@ __omci_agent_config_set_source(struct omci_device *odev, u16 key,
 			changed = agent->config.traffic_mgmt_option != scalar;
 			agent->config.traffic_mgmt_option = scalar;
 		} else if (key == OMCI_CONFIG_ONU_TYPE) {
+			if (scalar > OMCI_ONU_TYPE_CBU) {
+				ret = -EINVAL;
+				break;
+			}
 			changed = agent->config.onu_type != scalar;
 			agent->config.onu_type = scalar;
+			agent->config.onu_type_source = source;
 		} else if (key == OMCI_CONFIG_UNI_COUNT) {
 			scalar = clamp_t(u8, scalar, 1, 16);
 			changed = agent->config.uni_count != scalar;
@@ -4510,8 +4538,18 @@ int omci_agent_config_set_source(struct omci_device *odev, u16 key,
 int omci_agent_config_set(struct omci_device *odev, u16 key,
 			  const void *value, size_t len)
 {
-	return __omci_agent_config_set_source(odev, key, value, len,
-					      OMCI_CONFIG_SOURCE_NETLINK,
+	return omci_agent_config_set_userspace(odev, key, value, len,
+					       OMCI_CONFIG_SOURCE_NETLINK);
+}
+
+int omci_agent_config_set_userspace(struct omci_device *odev, u16 key,
+				    const void *value, size_t len, u8 source)
+{
+	if (source != OMCI_CONFIG_SOURCE_NETLINK &&
+	    source != OMCI_CONFIG_SOURCE_SYSFS)
+		return -EINVAL;
+
+	return __omci_agent_config_set_source(odev, key, value, len, source,
 					      true);
 }
 
@@ -4545,6 +4583,9 @@ int omci_agent_config_source_get(struct omci_device *odev, u16 key, u8 *source)
 		break;
 	case OMCI_CONFIG_PASSWORD:
 		*source = agent->config.password_source;
+		break;
+	case OMCI_CONFIG_ONU_TYPE:
+		*source = agent->config.onu_type_source;
 		break;
 	case OMCI_CONFIG_OLT_PROFILE:
 		*source = agent->config.olt_profile_source;
