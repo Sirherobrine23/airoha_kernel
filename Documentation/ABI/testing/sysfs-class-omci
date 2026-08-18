@@ -1,0 +1,115 @@
+What:		/sys/class/omci/omciX/
+Date:		August 2026
+Contact:	Matheus Sampaio Queiroga <srherobrine20@gmail.com>
+Description:
+		OMCI devices registered by an ONU/ONT provider.  Generic Netlink is
+		the structured management interface; this class provides a small
+		stable interface for shell scripts and early userspace.
+
+What:		/sys/class/omci/omciX/dev_id
+What:		/sys/class/omci/omciX/ifindex
+What:		/sys/class/omci/omciX/onu_id
+What:		/sys/class/omci/omciX/gem_port_id
+What:		/sys/class/omci/omciX/state
+What:		/sys/class/omci/omciX/channel_up
+What:		/sys/class/omci/omciX/capabilities
+Date:		August 2026
+Contact:	Matheus Sampaio Queiroga <srherobrine20@gmail.com>
+Description:
+		Read-only OMCI device and OMCC channel state.  capabilities is printed
+		as a hexadecimal OMCI_CAP_* bitmap.  channel_up is 0 or 1.
+
+What:		/sys/class/omci/omciX/rx_packets
+What:		/sys/class/omci/omciX/rx_bytes
+What:		/sys/class/omci/omciX/rx_dropped
+What:		/sys/class/omci/omciX/tx_packets
+What:		/sys/class/omci/omciX/tx_bytes
+What:		/sys/class/omci/omciX/tx_errors
+What:		/sys/class/omci/omciX/agent_responses
+What:		/sys/class/omci/omciX/agent_duplicates
+What:		/sys/class/omci/omciX/agent_unsupported
+What:		/sys/class/omci/omciX/agent_fake_responses
+What:		/sys/class/omci/omciX/mib_sync
+Date:		August 2026
+Contact:	Matheus Sampaio Queiroga <srherobrine20@gmail.com>
+Description:
+		Read-only OMCI transport and in-kernel agent counters plus the current
+		MIB data-sync value.
+
+What:		/sys/class/omci/omciX/serial_number
+What:		/sys/class/omci/omciX/vendor_id
+What:		/sys/class/omci/omciX/equipment_id
+What:		/sys/class/omci/omciX/hardware_version
+What:		/sys/class/omci/omciX/software_version_0
+What:		/sys/class/omci/omciX/software_version_1
+Date:		August 2026
+Contact:	Matheus Sampaio Queiroga <srherobrine20@gmail.com>
+Description:
+		Read/write normalized ONU identity values.  Writes use the same
+		validation and update path as OMCI_CMD_CONFIG_SET.  The serial number
+		is normally printed as four vendor characters followed by eight
+		hexadecimal digits.
+
+What:		/sys/class/omci/omciX/password
+Date:		August 2026
+Contact:	Matheus Sampaio Queiroga <srherobrine20@gmail.com>
+Description:
+		Write-only GPON registration password.  The password is deliberately
+		not readable from sysfs.
+
+What:		/sys/class/omci/omciX/onu_type
+What:		/sys/class/omci/omciX/onu_type_id
+Date:		August 2026
+Contact:	Matheus Sampaio Queiroga <srherobrine20@gmail.com>
+Description:
+		onu_type is a read/write symbolic ONU/ONT deployment role.  It accepts
+		case-insensitive symbolic names or the numeric value.  onu_type_id is
+		a read-only numeric view.  Stable values are:
+
+		0  Other
+		1  SFU - Single Family Unit ONT
+		2  HGU - Home Gateway Unit ONT
+		3  MDU - Multi-Dwelling Unit ONT
+		4  SBU - Single Business Unit ONT
+		5  MTU - Multi-Tenant Unit ONT
+		6  CBU - Cellular Backhaul Unit ONT
+
+What:		/sys/class/omci/omciX/traffic_management_option
+What:		/sys/class/omci/omciX/uni_count
+What:		/sys/class/omci/omciX/omcc_version
+Date:		August 2026
+Contact:	Matheus Sampaio Queiroga <srherobrine20@gmail.com>
+Description:
+		Read/write one-byte OMCI configuration values.  Decimal and 0x-prefixed
+		hexadecimal input are accepted.
+
+What:		/sys/class/omci/omciX/agent_enabled
+What:		/sys/class/omci/omciX/agent_permissive
+What:		/sys/class/omci/omciX/agent_fake_omci
+What:		/sys/class/omci/omciX/agent_dying_gasp
+What:		/sys/class/omci/omciX/agent_operational
+Date:		August 2026
+Contact:	Matheus Sampaio Queiroga <srherobrine20@gmail.com>
+Description:
+		In-kernel agent state.  The first four attributes are read/write
+		booleans.  agent_operational is read-only.
+
+What:		/sys/class/omci/omciX/olt_profile
+What:		/sys/class/omci/omciX/olt_profile_force
+What:		/sys/class/omci/omciX/olt_profile_effective
+What:		/sys/class/omci/omciX/olt_profile_quirks
+Date:		August 2026
+Contact:	Matheus Sampaio Queiroga <srherobrine20@gmail.com>
+Description:
+		OLT interoperability profile state.  olt_profile and
+		olt_profile_force are read/write and accept a numeric profile or its
+		name.  The effective profile and quirk bitmap are read-only.
+
+What:		/sys/class/omci/omciX/olt_vendor_id
+What:		/sys/class/omci/omciX/olt_equipment_id
+What:		/sys/class/omci/omciX/olt_version
+Date:		August 2026
+Contact:	Matheus Sampaio Queiroga <srherobrine20@gmail.com>
+Description:
+		Read-only OLT-G identity learned from the OLT.  "unknown" is returned
+		until the corresponding OLT-G attribute has been received.

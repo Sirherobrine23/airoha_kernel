@@ -18806,6 +18806,7 @@ F:	include/uapi/misc/ocxl.h
 ONU MANAGEMENT AND CONTROL INTERFACE (OMCI)
 M:	Matheus Sampaio Queiroga <srherobrine20@gmail.com>
 S:	Maintained
+F:	Documentation/ABI/testing/sysfs-class-omci
 F:	Documentation/devicetree/bindings/net/omci.yaml
 F:	include/net/omci.h
 F:	include/uapi/linux/omci.h
