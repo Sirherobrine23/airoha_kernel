@@ -790,20 +790,23 @@ struct airoha_ppe {
 	bool offload_setup_done;
 };
 
-/* EcoNet generation-1 PPE/FoE layout. */
+/*
+ * EcoNet generation-1 PPE/FoE logical layout.
+ *
+ * Keep the mixed-width fields in the same lane order as the EN7512 SDK
+ * _ipv4_hnapt structure.  The first 64 bytes are the IPv4 HNAPT payload;
+ * struct econet_foe_entry remains 80 bytes because the hardware table uses
+ * the largest FoE V1 union member as its stride.
+ */
 struct econet_foe_mac_info {
-	u16 vlan1;
 	u16 etype;
+	u16 vlan1;
 	u32 dest_mac_hi;
-	u16 vlan2;
 	u16 dest_mac_lo;
+	u16 vlan2;
 	u32 src_mac_hi;
-	u16 pppoe_id;
 	u16 src_mac_lo;
-	u16 minfo;
-	u16 winfo;
-	u32 w3info;
-	u32 amsdu;
+	u16 pppoe_id;
 };
 
 struct econet_ipv4_tuple {
@@ -811,8 +814,8 @@ struct econet_ipv4_tuple {
 	u32 dest_ip;
 	union {
 		struct {
-			u16 dest_port;
 			u16 src_port;
+			u16 dest_port;
 		};
 		u32 ports;
 	};
@@ -822,8 +825,7 @@ struct econet_foe_ipv4 {
 	struct econet_ipv4_tuple orig;
 	u32 ib2;
 	struct econet_ipv4_tuple new;
-	u16 timestamp;
-	u16 reserved[3];
+	u32 reserved[2];
 	u32 udf_tsid;
 	struct econet_foe_mac_info l2;
 };
@@ -835,6 +837,20 @@ struct econet_foe_entry {
 		u32 data[19];
 	};
 };
+
+static_assert(sizeof(struct econet_foe_entry) == 80);
+static_assert(offsetof(struct econet_foe_entry, ipv4.orig.src_port) == 12);
+static_assert(offsetof(struct econet_foe_entry, ipv4.orig.dest_port) == 14);
+static_assert(offsetof(struct econet_foe_entry, ipv4.ib2) == 16);
+static_assert(offsetof(struct econet_foe_entry, ipv4.new.src_port) == 28);
+static_assert(offsetof(struct econet_foe_entry, ipv4.new.dest_port) == 30);
+static_assert(offsetof(struct econet_foe_entry, ipv4.udf_tsid) == 40);
+static_assert(offsetof(struct econet_foe_entry, ipv4.l2.etype) == 44);
+static_assert(offsetof(struct econet_foe_entry, ipv4.l2.vlan1) == 46);
+static_assert(offsetof(struct econet_foe_entry, ipv4.l2.dest_mac_lo) == 52);
+static_assert(offsetof(struct econet_foe_entry, ipv4.l2.vlan2) == 54);
+static_assert(offsetof(struct econet_foe_entry, ipv4.l2.src_mac_lo) == 60);
+static_assert(offsetof(struct econet_foe_entry, ipv4.l2.pppoe_id) == 62);
 
 struct econet_flow_entry {
 	struct list_head list;
@@ -853,6 +869,7 @@ struct econet_ppe {
 	/* Protects flows and FoE slot ownership in RX and TC paths. */
 	spinlock_t lock;
 	struct list_head flows;
+	struct econet_flow_entry **foe_owner;
 	struct list_head block_cb_list;
 	bool armed;
 };
@@ -1122,6 +1139,8 @@ void airoha_ppe_foe_entry_get_stats(struct airoha_ppe *ppe, u32 hash,
 				    struct airoha_foe_stats64 *stats);
 void econet_ppe_read_entry(struct econet_ppe *ppe, u16 hash,
 			   struct econet_foe_entry *entry);
+void econet_ppe_decode_entry(const struct econet_foe_entry *raw,
+			     struct econet_foe_entry *entry);
 
 #if IS_ENABLED(CONFIG_NET_AIROHA_PPE_DEBUGFS)
 int airoha_ppe_debugfs_init(struct airoha_ppe_common *ppe);
