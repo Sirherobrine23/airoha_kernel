@@ -1267,13 +1267,28 @@ static int econet_init_final(struct econet_qdma *qdma)
 	set_qregs_qcfg_msg_word_swap(&qcfg, true);
 	set_qregs_qcfg_dscp_byte_swap(&qcfg, airoha_is(qdma->common.eth, econet_en751221));
 	set_qregs_qcfg_payload_byte_sw(&qcfg, true);
-	set_qregs_qcfg_dma_pref(&qcfg, QREGS_QCFG_DMA_PREF_TX1_FRX_TX0);
+	if (airoha_is(qdma->common.eth, econet_en751221))
+		set_qregs_qcfg_dma_pref(&qcfg, QREGS_QCFG_DMA_PREF_ROUND_ROBIN);
+	else
+		set_qregs_qcfg_dma_pref(&qcfg, QREGS_QCFG_DMA_PREF_TX1_FRX_TX0);
 	set_qregs_qcfg_rx_2b_offset(&qcfg, qdma->cfg.rx_2b_offset);
 	set_qregs_qcfg_irq_en(&qcfg, true);
 	set_qregs_qcfg_check_done(&qcfg, !airoha_is(qdma->common.eth, econet_en751221));
 	set_qregs_qcfg_tx_wb_done(&qcfg, true);
-	if (airoha_is(qdma->common.eth, econet_en751221) && qdma->common.id == 0)
-		set_qregs_qcfg_tx_immediate_done(&qcfg, true);
+	if (airoha_is(qdma->common.eth, econet_en751221)) {
+		/*
+		 * Stock QDMA_LAN uses TX_IMMEDIATE_DONE (0x9c180075), while
+		 * QDMA_WAN uses SLM_RELEASE_EN (0x9c280075). RX_2B_OFFSET is
+		 * intentionally kept controlled by cfg because the current
+		 * page-pool RX layout cannot safely reproduce the vendor +2 DMA
+		 * offset yet. Without that bit the expected values are
+		 * 0x1c180075 and 0x1c280075 once DMA is enabled.
+		 */
+		if (qdma->common.id == 0)
+			set_qregs_qcfg_tx_immediate_done(&qcfg, true);
+		else
+			set_qregs_qcfg_slm_release_en(&qcfg, true);
+	}
 	set_qregs_qcfg_burst_size(&qcfg, QREGS_QCFG_BURST_SIZE_128_BYTES);
 	econet_wreg(qcfg, &qdma->regs->qdma_cfg);
 

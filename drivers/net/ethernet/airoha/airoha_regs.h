@@ -87,12 +87,22 @@
 #define EN751221_FOE_IB1_BIND_VLAN_TAG	BIT(20)
 #define EN751221_FOE_IB1_BIND_CACHE	BIT(22)
 
-#define EN751221_FOE_IB2_QID		GENMASK(2, 0)
+#define EN751221_FOE_IB2_QID		GENMASK(3, 0)
 #define EN751221_FOE_IB2_PSE_QOS	BIT(4)
 #define EN751221_FOE_IB2_DEST_PORT	GENMASK(7, 5)
 #define EN751221_FOE_IB2_MULTICAST	BIT(8)
 #define EN751221_FOE_IB2_PORT_MG	GENMASK(17, 12)
 #define EN751221_FOE_IB2_PORT_AG	GENMASK(23, 18)
+
+/*
+ * UDF word (offset 40) as laid out by the EN7512 SDK _ipv4_hnapt structure on
+ * the big-endian host: act_dp, ts_id, channel, reserved.  set_act_dp_bits()
+ * writes act_dp as the byte at offset 40 and PpeSetPortInfo() writes ts_id and
+ * channel as the bytes at offsets 41 and 42.
+ */
+#define EN751221_FOE_UDF_ACT_DP		GENMASK(31, 24)
+#define EN751221_FOE_UDF_TSID		GENMASK(23, 16)
+#define EN751221_FOE_UDF_CHANNEL	GENMASK(15, 8)
 
 #define EN751221_PPE_CPU_REASON_NO_FLOW	0x07
 
@@ -393,6 +403,12 @@
 #define PPE_FLOW_CFG_IP4_TCP_FRAG_MASK		BIT(6)
 
 #define REG_PPE_IP_PROTO_CHK(_n)		(((_n) ? PPE2_BASE : PPE1_BASE) + 0x208)
+/*
+ * IP protocol list checked by the PPE classifier, four protocol numbers per
+ * register.  setup_ip_chk() in the EN7516 SDK loads TCP, UDP, IPv6 and IPIP
+ * into PPE_IP_PROT_0 when PPE_FLOW_CFG selects the blacklist mode.
+ */
+#define REG_PPE_IP_PROT(_n, _i)			(((_n) ? PPE2_BASE : PPE1_BASE) + 0x20c + ((_i) << 2))
 #define PPE_IP_PROTO_CHK_IPV4_MASK		GENMASK(31, 16)
 #define PPE_IP_PROTO_CHK_IPV6_MASK		GENMASK(15, 0)
 
