@@ -2528,6 +2528,36 @@ void econet_ppe_read_entry(struct econet_ppe *ppe, u16 hash,
 		((u32 *)entry)[i] = READ_ONCE(slot[i]);
 }
 
+/*
+ * The EN751221 PPE consumes the FoE table in the byte order the big-endian
+ * host already writes: PpeSetEntryBind() stores the bind state, TTL and
+ * timestamp straight into word 0, PpeSetPortInfo() reads the TPID as a plain
+ * u16 at offset 44 and set_act_dp_bits() writes act_dp as the byte at offset
+ * 40.  The hardware-generated lookup key follows the same convention, so the
+ * logical struct maps 1:1 onto the table and no conversion is needed.
+ */
+static void econet_ppe_encode_entry(const struct econet_foe_entry *entry,
+				    struct econet_foe_entry *raw)
+{
+	const u32 *src = (const u32 *)entry;
+	u32 *dst = (u32 *)raw;
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(entry->data) + 1; i++)
+		dst[i] = src[i];
+}
+
+void econet_ppe_decode_entry(const struct econet_foe_entry *raw,
+			     struct econet_foe_entry *entry)
+{
+	const u32 *src = (const u32 *)raw;
+	u32 *dst = (u32 *)entry;
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(entry->data) + 1; i++)
+		dst[i] = src[i];
+}
+
 static bool econet_ppe_cache_cmd(struct econet_ppe *ppe, u32 cmd)
 {
 	void __iomem *reg = ppe->common.eth->fe_regs + REG_EN751221_PPE_CACHE_CTL;
@@ -2625,27 +2655,23 @@ static int econet_foe_entry_set_xpon(struct econet_foe_entry *entry,
 					  pcp_valid, pcp, &info);
 	if (err)
 		return err;
-	if (info.oam || info.gem_port_id > 0xfff || info.tcont > 0xf ||
-	    info.queue > FIELD_MAX(EN751221_FOE_IB2_QID))
+	/* EN751221 GPON exposes 32 T-CONT channels and queues 0..7. */
+	if (info.oam || info.gem_port_id > 0xfff || info.tcont >= 32 ||
+	    info.queue >= 8)
 		return -EOPNOTSUPP;
 
 	/*
-	 * The EN7512/EN7521 vendor PpeSetPortInfo() path sends GPON flows
-	 * through PSE port 6 (QDMA hardware forwarding), not directly to
-	 * GDM2.  The QDMA metadata is multiplexed into the IPv4 HNAPT FoE
-	 * entry: txq goes in IB2, TSE/TSID and T-CONT use the two middle
-	 * bytes of udf_tsid, and the 12-bit GEM ID occupies the first L2
-	 * half-word.  TSE/TSID are zero for normal data flows.
-	 *
-	 * econet_ppe_commit_entry() byte-swaps udf_tsid before publishing
-	 * it, so logical bits 15:8 and 23:16 become the vendor ts_id and
-	 * channel bytes respectively.
+	 * Match PpeSetPortInfo(FOE_MAGIC_GPON): PSE port 6 selects QDMA-WAN
+	 * HWF, qid selects the TX queue, channel carries the T-CONT and etype
+	 * is repurposed for the GEM port ID.
 	 */
 	econet_foe_entry_set_pse_port(entry, EN751221_DPORT_QDMA_HW);
 	econet_foe_entry_set_queue(entry, info.queue);
-	entry->ipv4.udf_tsid &= ~GENMASK(23, 8);
-	entry->ipv4.udf_tsid |= FIELD_PREP(GENMASK(23, 16), info.tcont);
-	entry->ipv4.l2.vlan1 = info.gem_port_id;
+	entry->ipv4.udf_tsid &= ~(EN751221_FOE_UDF_TSID |
+				  EN751221_FOE_UDF_CHANNEL);
+	entry->ipv4.udf_tsid |= FIELD_PREP(EN751221_FOE_UDF_CHANNEL,
+				      info.tcont);
+	entry->ipv4.l2.etype = info.gem_port_id;
 
 	return 0;
 }
@@ -2656,18 +2682,12 @@ static int econet_foe_entry_set_vlan(struct econet_foe_entry *entry, u16 vid,
 	if (proto != htons(ETH_P_8021Q) || vid > VLAN_VID_MASK || prio > 7)
 		return -EOPNOTSUPP;
 
-	/*
-	 * For the EN751221 GPON FoE format PpeSetPortInfo() repurposes the
-	 * first L2 half-word for GEM metadata while retaining VLAN1 in the
-	 * following half-word.  In the logical EcoNet structure that second
-	 * half-word is l2.etype because commit_entry() rotates mixed-u16
-	 * words before writing the little-endian FoE table.
-	 */
+	/* PpeFillInL2Info() keeps the output VLAN TCI in vlan1. */
 	entry->ib1 &= ~(EN751221_FOE_IB1_BIND_VLAN_LAYER |
 			AIROHA_FOE_IB1_BIND_VPM);
 	entry->ib1 |= FIELD_PREP(EN751221_FOE_IB1_BIND_VLAN_LAYER, 1) |
 		      FIELD_PREP(AIROHA_FOE_IB1_BIND_VPM, 1);
-	entry->ipv4.l2.etype = FIELD_PREP(VLAN_PRIO_MASK, prio) | vid;
+	entry->ipv4.l2.vlan1 = FIELD_PREP(VLAN_PRIO_MASK, prio) | vid;
 
 	return 0;
 }
@@ -2705,17 +2725,30 @@ static void econet_foe_entry_set_bind_metadata(struct econet_foe_entry *entry)
 
 	entry->ib1 &= ~EN751221_FOE_IB1_BIND_VLAN_LAYER;
 	entry->ib1 |= FIELD_PREP(EN751221_FOE_IB1_BIND_VLAN_LAYER, 1);
-	entry->ipv4.udf_tsid &= ~0xff;
-	entry->ipv4.udf_tsid |= port + 6;
+
+	/* act_dp is a pseudo-interface UDF, not the PSE destination. */
+	entry->ipv4.udf_tsid &= ~EN751221_FOE_UDF_ACT_DP;
+	if (port != EN751221_DPORT_QDMA_HW)
+		entry->ipv4.udf_tsid |= FIELD_PREP(EN751221_FOE_UDF_ACT_DP,
+					     port + 6);
+}
+
+static u32 econet_ppe_raw_packet_type(const struct econet_foe_entry *raw)
+{
+	return FIELD_GET(AIROHA_FOE_IB1_BIND_PACKET_TYPE, raw->ib1);
 }
 
 static void econet_ppe_commit_entry(struct econet_ppe *ppe,
-				    struct econet_foe_entry *entry, u16 hash)
+				    struct econet_foe_entry *entry, u16 hash,
+				    const struct econet_foe_entry *lookup_raw)
 {
+	struct econet_foe_entry raw;
 	u32 *slot = econet_ppe_slot(ppe, hash);
 	u16 timestamp = airoha_fe_rr(ppe->common.eth, REG_FE_FOE_TS) &
 			AIROHA_FOE_IB1_BIND_TIMESTAMP;
-	const u32 *src;
+	u32 *raw_words = (u32 *)&raw;
+	const u32 *lookup_words = (const u32 *)lookup_raw;
+	const u32 *words;
 	int i;
 
 	entry->ib1 &= ~AIROHA_FOE_IB1_BIND_TIMESTAMP;
@@ -2724,27 +2757,33 @@ static void econet_ppe_commit_entry(struct econet_ppe *ppe,
 		AIROHA_FOE_IB1_BIND_KEEPALIVE;
 	econet_foe_entry_set_bind_metadata(entry);
 
-	/*
-	 * EN751221 is normally used by a big-endian MIPS CPU while the PPE
-	 * consumes little-endian words. Mixed-u16 words need an additional
-	 * half-word exchange to preserve the vendor FoE V1 layout.
-	 */
-	src = entry->data;
-	for (i = 0; i < ARRAY_SIZE(entry->data); i++) {
-		u32 val = src[i];
+	econet_ppe_encode_entry(entry, &raw);
 
-		if (i == 6 || i == 10 || i == 12 || i == 14)
-			val = rol32(val, 16);
-		/*
-		 * Match the old MMIO path exactly. On EN751221 writel() does not
-		 * add a software endian conversion when CONFIG_SWAP_IO_SPACE is
-		 * disabled, so cpu_to_le32(swab32(val)) double-swaps the DMA word.
-		 */
-		WRITE_ONCE(slot[i + 1], swab32(val));
+	/*
+	 * The EN7512 PPE creates the IPv4 lookup key itself in an UNB entry and
+	 * PpeClearEntryInfo() only memsets from ib2 onwards, so keep the source
+	 * and destination addresses the hardware hashed.
+	 *
+	 * The port word at offset 12 is only part of the key for IPV4_HNAPT.
+	 * The PPE learns new IPv4 flows as IPV4_ROUTE, where that word is the
+	 * reserved field of _ipv4_hnapt and holds no ports.  The vendor bind
+	 * path guards the copy on the packet type the hardware assigned, so do
+	 * the same and let the parsed tuple supply the ports otherwise.
+	 */
+	if (lookup_raw) {
+		raw_words[1] = lookup_words[1];
+		raw_words[2] = lookup_words[2];
+		if (econet_ppe_raw_packet_type(lookup_raw) ==
+		    PPE_PKT_TYPE_IPV4_HNAPT)
+			raw_words[3] = lookup_words[3];
 	}
+	words = (const u32 *)&raw;
+
 	/* Publish the rewrite payload before marking the entry bound. */
+	for (i = 1; i < ARRAY_SIZE(entry->data) + 1; i++)
+		WRITE_ONCE(slot[i], words[i]);
 	dma_wmb();
-	WRITE_ONCE(slot[0], swab32(entry->ib1));
+	WRITE_ONCE(slot[0], words[0]);
 	/* Publish the complete entry before invalidating the lookup cache. */
 	dma_wmb();
 	econet_ppe_cache_clean(ppe);
@@ -2758,6 +2797,106 @@ static void econet_ppe_invalidate_entry(struct econet_ppe *ppe, u16 hash)
 	WRITE_ONCE(econet_ppe_slot(ppe, hash)[0], 0);
 	/* Publish the invalid state before the caller clears the cache. */
 	dma_wmb();
+}
+
+static u32 econet_ppe_raw_state(const struct econet_foe_entry *raw)
+{
+	return FIELD_GET(AIROHA_FOE_IB1_BIND_STATE, raw->ib1);
+}
+
+static void econet_ppe_clear_owner(struct econet_ppe *ppe, u16 hash)
+{
+	struct econet_flow_entry *owner;
+
+	if (hash == EN751221_PPE_INVALID_HASH ||
+	    hash >= ppe->common.eth->soc->ppe_dram_entries)
+		return;
+
+	owner = ppe->foe_owner[hash];
+	if (owner && owner->hash == hash)
+		owner->hash = EN751221_PPE_INVALID_HASH;
+	ppe->foe_owner[hash] = NULL;
+}
+
+static void econet_ppe_release_flow_slot(struct econet_ppe *ppe,
+					 struct econet_flow_entry *flow,
+					 bool invalidate)
+{
+	u16 hash = flow->hash;
+
+	if (hash == EN751221_PPE_INVALID_HASH ||
+	    hash >= ppe->common.eth->soc->ppe_dram_entries ||
+	    ppe->foe_owner[hash] != flow) {
+		flow->hash = EN751221_PPE_INVALID_HASH;
+		return;
+	}
+
+	if (invalidate)
+		econet_ppe_invalidate_entry(ppe, hash);
+	ppe->foe_owner[hash] = NULL;
+	flow->hash = EN751221_PPE_INVALID_HASH;
+}
+
+static u16 econet_ppe_find_bind_way(struct econet_ppe *ppe,
+				    struct econet_flow_entry *flow, u16 hash,
+				    struct econet_foe_entry *lookup_raw,
+				    bool *lookup_valid)
+{
+	struct econet_foe_entry raw[2];
+	u16 way[2] = { hash, hash ^ 1 };
+	u32 state[2];
+	int i;
+
+	*lookup_valid = false;
+
+	/*
+	 * FoeHashFun() in the EN7512 SDK returns an even bucket base and then
+	 * checks base/base + 1.  RX metadata may contain either way, so retain
+	 * the reported way as the first preference and inspect its sibling too.
+	 */
+	for (i = 0; i < ARRAY_SIZE(way); i++) {
+		struct econet_flow_entry *owner;
+
+		if (way[i] >= ppe->common.eth->soc->ppe_dram_entries)
+			continue;
+		econet_ppe_read_entry(ppe, way[i], &raw[i]);
+		state[i] = econet_ppe_raw_state(&raw[i]);
+
+		owner = ppe->foe_owner[way[i]];
+		if (owner && state[i] != AIROHA_FOE_STATE_BIND) {
+			/* Hardware aging/replacement ended the previous ownership. */
+			econet_ppe_clear_owner(ppe, way[i]);
+			owner = NULL;
+		}
+		if (owner == flow && state[i] == AIROHA_FOE_STATE_BIND)
+			return way[i];
+	}
+
+	/*
+	 * Match the EN7512 FoeHashFun() allocation policy: INVALID and UNBIND
+	 * ways are reusable, while BIND and FIN are occupied.  An UNBIND way
+	 * contains the lookup key generated by the PPE and must be preserved;
+	 * an INVALID way has no key, so econet_ppe_commit_entry() encodes the
+	 * logical tuple from flow->data instead.
+	 */
+	for (i = 0; i < ARRAY_SIZE(way); i++) {
+		if (way[i] >= ppe->common.eth->soc->ppe_dram_entries ||
+		    ppe->foe_owner[way[i]])
+			continue;
+
+		switch (state[i]) {
+		case AIROHA_FOE_STATE_UNBIND:
+			*lookup_raw = raw[i];
+			*lookup_valid = true;
+			return way[i];
+		case AIROHA_FOE_STATE_INVALID:
+			return way[i];
+		default:
+			break;
+		}
+	}
+
+	return EN751221_PPE_INVALID_HASH;
 }
 
 static bool econet_ppe_parse_ipv4_tuple(struct sk_buff *skb, u32 *src_ip,
@@ -2819,9 +2958,10 @@ static void econet_ppe_rx_check(struct econet_ppe *ppe, struct sk_buff *skb,
 				u16 hash, u8 reason)
 {
 	struct econet_flow_entry *flow;
-	struct econet_foe_entry entry, hardware, readback = {};
+	struct econet_foe_entry entry, lookup_raw = {};
 	u32 src_ip, dest_ip;
-	u16 src_port, dest_port;
+	bool lookup_valid;
+	u16 src_port, dest_port, bind_hash;
 
 	if (!ppe || !READ_ONCE(ppe->armed) ||
 	    hash >= ppe->common.eth->soc->ppe_dram_entries)
@@ -2839,26 +2979,23 @@ static void econet_ppe_rx_check(struct econet_ppe *ppe, struct sk_buff *skb,
 		if (flow->src_ip != src_ip || flow->dest_ip != dest_ip ||
 		    flow->src_port != src_port || flow->dest_port != dest_port)
 			continue;
-		if (flow->hash == hash)
+
+		bind_hash = econet_ppe_find_bind_way(ppe, flow, hash,
+						     &lookup_raw, &lookup_valid);
+		if (bind_hash == EN751221_PPE_INVALID_HASH)
+			break;
+		if (ppe->foe_owner[bind_hash] == flow &&
+		    flow->hash == bind_hash)
 			break;
 
 		entry = flow->data;
-		econet_ppe_read_entry(ppe, hash, &hardware);
-		if (hardware.ib1) {
-			/*
-			 * Preserve the exact key generated by the hardware. The commit
-			 * path byte-swaps every word, therefore pre-swap these raw words
-			 * so they round-trip unchanged.
-			 */
-			entry.ipv4.orig.src_ip = swab32(hardware.ipv4.orig.src_ip);
-			entry.ipv4.orig.dest_ip = swab32(hardware.ipv4.orig.dest_ip);
-			entry.ipv4.orig.ports = swab32(hardware.ipv4.orig.ports);
-		}
-		if (flow->hash != EN751221_PPE_INVALID_HASH)
-			econet_ppe_invalidate_entry(ppe, flow->hash);
-		flow->hash = hash;
-		econet_ppe_commit_entry(ppe, &entry, hash);
-		econet_ppe_read_entry(ppe, hash, &readback);
+		if (flow->hash != bind_hash)
+			econet_ppe_release_flow_slot(ppe, flow, true);
+
+		econet_ppe_commit_entry(ppe, &entry, bind_hash,
+				       lookup_valid ? &lookup_raw : NULL);
+		ppe->foe_owner[bind_hash] = flow;
+		flow->hash = bind_hash;
 		break;
 	}
 	spin_unlock_bh(&ppe->lock);
@@ -2879,7 +3016,7 @@ static void econet_ppe_flush(struct econet_ppe *ppe)
 
 	spin_lock_bh(&ppe->lock);
 	list_for_each_entry(flow, &ppe->flows, list)
-		econet_ppe_invalidate_entry(ppe, flow->hash);
+		econet_ppe_release_flow_slot(ppe, flow, true);
 	list_splice_init(&ppe->flows, &free_list);
 	spin_unlock_bh(&ppe->lock);
 
@@ -2893,6 +3030,45 @@ static void econet_ppe_flush(struct econet_ppe *ppe)
 	econet_ppe_cache_clean(ppe);
 }
 
+/*
+ * EN751221 vendor hw_nat (PPE type 3) programs the otherwise unnamed
+ * generation-1 GLO_CFG bits 1 and 8 together with byte-swap/hash-offset
+ * and flow-drop-update. Bit 10 is not touched by hw_nat itself, but it is set
+ * in the production FE state (GLO_CFG = 0x763); the consolidated Linux driver
+ * owns the FE reset, so restore that steady-state bit explicitly on enable.
+ */
+#define EN751221_PPE_GLO_CFG_VENDOR_SET	(BIT(1) | BIT(8) | \
+					 PPE_GLO_CFG_PPE_BSWAP_MASK | \
+					 PPE_GLO_CFG_PSE_HASH_OFS_MASK | \
+					 PPE_GLO_CFG_FLOW_DROP_UPDATE_MASK)
+#define EN751221_PPE_GLO_CFG_STOCK_BIT10	BIT(10)
+#define EN751221_PPE_GLO_CFG_VENDOR_CLEAR	(PPE_GLO_CFG_TTL_DROP_MASK | \
+					 PPE_GLO_CFG_IP4_CS_DROP_MASK | \
+					 PPE_GLO_CFG_IP4_L4_CS_DROP_MASK)
+
+/*
+ * The type-3 stock flow profile is 0x07e0f740. Bits 21..24 are not named
+ * by the common Airoha register definitions yet, but are part of the
+ * EN751221 L2B/IPv4/IPv6/DS-LITE/6RD profile. IP protocol blacklist mode
+ * (bit 16) is configured separately by the vendor driver.
+ */
+#define EN751221_PPE_FLOW_CFG_TYPE3	(GENMASK(26, 21) | \
+					 PPE_FLOW_CFG_L2_BRIDGE_MASK | \
+					 PPE_FLOW_CFG_IP4_DSLITE_MASK | \
+					 PPE_FLOW_CFG_IP4_NAPT_MASK | \
+					 PPE_FLOW_CFG_IP4_NAT_MASK | \
+					 PPE_FLOW_CFG_IP6_6RD_MASK | \
+					 PPE_FLOW_CFG_IP6_5T_ROUTE_MASK | \
+					 PPE_FLOW_CFG_IP6_3T_ROUTE_MASK | \
+					 PPE_FLOW_CFG_IP4_TCP_FRAG_MASK)
+
+static void econet_ppe_set_flow_profile(struct econet_ppe *ppe)
+{
+	airoha_fe_wr(ppe->common.eth, REG_PPE_PPE_FLOW_CFG(0),
+		     EN751221_PPE_FLOW_CFG_TYPE3 |
+		     PPE_FLOW_CFG_IP_PROTO_BLACKLIST_MASK);
+}
+
 static int econet_ppe_engine_set(struct econet_ppe *ppe, bool enable)
 {
 	void __iomem *reg = ppe->common.eth->fe_regs + REG_PPE_GLO_CFG(0);
@@ -2903,13 +3079,21 @@ static int econet_ppe_engine_set(struct econet_ppe *ppe, bool enable)
 					      !(val & PPE_GLO_CFG_BUSY_MASK),
 					      10, 10000))
 			return -EBUSY;
-		val = PPE_GLO_CFG_EN_MASK | PPE_GLO_CFG_IP4_L4_CS_DROP_MASK |
-		      PPE_GLO_CFG_IP4_CS_DROP_MASK |
-		      PPE_GLO_CFG_FLOW_DROP_UPDATE_MASK;
+
+		/* Match FUN_00013f50(1) from the stock hw_nat module. */
+		val = readl(reg);
+		val &= ~EN751221_PPE_GLO_CFG_VENDOR_CLEAR;
+		val |= EN751221_PPE_GLO_CFG_VENDOR_SET |
+		       EN751221_PPE_GLO_CFG_STOCK_BIT10 | PPE_GLO_CFG_EN_MASK;
 		writel(val, reg);
 	} else {
+		/* Match FUN_00013f50(0), preserving unrelated FE-owned bits. */
 		val = readl(reg);
-		writel(val & ~PPE_GLO_CFG_EN_MASK, reg);
+		val &= ~(EN751221_PPE_GLO_CFG_VENDOR_SET |
+			 PPE_GLO_CFG_TTL_DROP_MASK | PPE_GLO_CFG_EN_MASK);
+		val |= PPE_GLO_CFG_IP4_CS_DROP_MASK |
+		       PPE_GLO_CFG_IP4_L4_CS_DROP_MASK;
+		writel(val, reg);
 	}
 	return 0;
 }
@@ -2917,16 +3101,17 @@ static int econet_ppe_engine_set(struct econet_ppe *ppe, bool enable)
 static void econet_ppe_set_gdm_ingress(struct econet_ppe *ppe, int gdm,
 				       u8 fport)
 {
-	u32 mask = GDM_UCFQ_MASK | GDM_OCFQ_MASK;
+	u32 mask = GDM_UCFQ_MASK | GDM_BCFQ_MASK |
+		   GDM_MCFQ_MASK | GDM_OCFQ_MASK;
 	u32 val = FIELD_PREP(GDM_UCFQ_MASK, fport) |
+		  FIELD_PREP(GDM_BCFQ_MASK, fport) |
+		  FIELD_PREP(GDM_MCFQ_MASK, fport) |
 		  FIELD_PREP(GDM_OCFQ_MASK, fport);
 
 	/*
-	 * Do not rewrite the complete FWD_CFG register here. EN751221 shares
-	 * some of these bits with its legacy special-tag/UNTAG controls, and
-	 * replacing the whole word breaks the DSA conduit. Only redirect the
-	 * unicast/my-MAC and default paths; broadcast/multicast stay on the
-	 * CPU path configured by the netdev.
+	 * Stock SetGdmaFwd() sends all four ingress classes to fport 4 while
+	 * HWNAT is enabled (the observed low word is 0x4444). Keep this an
+	 * RMW so EN751221 special-tag/UNTAG state in the upper bits survives.
 	 */
 	airoha_fe_rmw(ppe->common.eth, REG_GDM_FWD_CFG(gdm), mask, val);
 }
@@ -2953,29 +3138,29 @@ static int econet_ppe_engine_arm(struct econet_ppe *ppe)
 		     FIELD_PREP(PPE_KEEPALIVE_UDP_MASK, 1) |
 		     FIELD_PREP(PPE_KEEPALIVE_TCP_MASK, 1) |
 		     FIELD_PREP(PPE_KEEPALIVE_NTU_MASK, 1));
-	err = econet_ppe_engine_set(ppe, true);
-	if (err)
-		return err;
+
+	/*
+	 * Program the complete type-3 datapath before enabling GLO_CFG. The
+	 * stock module only calls SetGdmaFwd(1) after cache, FoE/table state,
+	 * protocol parsing and the PPE engine itself are ready.
+	 */
 	airoha_fe_wr(ppe->common.eth, REG_EN751221_PPE_CAH_GATE,
 		     EN751221_PPE_CAH_GATE_DEFAULT);
-	airoha_fe_wr(ppe->common.eth, REG_PPE_PPE_FLOW_CFG(0),
-		     PPE_FLOW_CFG_IP_MC_HPIT_MASK | PPE_FLOW_CFG_IP6_MC_HPRI_MASK |
-		     PPE_FLOW_CFG_L2_BRIDGE_MASK | PPE_FLOW_CFG_IP4_DSLITE_MASK |
-		     PPE_FLOW_CFG_IP4_NAPT_MASK | PPE_FLOW_CFG_IP4_NAT_MASK |
-		     PPE_FLOW_CFG_IP6_6RD_MASK | PPE_FLOW_CFG_IP6_5T_ROUTE_MASK |
-		     PPE_FLOW_CFG_IP6_3T_ROUTE_MASK);
+	econet_ppe_set_flow_profile(ppe);
 	airoha_fe_wr(ppe->common.eth, REG_PPE_VPM_TPID(0), ETH_P_8021Q);
 	airoha_fe_wr(ppe->common.eth, REG_CDM_VLAN_CTRL(1),
 		     FIELD_PREP(CDM_VLAN_MASK, ETH_P_8021Q) | STAG_EN);
-	/*
-	 * Route normal unicast ingress through the PPE without touching the
-	 * EN751221 special-tag state. GDM1 covers LAN/DSA -> WAN and GDM2
-	 * covers WAN/xPON -> LAN. PPE misses are returned to each GDM's CPU
-	 * QDMA through the default CPU-port map below.
-	 */
+
+	/* SetGdmaFwd() in the stock module writes PPE_DFT_CPORT = 0x500. */
 	airoha_fe_wr(ppe->common.eth, REG_PPE_DFT_CPORT_BASE(0),
 		     FIELD_PREP(DFT_CPORT_MASK(2),
 				EN751221_GDM_FPORT_QDMA1_CPU));
+
+	err = econet_ppe_engine_set(ppe, true);
+	if (err)
+		return err;
+
+	/* GDM redirection is deliberately the last arm step. */
 	econet_ppe_set_gdm_ingress(ppe, 1, EN751221_GDM_FPORT_PPE);
 	econet_ppe_set_gdm_ingress(ppe, 2, EN751221_GDM_FPORT_PPE);
 	WRITE_ONCE(ppe->armed, true);
@@ -3262,29 +3447,26 @@ static int econet_flow_offload_replace(struct net_device *dev,
 					dest_addr, dest_port);
 	econet_foe_entry_set_ipv4_tuple(&entry, true, new_src_addr, new_src_port,
 					new_dest_addr, new_dest_port);
+	/*
+	 * Match the vendor ordering: PpeFillInL2Info() installs VLAN/PPPoE
+	 * first and PpeSetPortInfo(FOE_MAGIC_GPON) runs last, repurposing
+	 * etype for the GEM port ID.
+	 */
+	if (vlan_push) {
+		err = econet_foe_entry_set_vlan(&entry, vlan_id, vlan_prio,
+					vlan_proto);
+		if (err)
+			return err;
+	}
+	if (pppoe_sid)
+		econet_foe_entry_set_pppoe(&entry, pppoe_sid);
+
 	err = econet_flow_set_output(&entry, odev, vlan_push, vlan_id,
 				     vlan_prio, &xpon);
 	if (err)
 		return err;
-	if (pppoe_sid)
-		econet_foe_entry_set_pppoe(&entry, pppoe_sid);
-	if (vlan_push) {
-		if (!xpon)
-			return -EOPNOTSUPP;
-		err = econet_foe_entry_set_vlan(&entry, vlan_id, vlan_prio,
-						vlan_proto);
-		if (err)
-			return err;
-	}
-
-	/*
-	 * The engine's lookup key uses the opposite word lane order on the
-	 * big-endian EN751221 CPU. The RX bind path will replace it with the
-	 * hardware-generated key when that key is visible in DRAM.
-	 */
-	entry.ipv4.orig.src_ip = swab32(entry.ipv4.orig.src_ip);
-	entry.ipv4.orig.dest_ip = swab32(entry.ipv4.orig.dest_ip);
-	entry.ipv4.orig.ports = swab32(entry.ipv4.orig.ports);
+	if (vlan_push && !xpon)
+		return -EOPNOTSUPP;
 
 	flow = kzalloc(sizeof(*flow), GFP_KERNEL);
 	if (!flow)
@@ -3319,7 +3501,7 @@ static int econet_flow_offload_destroy(struct net_device *dev,
 	spin_lock_bh(&ppe->lock);
 	flow = econet_ppe_find_flow(ppe, cls->cookie);
 	if (flow) {
-		econet_ppe_invalidate_entry(ppe, flow->hash);
+		econet_ppe_release_flow_slot(ppe, flow, true);
 		econet_ppe_cache_clean(ppe);
 		list_del(&flow->list);
 	}
@@ -3444,6 +3626,11 @@ static int airoha_ppe_gen1_init(struct airoha_eth *eth)
 		return err;
 
 	dram_num_entries = airoha_ppe_get_num_entries_shift(dram_entries);
+	ppe->foe_owner = devm_kcalloc(dev, dram_entries,
+				      sizeof(*ppe->foe_owner), GFP_KERNEL);
+	if (!ppe->foe_owner)
+		return -ENOMEM;
+
 	spin_lock_init(&ppe->lock);
 	INIT_LIST_HEAD(&ppe->flows);
 	INIT_LIST_HEAD(&ppe->block_cb_list);
@@ -3467,33 +3654,44 @@ static int airoha_ppe_gen1_init(struct airoha_eth *eth)
 		 PPE_TB_CFG_AGE_NON_L4_MASK |
 		 FIELD_PREP(PPE_TB_CFG_SEARCH_MISS_MASK, 3) |
 		 FIELD_PREP(PPE_TB_CFG_HASH_MODE_MASK, 3) |
-		 FIELD_PREP(PPE_TB_CFG_SCAN_MODE_MASK, 1) |
+		 FIELD_PREP(PPE_TB_CFG_KEEPALIVE_MASK, 3) |
 		 FIELD_PREP(PPE_DRAM_TB_NUM_ENTRY_MASK, dram_num_entries) |
 		 PPE_TB_ENTRY_SIZE_MASK;
 	airoha_fe_wr(eth, REG_PPE_TB_CFG(0), tb_cfg);
 	airoha_fe_wr(eth, REG_PPE_IP_PROTO_CHK(0),
 		     PPE_IP_PROTO_CHK_IPV4_MASK | PPE_IP_PROTO_CHK_IPV6_MASK);
-	airoha_fe_wr(eth, REG_PPE_PPE_FLOW_CFG(0),
-		     PPE_FLOW_CFG_IP6_3T_ROUTE_MASK |
-		     PPE_FLOW_CFG_IP6_5T_ROUTE_MASK |
-		     PPE_FLOW_CFG_IP6_6RD_MASK | PPE_FLOW_CFG_IP4_NAT_MASK |
-		     PPE_FLOW_CFG_IP4_NAPT_MASK | PPE_FLOW_CFG_IP4_NAT_FRAG_MASK);
+	/*
+	 * PPE_FLOW_CFG already selects the blacklist mode, but the protocol list
+	 * itself is left at its reset value, so the classifier has no entry for
+	 * TCP or UDP and falls back to IPV4_HNAT for every IPv4 flow.  Load the
+	 * same four protocols setup_ip_chk() writes on the vendor stack.
+	 */
+	airoha_fe_wr(eth, REG_PPE_IP_PROT(0, 0),
+		     FIELD_PREP(GENMASK(7, 0), IPPROTO_TCP) |
+		     FIELD_PREP(GENMASK(15, 8), IPPROTO_UDP) |
+		     FIELD_PREP(GENMASK(23, 16), IPPROTO_IPV6) |
+		     FIELD_PREP(GENMASK(31, 24), IPPROTO_IPIP));
+	airoha_fe_wr(eth, REG_PPE_IP_PROT(0, 1), 0);
+	airoha_fe_wr(eth, REG_PPE_IP_PROT(0, 2), 0);
+	airoha_fe_wr(eth, REG_PPE_IP_PROT(0, 3), 0);
+	econet_ppe_set_flow_profile(ppe);
 	airoha_fe_wr(eth, REG_PPE_UNBIND_AGE(0),
 		     FIELD_PREP(PPE_UNBIND_AGE_MIN_PACKETS_MASK, 1000) |
 		     FIELD_PREP(PPE_UNBIND_AGE_DELTA_MASK, 3));
+	/* Vendor defaults before optional userspace timeout retuning. */
 	airoha_fe_wr(eth, REG_PPE_BND_AGE0(0),
-		     FIELD_PREP(PPE_BIND_AGE0_DELTA_NON_L4, 1) |
-		     FIELD_PREP(PPE_BIND_AGE0_DELTA_UDP, 12));
+		     FIELD_PREP(PPE_BIND_AGE0_DELTA_NON_L4, 15) |
+		     FIELD_PREP(PPE_BIND_AGE0_DELTA_UDP, 15));
 	airoha_fe_wr(eth, REG_PPE_BND_AGE1(0),
-		     FIELD_PREP(PPE_BIND_AGE1_DELTA_TCP_FIN, 1) |
-		     FIELD_PREP(PPE_BIND_AGE1_DELTA_TCP, 7));
+		     FIELD_PREP(PPE_BIND_AGE1_DELTA_TCP_FIN, 5) |
+		     FIELD_PREP(PPE_BIND_AGE1_DELTA_TCP, 15));
 	airoha_fe_wr(eth, REG_PPE_BIND_LIMIT0(0),
-		     PPE_BIND_LIMIT0_QUARTER_MASK | PPE_BIND_LIMIT0_HALF_MASK);
+		     FIELD_PREP(PPE_BIND_LIMIT0_HALF_MASK, 800) |
+		     FIELD_PREP(PPE_BIND_LIMIT0_QUARTER_MASK, 1600));
 	airoha_fe_wr(eth, REG_PPE_BIND_LIMIT1(0),
-		     PPE_BIND_LIMIT1_FULL_MASK |
-		     FIELD_PREP(PPE_BIND_LIMIT1_NON_L4_MASK, 1));
+		     FIELD_PREP(PPE_BIND_LIMIT1_NON_L4_MASK, 1) |
+		     FIELD_PREP(PPE_BIND_LIMIT1_FULL_MASK, 400));
 	airoha_fe_wr(eth, REG_PPE_BIND_RATE(0),
-		     FIELD_PREP(PPE_BIND_RATE_L2B_BIND_MASK, 1) |
 		     FIELD_PREP(PPE_BIND_RATE_BIND_MASK, 30));
 	airoha_fe_wr(eth, REG_PPE_HASH_SEED(0), PPE_HASH_SEED);
 	airoha_fe_wr(eth, REG_PPE_DFT_CPORT_BASE(0), 0);

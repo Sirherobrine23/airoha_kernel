@@ -359,31 +359,6 @@ static int airoha_ppe_debugfs_foe_bind_show(struct seq_file *m, void *private)
 DEFINE_SHOW_ATTRIBUTE(airoha_ppe_debugfs_foe_bind);
 
 
-/*
- * econet_ppe_commit_entry() stores EN751221 FoE words in the byte/halfword
- * layout consumed by the PPE. Convert a CPU snapshot of that DMA memory back
- * into the logical struct layout before decoding it in debugfs.
- */
-static void
-econet_ppe_debugfs_decode_entry(const struct econet_foe_entry *raw,
-				struct econet_foe_entry *entry)
-{
-	int i;
-
-	memset(entry, 0, sizeof(*entry));
-	entry->ib1 = swab32(raw->ib1);
-
-	for (i = 0; i < ARRAY_SIZE(entry->data); i++) {
-		u32 val = swab32(raw->data[i]);
-
-		/* Mirror the 16-bit lane rotation used by commit_entry(). */
-		if (i == 6 || i == 10 || i == 12 || i == 14)
-			val = rol32(val, 16);
-
-		entry->data[i] = val;
-	}
-}
-
 static void econet_ppe_debugfs_mac(const struct econet_foe_mac_info *l2,
 				   u8 *src, u8 *dest)
 {
@@ -411,9 +386,17 @@ static void econet_ppe_debugfs_print_ipv4(struct seq_file *m,
 				       &ipv4->new.src_port,
 				       &ipv4->new.dest_port, false);
 	seq_printf(m,
-		   " eth=%pM->%pM etype=%04x vlan=%u,%u pppoe=%u ib1=%08x ib2=%08x",
+		   " eth=%pM->%pM etype=%04x vlan=%u,%u pppoe=%u",
 		   src, dest, ipv4->l2.etype, ipv4->l2.vlan1, ipv4->l2.vlan2,
-		   ipv4->l2.pppoe_id, entry->ib1, ipv4->ib2);
+		   ipv4->l2.pppoe_id);
+	seq_printf(m, " act_dp=%lu tsid=%lu ch=%lu fp=%lu fqos=%d qid=%lu",
+		   FIELD_GET(EN751221_FOE_UDF_ACT_DP, ipv4->udf_tsid),
+		   FIELD_GET(EN751221_FOE_UDF_TSID, ipv4->udf_tsid),
+		   FIELD_GET(EN751221_FOE_UDF_CHANNEL, ipv4->udf_tsid),
+		   FIELD_GET(EN751221_FOE_IB2_DEST_PORT, ipv4->ib2),
+		   !!(ipv4->ib2 & EN751221_FOE_IB2_PSE_QOS),
+		   FIELD_GET(EN751221_FOE_IB2_QID, ipv4->ib2));
+	seq_printf(m, " ib1=%08x ib2=%08x", entry->ib1, ipv4->ib2);
 }
 
 static int econet_ppe_debugfs_foe_show(struct seq_file *m, bool bind_only)
@@ -430,7 +413,7 @@ static int econet_ppe_debugfs_foe_show(struct seq_file *m, bool bind_only)
 		econet_ppe_read_entry(ppe, i, &raw);
 		spin_unlock_bh(&ppe->lock);
 
-		econet_ppe_debugfs_decode_entry(&raw, &entry);
+		econet_ppe_decode_entry(&raw, &entry);
 		state = FIELD_GET(AIROHA_FOE_IB1_BIND_STATE, entry.ib1);
 		if (state == AIROHA_FOE_STATE_INVALID)
 			continue;
@@ -531,16 +514,9 @@ static int econet_ppe_debugfs_flows_show(struct seq_file *m, void *private)
 	spin_unlock_bh(&ppe->lock);
 
 	for (i = 0; i < n; i++) {
-		struct econet_foe_entry entry = snapshot[i].data;
-		
-		/* flow->data keeps the pre-swapped EN751221 lookup key. */
-		entry.ipv4.orig.src_ip = swab32(entry.ipv4.orig.src_ip);
-		entry.ipv4.orig.dest_ip = swab32(entry.ipv4.orig.dest_ip);
-		entry.ipv4.orig.ports = swab32(entry.ipv4.orig.ports);
-
 		seq_printf(m, "cookie=%lx hash=%04x", snapshot[i].cookie,
 			   snapshot[i].hash);
-		econet_ppe_debugfs_print_ipv4(m, &entry);
+		econet_ppe_debugfs_print_ipv4(m, &snapshot[i].data);
 		seq_putc(m, '\n');
 	}
 
@@ -608,7 +584,7 @@ static int econet_ppe_debugfs_foe_json_show(struct seq_file *m, void *private)
 		econet_ppe_read_entry(ppe, i, &raw);
 		spin_unlock_bh(&ppe->lock);
 
-		econet_ppe_debugfs_decode_entry(&raw, &entry);
+		econet_ppe_decode_entry(&raw, &entry);
 		state = FIELD_GET(AIROHA_FOE_IB1_BIND_STATE, entry.ib1);
 		if (state == AIROHA_FOE_STATE_INVALID)
 			continue;
