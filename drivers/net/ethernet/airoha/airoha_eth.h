@@ -830,10 +830,30 @@ struct econet_foe_ipv4 {
 	struct econet_foe_mac_info l2;
 };
 
+/* EN7512 SDK _ipv6_5t_route layout. The hardware keeps the 5-tuple in
+ * words 1..9 and PpeClearEntryInfo() clears the entry starting at byte 40.
+ */
+struct econet_foe_ipv6 {
+	u32 src_ip[4];
+	u32 dest_ip[4];
+	union {
+		struct {
+			u16 src_port;
+			u16 dest_port;
+		};
+		u32 ports;
+	};
+	u32 reserved[3];
+	u32 udf_tsid;
+	u32 ib2;
+	struct econet_foe_mac_info l2;
+};
+
 struct econet_foe_entry {
 	u32 ib1;
 	union {
 		struct econet_foe_ipv4 ipv4;
+		struct econet_foe_ipv6 ipv6;
 		u32 data[19];
 	};
 };
@@ -851,6 +871,14 @@ static_assert(offsetof(struct econet_foe_entry, ipv4.l2.dest_mac_lo) == 52);
 static_assert(offsetof(struct econet_foe_entry, ipv4.l2.vlan2) == 54);
 static_assert(offsetof(struct econet_foe_entry, ipv4.l2.src_mac_lo) == 60);
 static_assert(offsetof(struct econet_foe_entry, ipv4.l2.pppoe_id) == 62);
+static_assert(offsetof(struct econet_foe_entry, ipv6.src_ip) == 4);
+static_assert(offsetof(struct econet_foe_entry, ipv6.dest_ip) == 20);
+static_assert(offsetof(struct econet_foe_entry, ipv6.src_port) == 36);
+static_assert(offsetof(struct econet_foe_entry, ipv6.dest_port) == 38);
+static_assert(offsetof(struct econet_foe_entry, ipv6.udf_tsid) == 52);
+static_assert(offsetof(struct econet_foe_entry, ipv6.ib2) == 56);
+static_assert(offsetof(struct econet_foe_entry, ipv6.l2.etype) == 60);
+static_assert(offsetof(struct econet_foe_entry, ipv6.l2.pppoe_id) == 78);
 
 struct econet_flow_entry {
 	struct list_head list;
@@ -858,9 +886,12 @@ struct econet_flow_entry {
 	unsigned long cookie;
 	u32 src_ip;
 	u32 dest_ip;
+	struct in6_addr src_ip6;
+	struct in6_addr dest_ip6;
 	u16 src_port;
 	u16 dest_port;
 	u16 hash;
+	u16 addr_type;
 };
 
 struct econet_ppe {
