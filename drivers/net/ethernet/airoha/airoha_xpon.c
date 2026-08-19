@@ -83,58 +83,6 @@ struct airoha_xpon_match_data {
 	bool gpon_reset_on_start;
 };
 
-static struct optical_frontend *
-airoha_xpon_find_legacy_frontend(struct device *dev)
-{
-	struct device_node *sfp_node, *i2c_node, *frontend_node;
-	struct optical_frontend *frontend;
-
-	/*
-	 * Compatibility with the existing soldered-BOSA topology:
-	 *
-	 *   xpon -> sfp -> i2c-bus = <&frontend/i2c-sfp>
-	 *
-	 * Do not infer a vendor or chip here. A physical SFP normally points to
-	 * a real controller bus rather than a child named i2c-sfp and therefore
-	 * does not enter the optical_frontend lookup.
-	 */
-	sfp_node = of_parse_phandle(dev->of_node, "sfp", 0);
-	if (!sfp_node)
-		return NULL;
-
-	i2c_node = of_parse_phandle(sfp_node, "i2c-bus", 0);
-	of_node_put(sfp_node);
-	if (!i2c_node)
-		return NULL;
-
-	if (!of_node_name_eq(i2c_node, "i2c-sfp")) {
-		of_node_put(i2c_node);
-		return NULL;
-	}
-
-	frontend_node = of_get_parent(i2c_node);
-	of_node_put(i2c_node);
-	if (!frontend_node)
-		return NULL;
-
-	frontend = devm_optical_frontend_get_by_fwnode(
-		dev, of_fwnode_handle(frontend_node));
-	of_node_put(frontend_node);
-
-	return frontend;
-}
-
-static struct optical_frontend *airoha_xpon_get_frontend(struct device *dev)
-{
-	struct optical_frontend *frontend;
-
-	frontend = devm_optical_frontend_get_optional(dev, "pon");
-	if (IS_ERR(frontend) || frontend)
-		return frontend;
-
-	return airoha_xpon_find_legacy_frontend(dev);
-}
-
 static int airoha_xpon_tx_rearm(struct device *dev,
 				struct optical_frontend *frontend)
 {
@@ -150,6 +98,25 @@ static int airoha_xpon_tx_rearm(struct device *dev,
 		dev_err(dev, "failed to rearm optical transmitter: %d\n", ret);
 	else
 		dev_info(dev, "optical transmitter safety circuit rearmed\n");
+
+	return ret;
+}
+
+static int airoha_xpon_tx_enable(struct device *dev,
+				 struct optical_frontend *frontend,
+				 bool enable)
+{
+	int ret;
+
+	if (!frontend)
+		return 0;
+
+	ret = optical_frontend_tx_enable(frontend, enable);
+	if (ret == -EOPNOTSUPP)
+		return 0;
+	if (ret)
+		dev_err(dev, "failed to %s optical transmitter: %d\n",
+			enable ? "enable" : "disable", ret);
 
 	return ret;
 }
@@ -2418,7 +2385,7 @@ static int gpon_enable(struct xpon_priv *priv)
 	if (priv->match_data->gpon_reset_on_start) {
 		ret = airoha_xpon_reset_mac(priv);
 		if (ret)
-			return ret;
+			goto err_disable_frontend;
 	}
 
 	ret = airoha_xpon_phy_start(priv->dev, priv->phy,
@@ -2426,7 +2393,7 @@ static int gpon_enable(struct xpon_priv *priv)
 				    &priv->phy_initialized,
 				    &priv->phy_powered);
 	if (ret)
-		return ret;
+		goto err_disable_frontend;
 
 	ret = gpon_prepare_hardware(priv);
 	if (ret) {
@@ -2472,8 +2439,13 @@ static int gpon_enable(struct xpon_priv *priv)
 	 */
 	atomic_set(&priv->pending_irqs, 0);
 	gpon_ploam_rx_queue_reset(priv);
-	ploam_start(priv->ploam);
 	WRITE_ONCE(priv->mac_enabled, true);
+	ret = airoha_xpon_tx_enable(priv->dev, priv->frontend, true);
+	if (ret)
+		goto err_disable_mac;
+
+	/* Do not enter O2 until the external transmitter interlock is open. */
+	ploam_start(priv->ploam);
 	WRITE_ONCE(priv->phy_link_known, false);
 	mod_delayed_work(priv->fsm_wq, &priv->phy_link_work, 0);
 
@@ -2494,11 +2466,18 @@ static int gpon_enable(struct xpon_priv *priv)
 
 	return 0;
 
+err_disable_mac:
+	gpon_disable(priv);
+	return ret;
 err_stop_phy:
+	airoha_xpon_tx_enable(priv->dev, priv->frontend, false);
 	airoha_xpon_phy_stop(priv->dev, priv->phy,
 			     AIROHA_XPON_MODE_GPON,
 			     &priv->phy_initialized,
 			     &priv->phy_powered);
+	return ret;
+err_disable_frontend:
+	airoha_xpon_tx_enable(priv->dev, priv->frontend, false);
 	return ret;
 }
 
@@ -2508,6 +2487,8 @@ static void gpon_disable(struct xpon_priv *priv)
 	bool phy_active = priv->phy_initialized || priv->phy_powered;
 	bool omci_reset = false;
 	int ret;
+
+	airoha_xpon_tx_enable(priv->dev, priv->frontend, false);
 
 	if (!mac_enabled && !phy_active)
 		goto reset_session;
@@ -3715,23 +3696,18 @@ static int epon_enable(struct xpon_priv *priv)
 	dev_info(priv->dev, "starting EPON MAC\n");
 	ret = airoha_xpon_reset_mac(priv);
 	if (ret)
-		return ret;
+		goto err_disable_frontend;
 
 	ret = airoha_xpon_phy_start(priv->dev, priv->phy,
 				     AIROHA_XPON_MODE_EPON,
 				     &priv->phy_initialized,
 				     &priv->phy_powered);
 	if (ret)
-		return ret;
+		goto err_disable_frontend;
 
 	ret = epon_prepare_hardware(priv);
-	if (ret) {
-		airoha_xpon_phy_stop(priv->dev, priv->phy,
-				      AIROHA_XPON_MODE_EPON,
-				      &priv->phy_initialized,
-				      &priv->phy_powered);
-		return ret;
-	}
+	if (ret)
+		goto err_stop_phy;
 
 	epon_hw_init(priv);
 
@@ -3762,12 +3738,12 @@ static int epon_enable(struct xpon_priv *priv)
 					  AIROHA_XPON_MODE_EPON, true);
 	if (ret) {
 		epon_write(priv, EPON_INT_EN, 0);
-		airoha_xpon_phy_stop(priv->dev, priv->phy,
-				      AIROHA_XPON_MODE_EPON,
-				      &priv->phy_initialized,
-				      &priv->phy_powered);
-		return ret;
+		goto err_stop_phy;
 	}
+
+	ret = airoha_xpon_tx_enable(priv->dev, priv->frontend, true);
+	if (ret)
+		goto err_disable_datapath;
 
 	/* Release EPON TX/RX MBI only after GDM2/CDM2 channels are ready. */
 	epon_write(priv, EPON_GLB_CFG,
@@ -3785,12 +3761,32 @@ static int epon_enable(struct xpon_priv *priv)
 	dev_info(priv->dev,
 		 "EPON MAC started: glb_cfg=%#08x int_enable=%#08x\n",
 		 epon_read(priv, EPON_GLB_CFG), epon_read(priv, EPON_INT_EN));
+
 	return 0;
+
+err_disable_datapath:
+	airoha_xpon_tx_enable(priv->dev, priv->frontend, false);
+	airoha_xpon_set_fe_datapath(priv->dev, priv->gdm_dev,
+				    AIROHA_XPON_MODE_EPON, false);
+	goto err_stop_phy_only;
+err_stop_phy:
+	airoha_xpon_tx_enable(priv->dev, priv->frontend, false);
+err_stop_phy_only:
+	airoha_xpon_phy_stop(priv->dev, priv->phy,
+			     AIROHA_XPON_MODE_EPON,
+			     &priv->phy_initialized,
+			     &priv->phy_powered);
+	return ret;
+err_disable_frontend:
+	airoha_xpon_tx_enable(priv->dev, priv->frontend, false);
+	return ret;
 }
 
 static void epon_disable(struct xpon_priv *priv)
 {
 	int idx, ret;
+
+	airoha_xpon_tx_enable(priv->dev, priv->frontend, false);
 
 	if (!READ_ONCE(priv->mac_enabled))
 		return;
@@ -4396,7 +4392,7 @@ static int airoha_xpon_probe(struct platform_device *pdev)
 	if (ret)
 		goto err_put_gdm;
 
-	priv->frontend = airoha_xpon_get_frontend(dev);
+	priv->frontend = devm_optical_frontend_get_optional(dev, "pon");
 	if (IS_ERR(priv->frontend)) {
 		ret = dev_err_probe(dev, PTR_ERR(priv->frontend),
 				    "failed to get optical frontend\n");
@@ -4503,13 +4499,14 @@ static void airoha_xpon_remove(struct platform_device *pdev)
 	    READ_ONCE(priv->optical_active))
 		sfp_upstream_stop(priv->sfp_bus);
 
-	if (!airoha_xpon_is_gpon(priv) && READ_ONCE(priv->mac_enabled)) {
+	if (!airoha_xpon_is_gpon(priv)) {
 		epon_disable(priv);
 	} else if (airoha_xpon_is_gpon(priv) &&
 		   (READ_ONCE(priv->mac_enabled) || priv->phy_powered)) {
 		/* Defensive fallback for a provider that failed to stop cleanly. */
 		gpon_disable(priv);
 	} else if (airoha_xpon_is_gpon(priv)) {
+		airoha_xpon_tx_enable(priv->dev, priv->frontend, false);
 		cancel_work_sync(&priv->irq_work);
 		cancel_delayed_work_sync(&priv->to1_work);
 		cancel_delayed_work_sync(&priv->to2_work);

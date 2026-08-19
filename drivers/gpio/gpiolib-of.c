@@ -694,7 +694,6 @@ static struct gpio_desc *of_find_trigger_gpio(struct device_node *np,
 	return desc;
 }
 
-
 typedef struct gpio_desc *(*of_find_gpio_quirk)(struct device_node *np,
 						const char *con_id,
 						unsigned int idx,
