@@ -151,6 +151,7 @@ static const struct optical_frontend_thresholds gn25l95_thresholds = {
 static const struct gn25l95_chip_data gn25l95_data = {
 	.frontend = {
 		.name = "gn25l95",
+		.type = "lddla",
 		.vendor_name = "Semtech",
 		.vendor_oui = { 0x00, 0x00, 0x00 },
 		.part_number = "GN25L95",
