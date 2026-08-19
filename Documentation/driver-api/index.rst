@@ -119,6 +119,7 @@ Subsystem-specific APIs
    ntb
    nvdimm/index
    nvmem
+   optical-frontend
    parport-lowlevel
    phy/index
    pin-control

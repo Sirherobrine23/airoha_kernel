@@ -32,7 +32,7 @@
 #include <linux/of_net.h>
 #include <linux/platform_device.h>
 #include <linux/property.h>
-#include <linux/phy/airoha-lddla.h>
+#include <linux/optical_frontend.h>
 #include <linux/phy/phy.h>
 #include <linux/phy/phy-airoha-xpon.h>
 #include <linux/random.h>
@@ -83,14 +83,21 @@ struct airoha_xpon_match_data {
 	bool gpon_reset_on_start;
 };
 
-static struct device *airoha_xpon_find_lddla(struct device *dev)
+static struct optical_frontend *
+airoha_xpon_find_legacy_frontend(struct device *dev)
 {
-	struct device_node *sfp_node, *i2c_node, *lddla_node;
-	struct i2c_client *client;
+	struct device_node *sfp_node, *i2c_node, *frontend_node;
+	struct optical_frontend *frontend;
 
-	if (!IS_REACHABLE(CONFIG_AIROHA_LDDLA_PHY))
-		return NULL;
-
+	/*
+	 * Compatibility with the existing soldered-BOSA topology:
+	 *
+	 *   xpon -> sfp -> i2c-bus = <&frontend/i2c-sfp>
+	 *
+	 * Do not infer a vendor or chip here. A physical SFP normally points to
+	 * a real controller bus rather than a child named i2c-sfp and therefore
+	 * does not enter the optical_frontend lookup.
+	 */
 	sfp_node = of_parse_phandle(dev->of_node, "sfp", 0);
 	if (!sfp_node)
 		return NULL;
@@ -100,40 +107,45 @@ static struct device *airoha_xpon_find_lddla(struct device *dev)
 	if (!i2c_node)
 		return NULL;
 
-	lddla_node = of_get_parent(i2c_node);
+	if (!of_node_name_eq(i2c_node, "i2c-sfp")) {
+		of_node_put(i2c_node);
+		return NULL;
+	}
+
+	frontend_node = of_get_parent(i2c_node);
 	of_node_put(i2c_node);
-	if (!lddla_node)
+	if (!frontend_node)
 		return NULL;
 
-	if (!of_device_is_compatible(lddla_node, "airoha,en7570") &&
-	    !of_device_is_compatible(lddla_node, "airoha,en7571") &&
-	    !of_device_is_compatible(lddla_node, "airoha,en7572") &&
-	    !of_device_is_compatible(lddla_node, "semtech,gn25l95")) {
-		of_node_put(lddla_node);
-		return NULL;
-	}
+	frontend = devm_optical_frontend_get_by_fwnode(
+		dev, of_fwnode_handle(frontend_node));
+	of_node_put(frontend_node);
 
-	client = of_find_i2c_device_by_node(lddla_node);
-	of_node_put(lddla_node);
-	if (!client)
-		return ERR_PTR(-EPROBE_DEFER);
-
-	if (!dev_get_drvdata(&client->dev)) {
-		put_device(&client->dev);
-		return ERR_PTR(-EPROBE_DEFER);
-	}
-
-	return &client->dev;
+	return frontend;
 }
 
-static int airoha_xpon_tx_rearm(struct device *dev, struct device *lddla_dev)
+static struct optical_frontend *airoha_xpon_get_frontend(struct device *dev)
+{
+	struct optical_frontend *frontend;
+
+	frontend = devm_optical_frontend_get_optional(dev, "pon");
+	if (IS_ERR(frontend) || frontend)
+		return frontend;
+
+	return airoha_xpon_find_legacy_frontend(dev);
+}
+
+static int airoha_xpon_tx_rearm(struct device *dev,
+				struct optical_frontend *frontend)
 {
 	int ret;
 
-	if (!lddla_dev)
+	if (!frontend)
 		return 0;
 
-	ret = airoha_lddla_tx_rearm(lddla_dev);
+	ret = optical_frontend_tx_rearm(frontend);
+	if (ret == -EOPNOTSUPP)
+		return 0;
 	if (ret)
 		dev_err(dev, "failed to rearm optical transmitter: %d\n", ret);
 	else
@@ -683,7 +695,7 @@ struct xpon_priv {
 	struct airoha_gpon_omci omci;
 	struct airoha_xpon_oam_handler omci_handler;
 	struct sfp_bus		*sfp_bus;
-	struct device		*lddla_dev;
+	struct optical_frontend	*frontend;
 	int			irq;
 	int			dying_gasp_irq;
 
@@ -754,6 +766,33 @@ struct xpon_priv {
 	u32			bit_delay;
 
 };
+
+static int airoha_xpon_frontend_set_mode(struct xpon_priv *priv)
+{
+	struct optical_frontend_mode mode = {};
+
+	if (!priv->frontend)
+		return 0;
+
+	switch (priv->mode) {
+	case AIROHA_XPON_MODE_GPON:
+		mode.protocol = OPTICAL_FRONTEND_PROTO_GPON;
+		mode.tx_rate = 1244160000ULL;
+		mode.rx_rate = 2488320000ULL;
+		mode.flags = OPTICAL_FRONTEND_MODE_BURST_TX;
+		break;
+	case AIROHA_XPON_MODE_EPON:
+		mode.protocol = OPTICAL_FRONTEND_PROTO_EPON;
+		mode.tx_rate = 1250000000ULL;
+		mode.rx_rate = 1250000000ULL;
+		mode.flags = OPTICAL_FRONTEND_MODE_BURST_TX;
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	return optical_frontend_set_mode(priv->frontend, &mode);
+}
 
 static int airoha_xpon_reset_mac(struct xpon_priv *priv)
 {
@@ -2158,7 +2197,7 @@ int airoha_gpon_omci_hw_set_uni(void *hw_priv, u16 entity_id, bool enable)
 int airoha_gpon_omci_hw_get_telemetry(void *hw_priv,
 				      struct omci_telemetry *telemetry)
 {
-	struct airoha_lddla_telemetry optical = {};
+	struct optical_frontend_telemetry optical = {};
 	struct xpon_priv *priv = hw_priv;
 	bool downstream_fec, upstream_fec;
 	int ret;
@@ -2179,34 +2218,34 @@ int airoha_gpon_omci_hw_get_telemetry(void *hw_priv,
 				    OMCI_TELEMETRY_F_FEC_UPSTREAM;
 	}
 
-	if (!priv->lddla_dev)
+	if (!priv->frontend)
 		return telemetry->valid ? 0 : -ENODATA;
 
-	ret = airoha_lddla_get_telemetry(priv->lddla_dev, &optical);
+	ret = optical_frontend_get_telemetry(priv->frontend, &optical);
 	if (ret)
 		return telemetry->valid ? 0 : ret;
 
-	if (optical.valid & AIROHA_LDDLA_TELEMETRY_F_TEMPERATURE) {
-		telemetry->bosa_temperature_mc = optical.bosa_temperature_mc;
+	if (optical.valid & OPTICAL_FRONTEND_TELEMETRY_F_TEMPERATURE) {
+		telemetry->bosa_temperature_mc = optical.temperature_mc;
 		telemetry->valid |= OMCI_TELEMETRY_F_BOSA_TEMPERATURE;
 	}
-	if (optical.valid & AIROHA_LDDLA_TELEMETRY_F_VOLTAGE) {
+	if (optical.valid & OPTICAL_FRONTEND_TELEMETRY_F_VOLTAGE) {
 		telemetry->bosa_voltage_uv = optical.voltage_uv;
 		telemetry->valid |= OMCI_TELEMETRY_F_BOSA_VOLTAGE;
 	}
-	if (optical.valid & AIROHA_LDDLA_TELEMETRY_F_BIAS) {
+	if (optical.valid & OPTICAL_FRONTEND_TELEMETRY_F_BIAS) {
 		telemetry->bosa_bias_ua = optical.bias_ua;
 		telemetry->valid |= OMCI_TELEMETRY_F_BOSA_BIAS;
 	}
-	if (optical.valid & AIROHA_LDDLA_TELEMETRY_F_TX_POWER) {
+	if (optical.valid & OPTICAL_FRONTEND_TELEMETRY_F_TX_POWER) {
 		telemetry->bosa_tx_power_nw = optical.tx_power_nw;
 		telemetry->valid |= OMCI_TELEMETRY_F_BOSA_TX_POWER;
 	}
-	if (optical.valid & AIROHA_LDDLA_TELEMETRY_F_RX_POWER) {
+	if (optical.valid & OPTICAL_FRONTEND_TELEMETRY_F_RX_POWER) {
 		telemetry->bosa_rx_power_nw = optical.rx_power_nw;
 		telemetry->valid |= OMCI_TELEMETRY_F_BOSA_RX_POWER;
 	}
-	if (optical.valid & AIROHA_LDDLA_TELEMETRY_F_ALARMS) {
+	if (optical.valid & OPTICAL_FRONTEND_TELEMETRY_F_ALARMS) {
 		telemetry->bosa_alarms = optical.alarms;
 		telemetry->valid |= OMCI_TELEMETRY_F_BOSA_ALARMS;
 	}
@@ -2748,7 +2787,7 @@ static void gpon_restart_work_fn(struct work_struct *work)
 			return;
 	}
 
-	ret = airoha_xpon_tx_rearm(priv->dev, priv->lddla_dev);
+	ret = airoha_xpon_tx_rearm(priv->dev, priv->frontend);
 	if (ret) {
 		dev_warn(priv->dev,
 			 "retrying optical transmitter rearm in %u ms\n",
@@ -2779,8 +2818,11 @@ int airoha_gpon_omci_hw_start(void *hw_priv)
 		if (!READ_ONCE(priv->optical_active))
 			sfp_upstream_start(priv->sfp_bus);
 	} else {
-		WRITE_ONCE(priv->optical_active, true);
-		ret = gpon_enable(priv);
+		ret = airoha_xpon_tx_rearm(priv->dev, priv->frontend);
+		if (!ret) {
+			WRITE_ONCE(priv->optical_active, true);
+			ret = gpon_enable(priv);
+		}
 		if (ret)
 			WRITE_ONCE(priv->optical_active, false);
 	}
@@ -3009,7 +3051,7 @@ static int gpon_sfp_module_start(void *upstream)
 
 	/* PHY ready: if we were in emergency stop, stay there. */
 	if (state == GPON_O1_INITIAL) {
-		ret = airoha_xpon_tx_rearm(priv->dev, priv->lddla_dev);
+		ret = airoha_xpon_tx_rearm(priv->dev, priv->frontend);
 		if (ret)
 			goto err_inactive;
 
@@ -3828,7 +3870,7 @@ static int epon_sfp_module_start(void *upstream)
 
 	dev_info(priv->dev, "EPON SFP module start\n");
 
-	ret = airoha_xpon_tx_rearm(priv->dev, priv->lddla_dev);
+	ret = airoha_xpon_tx_rearm(priv->dev, priv->frontend);
 	if (ret)
 		return ret;
 
@@ -3880,16 +3922,28 @@ static const struct sfp_upstream_ops epon_sfp_ops = {
 static int epon_link_start(void *data)
 {
 	struct xpon_priv *priv = data;
+	int ret = 0;
 
 	if (READ_ONCE(priv->started))
 		return 0;
 	WRITE_ONCE(priv->started, true);
 	airoha_xpon_update_netdev_link(priv->gdm_dev,
 				       AIROHA_XPON_MODE_EPON, false);
-	if (priv->sfp_bus && !READ_ONCE(priv->optical_active))
-		sfp_upstream_start(priv->sfp_bus);
+	if (priv->sfp_bus) {
+		if (!READ_ONCE(priv->optical_active))
+			sfp_upstream_start(priv->sfp_bus);
+	} else {
+		ret = airoha_xpon_tx_rearm(priv->dev, priv->frontend);
+		if (!ret)
+			ret = epon_enable(priv);
+		if (!ret)
+			WRITE_ONCE(priv->optical_active, true);
+	}
 
-	return 0;
+	if (ret)
+		WRITE_ONCE(priv->started, false);
+
+	return ret;
 }
 
 static void epon_link_stop(void *data)
@@ -4342,30 +4396,40 @@ static int airoha_xpon_probe(struct platform_device *pdev)
 	if (ret)
 		goto err_put_gdm;
 
-	priv->lddla_dev = airoha_xpon_find_lddla(dev);
-	if (IS_ERR(priv->lddla_dev)) {
-		ret = dev_err_probe(dev, PTR_ERR(priv->lddla_dev),
-				    "failed to find LDDLA device\n");
-		priv->lddla_dev = NULL;
+	priv->frontend = airoha_xpon_get_frontend(dev);
+	if (IS_ERR(priv->frontend)) {
+		ret = dev_err_probe(dev, PTR_ERR(priv->frontend),
+				    "failed to get optical frontend\n");
+		priv->frontend = NULL;
+		goto err_cleanup_mode;
+	}
+
+	ret = airoha_xpon_frontend_set_mode(priv);
+	if (ret) {
+		ret = dev_err_probe(dev, ret,
+				    "failed to configure optical frontend mode\n");
 		goto err_cleanup_mode;
 	}
 
 	priv->sfp_bus = sfp_bus_find_fwnode(dev->fwnode);
-	if (!priv->sfp_bus) {
-		ret = -ENODEV;
-		dev_err(dev, "missing SFP reference\n");
-		goto err_put_lddla;
-	}
 	if (IS_ERR(priv->sfp_bus)) {
 		ret = PTR_ERR(priv->sfp_bus);
 		dev_err(dev, "failed to find SFP bus: %d\n", ret);
-		goto err_put_lddla;
+		priv->sfp_bus = NULL;
+		goto err_cleanup_mode;
+	}
+	if (!priv->sfp_bus && !priv->frontend) {
+		ret = -ENODEV;
+		dev_err(dev, "missing SFP or optical frontend reference\n");
+		goto err_cleanup_mode;
 	}
 
-	sfp_ops = airoha_xpon_get_sfp_ops(priv);
-	ret = sfp_bus_add_upstream(priv->sfp_bus, priv, sfp_ops);
-	if (ret)
-		goto err_put_sfp;
+	if (priv->sfp_bus) {
+		sfp_ops = airoha_xpon_get_sfp_ops(priv);
+		ret = sfp_bus_add_upstream(priv->sfp_bus, priv, sfp_ops);
+		if (ret)
+			goto err_put_sfp;
+	}
 
 	link_ops = airoha_xpon_get_link_ops(priv);
 	ret = airoha_eth_register_xpon(priv->gdm_dev, priv->mode, link_ops,
@@ -4397,12 +4461,11 @@ static int airoha_xpon_probe(struct platform_device *pdev)
 err_unregister_xpon:
 	airoha_eth_unregister_xpon(priv->gdm_dev, link_ops, priv);
 err_del_upstream:
-	sfp_bus_del_upstream(priv->sfp_bus);
+	if (priv->sfp_bus)
+		sfp_bus_del_upstream(priv->sfp_bus);
 err_put_sfp:
-	sfp_bus_put(priv->sfp_bus);
-err_put_lddla:
-	if (priv->lddla_dev)
-		put_device(priv->lddla_dev);
+	if (priv->sfp_bus)
+		sfp_bus_put(priv->sfp_bus);
 err_cleanup_mode:
 	if (airoha_xpon_is_gpon(priv))
 		airoha_xpon_cleanup_gpon(priv);
@@ -4452,10 +4515,10 @@ static void airoha_xpon_remove(struct platform_device *pdev)
 		cancel_delayed_work_sync(&priv->to2_work);
 	}
 
-	sfp_bus_del_upstream(priv->sfp_bus);
-	sfp_bus_put(priv->sfp_bus);
-	if (priv->lddla_dev)
-		put_device(priv->lddla_dev);
+	if (priv->sfp_bus) {
+		sfp_bus_del_upstream(priv->sfp_bus);
+		sfp_bus_put(priv->sfp_bus);
+	}
 	if (airoha_xpon_is_gpon(priv))
 		airoha_xpon_cleanup_gpon(priv);
 	dev_put(priv->gdm_dev);

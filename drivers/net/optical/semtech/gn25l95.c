@@ -6,20 +6,23 @@
  * carries the live DDMI measurements and status at the standard 0x60..0x75
  * locations.  The chip normally responds to the SFF A0/A2 addresses 0x50 and
  * 0x51; in external-MCU mode only the A2 page is exposed.  This driver binds
- * to the A2 address and publishes the device through the existing Airoha
- * LDDLA telemetry/hwmon/virtual-SFP integration so either hardware mode works.
+ * to the A2 address and registers an independent generic optical_frontend
+ * provider so MAC, PHY, OMCI and diagnostic consumers can share the device.
  *
  * Register pointers are one byte wide.  Multi-byte DDMI values are stored
  * MSB-first as required by SFF-8472; this is independent of CPU endianness.
  */
 
 #include <linux/bitops.h>
+#include <linux/debugfs.h>
 #include <linux/delay.h>
 #include <linux/firmware.h>
 #include <linux/i2c.h>
 #include <linux/jiffies.h>
 #include <linux/mod_devicetable.h>
 #include <linux/module.h>
+#include <linux/mutex.h>
+#include <linux/optical_frontend.h>
 #include <linux/property.h>
 #include <linux/regmap.h>
 #include <linux/seq_file.h>
@@ -27,7 +30,6 @@
 #include <linux/unaligned.h>
 #include <linux/workqueue.h>
 
-#include "airoha_lddla.h"
 
 #define GN25L95_I2C_A0_ADDR		0x50
 #define GN25L95_I2C_A2_ADDR		0x51
@@ -94,12 +96,28 @@
 #define GN25L95_READY_POLL_MS		20
 #define GN25L95_SOFT_TX_DELAY_MS	110
 
+struct gn25l95_chip_data {
+	struct optical_frontend_desc frontend;
+	u8 default_i2c_addr;
+	const char *default_fw_name;
+};
+
 struct gn25l95_priv {
-	/* Must remain first: airoha_lddla_get_telemetry() consumes drvdata. */
-	struct airoha_lddla lddla;
+	struct device *dev;
+	struct i2c_client *client;
+	const struct gn25l95_chip_data *data;
+	struct optical_frontend *frontend;
 	struct regmap *regmap;
+	struct mutex lock; /* serializes register access and calibration */
 	struct delayed_work tick_work;
+	struct dentry *debugfs;
 	const char *fw_name;
+	u32 alarm;
+	u16 ddmi_temperature;
+	u16 ddmi_voltage;
+	u16 ddmi_current;
+	u16 ddmi_tx_power;
+	u16 ddmi_rx_power;
 	bool native_a0;
 	bool eeprom_present;
 	bool calibrated;
@@ -110,6 +128,53 @@ static const struct regmap_config gn25l95_regmap_config = {
 	.val_bits = 8,
 	.max_register = 0xff,
 	.cache_type = REGCACHE_NONE,
+};
+
+static const struct optical_frontend_thresholds gn25l95_thresholds = {
+	.valid = OPTICAL_FRONTEND_THRESHOLD_F_TEMPERATURE |
+		 OPTICAL_FRONTEND_THRESHOLD_F_VOLTAGE |
+		 OPTICAL_FRONTEND_THRESHOLD_F_BIAS |
+		 OPTICAL_FRONTEND_THRESHOLD_F_TX_POWER |
+		 OPTICAL_FRONTEND_THRESHOLD_F_RX_POWER,
+	.temperature_low_mc = -5000,
+	.temperature_high_mc = 85000,
+	.voltage_low_uv = 2900000,
+	.voltage_high_uv = 3700000,
+	.bias_low_ua = 1000,
+	.bias_high_ua = 100000,
+	.tx_power_low_nw = 1000000,
+	.tx_power_high_nw = 3548100,
+	.rx_power_low_nw = 1000,
+	.rx_power_high_nw = 251100,
+};
+
+static const struct gn25l95_chip_data gn25l95_data = {
+	.frontend = {
+		.name = "gn25l95",
+		.vendor_name = "Semtech",
+		.vendor_oui = { 0x00, 0x00, 0x00 },
+		.part_number = "GN25L95",
+		.serial = "UNKNOWN",
+		.date_code = "000000",
+		.capabilities = OPTICAL_FRONTEND_CAP_TEMPERATURE |
+				OPTICAL_FRONTEND_CAP_VOLTAGE |
+				OPTICAL_FRONTEND_CAP_BIAS |
+				OPTICAL_FRONTEND_CAP_TX_POWER |
+				OPTICAL_FRONTEND_CAP_RX_POWER |
+				OPTICAL_FRONTEND_CAP_ALARMS |
+				OPTICAL_FRONTEND_CAP_TX_REARM |
+				OPTICAL_FRONTEND_CAP_TX_DISABLE |
+				OPTICAL_FRONTEND_CAP_TX_FAULT |
+				OPTICAL_FRONTEND_CAP_RX_LOS |
+				OPTICAL_FRONTEND_CAP_BURST_TX |
+				OPTICAL_FRONTEND_CAP_APD,
+		.protocols = BIT(OPTICAL_FRONTEND_PROTO_EPON) |
+			     BIT(OPTICAL_FRONTEND_PROTO_GPON),
+		.thresholds = &gn25l95_thresholds,
+		.telemetry_cache_ms = 100,
+	},
+	.default_i2c_addr = GN25L95_I2C_A2_ADDR,
+	.default_fw_name = GN25L95_DEFAULT_FW_NAME,
 };
 
 static int gn25l95_vendor_write_byte(struct gn25l95_priv *priv, u8 reg,
@@ -229,7 +294,7 @@ static int gn25l95_read_eeprom_status(struct gn25l95_priv *priv, u8 *status)
 static int gn25l95_program_hwconfig(struct gn25l95_priv *priv,
 				    const u8 *data, size_t size)
 {
-	struct device *dev = priv->lddla.dev;
+	struct device *dev = priv->dev;
 	int ret;
 
 	if (size != GN25L95_HWCONFIG_SIZE)
@@ -346,7 +411,7 @@ static int gn25l95_program_hwconfig(struct gn25l95_priv *priv,
 
 static int gn25l95_verify_hwconfig(struct gn25l95_priv *priv, const u8 *data)
 {
-	struct device *dev = priv->lddla.dev;
+	struct device *dev = priv->dev;
 	u8 lut_first, lut_last, safe_mode;
 	u8 apd[3];
 	int ret;
@@ -419,7 +484,7 @@ static int gn25l95_verify_hwconfig(struct gn25l95_priv *priv, const u8 *data)
 		return -EIO;
 	}
 
-	dev_info(priv->lddla.dev,
+	dev_info(priv->dev,
 		 "calibration verified: RX_LOS=0x%02x APD_CTRL=0x%02x APD=0x%02x APD_LUT=0x%02x..0x%02x\n",
 		 apd[0], apd[1], apd[2], lut_first, lut_last);
 	return 0;
@@ -430,13 +495,13 @@ static int gn25l95_load_hwconfig(struct gn25l95_priv *priv)
 	const struct firmware *fw;
 	int ret;
 
-	ret = request_firmware(&fw, priv->fw_name, priv->lddla.dev);
+	ret = request_firmware(&fw, priv->fw_name, priv->dev);
 	if (ret)
-		return dev_err_probe(priv->lddla.dev, ret,
+		return dev_err_probe(priv->dev, ret,
 				     "calibration '%s' not found\n", priv->fw_name);
 
 	if (fw->size != GN25L95_HWCONFIG_SIZE) {
-		dev_err(priv->lddla.dev,
+		dev_err(priv->dev,
 			"calibration '%s' has invalid size %zu (expected %u)\n",
 			priv->fw_name, fw->size, GN25L95_HWCONFIG_SIZE);
 		ret = -EINVAL;
@@ -457,7 +522,7 @@ out_release:
 static int gn25l95_read_a0(struct gn25l95_priv *priv, u8 reg, u8 *buf,
 			   size_t len)
 {
-	struct i2c_adapter *adap = priv->lddla.client->adapter;
+	struct i2c_adapter *adap = priv->client->adapter;
 	struct i2c_msg msgs[2] = {
 		{
 			.addr = GN25L95_I2C_A0_ADDR,
@@ -479,38 +544,38 @@ static int gn25l95_read_a0(struct gn25l95_priv *priv, u8 reg, u8 *buf,
 	return ret == ARRAY_SIZE(msgs) ? 0 : -EIO;
 }
 
-static void gn25l95_decode_alarms(struct airoha_lddla *lddla, u8 alarm1,
+static void gn25l95_decode_alarms(struct gn25l95_priv *priv, u8 alarm1,
 				  u8 alarm2)
 {
 	u32 alarm = 0;
 
 	if (alarm1 & GN25L95_ALARM_TEMP_HIGH)
-		alarm |= AIROHA_ALARM_HIGH_TEMP;
+		alarm |= OPTICAL_FRONTEND_ALARM_HIGH_TEMP;
 	if (alarm1 & GN25L95_ALARM_TEMP_LOW)
-		alarm |= AIROHA_ALARM_LOW_TEMP;
+		alarm |= OPTICAL_FRONTEND_ALARM_LOW_TEMP;
 	if (alarm1 & GN25L95_ALARM_VCC_HIGH)
-		alarm |= AIROHA_ALARM_HIGH_VOLT;
+		alarm |= OPTICAL_FRONTEND_ALARM_HIGH_VOLTAGE;
 	if (alarm1 & GN25L95_ALARM_VCC_LOW)
-		alarm |= AIROHA_ALARM_LOW_VOLT;
+		alarm |= OPTICAL_FRONTEND_ALARM_LOW_VOLTAGE;
 	if (alarm1 & GN25L95_ALARM_TX_BIAS_HIGH)
-		alarm |= AIROHA_ALARM_TX_HIGH_BIAS;
+		alarm |= OPTICAL_FRONTEND_ALARM_TX_HIGH_BIAS;
 	if (alarm1 & GN25L95_ALARM_TX_BIAS_LOW)
-		alarm |= AIROHA_ALARM_TX_LOW_BIAS;
+		alarm |= OPTICAL_FRONTEND_ALARM_TX_LOW_BIAS;
 	if (alarm1 & GN25L95_ALARM_TX_POWER_HIGH)
-		alarm |= AIROHA_ALARM_TX_HIGH_POWER;
+		alarm |= OPTICAL_FRONTEND_ALARM_TX_HIGH_POWER;
 	if (alarm1 & GN25L95_ALARM_TX_POWER_LOW)
-		alarm |= AIROHA_ALARM_TX_LOW_POWER;
+		alarm |= OPTICAL_FRONTEND_ALARM_TX_LOW_POWER;
 	if (alarm2 & GN25L95_ALARM_RX_POWER_HIGH)
-		alarm |= AIROHA_ALARM_RX_HIGH_POWER;
+		alarm |= OPTICAL_FRONTEND_ALARM_RX_HIGH_POWER;
 	if (alarm2 & GN25L95_ALARM_RX_POWER_LOW)
-		alarm |= AIROHA_ALARM_RX_LOW_POWER;
+		alarm |= OPTICAL_FRONTEND_ALARM_RX_LOW_POWER;
 
-	lddla->alarm = alarm;
+	priv->alarm = alarm;
 }
 
+/* Caller holds priv->lock. */
 static int gn25l95_refresh_all(struct gn25l95_priv *priv)
 {
-	struct airoha_lddla *lddla = &priv->lddla;
 	unsigned int status;
 	u8 ddmi[10], alarms[2];
 	int ret;
@@ -526,75 +591,82 @@ static int gn25l95_refresh_all(struct gn25l95_priv *priv)
 	if (ret)
 		return ret;
 
-	lddla->ddmi_temperature = get_unaligned_be16(&ddmi[0]);
-	lddla->ddmi_voltage = get_unaligned_be16(&ddmi[2]);
-	lddla->ddmi_current = get_unaligned_be16(&ddmi[4]);
-	lddla->ddmi_tx_power = get_unaligned_be16(&ddmi[6]);
-	lddla->ddmi_rx_power = get_unaligned_be16(&ddmi[8]);
+	priv->ddmi_temperature = get_unaligned_be16(&ddmi[0]);
+	priv->ddmi_voltage = get_unaligned_be16(&ddmi[2]);
+	priv->ddmi_current = get_unaligned_be16(&ddmi[4]);
+	priv->ddmi_tx_power = get_unaligned_be16(&ddmi[6]);
+	priv->ddmi_rx_power = get_unaligned_be16(&ddmi[8]);
 
 	ret = regmap_bulk_read(priv->regmap, GN25L95_ALARM_FLAGS_1,
 			       alarms, sizeof(alarms));
 	if (!ret)
-		gn25l95_decode_alarms(lddla, alarms[0], alarms[1]);
+		gn25l95_decode_alarms(priv, alarms[0], alarms[1]);
 
 	return 0;
 }
 
-static s32 gn25l95_op_temp(struct airoha_lddla *lddla)
+static int
+gn25l95_frontend_get_telemetry(
+	struct optical_frontend *frontend,
+	struct optical_frontend_telemetry *telemetry)
 {
-	struct gn25l95_priv *priv = container_of(lddla, struct gn25l95_priv,
-						 lddla);
+	struct gn25l95_priv *priv = optical_frontend_get_drvdata(frontend);
+	int ret;
 
-	gn25l95_refresh_all(priv);
-	return (s16)lddla->ddmi_temperature * 1000 / 256;
+	mutex_lock(&priv->lock);
+	ret = gn25l95_refresh_all(priv);
+	if (!ret) {
+		telemetry->temperature_mc =
+			(s16)priv->ddmi_temperature * 1000 / 256;
+		telemetry->voltage_uv = priv->ddmi_voltage * 100U;
+		telemetry->bias_ua = priv->ddmi_current * 2U;
+		telemetry->tx_power_nw = priv->ddmi_tx_power * 100U;
+		telemetry->rx_power_nw = priv->ddmi_rx_power * 100U;
+		telemetry->alarms = priv->alarm;
+		telemetry->valid = OPTICAL_FRONTEND_TELEMETRY_F_TEMPERATURE |
+				   OPTICAL_FRONTEND_TELEMETRY_F_VOLTAGE |
+				   OPTICAL_FRONTEND_TELEMETRY_F_BIAS |
+				   OPTICAL_FRONTEND_TELEMETRY_F_TX_POWER |
+				   OPTICAL_FRONTEND_TELEMETRY_F_RX_POWER |
+				   OPTICAL_FRONTEND_TELEMETRY_F_ALARMS;
+	}
+	mutex_unlock(&priv->lock);
+
+	return ret;
 }
 
-static s32 gn25l95_op_bosa_temp(struct airoha_lddla *lddla)
+static int
+gn25l95_frontend_get_state(struct optical_frontend *frontend,
+			     struct optical_frontend_state *state)
 {
-	/* GN25L95 has one internal temperature sensor, not a separate BOSA one. */
-	return gn25l95_op_temp(lddla);
+	struct gn25l95_priv *priv = optical_frontend_get_drvdata(frontend);
+	unsigned int status;
+	int ret;
+
+	mutex_lock(&priv->lock);
+	ret = regmap_read(priv->regmap, GN25L95_STATUS_CTRL, &status);
+	mutex_unlock(&priv->lock);
+	if (ret)
+		return ret;
+
+	state->present = true;
+	state->ready = !(status & GN25L95_STATUS_DATA_READY_BAR);
+	state->rx_los = !!(status & GN25L95_STATUS_RX_LOS);
+	state->tx_fault = !!(status & GN25L95_STATUS_TX_FAULT);
+	state->tx_enabled = !(status & (GN25L95_STATUS_TX_DISABLE |
+				       GN25L95_STATUS_SOFT_TX_DISABLE));
+	state->valid = OPTICAL_FRONTEND_STATE_F_PRESENT |
+		       OPTICAL_FRONTEND_STATE_F_READY |
+		       OPTICAL_FRONTEND_STATE_F_RX_LOS |
+		       OPTICAL_FRONTEND_STATE_F_TX_FAULT |
+		       OPTICAL_FRONTEND_STATE_F_TX_ENABLED;
+
+	return 0;
 }
 
-static u16 gn25l95_op_vcc(struct airoha_lddla *lddla)
+/* Caller holds priv->lock. */
+static int gn25l95_tx_rearm_locked(struct gn25l95_priv *priv)
 {
-	struct gn25l95_priv *priv = container_of(lddla, struct gn25l95_priv,
-						 lddla);
-
-	gn25l95_refresh_all(priv);
-	return lddla->ddmi_voltage;
-}
-
-static u16 gn25l95_op_bias(struct airoha_lddla *lddla)
-{
-	struct gn25l95_priv *priv = container_of(lddla, struct gn25l95_priv,
-						 lddla);
-
-	gn25l95_refresh_all(priv);
-	return lddla->ddmi_current;
-}
-
-static u16 gn25l95_op_tx_power(struct airoha_lddla *lddla)
-{
-	struct gn25l95_priv *priv = container_of(lddla, struct gn25l95_priv,
-						 lddla);
-
-	gn25l95_refresh_all(priv);
-	return lddla->ddmi_tx_power;
-}
-
-static u16 gn25l95_op_rx_power(struct airoha_lddla *lddla)
-{
-	struct gn25l95_priv *priv = container_of(lddla, struct gn25l95_priv,
-						 lddla);
-
-	gn25l95_refresh_all(priv);
-	return lddla->ddmi_rx_power;
-}
-
-static int gn25l95_op_tx_rearm(struct airoha_lddla *lddla)
-{
-	struct gn25l95_priv *priv = container_of(lddla, struct gn25l95_priv,
-						 lddla);
 	unsigned int status;
 	int ret;
 
@@ -603,22 +675,16 @@ static int gn25l95_op_tx_rearm(struct airoha_lddla *lddla)
 		return ret;
 
 	if (status & GN25L95_STATUS_DATA_READY_BAR) {
-		dev_warn_ratelimited(lddla->dev,
+		dev_warn_ratelimited(priv->dev,
 				     "optical frontend is not configured/DDMI-ready\n");
 		return -EAGAIN;
 	}
 
-	/*
-	 * External-MCU mode powers up with SOFT_TX_DISABLE asserted.  Clearing it
-	 * is sufficient for the normal start path.  If a fault is already latched,
-	 * pulse the software disable first; the data sheet specifies up to 100 ms
-	 * for a software disable transition, hence the conservative delay.
-	 */
 	if ((status & GN25L95_STATUS_TX_FAULT) &&
 	    !(status & GN25L95_STATUS_SOFT_TX_DISABLE)) {
 		ret = regmap_update_bits(priv->regmap, GN25L95_STATUS_CTRL,
-					 GN25L95_STATUS_SOFT_TX_DISABLE,
-					 GN25L95_STATUS_SOFT_TX_DISABLE);
+				 GN25L95_STATUS_SOFT_TX_DISABLE,
+				 GN25L95_STATUS_SOFT_TX_DISABLE);
 		if (ret)
 			return ret;
 		msleep(GN25L95_SOFT_TX_DELAY_MS);
@@ -633,14 +699,31 @@ static int gn25l95_op_tx_rearm(struct airoha_lddla *lddla)
 	return 0;
 }
 
-static void gn25l95_op_diag_show(struct airoha_lddla *lddla,
-				 struct seq_file *s)
+static int gn25l95_frontend_tx_rearm(struct optical_frontend *frontend)
 {
-	struct gn25l95_priv *priv = container_of(lddla, struct gn25l95_priv,
-						 lddla);
+	struct gn25l95_priv *priv = optical_frontend_get_drvdata(frontend);
+	int ret;
+
+	mutex_lock(&priv->lock);
+	ret = gn25l95_tx_rearm_locked(priv);
+	mutex_unlock(&priv->lock);
+
+	return ret;
+}
+
+static const struct optical_frontend_ops gn25l95_frontend_ops = {
+	.get_telemetry = gn25l95_frontend_get_telemetry,
+	.get_state = gn25l95_frontend_get_state,
+	.tx_rearm = gn25l95_frontend_tx_rearm,
+};
+
+static int gn25l95_diag_show(struct seq_file *s, void *unused)
+{
+	struct gn25l95_priv *priv = s->private;
 	unsigned int status = 0;
 	u8 a0_id = 0;
 
+	mutex_lock(&priv->lock);
 	regmap_read(priv->regmap, GN25L95_STATUS_CTRL, &status);
 	if (priv->native_a0)
 		gn25l95_read_a0(priv, 0, &a0_id, 1);
@@ -665,24 +748,45 @@ static void gn25l95_op_diag_show(struct airoha_lddla *lddla,
 		   !!(status & GN25L95_STATUS_ROGUE_ONU));
 	seq_printf(s, "data_ready:  %u\n",
 		   !(status & GN25L95_STATUS_DATA_READY_BAR));
+	mutex_unlock(&priv->lock);
+
+	return 0;
+}
+DEFINE_SHOW_ATTRIBUTE(gn25l95_diag);
+
+static ssize_t gn25l95_tx_rearm_write(struct file *file,
+				      const char __user *buf, size_t count,
+				      loff_t *ppos)
+{
+	struct gn25l95_priv *priv = file->private_data;
+	bool rearm;
+	int ret;
+
+	ret = kstrtobool_from_user(buf, count, &rearm);
+	if (ret)
+		return ret;
+	if (!rearm)
+		return -EINVAL;
+
+	ret = optical_frontend_tx_rearm(priv->frontend);
+	return ret ? ret : count;
 }
 
-static const struct airoha_lddla_ops gn25l95_ops = {
-	.name = "gn25l95",
-	.vendor_name = "Semtech",
-	.vendor_oui = { 0x00, 0x00, 0x00 },
-	.part_number = "GN25L95",
-	.serial = "UNKNOWN",
-	.date_code = "000000",
-	.temp_refresh = gn25l95_op_temp,
-	.bosa_temp_refresh = gn25l95_op_bosa_temp,
-	.vcc_refresh = gn25l95_op_vcc,
-	.bias_refresh = gn25l95_op_bias,
-	.tx_power_refresh = gn25l95_op_tx_power,
-	.rx_power_refresh = gn25l95_op_rx_power,
-	.diag_show = gn25l95_op_diag_show,
-	.tx_rearm = gn25l95_op_tx_rearm,
+static const struct file_operations gn25l95_tx_rearm_fops = {
+	.owner = THIS_MODULE,
+	.open = simple_open,
+	.write = gn25l95_tx_rearm_write,
+	.llseek = noop_llseek,
 };
+
+static void gn25l95_debugfs_init(struct gn25l95_priv *priv)
+{
+	priv->debugfs = debugfs_create_dir(dev_name(priv->dev), NULL);
+	debugfs_create_file("diag", 0444, priv->debugfs, priv,
+			    &gn25l95_diag_fops);
+	debugfs_create_file("tx_rearm", 0200, priv->debugfs, priv,
+			    &gn25l95_tx_rearm_fops);
+}
 
 static int
 gn25l95_wait_accessible(struct gn25l95_priv *priv, unsigned int *status)
@@ -707,9 +811,12 @@ static void gn25l95_tick_work(struct work_struct *work)
 	struct gn25l95_priv *priv =
 		container_of(to_delayed_work(work), struct gn25l95_priv, tick_work);
 
-	if (!lddla_lock(&priv->lddla)) {
-		gn25l95_refresh_all(priv);
-		mutex_unlock(&priv->lddla.lock);
+	mutex_lock(&priv->lock);
+	if (!gn25l95_refresh_all(priv)) {
+		mutex_unlock(&priv->lock);
+		optical_frontend_invalidate_telemetry(priv->frontend);
+	} else {
+		mutex_unlock(&priv->lock);
 	}
 
 	schedule_delayed_work(&priv->tick_work, HZ);
@@ -730,16 +837,16 @@ static int gn25l95_probe(struct i2c_client *client)
 	if (!priv)
 		return -ENOMEM;
 
-	priv->lddla.client = client;
-	priv->lddla.dev = dev;
-	priv->lddla.ops = &gn25l95_ops;
-	priv->lddla.pon_mode = AIROHA_PON_GPON;
-	mutex_init(&priv->lddla.lock);
-	memset(priv->lddla.flash, 0xff, sizeof(priv->lddla.flash));
+	priv->client = client;
+	priv->dev = dev;
+	priv->data = device_get_match_data(dev);
+	if (!priv->data)
+		priv->data = &gn25l95_data;
+	mutex_init(&priv->lock);
 	INIT_DELAYED_WORK(&priv->tick_work, gn25l95_tick_work);
 	i2c_set_clientdata(client, priv);
 
-	if (client->addr != GN25L95_I2C_A2_ADDR)
+	if (client->addr != priv->data->default_i2c_addr)
 		dev_info(dev, "using non-default A2 address 0x%02x\n",
 			 client->addr);
 
@@ -755,7 +862,7 @@ static int gn25l95_probe(struct i2c_client *client)
 
 	ret = device_property_read_string(dev, "firmware-name", &priv->fw_name);
 	if (ret)
-		priv->fw_name = GN25L95_DEFAULT_FW_NAME;
+		priv->fw_name = priv->data->default_fw_name;
 
 	ret = gn25l95_soft_reset(priv);
 	if (ret)
@@ -802,24 +909,29 @@ static int gn25l95_probe(struct i2c_client *client)
 		dev_warn(dev,
 			 "DDMI data is not ready; keeping transmitter disabled until configured\n");
 	} else {
+		mutex_lock(&priv->lock);
 		ret = gn25l95_refresh_all(priv);
+		mutex_unlock(&priv->lock);
 		if (ret)
 			return dev_err_probe(dev, ret, "failed to read DDMI data\n");
 	}
 
-	ret = lddla_hwmon_register(&priv->lddla);
+	priv->frontend = devm_optical_frontend_register(
+		dev, &priv->data->frontend, &gn25l95_frontend_ops, priv);
+	if (IS_ERR(priv->frontend))
+		return dev_err_probe(dev, PTR_ERR(priv->frontend),
+				     "failed to register optical frontend\n");
+
+	ret = devm_optical_frontend_hwmon_register(priv->frontend);
 	if (ret)
 		return dev_err_probe(dev, ret, "failed to register hwmon\n");
 
-	lddla_debugfs_init(&priv->lddla);
-
-	ret = lddla_sfp_init(&priv->lddla);
-	if (ret) {
-		lddla_debugfs_remove(&priv->lddla);
+	ret = devm_optical_frontend_sfp_register(priv->frontend);
+	if (ret)
 		return dev_err_probe(dev, ret,
 				     "failed to register virtual SFP bus\n");
-	}
 
+	gn25l95_debugfs_init(priv);
 	schedule_delayed_work(&priv->tick_work, HZ);
 
 	dev_info(dev,
@@ -833,23 +945,22 @@ static void gn25l95_remove(struct i2c_client *client)
 	struct gn25l95_priv *priv = i2c_get_clientdata(client);
 
 	cancel_delayed_work_sync(&priv->tick_work);
-	lddla_sfp_remove(&priv->lddla);
-	lddla_debugfs_remove(&priv->lddla);
+	debugfs_remove_recursive(priv->debugfs);
 }
 
 static const struct of_device_id gn25l95_of_match[] = {
-	{ .compatible = "semtech,gn25l95" },
+	{ .compatible = "semtech,gn25l95", .data = &gn25l95_data },
 	{ }
 };
 MODULE_DEVICE_TABLE(of, gn25l95_of_match);
 
 static const struct i2c_device_id gn25l95_i2c_ids[] = {
-	{ "gn25l95" },
+	{ "gn25l95", (kernel_ulong_t)&gn25l95_data },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, gn25l95_i2c_ids);
 
-struct i2c_driver gn25l95_i2c_driver = {
+static struct i2c_driver gn25l95_i2c_driver = {
 	.driver = {
 		.name = "gn25l95",
 		.of_match_table = gn25l95_of_match,
@@ -858,6 +969,7 @@ struct i2c_driver gn25l95_i2c_driver = {
 	.remove = gn25l95_remove,
 	.id_table = gn25l95_i2c_ids,
 };
+module_i2c_driver(gn25l95_i2c_driver);
 
 MODULE_FIRMWARE(GN25L95_DEFAULT_FW_NAME);
 MODULE_DESCRIPTION("Semtech GN25L95 xPON optical frontend driver");

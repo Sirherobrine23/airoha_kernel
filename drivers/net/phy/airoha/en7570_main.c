@@ -364,6 +364,9 @@ static const struct airoha_lddla_ops en7570_ops = {
 	.part_number = "EN7570-LDDLA",
 	.serial = "EN7570SN00000001",
 	.date_code = "260608",
+	.protocols = BIT(OPTICAL_FRONTEND_PROTO_EPON) |
+		     BIT(OPTICAL_FRONTEND_PROTO_GPON),
+	.thresholds = &airoha_lddla_default_thresholds,
 	.temp_refresh = en7570_op_temp,
 	.bosa_temp_refresh = en7570_op_bosa_temp,
 	.vcc_refresh = en7570_op_vcc,
@@ -526,17 +529,13 @@ static int en7570_probe(struct i2c_client *client)
 	if (ret)
 		return dev_err_probe(dev, ret, "device init failed\n");
 
-	ret = lddla_hwmon_register(&priv->lddla);
+	ret = lddla_frontend_register(&priv->lddla);
 	if (ret)
 		return ret;
 
 	lddla_debugfs_init(&priv->lddla);
 	debugfs_create_file("lut", 0444, priv->lddla.debugfs, priv, &en7570_lut_fops);
 
-	/* Expose the diagnostics as a virtual SFP module (non-fatal). */
-	ret = lddla_sfp_init(&priv->lddla);
-	if (ret)
-		dev_warn(dev, "virtual SFP bus unavailable (%d)\n", ret);
 
 	schedule_delayed_work(&priv->tick_work, HZ);
 	return 0;
@@ -547,7 +546,6 @@ static void en7570_remove(struct i2c_client *client)
 	struct en7570_priv *priv = i2c_get_clientdata(client);
 
 	cancel_delayed_work_sync(&priv->tick_work);
-	lddla_sfp_remove(&priv->lddla);
 	lddla_debugfs_remove(&priv->lddla);
 	mutex_destroy(&priv->lddla.lock);
 }

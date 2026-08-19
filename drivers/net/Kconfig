@@ -26,6 +26,8 @@ menuconfig NETDEVICES
 # that for each of the symbols.
 if NETDEVICES
 
+source "drivers/net/optical/Kconfig"
+
 config MII
 	tristate
 
