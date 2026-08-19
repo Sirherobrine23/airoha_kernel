@@ -108,7 +108,7 @@ s32 en7572_power_dbm_x100(u16 word_0p1uw)
 }
 
 /* ------------------------------------------------------------------ */
-/* SFF-8472 refreshers (cache the MSA words for hwmon / virtual SFP)   */
+/* SFF-8472 refreshers (cache the MSA words for hwmon / optical frontend)   */
 /* ------------------------------------------------------------------ */
 
 /* Refresh the temperature word; return the IC temperature in m degC. */

@@ -46,7 +46,6 @@ obj-$(CONFIG_ADIN_PHY)		+= adin.o
 obj-$(CONFIG_ADIN1100_PHY)	+= adin1100.o
 obj-$(CONFIG_AIROHA_EN8801S_PHY)	+= air_en8801s.o
 obj-$(CONFIG_AIR_EN8811H_PHY)   += air_en8811h.o
-obj-$(CONFIG_AIROHA_LDDLA_PHY)	+= airoha/
 obj-$(CONFIG_AMD_PHY)		+= amd.o
 obj-$(CONFIG_AMCC_QT2025_PHY)	+= qt2025.o
 obj-$(CONFIG_AQUANTIA_PHY)	+= aquantia/

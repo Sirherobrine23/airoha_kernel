@@ -73,14 +73,19 @@ Operating mode
 bit rates and burst/continuous operation.  Consumers call
 ``optical_frontend_set_mode()``; a provider may implement ``->set_mode()`` when
 hardware programming is required.  Even when no callback is required the core
-retains the selected mode for shared consumers and compatibility interfaces.
+retains the selected mode for shared consumers.
 
-SFF-8472 compatibility
-======================
+Transmitter control
+===================
 
-``CONFIG_OPTICAL_FRONTEND_SFP_COMPAT`` optionally creates a virtual I2C adapter
-for a provider DT child named ``i2c-sfp``.  It exports generated A0 identity and
-A2 DDMI pages for existing SFP tooling.  This is a compatibility interface;
-fixed BOSA hardware should be connected to its MAC through
-``optical-frontends`` rather than by pretending that the soldered frontend is
-a pluggable SFP module.
+Providers may describe a board-level transmitter interlock with the standard
+``tx-disable-gpios`` property.  The core requests it using the ``tx-disable``
+GPIO consumer ID and ``GPIOD_OUT_HIGH`` during provider registration, so the optical
+transmitter remains disabled until its operational consumer explicitly calls
+``optical_frontend_tx_enable()``.
+
+Transmitter transitions are ordered fail-safe.  Disable asserts the GPIO
+before invoking the optional provider ``->tx_enable(false)`` callback.  Enable
+invokes ``->tx_enable(true)`` first and deasserts the GPIO only after that
+callback succeeds.  A provider which needs no additional register sequence
+may omit the callback and rely entirely on the GPIO.

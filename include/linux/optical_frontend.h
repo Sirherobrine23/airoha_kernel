@@ -178,6 +178,7 @@ struct optical_frontend_desc {
 /**
  * struct optical_frontend_ops - provider operations
  * @set_mode: configure protocol/rates; optional
+ * @tx_enable: prepare/enable or disable the optical transmitter; optional
  * @tx_rearm: rearm a transmitter safety/fault latch; optional
  * @get_state: retrieve normalized frontend state; optional
  * @get_telemetry: retrieve normalized live measurements; optional
@@ -188,6 +189,7 @@ struct optical_frontend_desc {
 struct optical_frontend_ops {
 	int (*set_mode)(struct optical_frontend *frontend,
 			const struct optical_frontend_mode *mode);
+	int (*tx_enable)(struct optical_frontend *frontend, bool enable);
 	int (*tx_rearm)(struct optical_frontend *frontend);
 	int (*get_state)(struct optical_frontend *frontend,
 			 struct optical_frontend_state *state);
@@ -217,6 +219,7 @@ int optical_frontend_set_mode(struct optical_frontend *frontend,
 			      const struct optical_frontend_mode *mode);
 int optical_frontend_get_mode(struct optical_frontend *frontend,
 			      struct optical_frontend_mode *mode);
+int optical_frontend_tx_enable(struct optical_frontend *frontend, bool enable);
 int optical_frontend_tx_rearm(struct optical_frontend *frontend);
 int optical_frontend_get_state(struct optical_frontend *frontend,
 			       struct optical_frontend_state *state);
@@ -277,6 +280,12 @@ optical_frontend_get_mode(struct optical_frontend *frontend,
 	return -EOPNOTSUPP;
 }
 
+static inline int
+optical_frontend_tx_enable(struct optical_frontend *frontend, bool enable)
+{
+	return -EOPNOTSUPP;
+}
+
 static inline int optical_frontend_tx_rearm(struct optical_frontend *frontend)
 {
 	return -EOPNOTSUPP;
@@ -308,16 +317,6 @@ int devm_optical_frontend_hwmon_register(struct optical_frontend *frontend);
 #else
 static inline int
 devm_optical_frontend_hwmon_register(struct optical_frontend *frontend)
-{
-	return 0;
-}
-#endif
-
-#if IS_REACHABLE(CONFIG_OPTICAL_FRONTEND_SFP_COMPAT)
-int devm_optical_frontend_sfp_register(struct optical_frontend *frontend);
-#else
-static inline int
-devm_optical_frontend_sfp_register(struct optical_frontend *frontend)
 {
 	return 0;
 }

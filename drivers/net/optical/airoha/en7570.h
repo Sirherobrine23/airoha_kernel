@@ -35,6 +35,8 @@
 #define EN7570_DDMI_ON			1
 #define EN7570_DDMI_FAST		2
 
+#define EN7570_DEFAULT_FW	"airoha/en7570_bob.bin"
+
 /*
  * Per-device state for one EN7570 LDDLA controller.  The shared airoha_lddla
  * object (transport / flash / hwmon / SFP) must be the first member.

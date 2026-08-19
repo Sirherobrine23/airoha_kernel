@@ -40,6 +40,28 @@ struct airoha_lddla;
 /* Calibration NVM: 100 little-endian 32-bit words; 0xffffffff == erased. */
 #define AIROHA_LDDLA_FLASH_WORDS	100
 #define AIROHA_LDDLA_FLASH_ERASED	0xffffffff
+#define AIROHA_LDDLA_BOB_MAGIC_OFFSET		0x094
+#define AIROHA_LDDLA_BOB_MAX_SIZE		512
+
+/*
+ * Every known Airoha LDD/LA BOB magic has the form 0xPP0507CC:
+ *
+ *   PP - PON/profile selector (for example 0x07 GPON, 0xe7 EPON)
+ *   CC - LDD/LA model/variant byte (0x00 EN7570, 0x01 EN7571, ...)
+ *
+ * Only the 0x0507 family signature is invariant.  Keep the core open-ended:
+ * a newly introduced LDD/LA must not require extending a static chip enum.
+ */
+#define AIROHA_LDDLA_BOB_MAGIC_COMMON_MASK	GENMASK(23, 8)
+#define AIROHA_LDDLA_BOB_MAGIC_COMMON_MIN	0x00050700
+#define AIROHA_LDDLA_BOB_MAGIC_PROFILE_MASK	GENMASK(31, 24)
+#define AIROHA_LDDLA_BOB_MAGIC_CHIP_MASK	GENMASK(7, 0)
+
+enum airoha_lddla_bob_endian {
+	AIROHA_LDDLA_BOB_ENDIAN_UNKNOWN,
+	AIROHA_LDDLA_BOB_ENDIAN_LITTLE,
+	AIROHA_LDDLA_BOB_ENDIAN_BIG,
+};
 
 /* Keep the vendor driver names while using the generic alarm ABI. */
 #define AIROHA_ALARM_TX_LOW_POWER	OPTICAL_FRONTEND_ALARM_TX_LOW_POWER
@@ -78,6 +100,7 @@ airoha_lddla_default_thresholds;
  * @date_code: SFP MSA date code (6 chars).
  * @protocols: BIT(OPTICAL_FRONTEND_PROTO_*) bitmap supported by this chip.
  * @thresholds: normalized alarm thresholds for this chip/firmware family.
+ * @bob_size: expected BOB/calibration image size in bytes.
  * @temp_refresh: refresh the temperature DDMI word; return IC temp (m degC).
  * @bosa_temp_refresh: refresh and return BOSA temperature (m degC).
  * @vcc_refresh: refresh and return the cached supply-voltage word.
@@ -99,6 +122,7 @@ struct airoha_lddla_ops {
 	const char *date_code;
 	u32 protocols;
 	const struct optical_frontend_thresholds *thresholds;
+	size_t bob_size;
 
 	s32 (*temp_refresh)(struct airoha_lddla *lddla);
 	s32 (*bosa_temp_refresh)(struct airoha_lddla *lddla);
@@ -120,8 +144,14 @@ struct airoha_lddla_ops {
  * @frontend: generic optical frontend provider handle.
  * @frontend_desc: immutable description exported to generic consumers.
  * @debugfs: per-device debugfs directory.
- * @fw_name: calibration firmware blob name.
- * @flash: in-memory mirror of the calibration NVM.
+ * @bob_fw_name: calibration/BOB firmware blob name.
+ * @bob: canonical little-endian in-memory BOB image.
+ * @bob_len: number of valid bytes in @bob.
+ * @bob_valid: true when a valid BOB image was loaded.
+ * @bob_source_endian: byte order detected in the source blob.
+ * @bob_magic: normalized BOB magic read from byte 0x94.
+ * @bob_chip_id: model/variant byte dynamically extracted from @bob_magic.
+ * @bob_profile: PON/profile byte dynamically extracted from @bob_magic.
  * @pon_mode: AIROHA_PON_* operating mode.
  * @alarm: AIROHA_ALARM_* bitmap of active DDMI alarms.
  * @ddmi_temperature: cached SFF-8472 temperature word (1/256 degC).
@@ -141,8 +171,14 @@ struct airoha_lddla {
 	struct optical_frontend_desc frontend_desc;
 	struct dentry *debugfs;
 
-	const char *fw_name;
-	u32 flash[AIROHA_LDDLA_FLASH_WORDS];
+	const char *bob_fw_name;
+	u8 bob[AIROHA_LDDLA_BOB_MAX_SIZE];
+	size_t bob_len;
+	bool bob_valid;
+	enum airoha_lddla_bob_endian bob_source_endian;
+	u32 bob_magic;
+	u8 bob_chip_id;
+	u8 bob_profile;
 
 	int pon_mode;
 	u32 alarm;
@@ -164,8 +200,8 @@ int lddla_rd16(struct airoha_lddla *lddla, u16 addr, u16 *val);
 int lddla_rd32(struct airoha_lddla *lddla, u16 addr, u32 *val);
 int lddla_lock(struct airoha_lddla *lddla);
 
-/* --- EN7570/EN7571 calibration store (airoha_lddla_core.c) --- */
-int lddla_flash_load(struct airoha_lddla *lddla);
+/* --- shared Airoha BOB/calibration store (airoha_lddla_core.c) --- */
+int lddla_bob_load(struct airoha_lddla *lddla);
 u32 lddla_flash_read(struct airoha_lddla *lddla, u32 off);
 void lddla_flash_defaults(struct airoha_lddla *lddla);
 

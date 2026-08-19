@@ -6,7 +6,6 @@ config GN25L95_PHY
 	select FW_LOADER
 	select REGMAP_I2C
 	select OPTICAL_FRONTEND
-	select OPTICAL_FRONTEND_SFP_COMPAT
 	help
 	  Support the Semtech GN25L95 2.5 Gbit/s burst-mode laser driver
 	  and limiting post amplifier. The driver is an independent provider
