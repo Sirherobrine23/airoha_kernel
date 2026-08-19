@@ -34,7 +34,6 @@
 #include <linux/phy/phy-airoha-xpon.h>
 #include <linux/delay.h>
 #include <linux/firmware.h>
-#include <linux/hwmon.h>
 #include <linux/i2c.h>
 #include <linux/jiffies.h>
 #include <linux/module.h>
@@ -273,269 +272,133 @@ int lddla_flash_load(struct airoha_lddla *lddla)
 	return 0;
 }
 
+const struct optical_frontend_thresholds airoha_lddla_default_thresholds = {
+	.valid = OPTICAL_FRONTEND_THRESHOLD_F_TEMPERATURE |
+		 OPTICAL_FRONTEND_THRESHOLD_F_VOLTAGE |
+		 OPTICAL_FRONTEND_THRESHOLD_F_BIAS |
+		 OPTICAL_FRONTEND_THRESHOLD_F_TX_POWER |
+		 OPTICAL_FRONTEND_THRESHOLD_F_RX_POWER,
+	.temperature_low_mc = -5000,
+	.temperature_high_mc = 85000,
+	.voltage_low_uv = 2900000,
+	.voltage_high_uv = 3700000,
+	.bias_low_ua = 1000,
+	.bias_high_ua = 100000,
+	.tx_power_low_nw = 1000000,
+	.tx_power_high_nw = 3548100,
+	.rx_power_low_nw = 1000,
+	.rx_power_high_nw = 251100,
+};
+
 /* ------------------------------------------------------------------ */
-/* hwmon								      */
+/* Generic optical frontend bridge                                     */
 /* ------------------------------------------------------------------ */
 
-#if IS_REACHABLE(CONFIG_HWMON)
-
-static umode_t airoha_lddla_hwmon_is_visible(const void *data,
-					    enum hwmon_sensor_types type,
-					    u32 attr, int channel)
+static int
+airoha_lddla_frontend_set_mode(struct optical_frontend *frontend,
+			       const struct optical_frontend_mode *mode)
 {
-	return 0444;
-}
-
-/* Convert an SFF-8472 threshold word to the hwmon unit for an attribute. */
-static long airoha_lddla_hwmon_thld(enum hwmon_sensor_types type, u32 attr)
-{
-	switch (type) {
-	case hwmon_temp:	/* 1/256 degC -> milli-degC */
-		return (attr == hwmon_temp_min ? (s16)AIROHA_TEMP_LOW_THLD
-					       : (s16)AIROHA_TEMP_HIGH_THLD)
-			* 1000 / 256;
-	case hwmon_in:		/* 100 uV -> mV */
-		return (attr == hwmon_in_min ? AIROHA_VOLT_LOW_THLD
-					     : AIROHA_VOLT_HIGH_THLD) / 10;
-	case hwmon_curr:	/* 2 uA -> mA */
-		return (attr == hwmon_curr_min ? AIROHA_TX_BIAS_LOW_THLD
-					       : AIROHA_TX_BIAS_HIGH_THLD)
-			* 2 / 1000;
-	default:
-		return 0;
-	}
-}
-
-static int airoha_lddla_hwmon_read(struct device *dev,
-				  enum hwmon_sensor_types type,
-				  u32 attr, int channel, long *val)
-{
-	struct airoha_lddla *lddla = dev_get_drvdata(dev);
-	const struct airoha_lddla_ops *ops = lddla->ops;
+	struct airoha_lddla *lddla = optical_frontend_get_drvdata(frontend);
+	int pon_mode;
 	int ret;
-	u16 word;
+
+	switch (mode->protocol) {
+	case OPTICAL_FRONTEND_PROTO_GPON:
+		pon_mode = AIROHA_PON_GPON;
+		break;
+	case OPTICAL_FRONTEND_PROTO_EPON:
+		pon_mode = AIROHA_PON_EPON;
+		break;
+	default:
+		return -EOPNOTSUPP;
+	}
 
 	ret = lddla_lock(lddla);
 	if (ret)
 		return ret;
 
-	switch (type) {
-	case hwmon_temp:
-		switch (attr) {
-		case hwmon_temp_input:
-			*val = ops->temp_refresh(lddla);
-			break;
-		case hwmon_temp_min:
-		case hwmon_temp_max:
-			*val = airoha_lddla_hwmon_thld(type, attr);
-			break;
-		case hwmon_temp_min_alarm:
-			*val = (s16)lddla->ddmi_temperature < (s16)AIROHA_TEMP_LOW_THLD;
-			break;
-		case hwmon_temp_max_alarm:
-			*val = (s16)lddla->ddmi_temperature > (s16)AIROHA_TEMP_HIGH_THLD;
-			break;
-		default:
-			ret = -EOPNOTSUPP;
-		}
-		break;
-	case hwmon_in:
-		switch (attr) {
-		case hwmon_in_input:
-			*val = ops->vcc_refresh(lddla) / 10;	/* 100 uV -> mV */
-			break;
-		case hwmon_in_min:
-		case hwmon_in_max:
-			*val = airoha_lddla_hwmon_thld(type, attr);
-			break;
-		case hwmon_in_min_alarm:
-			*val = lddla->ddmi_voltage < AIROHA_VOLT_LOW_THLD;
-			break;
-		case hwmon_in_max_alarm:
-			*val = lddla->ddmi_voltage > AIROHA_VOLT_HIGH_THLD;
-			break;
-		default:
-			ret = -EOPNOTSUPP;
-		}
-		break;
-	case hwmon_curr:
-		switch (attr) {
-		case hwmon_curr_input:
-			*val = ops->bias_refresh(lddla) * 2 / 1000;	/* 2 uA -> mA */
-			break;
-		case hwmon_curr_min:
-		case hwmon_curr_max:
-			*val = airoha_lddla_hwmon_thld(type, attr);
-			break;
-		case hwmon_curr_min_alarm:
-			*val = lddla->ddmi_current < AIROHA_TX_BIAS_LOW_THLD;
-			break;
-		case hwmon_curr_max_alarm:
-			*val = lddla->ddmi_current > AIROHA_TX_BIAS_HIGH_THLD;
-			break;
-		default:
-			ret = -EOPNOTSUPP;
-		}
-		break;
-	case hwmon_power:
-		/* channel 0 = Tx optical power, channel 1 = Rx optical power. */
-		switch (attr) {
-		case hwmon_power_input:
-			word = channel ? ops->rx_power_refresh(lddla)
-				       : ops->tx_power_refresh(lddla);
-			*val = word / 10;		/* 0.1 uW -> uW */
-			break;
-		case hwmon_power_min:
-			*val = (channel ? AIROHA_RX_PWR_LOW_THLD
-					: AIROHA_TX_PWR_LOW_THLD) / 10;
-			break;
-		case hwmon_power_max:
-			*val = (channel ? AIROHA_RX_PWR_HIGH_THLD
-					: AIROHA_TX_PWR_HIGH_THLD) / 10;
-			break;
-		case hwmon_power_min_alarm:
-			*val = !!(lddla->alarm & (channel ? AIROHA_ALARM_RX_LOW_POWER
-							 : AIROHA_ALARM_TX_LOW_POWER));
-			break;
-		case hwmon_power_max_alarm:
-			*val = !!(lddla->alarm & (channel ? AIROHA_ALARM_RX_HIGH_POWER
-							 : AIROHA_ALARM_TX_HIGH_POWER));
-			break;
-		default:
-			ret = -EOPNOTSUPP;
-		}
-		break;
-	default:
-		ret = -EOPNOTSUPP;
-	}
-
+	/*
+	 * EN757x calibration/bring-up is mode-specific. Do not silently
+	 * reinterpret a frontend which was initialized for another PON mode.
+	 */
+	ret = lddla->pon_mode == pon_mode ? 0 : -EINVAL;
 	mutex_unlock(&lddla->lock);
+
 	return ret;
 }
 
-static const struct hwmon_channel_info * const airoha_lddla_hwmon_info[] = {
-	HWMON_CHANNEL_INFO(temp,
-			   HWMON_T_INPUT | HWMON_T_MIN | HWMON_T_MAX |
-			   HWMON_T_MIN_ALARM | HWMON_T_MAX_ALARM),
-	HWMON_CHANNEL_INFO(in,
-			   HWMON_I_INPUT | HWMON_I_MIN | HWMON_I_MAX |
-			   HWMON_I_MIN_ALARM | HWMON_I_MAX_ALARM),
-	HWMON_CHANNEL_INFO(curr,
-			   HWMON_C_INPUT | HWMON_C_MIN | HWMON_C_MAX |
-			   HWMON_C_MIN_ALARM | HWMON_C_MAX_ALARM),
-	HWMON_CHANNEL_INFO(power,
-			   HWMON_P_INPUT | HWMON_P_MIN | HWMON_P_MAX |
-			   HWMON_P_MIN_ALARM | HWMON_P_MAX_ALARM,
-			   HWMON_P_INPUT | HWMON_P_MIN | HWMON_P_MAX |
-			   HWMON_P_MIN_ALARM | HWMON_P_MAX_ALARM),
-	NULL,
-};
-
-static const struct hwmon_ops airoha_lddla_hwmon_ops = {
-	.is_visible = airoha_lddla_hwmon_is_visible,
-	.read = airoha_lddla_hwmon_read,
-};
-
-static const struct hwmon_chip_info airoha_lddla_hwmon_chip_info = {
-	.ops = &airoha_lddla_hwmon_ops,
-	.info = airoha_lddla_hwmon_info,
-};
-
-/**
- * lddla_hwmon_register() - register the device with hwmon.
- * @lddla: device
- *
- * Exposes temperature, supply voltage, Tx bias current and Tx/Rx optical power
- * (channels 0/1) using the cached DDMI words.  Return: 0 or a negative errno.
- */
-int lddla_hwmon_register(struct airoha_lddla *lddla)
+static int
+airoha_lddla_frontend_get_telemetry(
+	struct optical_frontend *frontend,
+	struct optical_frontend_telemetry *telemetry)
 {
-	lddla->hwmon = devm_hwmon_device_register_with_info(lddla->dev,
-							   lddla->ops->name, lddla,
-							   &airoha_lddla_hwmon_chip_info,
-							   NULL);
-	return PTR_ERR_OR_ZERO(lddla->hwmon);
-}
-
-#else
-
-int lddla_hwmon_register(struct airoha_lddla *lddla)
-{
-	return 0;
-}
-
-#endif /* CONFIG_HWMON */
-
-/**
- * airoha_lddla_get_telemetry() - refresh optical frontend telemetry
- * @dev: LDDLA I2C device
- * @telemetry: output measurements
- *
- * Return: 0 when at least one measurement is available or a negative errno.
- */
-int airoha_lddla_get_telemetry(struct device *dev,
-			       struct airoha_lddla_telemetry *telemetry)
-{
-	struct airoha_lddla *lddla;
+	struct airoha_lddla *lddla = optical_frontend_get_drvdata(frontend);
 	const struct airoha_lddla_ops *ops;
 	int ret;
 
-	if (!dev || !telemetry)
+	if (!lddla || !telemetry)
 		return -EINVAL;
-
-	lddla = dev_get_drvdata(dev);
-	memset(telemetry, 0, sizeof(*telemetry));
-	if (!lddla || lddla->dev != dev)
-		return -ENODEV;
 
 	ops = lddla->ops;
 	ret = lddla_lock(lddla);
 	if (ret)
 		return ret;
 
+	memset(telemetry, 0, sizeof(*telemetry));
 	if (ops->bosa_temp_refresh) {
-		telemetry->bosa_temperature_mc =
-			ops->bosa_temp_refresh(lddla);
-		telemetry->valid |= AIROHA_LDDLA_TELEMETRY_F_TEMPERATURE;
+		telemetry->temperature_mc = ops->bosa_temp_refresh(lddla);
+		telemetry->valid |= OPTICAL_FRONTEND_TELEMETRY_F_TEMPERATURE;
+	} else if (ops->temp_refresh) {
+		telemetry->temperature_mc = ops->temp_refresh(lddla);
+		telemetry->valid |= OPTICAL_FRONTEND_TELEMETRY_F_TEMPERATURE;
 	}
 	if (ops->vcc_refresh) {
 		telemetry->voltage_uv = ops->vcc_refresh(lddla) * 100U;
-		telemetry->valid |= AIROHA_LDDLA_TELEMETRY_F_VOLTAGE;
+		telemetry->valid |= OPTICAL_FRONTEND_TELEMETRY_F_VOLTAGE;
 	}
 	if (ops->bias_refresh) {
 		telemetry->bias_ua = ops->bias_refresh(lddla) * 2U;
-		telemetry->valid |= AIROHA_LDDLA_TELEMETRY_F_BIAS;
+		telemetry->valid |= OPTICAL_FRONTEND_TELEMETRY_F_BIAS;
 	}
 	if (ops->tx_power_refresh) {
 		telemetry->tx_power_nw = ops->tx_power_refresh(lddla) * 100U;
-		telemetry->valid |= AIROHA_LDDLA_TELEMETRY_F_TX_POWER;
+		telemetry->valid |= OPTICAL_FRONTEND_TELEMETRY_F_TX_POWER;
 	}
 	if (ops->rx_power_refresh) {
 		telemetry->rx_power_nw = ops->rx_power_refresh(lddla) * 100U;
-		telemetry->valid |= AIROHA_LDDLA_TELEMETRY_F_RX_POWER;
+		telemetry->valid |= OPTICAL_FRONTEND_TELEMETRY_F_RX_POWER;
 	}
 	telemetry->alarms = lddla->alarm;
-	telemetry->valid |= AIROHA_LDDLA_TELEMETRY_F_ALARMS;
-	mutex_unlock(&lddla->lock);
+	telemetry->valid |= OPTICAL_FRONTEND_TELEMETRY_F_ALARMS;
 
+	mutex_unlock(&lddla->lock);
 	return telemetry->valid ? 0 : -ENODATA;
 }
-EXPORT_SYMBOL_GPL(airoha_lddla_get_telemetry);
 
-/**
- * airoha_lddla_tx_rearm() - rearm an LDDLA optical transmitter
- * @dev: LDDLA I2C device
- *
- * The caller must invoke this after external TX_DISABLE has been released.
- *
- * Return: 0 on success or a negative errno.
- */
-int airoha_lddla_tx_rearm(struct device *dev)
+static int
+airoha_lddla_frontend_get_state(struct optical_frontend *frontend,
+				struct optical_frontend_state *state)
 {
-	struct airoha_lddla *lddla = dev_get_drvdata(dev);
+	struct airoha_lddla *lddla = optical_frontend_get_drvdata(frontend);
+
+	if (!lddla || !state)
+		return -EINVAL;
+
+	memset(state, 0, sizeof(*state));
+	state->present = true;
+	state->ready = true;
+	state->valid = OPTICAL_FRONTEND_STATE_F_PRESENT |
+		       OPTICAL_FRONTEND_STATE_F_READY;
+
+	return 0;
+}
+
+static int airoha_lddla_frontend_tx_rearm(struct optical_frontend *frontend)
+{
+	struct airoha_lddla *lddla = optical_frontend_get_drvdata(frontend);
 	int ret;
 
-	if (!lddla || lddla->dev != dev || !lddla->ops->tx_rearm)
+	if (!lddla || !lddla->ops->tx_rearm)
 		return -EOPNOTSUPP;
 
 	ret = lddla_lock(lddla);
@@ -547,7 +410,64 @@ int airoha_lddla_tx_rearm(struct device *dev)
 
 	return ret;
 }
-EXPORT_SYMBOL_GPL(airoha_lddla_tx_rearm);
+
+static const struct optical_frontend_ops airoha_lddla_frontend_ops = {
+	.set_mode = airoha_lddla_frontend_set_mode,
+	.get_telemetry = airoha_lddla_frontend_get_telemetry,
+	.get_state = airoha_lddla_frontend_get_state,
+	.tx_rearm = airoha_lddla_frontend_tx_rearm,
+};
+
+int lddla_frontend_register(struct airoha_lddla *lddla)
+{
+	const struct airoha_lddla_ops *ops = lddla->ops;
+	struct optical_frontend_desc *desc = &lddla->frontend_desc;
+	int ret;
+
+	memset(desc, 0, sizeof(*desc));
+	desc->name = ops->name;
+	desc->vendor_name = ops->vendor_name ?: "Airoha";
+	if (ops->vendor_name) {
+		memcpy(desc->vendor_oui, ops->vendor_oui,
+		       sizeof(desc->vendor_oui));
+	} else {
+		desc->vendor_oui[0] = 0x00;
+		desc->vendor_oui[1] = 0x0c;
+		desc->vendor_oui[2] = 0xe7;
+	}
+	desc->part_number = ops->part_number;
+	desc->serial = ops->serial;
+	desc->date_code = ops->date_code;
+	desc->protocols = ops->protocols;
+	desc->thresholds = ops->thresholds;
+	desc->telemetry_cache_ms = 100;
+
+	if (ops->temp_refresh || ops->bosa_temp_refresh)
+		desc->capabilities |= OPTICAL_FRONTEND_CAP_TEMPERATURE;
+	if (ops->vcc_refresh)
+		desc->capabilities |= OPTICAL_FRONTEND_CAP_VOLTAGE;
+	if (ops->bias_refresh)
+		desc->capabilities |= OPTICAL_FRONTEND_CAP_BIAS;
+	if (ops->tx_power_refresh)
+		desc->capabilities |= OPTICAL_FRONTEND_CAP_TX_POWER;
+	if (ops->rx_power_refresh)
+		desc->capabilities |= OPTICAL_FRONTEND_CAP_RX_POWER;
+	desc->capabilities |= OPTICAL_FRONTEND_CAP_ALARMS |
+			      OPTICAL_FRONTEND_CAP_BURST_TX;
+	if (ops->tx_rearm)
+		desc->capabilities |= OPTICAL_FRONTEND_CAP_TX_REARM;
+
+	lddla->frontend = devm_optical_frontend_register(
+		lddla->dev, desc, &airoha_lddla_frontend_ops, lddla);
+	if (IS_ERR(lddla->frontend))
+		return PTR_ERR(lddla->frontend);
+
+	ret = devm_optical_frontend_hwmon_register(lddla->frontend);
+	if (ret)
+		return ret;
+
+	return devm_optical_frontend_sfp_register(lddla->frontend);
+}
 
 /* ------------------------------------------------------------------ */
 /* debugfs								      */
@@ -606,7 +526,7 @@ static ssize_t airoha_lddla_tx_rearm_write(struct file *file,
 	if (!rearm)
 		return -EINVAL;
 
-	ret = airoha_lddla_tx_rearm(lddla->dev);
+	ret = optical_frontend_tx_rearm(lddla->frontend);
 	if (ret)
 		return ret;
 
@@ -647,251 +567,6 @@ void lddla_debugfs_remove(struct airoha_lddla *lddla)
 }
 
 /* ------------------------------------------------------------------ */
-/* Virtual SFP MSA / SFF-8472 bus					      */
-/* ------------------------------------------------------------------ */
-
-#define AIROHA_SFP_ROM_ADDR	0x50	/* 8-bit 0xA0: SFP MSA serial ID */
-#define AIROHA_SFP_DDM_ADDR	0x51	/* 8-bit 0xA2: SFF-8472 diagnostics */
-#define AIROHA_SFP_PAGE_SIZE	256
-
-struct airoha_sfp {
-	struct i2c_adapter adapter;
-	struct airoha_lddla *lddla;
-	u8 rom[AIROHA_SFP_PAGE_SIZE];
-	u8 ddm[AIROHA_SFP_PAGE_SIZE];
-	u8 rom_ptr;
-	u8 ddm_ptr;
-};
-
-static void put_be16(u8 *buf, int off, u16 val)
-{
-	buf[off] = val >> 8;
-	buf[off + 1] = val & 0xff;
-}
-
-/* Copy an ASCII field, space-padded to @len (no NUL terminator). */
-static void put_ascii(u8 *buf, int off, const char *s, int len)
-{
-	int i;
-
-	for (i = 0; i < len; i++)
-		buf[off + i] = *s ? *s++ : ' ';
-}
-
-static u8 sfp_checksum(const u8 *buf, int first, int last)
-{
-	u8 sum = 0;
-	int i;
-
-	for (i = first; i <= last; i++)
-		sum += buf[i];
-	return sum;
-}
-
-static void airoha_sfp_build_rom(struct airoha_sfp *sfp)
-{
-	const struct airoha_lddla_ops *ops = sfp->lddla->ops;
-	bool gpon = sfp->lddla->pon_mode == AIROHA_PON_GPON;
-	u8 *r = sfp->rom;
-
-	memset(r, 0, AIROHA_SFP_PAGE_SIZE);
-
-	r[0] = 0x03;			/* Identifier: SFP/SFP+ */
-	r[1] = 0x04;			/* Ext. identifier: 2-wire serial ID */
-	r[2] = 0x01;			/* Connector: SC */
-	r[11] = 0x03;			/* Encoding: NRZ */
-	r[12] = gpon ? 0x19 : 0x0d;	/* BR nominal: ~2.5G GPON / 1.25G EPON */
-	put_be16(r, 14, 1490);		/* downstream wavelength (nm) */
-
-	if (ops->vendor_name) {
-		put_ascii(r, 20, ops->vendor_name, 16);
-		r[37] = ops->vendor_oui[0];
-		r[38] = ops->vendor_oui[1];
-		r[39] = ops->vendor_oui[2];
-	} else {
-		put_ascii(r, 20, "Airoha", 16);
-		r[37] = 0x00;
-		r[38] = 0x0c;
-		r[39] = 0xe7;
-	}
-	put_ascii(r, 40, ops->part_number, 16);		/* vendor part number */
-	put_ascii(r, 56, "0001", 4);			/* vendor revision */
-	put_be16(r, 60, 1490);				/* wavelength (nm) */
-	r[63] = sfp_checksum(r, 0, 62);			/* CC_BASE */
-
-	r[65] = 0x1a;			/* Options: TX_DISABLE | TX_FAULT | LOS */
-	put_ascii(r, 68, ops->serial, 16);		/* vendor serial number */
-	put_ascii(r, 84, ops->date_code, 8);		/* date code */
-	r[92] = 0x68;			/* DDM: implemented, internally cal, avg Rx */
-	r[93] = 0xf0;			/* enhanced options: alarms, soft control */
-	r[94] = 0x06;			/* SFF-8472 compliance (rev 11.3) */
-	r[95] = sfp_checksum(r, 64, 94);		/* CC_EXT */
-}
-
-static void airoha_sfp_build_ddm_thresholds(struct airoha_sfp *sfp)
-{
-	u8 *d = sfp->ddm;
-
-	memset(d, 0, AIROHA_SFP_PAGE_SIZE);
-
-	put_be16(d, 0, AIROHA_TEMP_HIGH_THLD);
-	put_be16(d, 2, AIROHA_TEMP_LOW_THLD);
-	put_be16(d, 4, AIROHA_TEMP_HIGH_THLD);
-	put_be16(d, 6, AIROHA_TEMP_LOW_THLD);
-	put_be16(d, 8, AIROHA_VOLT_HIGH_THLD);
-	put_be16(d, 10, AIROHA_VOLT_LOW_THLD);
-	put_be16(d, 12, AIROHA_VOLT_HIGH_THLD);
-	put_be16(d, 14, AIROHA_VOLT_LOW_THLD);
-	put_be16(d, 16, AIROHA_TX_BIAS_HIGH_THLD);
-	put_be16(d, 18, AIROHA_TX_BIAS_LOW_THLD);
-	put_be16(d, 20, AIROHA_TX_BIAS_HIGH_THLD);
-	put_be16(d, 22, AIROHA_TX_BIAS_LOW_THLD);
-	put_be16(d, 24, AIROHA_TX_PWR_HIGH_THLD);
-	put_be16(d, 26, AIROHA_TX_PWR_LOW_THLD);
-	put_be16(d, 28, AIROHA_TX_PWR_HIGH_THLD);
-	put_be16(d, 30, AIROHA_TX_PWR_LOW_THLD);
-	put_be16(d, 32, AIROHA_RX_PWR_HIGH_THLD);
-	put_be16(d, 34, AIROHA_RX_PWR_LOW_THLD);
-	put_be16(d, 36, AIROHA_RX_PWR_HIGH_THLD);
-	put_be16(d, 38, AIROHA_RX_PWR_LOW_THLD);
-
-	/* Internally-calibrated module: unity slopes, zero offsets. */
-	put_be16(d, 56, 1);
-	put_be16(d, 80, 1);
-	put_be16(d, 84, 1);
-	put_be16(d, 88, 1);
-	put_be16(d, 90, 1);
-	d[95] = sfp_checksum(d, 0, 94);		/* CC_DMI */
-}
-
-/* Refresh the live SFF-8472 diagnostics from the cached DDMI words. */
-static void airoha_sfp_refresh_ddm(struct airoha_sfp *sfp)
-{
-	struct airoha_lddla *lddla = sfp->lddla;
-	u8 *d = sfp->ddm;
-	u32 alarm;
-
-	mutex_lock(&lddla->lock);
-	put_be16(d, 96, lddla->ddmi_temperature);
-	put_be16(d, 98, lddla->ddmi_voltage);
-	put_be16(d, 100, lddla->ddmi_current);
-	put_be16(d, 102, lddla->ddmi_tx_power);
-	put_be16(d, 104, lddla->ddmi_rx_power);
-	alarm = lddla->alarm;
-	mutex_unlock(&lddla->lock);
-
-	d[110] = 0x00;		/* Data_Ready_Bar cleared = ready */
-
-	d[112] = (alarm & AIROHA_ALARM_HIGH_TEMP   ? 0x80 : 0) |
-		 (alarm & AIROHA_ALARM_LOW_TEMP    ? 0x40 : 0) |
-		 (alarm & AIROHA_ALARM_HIGH_VOLT   ? 0x20 : 0) |
-		 (alarm & AIROHA_ALARM_LOW_VOLT    ? 0x10 : 0) |
-		 (alarm & AIROHA_ALARM_TX_HIGH_BIAS  ? 0x08 : 0) |
-		 (alarm & AIROHA_ALARM_TX_LOW_BIAS   ? 0x04 : 0) |
-		 (alarm & AIROHA_ALARM_TX_HIGH_POWER ? 0x02 : 0) |
-		 (alarm & AIROHA_ALARM_TX_LOW_POWER  ? 0x01 : 0);
-	d[113] = (alarm & AIROHA_ALARM_RX_HIGH_POWER ? 0x80 : 0) |
-		 (alarm & AIROHA_ALARM_RX_LOW_POWER  ? 0x40 : 0);
-	d[116] = d[112];
-	d[117] = d[113];
-}
-
-static int airoha_sfp_xfer(struct i2c_adapter *adap, struct i2c_msg *msgs,
-			   int num)
-{
-	struct airoha_sfp *sfp = i2c_get_adapdata(adap);
-	u8 *page, *ptr;
-	int i, j;
-
-	for (i = 0; i < num; i++) {
-		struct i2c_msg *msg = &msgs[i];
-
-		if (msg->addr == AIROHA_SFP_ROM_ADDR) {
-			page = sfp->rom;
-			ptr = &sfp->rom_ptr;
-		} else if (msg->addr == AIROHA_SFP_DDM_ADDR) {
-			page = sfp->ddm;
-			ptr = &sfp->ddm_ptr;
-		} else {
-			return -ENXIO;
-		}
-
-		if (msg->flags & I2C_M_RD) {
-			if (page == sfp->ddm)
-				airoha_sfp_refresh_ddm(sfp);
-			for (j = 0; j < msg->len; j++)
-				msg->buf[j] = page[(*ptr)++];
-		} else {
-			if (msg->len >= 1)
-				*ptr = msg->buf[0];	/* set word pointer */
-		}
-	}
-
-	return num;
-}
-
-static u32 airoha_sfp_func(struct i2c_adapter *adap)
-{
-	return I2C_FUNC_I2C | I2C_FUNC_SMBUS_EMUL;
-}
-
-static const struct i2c_algorithm airoha_sfp_algo = {
-	.master_xfer = airoha_sfp_xfer,
-	.functionality = airoha_sfp_func,
-};
-
-/**
- * lddla_sfp_init() - publish the diagnostics as a virtual SFP module.
- * @lddla: device
- *
- * Registers an emulated I2C adapter carrying the two SFP slaves (MSA serial-ID
- * at 0x50, SFF-8472 diagnostics at 0x51) so the standard SFP/phylink and
- * ethtool tooling can read this soldered-down module.  Return: 0 or errno.
- */
-int lddla_sfp_init(struct airoha_lddla *lddla)
-{
-	struct airoha_sfp *sfp;
-	int ret;
-
-	sfp = devm_kzalloc(lddla->dev, sizeof(*sfp), GFP_KERNEL);
-	if (!sfp)
-		return -ENOMEM;
-
-	sfp->lddla = lddla;
-	airoha_sfp_build_rom(sfp);
-	airoha_sfp_build_ddm_thresholds(sfp);
-
-	sfp->adapter.owner = THIS_MODULE;
-	sfp->adapter.algo = &airoha_sfp_algo;
-	sfp->adapter.dev.parent = lddla->dev;
-	sfp->adapter.dev.of_node =
-		of_get_child_by_name(lddla->dev->of_node, "i2c-sfp");
-	sfp->adapter.class = 0;
-	strscpy(sfp->adapter.name, "xPON LDDLA virtual SFP",
-		sizeof(sfp->adapter.name));
-	i2c_set_adapdata(&sfp->adapter, sfp);
-
-	ret = i2c_add_adapter(&sfp->adapter);
-	if (ret)
-		return ret;
-
-	lddla->sfp = sfp;
-	dev_info(lddla->dev, "virtual SFP bus %d: ROM @0x%02x, DDM @0x%02x\n",
-		 sfp->adapter.nr, AIROHA_SFP_ROM_ADDR, AIROHA_SFP_DDM_ADDR);
-	return 0;
-}
-
-/* Remove the virtual SFP adapter. */
-void lddla_sfp_remove(struct airoha_lddla *lddla)
-{
-	if (lddla->sfp) {
-		i2c_del_adapter(&lddla->sfp->adapter);
-		of_node_put(lddla->sfp->adapter.dev.of_node);
-		lddla->sfp = NULL;
-	}
-}
-
-/* ------------------------------------------------------------------ */
 /* Module: register the configured chip drivers			      */
 /* ------------------------------------------------------------------ */
 
@@ -903,9 +578,6 @@ extern struct i2c_driver en7571_i2c_driver;
 #endif
 #if IS_ENABLED(CONFIG_EN7572_PHY)
 extern struct i2c_driver en7572_i2c_driver;
-#endif
-#if IS_ENABLED(CONFIG_GN25L95_PHY)
-extern struct i2c_driver gn25l95_i2c_driver;
 #endif
 
 static int __init airoha_lddla_init(void)
@@ -927,19 +599,7 @@ static int __init airoha_lddla_init(void)
 	if (ret)
 		goto err_7572;
 #endif
-#if IS_ENABLED(CONFIG_GN25L95_PHY)
-	ret = i2c_add_driver(&gn25l95_i2c_driver);
-	if (ret)
-		goto err_gn25l95;
-#endif
 	return ret;
-
-#if IS_ENABLED(CONFIG_GN25L95_PHY)
-err_gn25l95:
-#if IS_ENABLED(CONFIG_EN7572_PHY)
-	i2c_del_driver(&en7572_i2c_driver);
-#endif
-#endif
 
 #if IS_ENABLED(CONFIG_EN7572_PHY)
 err_7572:
@@ -959,9 +619,6 @@ module_init(airoha_lddla_init);
 
 static void __exit airoha_lddla_exit(void)
 {
-#if IS_ENABLED(CONFIG_GN25L95_PHY)
-	i2c_del_driver(&gn25l95_i2c_driver);
-#endif
 #if IS_ENABLED(CONFIG_EN7572_PHY)
 	i2c_del_driver(&en7572_i2c_driver);
 #endif
@@ -974,6 +631,6 @@ static void __exit airoha_lddla_exit(void)
 }
 module_exit(airoha_lddla_exit);
 
-MODULE_DESCRIPTION("xPON LDDLA controller driver for Airoha EN757x and Semtech GN25L95");
+MODULE_DESCRIPTION("Airoha EN757x xPON optical frontend drivers");
 MODULE_AUTHOR("Benjamin Larsson <benjamin.larsson@genexis.eu>");
 MODULE_LICENSE("GPL");

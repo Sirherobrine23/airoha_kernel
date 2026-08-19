@@ -1,0 +1,43 @@
+# SPDX-License-Identifier: GPL-2.0-only
+
+menu "Optical frontend support"
+
+config OPTICAL_FRONTEND
+	tristate "Generic optical frontend core"
+	help
+	  Generic provider/consumer framework for soldered optical frontends such
+	  as laser-diode drivers, limiting amplifiers and APD controllers used by
+	  PON and other optical network devices.
+
+	  The core intentionally sits beside PHYLIB/phylink: it represents the
+	  analog optical frontend, not an Ethernet PHY or a serial PCS.
+
+if OPTICAL_FRONTEND
+
+config OPTICAL_FRONTEND_HWMON
+	bool "Expose optical telemetry through hwmon"
+	depends on HWMON
+	default y
+	help
+	  Export normalized temperature, voltage, laser bias and Tx/Rx optical
+	  power measurements through hwmon when a frontend provides them.
+
+	  Alarm state and provider-supplied low/high thresholds are exported when
+	  available. Say Y when standard hwmon userspace should monitor optics.
+
+config OPTICAL_FRONTEND_SFP_COMPAT
+	bool "Virtual SFF-8472 compatibility bus"
+	depends on I2C
+	default y
+	help
+	  Allow a soldered optical frontend to expose a virtual SFP I2C bus with
+	  SFF-8472 identity and DDMI pages for existing SFP/phylink tooling.
+
+	  This is intended as a compatibility path for existing device trees. New
+	  fixed-front-end consumers should use the optical frontend API directly.
+
+endif
+
+source "drivers/net/optical/semtech/Kconfig"
+
+endmenu
