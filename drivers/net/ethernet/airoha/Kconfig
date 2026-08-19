@@ -65,7 +65,7 @@ config AIROHA_XPON_V1
 	depends on NET_AIROHA
 	depends on OF
 	depends on SFP
-	depends on AIROHA_LDDLA_PHY || AIROHA_LDDLA_PHY=n
+	depends on OPTICAL_FRONTEND || OPTICAL_FRONTEND=n
 	depends on MFD_SYSCON
 	select PHY_AIROHA_XPON
 	select OMCI

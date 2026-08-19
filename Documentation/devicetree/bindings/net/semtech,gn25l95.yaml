@@ -24,6 +24,11 @@ properties:
     description:
       I2C address of the GN25L95 A2 host page, normally 0x51.
 
+  '#optical-frontend-cells':
+    const: 0
+    description:
+      The GN25L95 exposes one optical frontend provider.
+
   firmware-name:
     $ref: /schemas/types.yaml#/definitions/string
     description: |
@@ -55,6 +60,7 @@ properties:
 required:
   - compatible
   - reg
+  - '#optical-frontend-cells'
 
 additionalProperties: false
 
@@ -67,6 +73,7 @@ examples:
         optical-frontend@51 {
             compatible = "semtech,gn25l95";
             reg = <0x51>;
+            #optical-frontend-cells = <0>;
             firmware-name = "semtech/gpt2741-gn25l95-hwconfig.bin";
 
             sfp_i2c: i2c-sfp {

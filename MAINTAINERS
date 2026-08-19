@@ -19436,6 +19436,15 @@ S:	Maintained
 T:	git git://git.kernel.org/pub/scm/linux/kernel/git/tiwai/sound.git
 F:	sound/drivers/opl4/
 
+OPTICAL FRONTEND SUBSYSTEM
+M:	Matheus Sampaio Queiroga <srherobrine20@gmail.com>
+L:	netdev@vger.kernel.org
+S:	Maintained
+F:	Documentation/devicetree/bindings/net/semtech,gn25l95.yaml
+F:	Documentation/driver-api/optical-frontend.rst
+F:	drivers/net/optical/
+F:	include/linux/optical_frontend.h
+
 ORACLE CLUSTER FILESYSTEM 2 (OCFS2)
 M:	Mark Fasheh <mark@fasheh.com>
 M:	Joel Becker <jlbec@evilplan.org>
