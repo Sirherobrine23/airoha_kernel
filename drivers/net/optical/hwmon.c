@@ -6,6 +6,7 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/optical_frontend.h>
+#include <linux/sysfs.h>
 
 static bool optical_frontend_hwmon_has_threshold(
 	const struct optical_frontend_desc *desc,
@@ -285,25 +286,46 @@ static const struct hwmon_chip_info optical_frontend_hwmon_chip_info = {
 	.info = optical_frontend_hwmon_info,
 };
 
+static void optical_frontend_hwmon_remove_link(void *data)
+{
+	struct optical_frontend *frontend = data;
+	struct device *dev = optical_frontend_get_device(frontend);
+
+	if (dev)
+		sysfs_remove_link(&dev->kobj, "hwmon");
+}
+
 int devm_optical_frontend_hwmon_register(struct optical_frontend *frontend)
 {
 	const struct optical_frontend_desc *desc;
+	struct device *frontend_dev;
 	struct device *provider;
 	struct device *hwmon;
+	int ret;
 
 	if (!frontend)
 		return -EINVAL;
 
 	desc = optical_frontend_get_desc(frontend);
+	frontend_dev = optical_frontend_get_device(frontend);
 	provider = optical_frontend_get_provider(frontend);
-	if (!desc || !provider)
+	if (!desc || !frontend_dev || !provider)
 		return -EINVAL;
 
 	hwmon = devm_hwmon_device_register_with_info(provider, desc->name,
 						     frontend,
 						     &optical_frontend_hwmon_chip_info,
 						     NULL);
-	return PTR_ERR_OR_ZERO(hwmon);
+	if (IS_ERR(hwmon))
+		return PTR_ERR(hwmon);
+
+	ret = sysfs_create_link(&frontend_dev->kobj, &hwmon->kobj, "hwmon");
+	if (ret)
+		return ret;
+
+	return devm_add_action_or_reset(provider,
+					optical_frontend_hwmon_remove_link,
+					frontend);
 }
 EXPORT_SYMBOL_GPL(devm_optical_frontend_hwmon_register);
 

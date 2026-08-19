@@ -33,6 +33,7 @@
 #include <linux/seq_file.h>
 #include <linux/slab.h>
 #include <linux/string.h>
+#include <linux/sysfs.h>
 #include <linux/unaligned.h>
 
 #include "airoha_lddla.h"
@@ -341,6 +342,8 @@ static int lddla_bob_load_nvmem(struct airoha_lddla *lddla)
 
 	ret = lddla_bob_import(lddla, buf, len, "NVMEM");
 	kfree(buf);
+	if (!ret)
+		lddla->bob_source = AIROHA_LDDLA_BOB_SOURCE_NVMEM;
 	return ret;
 }
 #else
@@ -365,6 +368,8 @@ static int lddla_bob_load_firmware(struct airoha_lddla *lddla)
 	ret = lddla_bob_import(lddla, fw->data, fw->size,
 			       lddla->bob_fw_name);
 	release_firmware(fw);
+	if (!ret)
+		lddla->bob_source = AIROHA_LDDLA_BOB_SOURCE_FIRMWARE;
 	return ret;
 }
 
@@ -433,6 +438,7 @@ void lddla_flash_defaults(struct airoha_lddla *lddla)
 	memset(lddla->bob, 0xff, sizeof(lddla->bob));
 	lddla->bob_len = min_t(size_t, size, sizeof(lddla->bob));
 	lddla->bob_valid = false;
+	lddla->bob_source = AIROHA_LDDLA_BOB_SOURCE_NONE;
 	lddla->bob_source_endian = AIROHA_LDDLA_BOB_ENDIAN_UNKNOWN;
 }
 
@@ -582,6 +588,143 @@ static const struct optical_frontend_ops airoha_lddla_frontend_ops = {
 	.tx_rearm = airoha_lddla_frontend_tx_rearm,
 };
 
+static struct airoha_lddla *airoha_lddla_from_frontend_dev(struct device *dev)
+{
+	struct optical_frontend *frontend = optical_frontend_from_dev(dev);
+
+	return frontend ? optical_frontend_get_drvdata(frontend) : NULL;
+}
+
+static ssize_t valid_show(struct device *dev,
+			  struct device_attribute *attr, char *buf)
+{
+	struct airoha_lddla *lddla = airoha_lddla_from_frontend_dev(dev);
+
+	return lddla ? sysfs_emit(buf, "%u\n", lddla->bob_valid) : -ENODEV;
+}
+static DEVICE_ATTR_RO(valid);
+
+static ssize_t source_show(struct device *dev,
+			   struct device_attribute *attr, char *buf)
+{
+	struct airoha_lddla *lddla = airoha_lddla_from_frontend_dev(dev);
+	const char *source;
+
+	if (!lddla)
+		return -ENODEV;
+
+	switch (lddla->bob_source) {
+	case AIROHA_LDDLA_BOB_SOURCE_NVMEM:
+		source = "nvmem";
+		break;
+	case AIROHA_LDDLA_BOB_SOURCE_FIRMWARE:
+		source = "firmware";
+		break;
+	case AIROHA_LDDLA_BOB_SOURCE_NONE:
+	default:
+		source = "none";
+		break;
+	}
+
+	return sysfs_emit(buf, "%s\n", source);
+}
+static DEVICE_ATTR_RO(source);
+
+static ssize_t endian_show(struct device *dev,
+			   struct device_attribute *attr, char *buf)
+{
+	struct airoha_lddla *lddla = airoha_lddla_from_frontend_dev(dev);
+	const char *endian;
+
+	if (!lddla)
+		return -ENODEV;
+
+	switch (lddla->bob_source_endian) {
+	case AIROHA_LDDLA_BOB_ENDIAN_LITTLE:
+		endian = "little";
+		break;
+	case AIROHA_LDDLA_BOB_ENDIAN_BIG:
+		endian = "big";
+		break;
+	case AIROHA_LDDLA_BOB_ENDIAN_UNKNOWN:
+	default:
+		endian = "unknown";
+		break;
+	}
+
+	return sysfs_emit(buf, "%s\n", endian);
+}
+static DEVICE_ATTR_RO(endian);
+
+static ssize_t size_show(struct device *dev,
+			 struct device_attribute *attr, char *buf)
+{
+	struct airoha_lddla *lddla = airoha_lddla_from_frontend_dev(dev);
+
+	return lddla ? sysfs_emit(buf, "%zu\n", lddla->bob_len) : -ENODEV;
+}
+static DEVICE_ATTR_RO(size);
+
+static ssize_t magic_show(struct device *dev,
+			  struct device_attribute *attr, char *buf)
+{
+	struct airoha_lddla *lddla = airoha_lddla_from_frontend_dev(dev);
+
+	if (!lddla)
+		return -ENODEV;
+	if (!lddla->bob_valid)
+		return -ENODATA;
+	return sysfs_emit(buf, "0x%08x\n", lddla->bob_magic);
+}
+static DEVICE_ATTR_RO(magic);
+
+static ssize_t chip_id_show(struct device *dev,
+			    struct device_attribute *attr, char *buf)
+{
+	struct airoha_lddla *lddla = airoha_lddla_from_frontend_dev(dev);
+
+	if (!lddla)
+		return -ENODEV;
+	if (!lddla->bob_valid)
+		return -ENODATA;
+	return sysfs_emit(buf, "0x%02x\n", lddla->bob_chip_id);
+}
+static DEVICE_ATTR_RO(chip_id);
+
+static ssize_t profile_show(struct device *dev,
+			    struct device_attribute *attr, char *buf)
+{
+	struct airoha_lddla *lddla = airoha_lddla_from_frontend_dev(dev);
+
+	if (!lddla)
+		return -ENODEV;
+	if (!lddla->bob_valid)
+		return -ENODATA;
+	return sysfs_emit(buf, "0x%02x\n", lddla->bob_profile);
+}
+static DEVICE_ATTR_RO(profile);
+
+static struct attribute *airoha_lddla_bob_attrs[] = {
+	&dev_attr_valid.attr,
+	&dev_attr_source.attr,
+	&dev_attr_endian.attr,
+	&dev_attr_size.attr,
+	&dev_attr_magic.attr,
+	&dev_attr_chip_id.attr,
+	&dev_attr_profile.attr,
+	NULL,
+};
+
+static const struct attribute_group airoha_lddla_bob_group = {
+	.name = "bob",
+	.attrs = airoha_lddla_bob_attrs,
+};
+
+static const struct attribute_group *airoha_lddla_frontend_groups[] = {
+	&airoha_lddla_bob_group,
+	NULL,
+};
+
 int lddla_frontend_register(struct airoha_lddla *lddla)
 {
 	const struct airoha_lddla_ops *ops = lddla->ops;
@@ -589,6 +732,7 @@ int lddla_frontend_register(struct airoha_lddla *lddla)
 
 	memset(desc, 0, sizeof(*desc));
 	desc->name = ops->name;
+	desc->type = "lddla";
 	desc->vendor_name = ops->vendor_name ?: "Airoha";
 	if (ops->vendor_name) {
 		memcpy(desc->vendor_oui, ops->vendor_oui,
@@ -604,6 +748,7 @@ int lddla_frontend_register(struct airoha_lddla *lddla)
 	desc->protocols = ops->protocols;
 	desc->thresholds = ops->thresholds;
 	desc->telemetry_cache_ms = 100;
+	desc->groups = airoha_lddla_frontend_groups;
 
 	if (ops->temp_refresh || ops->bosa_temp_refresh)
 		desc->capabilities |= OPTICAL_FRONTEND_CAP_TEMPERATURE;
