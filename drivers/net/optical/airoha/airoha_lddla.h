@@ -63,6 +63,12 @@ enum airoha_lddla_bob_endian {
 	AIROHA_LDDLA_BOB_ENDIAN_BIG,
 };
 
+enum airoha_lddla_bob_source {
+	AIROHA_LDDLA_BOB_SOURCE_NONE,
+	AIROHA_LDDLA_BOB_SOURCE_NVMEM,
+	AIROHA_LDDLA_BOB_SOURCE_FIRMWARE,
+};
+
 /* Keep the vendor driver names while using the generic alarm ABI. */
 #define AIROHA_ALARM_TX_LOW_POWER	OPTICAL_FRONTEND_ALARM_TX_LOW_POWER
 #define AIROHA_ALARM_TX_HIGH_POWER	OPTICAL_FRONTEND_ALARM_TX_HIGH_POWER
@@ -148,6 +154,7 @@ struct airoha_lddla_ops {
  * @bob: canonical little-endian in-memory BOB image.
  * @bob_len: number of valid bytes in @bob.
  * @bob_valid: true when a valid BOB image was loaded.
+ * @bob_source: origin of the active BOB image.
  * @bob_source_endian: byte order detected in the source blob.
  * @bob_magic: normalized BOB magic read from byte 0x94.
  * @bob_chip_id: model/variant byte dynamically extracted from @bob_magic.
@@ -175,6 +182,7 @@ struct airoha_lddla {
 	u8 bob[AIROHA_LDDLA_BOB_MAX_SIZE];
 	size_t bob_len;
 	bool bob_valid;
+	enum airoha_lddla_bob_source bob_source;
 	enum airoha_lddla_bob_endian bob_source_endian;
 	u32 bob_magic;
 	u8 bob_chip_id;
