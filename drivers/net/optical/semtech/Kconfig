@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: GPL-2.0-only
+
+config GN25L95_PHY
+	tristate "Semtech GN25L95 xPON optical frontend"
+	depends on I2C
+	select FW_LOADER
+	select REGMAP_I2C
+	select OPTICAL_FRONTEND
+	select OPTICAL_FRONTEND_SFP_COMPAT
+	help
+	  Support the Semtech GN25L95 2.5 Gbit/s burst-mode laser driver
+	  and limiting post amplifier. The driver is an independent provider
+	  of the generic optical frontend subsystem and is not tied to Airoha
+	  MAC or PHY drivers.
