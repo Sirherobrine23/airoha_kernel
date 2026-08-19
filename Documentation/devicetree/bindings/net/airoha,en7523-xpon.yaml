@@ -126,13 +126,31 @@ properties:
 
   sfp:
     $ref: /schemas/types.yaml#/definitions/phandle
-    description: Phandle to the optical module or virtual SFP cage.
+    description: Phandle to a pluggable optical module or SFP cage.
+
+  optical-frontends:
+    $ref: /schemas/types.yaml#/definitions/phandle-array
+    maxItems: 1
+    description:
+      Phandle to a fixed optical frontend provider such as an integrated
+      laser-driver/limiting-amplifier. This is the preferred connection for
+      soldered BOSA frontends and may be used instead of sfp.
+
+  optical-frontend-names:
+    items:
+      - const: pon
 
 required:
   - compatible
   - reg
   - airoha,scu
-  - sfp
+
+anyOf:
+  - required:
+      - sfp
+  - required:
+      - optical-frontends
+      - optical-frontend-names
 
 dependencies:
   airoha,gpon-serial-from-mac:
@@ -181,9 +199,8 @@ examples:
     #include <dt-bindings/interrupt-controller/arm-gic.h>
     #include <dt-bindings/reset/airoha,en7523-reset.h>
 
-    pon0: sfp {
-        compatible = "sff,sfp";
-        i2c-bus = <&i2c_sfp>;
+    optical_frontend: optical-frontend {
+        #optical-frontend-cells = <0>;
     };
 
     xpon@1fb60000 {
@@ -200,6 +217,7 @@ examples:
         airoha,gpon-password = [30 30 31 34 34 35 31 38 33 30];
         phys = <&xpon_phy>;
         phy-names = "xpon";
-        sfp = <&pon0>;
+        optical-frontends = <&optical_frontend>;
+        optical-frontend-names = "pon";
     };
 ...

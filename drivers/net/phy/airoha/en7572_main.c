@@ -385,11 +385,31 @@ static void en7572_tick_work(struct work_struct *work)
 /* Per-chip ops table						      */
 /* ------------------------------------------------------------------ */
 
+static const struct optical_frontend_thresholds en7572_thresholds = {
+	.valid = OPTICAL_FRONTEND_THRESHOLD_F_TEMPERATURE |
+		 OPTICAL_FRONTEND_THRESHOLD_F_VOLTAGE |
+		 OPTICAL_FRONTEND_THRESHOLD_F_BIAS |
+		 OPTICAL_FRONTEND_THRESHOLD_F_TX_POWER |
+		 OPTICAL_FRONTEND_THRESHOLD_F_RX_POWER,
+	.temperature_low_mc = -50000,
+	.temperature_high_mc = 100000,
+	.voltage_low_uv = 2900000,
+	.voltage_high_uv = 3700000,
+	.bias_low_ua = 1000,
+	.bias_high_ua = 85002,
+	.tx_power_low_nw = 0,
+	.tx_power_high_nw = 6553500,
+	.rx_power_low_nw = 0,
+	.rx_power_high_nw = 6553500,
+};
+
 static const struct airoha_lddla_ops en7572_ops = {
 	.name		= "en7572",
 	.part_number	= "EN7572",
 	.serial		= "0000000000000000",
 	.date_code	= "000000",
+	.protocols	= BIT(OPTICAL_FRONTEND_PROTO_GPON),
+	.thresholds	= &en7572_thresholds,
 	.temp_refresh	= en7572_temp_refresh,
 	.vcc_refresh	= en7572_vcc_refresh,
 	.bias_refresh	= en7572_bias_refresh,
@@ -448,16 +468,11 @@ static int en7572_probe(struct i2c_client *client)
 	if (priv->bob_valid)
 		en7572_adaptive_pon(priv, 0);
 
-	ret = lddla_hwmon_register(&priv->lddla);
+	ret = lddla_frontend_register(&priv->lddla);
 	if (ret)
 		return ret;
 	lddla_debugfs_init(&priv->lddla);
 
-	ret = lddla_sfp_init(&priv->lddla);
-	if (ret) {
-		lddla_debugfs_remove(&priv->lddla);
-		return ret;
-	}
 
 	INIT_DELAYED_WORK(&priv->tick_work, en7572_tick_work);
 	schedule_delayed_work(&priv->tick_work, HZ);
@@ -469,7 +484,6 @@ static void en7572_remove(struct i2c_client *client)
 	struct en7572_priv *priv = i2c_get_clientdata(client);
 
 	cancel_delayed_work_sync(&priv->tick_work);
-	lddla_sfp_remove(&priv->lddla);
 	lddla_debugfs_remove(&priv->lddla);
 }
 
