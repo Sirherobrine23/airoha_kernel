@@ -3,7 +3,7 @@
  * Airoha EN7572 / AN8901 xPON LDDLA controller driver.
  *
  * Per-device state and internal API.  The shared transport-agnostic
- * scaffolding (hwmon, virtual SFP, debugfs, module entry) lives in the
+ * scaffolding (hwmon, optical frontend, debugfs, module entry) lives in the
  * airoha_lddla core; this holds the EN7572-specific MD32 firmware loader, the
  * A0/A2 I2C transport, the SFF-8472 readback and the runtime control loops.
  *
@@ -39,11 +39,8 @@ struct en7572_priv {
 	int variant;			/* EN7572_VARIANT_* */
 	const char *fw_pm;		/* MD32 program-memory image */
 	const char *fw_dm;		/* MD32 data-memory image */
-	const char *fw_bob;		/* calibration (BOB) table */
 
 	bool mcu_ready;			/* firmware loaded and MD32 released */
-	bool bob_valid;			/* a BOB calibration table was loaded */
-	u8 bob[EN7572_BOB_SIZE];	/* in-memory BOB table mirror */
 
 	/* reduce-Imod high-temperature loop state (en7572_loop.c). */
 	bool ri_assert;

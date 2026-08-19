@@ -926,10 +926,6 @@ static int gn25l95_probe(struct i2c_client *client)
 	if (ret)
 		return dev_err_probe(dev, ret, "failed to register hwmon\n");
 
-	ret = devm_optical_frontend_sfp_register(priv->frontend);
-	if (ret)
-		return dev_err_probe(dev, ret,
-				     "failed to register virtual SFP bus\n");
 
 	gn25l95_debugfs_init(priv);
 	schedule_delayed_work(&priv->tick_work, HZ);
