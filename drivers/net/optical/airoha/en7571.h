@@ -26,6 +26,7 @@
 
 /* Driver version reported in diagnostics. */
 #define EN7571_VERSION			3
+#define EN7571_DEFAULT_FW		"airoha/en7571_bob.bin"
 
 /*
  * Per-device state for one EN7571 LDDLA controller.  The shared airoha_lddla

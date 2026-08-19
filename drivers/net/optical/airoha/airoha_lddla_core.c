@@ -4,26 +4,17 @@
  * controllers used with Airoha/EcoNet xPON MACs.
  *
  * Provides the common I2C transport, the bounded ADC/I2C lock, the calibration
- * firmware store, the hwmon registration, the virtual SFP bus and the single
+ * firmware store, hwmon registration and the single
  * module entry point that registers whichever chip drivers are configured in.
  * The per-chip drivers supply a struct airoha_lddla_ops for the live readback.
  *
  * Bus attachment
  * ==============
- * The driver sits on two I2C buses with opposite roles:
- *
- *  - On the real I2C bus it is a *client*.  The LDDLA is a physical slave at
- *    7-bit address 0x70, described in the device tree as "airoha,en7570" or
- *    "airoha,en7571" (or matched by the i2c_device_id table); the per-chip
- *    i2c_driver binds to it and the transport helpers below issue master
- *    transactions to 0x70.
- *
- *  - To publish its diagnostics it registers a *virtual* I2C adapter
- *    (lddla_sfp_init()) on which it plays the *slave* side.  The adapter's
- *    master_xfer emulates the two EEPROM-style slaves that a pluggable SFP
- *    exposes - the MSA serial-ID ROM at 0x50 and the SFF-8472 diagnostics at
- *    0x51 - so the standard SFP / phylink stack (or userspace i2cdev) can read
- *    this soldered-down module as if it were a real SFP.
+ * The driver is an I2C client.  The LDDLA is a physical slave at
+ * 7-bit address 0x70, described in the device tree as "airoha,en7570" or
+ * "airoha,en7571" (or matched by the i2c_device_id table); the per-chip
+ * i2c_driver binds to it and the transport helpers below issue master
+ * transactions to 0x70.
  *
  * Locking: every top-level entry point (probe/init, the 1 Hz worker, hwmon and
  * debugfs callbacks) holds lddla->lock for the whole operation, which keeps the
@@ -37,7 +28,7 @@
 #include <linux/i2c.h>
 #include <linux/jiffies.h>
 #include <linux/module.h>
-#include <linux/of.h>
+#include <linux/nvmem-consumer.h>
 #include <linux/sched/signal.h>
 #include <linux/seq_file.h>
 #include <linux/slab.h>
@@ -45,6 +36,8 @@
 #include <linux/unaligned.h>
 
 #include "airoha_lddla.h"
+
+#define AIROHA_LDDLA_NVMEM_CELL "calibration"
 
 /* ------------------------------------------------------------------ */
 /* I2C transport							      */
@@ -211,65 +204,236 @@ int lddla_lock(struct airoha_lddla *lddla)
 }
 
 /* ------------------------------------------------------------------ */
-/* Calibration store						      */
+/* Shared BOB / calibration store                                     */
 /* ------------------------------------------------------------------ */
 
+static bool lddla_bob_magic_valid(u32 magic)
+{
+	return (magic & AIROHA_LDDLA_BOB_MAGIC_COMMON_MASK) ==
+	       AIROHA_LDDLA_BOB_MAGIC_COMMON_MIN;
+}
+
+static u8 lddla_bob_magic_chip_id(u32 magic)
+{
+	return magic & AIROHA_LDDLA_BOB_MAGIC_CHIP_MASK;
+}
+
+static u8 lddla_bob_magic_profile(u32 magic)
+{
+	return (magic & AIROHA_LDDLA_BOB_MAGIC_PROFILE_MASK) >> 24;
+}
+
+/*
+ * Detect the byte order used by a factory BOB image from the PON magic at
+ * byte 0x94.  Source images found in flash/NVMEM are known to exist in both
+ * word orders, so never infer the format from the CPU endianness.
+ */
+static int lddla_bob_check(struct airoha_lddla *lddla, const u8 *data,
+			   size_t len,
+			   enum airoha_lddla_bob_endian *endian,
+			   u32 *magic)
+{
+	u32 le, be;
+	bool le_match, be_match;
+
+	if (len < AIROHA_LDDLA_BOB_MAGIC_OFFSET + sizeof(u32))
+		return -EINVAL;
+
+	le = get_unaligned_le32(data + AIROHA_LDDLA_BOB_MAGIC_OFFSET);
+	be = get_unaligned_be32(data + AIROHA_LDDLA_BOB_MAGIC_OFFSET);
+	le_match = lddla_bob_magic_valid(le);
+	be_match = lddla_bob_magic_valid(be);
+
+	dev_dbg(lddla->dev,
+		"BOB magic: little-endian 0x%08x, big-endian 0x%08x\n",
+		le, be);
+
+	if (le_match == be_match) {
+		dev_err(lddla->dev,
+			"unable to determine BOB byte order from Airoha signature at %#x\n",
+			AIROHA_LDDLA_BOB_MAGIC_OFFSET);
+		return -EINVAL;
+	}
+
+	if (le_match) {
+		*endian = AIROHA_LDDLA_BOB_ENDIAN_LITTLE;
+		*magic = le;
+	} else {
+		*endian = AIROHA_LDDLA_BOB_ENDIAN_BIG;
+		*magic = be;
+	}
+
+	return 0;
+}
+
+static int lddla_bob_import(struct airoha_lddla *lddla, const u8 *data,
+			    size_t len, const char *source)
+{
+	enum airoha_lddla_bob_endian endian;
+	u32 magic;
+	size_t expected = lddla->ops->bob_size;
+	size_t i;
+	int ret;
+
+	if (!expected || expected > sizeof(lddla->bob))
+		return -EINVAL;
+	if (len < expected) {
+		dev_err(lddla->dev, "%s BOB is too small (%zu < %zu bytes)\n",
+			source, len, expected);
+		return -EINVAL;
+	}
+	if (len > expected)
+		dev_warn(lddla->dev,
+			 "%s BOB has %zu extra bytes; ignoring them\n",
+			 source, len - expected);
+
+	ret = lddla_bob_check(lddla, data, expected, &endian, &magic);
+	if (ret)
+		return ret;
+
+	memset(lddla->bob, 0xff, sizeof(lddla->bob));
+	if (endian == AIROHA_LDDLA_BOB_ENDIAN_LITTLE) {
+		memcpy(lddla->bob, data, expected);
+	} else {
+		/* Normalize every 32-bit factory word to little-endian bytes. */
+		for (i = 0; i + sizeof(u32) <= expected; i += sizeof(u32))
+			put_unaligned_le32(get_unaligned_be32(data + i),
+					   lddla->bob + i);
+		if (i < expected)
+			memcpy(lddla->bob + i, data + i, expected - i);
+	}
+
+	lddla->bob_len = expected;
+	lddla->bob_valid = true;
+	lddla->bob_source_endian = endian;
+	lddla->bob_magic = magic;
+	lddla->bob_chip_id = lddla_bob_magic_chip_id(magic);
+	lddla->bob_profile = lddla_bob_magic_profile(magic);
+
+	dev_info(lddla->dev,
+		 "loaded %zu-byte %s-endian BOB from %s: magic 0x%08x, chip-id 0x%02x, profile 0x%02x\n",
+		 expected,
+		 endian == AIROHA_LDDLA_BOB_ENDIAN_BIG ? "big" : "little",
+		 source, magic, lddla->bob_chip_id, lddla->bob_profile);
+	return 0;
+}
+
+#if IS_REACHABLE(CONFIG_NVMEM)
+static int lddla_bob_load_nvmem(struct airoha_lddla *lddla)
+{
+	struct nvmem_cell *cell;
+	void *buf;
+	size_t len;
+	int ret;
+
+	cell = nvmem_cell_get(lddla->dev, AIROHA_LDDLA_NVMEM_CELL);
+	if (IS_ERR(cell)) {
+		ret = PTR_ERR(cell);
+		if (ret == -ENOENT || ret == -EOPNOTSUPP)
+			return -ENOENT;
+		return ret;
+	}
+
+	buf = nvmem_cell_read(cell, &len);
+	nvmem_cell_put(cell);
+	if (IS_ERR(buf))
+		return PTR_ERR(buf);
+
+	ret = lddla_bob_import(lddla, buf, len, "NVMEM");
+	kfree(buf);
+	return ret;
+}
+#else
+static int lddla_bob_load_nvmem(struct airoha_lddla *lddla)
+{
+	return -ENOENT;
+}
+#endif
+
+static int lddla_bob_load_firmware(struct airoha_lddla *lddla)
+{
+	const struct firmware *fw;
+	int ret;
+
+	if (!lddla->bob_fw_name)
+		return -ENOENT;
+
+	ret = request_firmware_direct(&fw, lddla->bob_fw_name, lddla->dev);
+	if (ret)
+		return ret;
+
+	ret = lddla_bob_import(lddla, fw->data, fw->size,
+			       lddla->bob_fw_name);
+	release_firmware(fw);
+	return ret;
+}
+
 /**
- * lddla_flash_read() - read a calibration word from the in-memory mirror.
+ * lddla_bob_load() - load and normalize an Airoha factory BOB image.
  * @lddla: device
- * @off:   byte offset into the blob (a multiple of 4)
  *
- * Return: the 32-bit word, or AIROHA_LDDLA_FLASH_ERASED if @off is out of range.
+ * NVMEM is preferred over a firmware file.  The magic at byte 0x94 identifies
+ * both the EN757x family member and whether the source stores 32-bit words in
+ * little or big endian.  The in-memory image is always normalized to
+ * little-endian bytes, so the chip algorithms behave identically on LE and BE
+ * hosts and no userspace byte-swap step is required.
+ *
+ * Missing calibration is non-fatal and leaves an erased mirror.  A present but
+ * malformed or wrong-chip BOB is rejected.
+ */
+int lddla_bob_load(struct airoha_lddla *lddla)
+{
+	int ret;
+
+	lddla_flash_defaults(lddla);
+
+	ret = lddla_bob_load_nvmem(lddla);
+	if (!ret)
+		return 0;
+	if (ret != -ENOENT)
+		return ret;
+
+	ret = lddla_bob_load_firmware(lddla);
+	if (!ret)
+		return 0;
+	if (ret != -ENOENT && ret != -ENODEV) {
+		dev_err(lddla->dev, "failed to load BOB firmware '%s': %d\n",
+			lddla->bob_fw_name ?: "<none>", ret);
+		return ret;
+	}
+
+	dev_warn(lddla->dev,
+		 "calibration BOB '%s' not found (%d); using erased defaults\n",
+		 lddla->bob_fw_name ?: "<none>", ret);
+	return 0;
+}
+
+/**
+ * lddla_flash_read() - read one normalized calibration word.
+ * @lddla: device
+ * @off: byte offset into the BOB (a multiple of four)
+ *
+ * Return: host-endian value of the canonical little-endian BOB word, or the
+ * erased value if @off is outside the loaded image.
  */
 u32 lddla_flash_read(struct airoha_lddla *lddla, u32 off)
 {
-	u32 idx = off >> 2;
-
-	if (idx >= AIROHA_LDDLA_FLASH_WORDS)
+	if (off & (sizeof(u32) - 1))
 		return AIROHA_LDDLA_FLASH_ERASED;
-	return lddla->flash[idx];
+	if (off + sizeof(u32) > lddla->bob_len)
+		return AIROHA_LDDLA_FLASH_ERASED;
+
+	return get_unaligned_le32(lddla->bob + off);
 }
 
-/* Fill the first 40 words with the "erased" pattern. */
 void lddla_flash_defaults(struct airoha_lddla *lddla)
 {
-	int i;
+	size_t size = lddla->ops ? lddla->ops->bob_size : 0;
 
-	for (i = 0; i < 40; i++)
-		lddla->flash[i] = AIROHA_LDDLA_FLASH_ERASED;
-}
-
-/**
- * lddla_flash_load() - load the calibration NVM into the in-memory mirror.
- * @lddla: device
- *
- * A missing firmware blob is non-fatal: the erased defaults are installed.
- * Return: 0 (always; load failures fall back to defaults).
- */
-int lddla_flash_load(struct airoha_lddla *lddla)
-{
-	const struct firmware *fw;
-	size_t words, i;
-	int ret;
-
-	ret = request_firmware_direct(&fw, lddla->fw_name, lddla->dev);
-	if (ret) {
-		dev_warn(lddla->dev,
-			 "calibration NVM '%s' not found (%d); using defaults\n",
-			 lddla->fw_name, ret);
-		lddla_flash_defaults(lddla);
-		return 0;
-	}
-
-	memset32(lddla->flash, AIROHA_LDDLA_FLASH_ERASED, AIROHA_LDDLA_FLASH_WORDS);
-	words = min_t(size_t, fw->size / sizeof(u32), AIROHA_LDDLA_FLASH_WORDS);
-	for (i = 0; i < words; i++)
-		lddla->flash[i] = get_unaligned_le32(fw->data + i * sizeof(u32));
-
-	release_firmware(fw);
-	dev_dbg(lddla->dev, "loaded %zu calibration words from '%s'\n",
-		words, lddla->fw_name);
-	return 0;
+	memset(lddla->bob, 0xff, sizeof(lddla->bob));
+	lddla->bob_len = min_t(size_t, size, sizeof(lddla->bob));
+	lddla->bob_valid = false;
+	lddla->bob_source_endian = AIROHA_LDDLA_BOB_ENDIAN_UNKNOWN;
 }
 
 const struct optical_frontend_thresholds airoha_lddla_default_thresholds = {
@@ -422,7 +586,6 @@ int lddla_frontend_register(struct airoha_lddla *lddla)
 {
 	const struct airoha_lddla_ops *ops = lddla->ops;
 	struct optical_frontend_desc *desc = &lddla->frontend_desc;
-	int ret;
 
 	memset(desc, 0, sizeof(*desc));
 	desc->name = ops->name;
@@ -462,11 +625,7 @@ int lddla_frontend_register(struct airoha_lddla *lddla)
 	if (IS_ERR(lddla->frontend))
 		return PTR_ERR(lddla->frontend);
 
-	ret = devm_optical_frontend_hwmon_register(lddla->frontend);
-	if (ret)
-		return ret;
-
-	return devm_optical_frontend_sfp_register(lddla->frontend);
+	return devm_optical_frontend_hwmon_register(lddla->frontend);
 }
 
 /* ------------------------------------------------------------------ */
@@ -490,6 +649,11 @@ static int airoha_lddla_diag_show(struct seq_file *s, void *unused)
 	seq_printf(s, "ddmi tx_pwr: 0x%04x\n", lddla->ddmi_tx_power);
 	seq_printf(s, "ddmi rx_pwr: 0x%04x\n", lddla->ddmi_rx_power);
 	seq_printf(s, "alarm:       0x%04x\n", lddla->alarm);
+	seq_printf(s, "bob:         %s, %zu bytes, source %s-endian\n",
+		   lddla->bob_valid ? "valid" : "not loaded", lddla->bob_len,
+		   lddla->bob_source_endian == AIROHA_LDDLA_BOB_ENDIAN_BIG ?
+		   "big" : lddla->bob_source_endian == AIROHA_LDDLA_BOB_ENDIAN_LITTLE ?
+		   "little" : "unknown");
 	if (lddla->ops->diag_show)
 		lddla->ops->diag_show(lddla, s);
 	mutex_unlock(&lddla->lock);
@@ -505,8 +669,9 @@ static int airoha_lddla_flash_show(struct seq_file *s, void *unused)
 	ret = lddla_lock(lddla);
 	if (ret)
 		return ret;
-	for (i = 0; i < AIROHA_LDDLA_FLASH_WORDS; i++)
-		seq_printf(s, "0x%03x = 0x%08x\n", i * 4, lddla->flash[i]);
+	for (i = 0; i + sizeof(u32) <= lddla->bob_len; i += sizeof(u32))
+		seq_printf(s, "0x%03x = 0x%08x\n", i,
+			   lddla_flash_read(lddla, i));
 	mutex_unlock(&lddla->lock);
 	return 0;
 }

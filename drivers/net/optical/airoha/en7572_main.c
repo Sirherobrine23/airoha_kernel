@@ -259,15 +259,17 @@ static int en7572_load_firmware(struct en7572_priv *priv)
 			  EN7572_MD32_DM_DATA, dm, EN7572_DM_SIZE, 0);
 	dev_dbg(priv->lddla.dev, "MD32 PM/DM loaded\n");
 
-	if (en7572_request_image(priv, priv->fw_bob, priv->bob, EN7572_BOB_SIZE)) {
+	ret = lddla_bob_load(&priv->lddla);
+	if (ret)
+		goto out;
+	if (priv->lddla.bob_valid) {
+		en7572_load_block(priv, EN7572_MD32_DM_CFG, EN7572_MD32_DM_ADDR,
+				  EN7572_MD32_DM_DATA, priv->lddla.bob,
+				  EN7572_BOB_SIZE, EN7572_MD32_BOB_DM_OFFSET);
+		dev_dbg(priv->lddla.dev, "BOB table loaded\n");
+	} else {
 		dev_warn(priv->lddla.dev,
 			 "no BOB calibration table; running uncalibrated\n");
-	} else {
-		en7572_load_block(priv, EN7572_MD32_DM_CFG, EN7572_MD32_DM_ADDR,
-				  EN7572_MD32_DM_DATA, priv->bob, EN7572_BOB_SIZE,
-				  EN7572_MD32_BOB_DM_OFFSET);
-		priv->bob_valid = true;
-		dev_dbg(priv->lddla.dev, "BOB table loaded\n");
 	}
 	ret = 0;
 out:
@@ -347,7 +349,7 @@ int en7572_init(struct en7572_priv *priv)
  * en7572_tick() - one pass of the 1 Hz worker.
  * @priv: device
  *
- * Refreshes the cached SFF-8472 diagnostics (for hwmon and the virtual SFP),
+ * Refreshes the cached SFF-8472 diagnostics (for hwmon and the optical frontend),
  * re-evaluates the alarm bitmap, and services the firmware-assist control
  * loops (each self-gates on its enable bit and cadence).  Called with
  * lddla->lock held.
@@ -410,6 +412,7 @@ static const struct airoha_lddla_ops en7572_ops = {
 	.date_code	= "000000",
 	.protocols	= BIT(OPTICAL_FRONTEND_PROTO_GPON),
 	.thresholds	= &en7572_thresholds,
+	.bob_size	= EN7572_BOB_SIZE,
 	.temp_refresh	= en7572_temp_refresh,
 	.vcc_refresh	= en7572_vcc_refresh,
 	.bias_refresh	= en7572_bias_refresh,
@@ -454,7 +457,9 @@ static int en7572_probe(struct i2c_client *client)
 		priv->variant = EN7572_VARIANT_EN7572;
 	priv->fw_pm = en7572_fw[priv->variant].pm;
 	priv->fw_dm = en7572_fw[priv->variant].dm;
-	priv->fw_bob = en7572_fw[priv->variant].bob;
+	if (device_property_read_string(&client->dev, "firmware-name",
+					&priv->lddla.bob_fw_name))
+		priv->lddla.bob_fw_name = en7572_fw[priv->variant].bob;
 
 	ret = en7572_detect(priv);
 	if (ret)
@@ -465,7 +470,7 @@ static int en7572_probe(struct i2c_client *client)
 		return ret;
 
 	/* Load the default Tx eye (eye 0) from the BOB table, if calibrated. */
-	if (priv->bob_valid)
+	if (priv->lddla.bob_valid)
 		en7572_adaptive_pon(priv, 0);
 
 	ret = lddla_frontend_register(&priv->lddla);

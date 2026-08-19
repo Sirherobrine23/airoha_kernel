@@ -24,12 +24,12 @@
 /* BOB calibration-table halves: eye 1 (A0) and eye 0 (A2). */
 static u8 bob_a0(struct en7572_priv *priv, int off)
 {
-	return priv->bob[EN7572_BOB_A0(off)];
+	return priv->lddla.bob[EN7572_BOB_A0(off)];
 }
 
 static u8 bob_a2(struct en7572_priv *priv, int off)
 {
-	return priv->bob[EN7572_BOB_A2(off)];
+	return priv->lddla.bob[EN7572_BOB_A2(off)];
 }
 
 /* Program one calibrated Tx eye into the loop-control CSRs. */
@@ -64,7 +64,7 @@ static void en7572_load_eye(struct en7572_priv *priv,
 
 	/* Refresh the firmware's Tx-power DDMI cal point for this eye. */
 	en7572_wr(priv, EN7572_DEV_A2, EN7572_BOB_TSSI_CAL_1,
-		  &priv->bob[tssi_off], 4);
+		  &priv->lddla.bob[tssi_off], 4);
 
 	en7572_bit_wr(priv, EN7572_RG_LOOP_EN, 0, 0, 0);	/* restart loop */
 	en7572_bit_wr(priv, EN7572_RG_LOOP_EN, 0, 0, 1);

@@ -16,20 +16,14 @@
 #include <linux/delay.h>
 #include <linux/err.h>
 #include <linux/i2c.h>
-#include <linux/kconfig.h>
 #include <linux/mod_devicetable.h>
 #include <linux/module.h>
-#include <linux/nvmem-consumer.h>
 #include <linux/of.h>
 #include <linux/property.h>
 #include <linux/seq_file.h>
 #include <linux/slab.h>
-#include <linux/unaligned.h>
 
 #include "en7571.h"
-
-#define EN7571_DEFAULT_FW	"airoha/en7571_cal.bin"
-#define EN7571_NVMEM_CELL	"calibration"
 
 /* ------------------------------------------------------------------ */
 /* Detection and reset						      */
@@ -122,80 +116,6 @@ static void en7571_load_config(struct en7571_priv *priv)
 	w = lddla_flash_read(&priv->lddla, EN7571_FL_T_APD);
 	priv->t_apd = (w != EN7571_FLASH_ERASED) ? max_t(u32, w, EN7571_T_APD_MIN)
 						 : EN7571_T_APD_DEFAULT;
-}
-
-#if IS_REACHABLE(CONFIG_NVMEM)
-static int en7571_load_nvmem(struct en7571_priv *priv)
-{
-	struct airoha_lddla *lddla = &priv->lddla;
-	struct nvmem_cell *cell;
-	const u8 *data;
-	size_t words, len, i;
-	void *buf;
-	int ret;
-
-	cell = nvmem_cell_get(lddla->dev, EN7571_NVMEM_CELL);
-	if (IS_ERR(cell)) {
-		ret = PTR_ERR(cell);
-		if (ret == -ENOENT || ret == -EOPNOTSUPP)
-			return 0;
-
-		return ret;
-	}
-
-	buf = nvmem_cell_read(cell, &len);
-	nvmem_cell_put(cell);
-	if (IS_ERR(buf))
-		return PTR_ERR(buf);
-
-	if (len < sizeof(u32)) {
-		dev_err(lddla->dev, "calibration NVMEM cell '%s' is too small (%zu bytes)\n",
-			EN7571_NVMEM_CELL, len);
-		kfree(buf);
-		return -EINVAL;
-	}
-
-	data = buf;
-	for (i = 0; i < AIROHA_LDDLA_FLASH_WORDS; i++)
-		lddla->flash[i] = AIROHA_LDDLA_FLASH_ERASED;
-
-	words = min_t(size_t, len / sizeof(u32), AIROHA_LDDLA_FLASH_WORDS);
-	for (i = 0; i < words; i++)
-		lddla->flash[i] = get_unaligned_le32(data + i * sizeof(u32));
-
-	if (len > AIROHA_LDDLA_FLASH_WORDS * sizeof(u32))
-		dev_warn(lddla->dev,
-			 "calibration NVMEM cell '%s' has %zu extra bytes; ignoring\n",
-			 EN7571_NVMEM_CELL,
-			 len - AIROHA_LDDLA_FLASH_WORDS * sizeof(u32));
-	else if (len % sizeof(u32))
-		dev_warn(lddla->dev,
-			 "calibration NVMEM cell '%s' has %zu trailing bytes; ignoring\n",
-			 EN7571_NVMEM_CELL, len % sizeof(u32));
-
-	kfree(buf);
-	dev_dbg(lddla->dev, "loaded %zu calibration words from NVMEM cell '%s'\n",
-		words, EN7571_NVMEM_CELL);
-	return 1;
-}
-#else
-static int en7571_load_nvmem(struct en7571_priv *priv)
-{
-	return -E;
-}
-#endif
-
-static int en7571_flash_load(struct en7571_priv *priv)
-{
-	int ret;
-
-	ret = en7571_load_nvmem(priv);
-	if (ret > 0)
-		return 0;
-	if (ret)
-		return ret;
-
-	return lddla_flash_load(&priv->lddla);
 }
 
 /**
@@ -472,6 +392,7 @@ static const struct airoha_lddla_ops en7571_ops = {
 	.protocols = BIT(OPTICAL_FRONTEND_PROTO_EPON) |
 		     BIT(OPTICAL_FRONTEND_PROTO_GPON),
 	.thresholds = &airoha_lddla_default_thresholds,
+	.bob_size = AIROHA_LDDLA_FLASH_WORDS * sizeof(u32),
 	.temp_refresh = en7571_op_temp,
 	.bosa_temp_refresh = en7571_op_bosa_temp,
 	.vcc_refresh = en7571_op_vcc,
@@ -527,8 +448,9 @@ static int en7571_probe(struct i2c_client *client)
 	i2c_set_clientdata(client, priv);
 	en7571_set_defaults(priv);
 
-	if (device_property_read_string(dev, "firmware-name", &priv->lddla.fw_name))
-		priv->lddla.fw_name = EN7571_DEFAULT_FW;
+	if (device_property_read_string(dev, "firmware-name",
+					&priv->lddla.bob_fw_name))
+		priv->lddla.bob_fw_name = EN7571_DEFAULT_FW;
 
 	ret = en7571_detect(priv);
 	if (ret < 0)
@@ -536,7 +458,7 @@ static int en7571_probe(struct i2c_client *client)
 	if (!ret)
 		return dev_err_probe(dev, -ENODEV, "EN7571 silicon not found\n");
 
-	ret = en7571_flash_load(priv);
+	ret = lddla_bob_load(&priv->lddla);
 	if (ret)
 		return dev_err_probe(dev, ret, "calibration load failed\n");
 

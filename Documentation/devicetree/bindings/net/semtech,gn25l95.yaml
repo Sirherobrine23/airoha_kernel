@@ -29,6 +29,12 @@ properties:
     description:
       The GN25L95 exposes one optical frontend provider.
 
+  tx-disable-gpios:
+    $ref: /schemas/types.yaml#/definitions/phandle-array
+    maxItems: 1
+    description:
+      GPIO connected to the optical transmitter disable input.
+
   firmware-name:
     $ref: /schemas/types.yaml#/definitions/string
     description: |
@@ -36,26 +42,6 @@ properties:
       uses the MediaTek/EcoNet vendor /bosa/hwconfig layout and is required
       when STATUS_0 reports that no external EEPROM is present. If omitted,
       the driver requests semtech/gn25l95-hwconfig.bin.
-
-  i2c-sfp:
-    type: object
-    description:
-      Firmware node assigned to the virtual SFP I2C adapter exported by the
-      driver.  A soldered optical frontend can reference this node from an
-      sff,sfp node using its i2c-bus property.
-
-    properties:
-      '#address-cells':
-        const: 1
-
-      '#size-cells':
-        const: 0
-
-    required:
-      - '#address-cells'
-      - '#size-cells'
-
-    additionalProperties: false
 
 required:
   - compatible
@@ -75,10 +61,5 @@ examples:
             reg = <0x51>;
             #optical-frontend-cells = <0>;
             firmware-name = "semtech/gpt2741-gn25l95-hwconfig.bin";
-
-            sfp_i2c: i2c-sfp {
-                #address-cells = <1>;
-                #size-cells = <0>;
-            };
         };
     };

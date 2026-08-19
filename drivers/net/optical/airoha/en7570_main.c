@@ -15,20 +15,14 @@
 #include <linux/delay.h>
 #include <linux/err.h>
 #include <linux/i2c.h>
-#include <linux/kconfig.h>
 #include <linux/mod_devicetable.h>
 #include <linux/module.h>
-#include <linux/nvmem-consumer.h>
 #include <linux/of.h>
 #include <linux/property.h>
 #include <linux/seq_file.h>
 #include <linux/slab.h>
-#include <linux/unaligned.h>
 
 #include "en7570.h"
-
-#define EN7570_DEFAULT_FW	"airoha/en7570_cal.bin"
-#define EN7570_NVMEM_CELL	"calibration"
 
 /* ------------------------------------------------------------------ */
 /* Detection and reset						      */
@@ -367,6 +361,7 @@ static const struct airoha_lddla_ops en7570_ops = {
 	.protocols = BIT(OPTICAL_FRONTEND_PROTO_EPON) |
 		     BIT(OPTICAL_FRONTEND_PROTO_GPON),
 	.thresholds = &airoha_lddla_default_thresholds,
+	.bob_size = AIROHA_LDDLA_FLASH_WORDS * sizeof(u32),
 	.temp_refresh = en7570_op_temp,
 	.bosa_temp_refresh = en7570_op_bosa_temp,
 	.vcc_refresh = en7570_op_vcc,
@@ -419,76 +414,6 @@ static void en7570_set_defaults(struct en7570_priv *priv)
 	priv->apd_voltage_mv = EN7570_APD_KNEE_MV_DEF;
 }
 
-#if IS_REACHABLE(CONFIG_NVMEM)
-static int en7570_load_nvmem(struct en7570_priv *priv)
-{
-	struct airoha_lddla *lddla = &priv->lddla;
-	const size_t expected = sizeof(lddla->flash);
-	struct nvmem_cell *cell;
-	const u8 *data;
-	void *buf;
-	size_t len, i;
-	u32 magic;
-	int ret;
-
-	cell = nvmem_cell_get(lddla->dev, EN7570_NVMEM_CELL);
-	if (IS_ERR(cell)) {
-		ret = PTR_ERR(cell);
-		if (ret == -ENOENT || ret == -EOPNOTSUPP)
-			return 0;
-
-		return ret;
-	}
-
-	buf = nvmem_cell_read(cell, &len);
-	nvmem_cell_put(cell);
-	if (IS_ERR(buf))
-		return PTR_ERR(buf);
-
-	if (len != expected) {
-		dev_err(lddla->dev,
-			"calibration NVMEM cell '%s' has %zu bytes (expected %zu)\n",
-			EN7570_NVMEM_CELL, len, expected);
-		ret = -EINVAL;
-		goto out_free;
-	}
-
-	data = buf;
-	for (i = 0; i < AIROHA_LDDLA_FLASH_WORDS; i++)
-		lddla->flash[i] = get_unaligned_be32(data + i * sizeof(u32));
-
-	magic = lddla_flash_read(lddla, EN7570_FL_MAGIC);
-	if (magic != EN7570_MAGIC_GPON && magic != EN7570_MAGIC_EPON) {
-		dev_err(lddla->dev,
-			"calibration NVMEM cell '%s' has invalid magic 0x%08x\n",
-			EN7570_NVMEM_CELL, magic);
-		ret = -EINVAL;
-		goto out_free;
-	}
-
-	dev_info(lddla->dev,
-		 "loaded %zu-byte big-endian calibration from NVMEM cell '%s'\n",
-		 len, EN7570_NVMEM_CELL);
-	ret = 1;
-
-out_free:
-	kfree(buf);
-	return ret;
-}
-#else
-static int en7570_load_nvmem(struct en7570_priv *priv)
-{
-	return 0;
-}
-#endif
-
-static int en7570_flash_load(struct en7570_priv *priv)
-{
-	int ret = en7570_load_nvmem(priv);
-
-	return ret > 0 ? 0 : ret ? ret : lddla_flash_load(&priv->lddla);
-}
-
 static int en7570_probe(struct i2c_client *client)
 {
 	struct device *dev = &client->dev;
@@ -510,8 +435,9 @@ static int en7570_probe(struct i2c_client *client)
 	i2c_set_clientdata(client, priv);
 	en7570_set_defaults(priv);
 
-	if (device_property_read_string(dev, "firmware-name", &priv->lddla.fw_name))
-		priv->lddla.fw_name = EN7570_DEFAULT_FW;
+	if (device_property_read_string(dev, "firmware-name",
+					&priv->lddla.bob_fw_name))
+		priv->lddla.bob_fw_name = EN7570_DEFAULT_FW;
 
 	ret = en7570_detect(priv);
 	if (ret < 0)
@@ -519,7 +445,7 @@ static int en7570_probe(struct i2c_client *client)
 	if (!ret)
 		return dev_err_probe(dev, -ENODEV, "EN7570 silicon not found\n");
 
-	ret = en7570_flash_load(priv);
+	ret = lddla_bob_load(&priv->lddla);
 	if (ret)
 		return ret;
 
