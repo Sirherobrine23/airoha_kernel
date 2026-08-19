@@ -4,7 +4,6 @@ config AIROHA_LDDLA_PHY
 	select FW_LOADER
 	select PHY_COMMON_PROPS
 	select OPTICAL_FRONTEND
-	select OPTICAL_FRONTEND_SFP_COMPAT
 	default n
 	help
 	  Support Airoha EN757x laser-driver / limiting-amplifier devices as

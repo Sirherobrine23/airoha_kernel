@@ -19440,6 +19440,7 @@ OPTICAL FRONTEND SUBSYSTEM
 M:	Matheus Sampaio Queiroga <srherobrine20@gmail.com>
 L:	netdev@vger.kernel.org
 S:	Maintained
+F:	Documentation/devicetree/bindings/net/optical-frontend.yaml
 F:	Documentation/devicetree/bindings/net/semtech,gn25l95.yaml
 F:	Documentation/driver-api/optical-frontend.rst
 F:	drivers/net/optical/
