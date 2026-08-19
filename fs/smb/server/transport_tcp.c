@@ -544,6 +544,12 @@ static int create_socket(struct interface *iface)
 	ksmbd_socket->sk->sk_rcvtimeo = KSMBD_TCP_RECV_TIMEOUT;
 	ksmbd_socket->sk->sk_sndtimeo = KSMBD_TCP_SEND_TIMEOUT;
 
+	/*
+	 * Accepted sockets inherit the listener's net reference. Keep TCP
+	 * timers alive after a kernel socket is released.
+	 */
+	sk_net_refcnt_upgrade(ksmbd_socket->sk);
+
 	ret = kernel_listen(ksmbd_socket, KSMBD_SOCKET_BACKLOG);
 	if (ret) {
 		pr_err("Port listen() error: %d\n", ret);
