@@ -8,6 +8,7 @@
 #include <linux/kconfig.h>
 #include <linux/types.h>
 
+struct attribute_group;
 struct device;
 struct fwnode_handle;
 struct optical_frontend;
@@ -152,6 +153,7 @@ struct optical_frontend_thresholds {
 /**
  * struct optical_frontend_desc - immutable provider description
  * @name: short driver/model name used by hwmon and diagnostics
+ * @type: frontend type string exposed through sysfs (for example "lddla")
  * @vendor_name: vendor string for SFF compatibility
  * @vendor_oui: vendor OUI for SFF compatibility
  * @part_number: part number for SFF compatibility
@@ -161,9 +163,11 @@ struct optical_frontend_thresholds {
  * @protocols: BIT(OPTICAL_FRONTEND_PROTO_*) bitmap
  * @thresholds: optional normalized alarm thresholds
  * @telemetry_cache_ms: core telemetry cache lifetime; zero disables caching
+ * @groups: optional provider-specific sysfs groups on the frontend class device
  */
 struct optical_frontend_desc {
 	const char *name;
+	const char *type;
 	const char *vendor_name;
 	u8 vendor_oui[3];
 	const char *part_number;
@@ -173,6 +177,7 @@ struct optical_frontend_desc {
 	u32 protocols;
 	const struct optical_frontend_thresholds *thresholds;
 	u32 telemetry_cache_ms;
+	const struct attribute_group **groups;
 };
 
 /**
@@ -211,6 +216,8 @@ devm_optical_frontend_get_by_fwnode(struct device *dev,
 				    const struct fwnode_handle *fwnode);
 
 void *optical_frontend_get_drvdata(struct optical_frontend *frontend);
+struct optical_frontend *optical_frontend_from_dev(struct device *dev);
+struct device *optical_frontend_get_device(struct optical_frontend *frontend);
 struct device *optical_frontend_get_provider(struct optical_frontend *frontend);
 const struct optical_frontend_desc *
 optical_frontend_get_desc(struct optical_frontend *frontend);
@@ -250,6 +257,18 @@ devm_optical_frontend_get_by_fwnode(struct device *dev,
 }
 
 static inline void *optical_frontend_get_drvdata(struct optical_frontend *frontend)
+{
+	return NULL;
+}
+
+static inline struct optical_frontend *
+optical_frontend_from_dev(struct device *dev)
+{
+	return NULL;
+}
+
+static inline struct device *
+optical_frontend_get_device(struct optical_frontend *frontend)
 {
 	return NULL;
 }

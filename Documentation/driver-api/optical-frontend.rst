@@ -89,3 +89,22 @@ before invoking the optional provider ``->tx_enable(false)`` callback.  Enable
 invokes ``->tx_enable(true)`` first and deasserts the GPIO only after that
 callback succeeds.  A provider which needs no additional register sequence
 may omit the callback and rely entirely on the GPIO.
+
+Sysfs and hwmon
+===============
+
+Every registered frontend appears below ``/sys/class/optical_frontend``.  The
+class attributes expose stable identity, selected/supported protocols and
+normalized state.  They are read-only: operational ownership remains with the
+MAC/PHY consumer rather than userspace.
+
+Physical measurements are not duplicated in the optical class.  Providers with
+telemetry register the generic hwmon bridge, which exposes temperature, supply
+voltage, laser bias, Tx/Rx power, thresholds and per-channel alarms using the
+standard hwmon ABI.  The frontend class device contains an ``hwmon`` symlink to
+that device.
+
+Providers may add read-only vendor-specific attribute groups through
+``struct optical_frontend_desc::groups``.  Airoha LDD/LA providers use this for
+``bob/`` metadata describing the normalized factory BOB image; Semtech and
+other providers are not required to implement this group.
