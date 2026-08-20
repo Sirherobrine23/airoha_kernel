@@ -1111,9 +1111,15 @@ static void gpon_load_aes_shadow(struct xpon_priv *priv, const u8 key[16],
 {
 	int i;
 
+	/*
+	 * The shadow key registers are laid out with the least significant
+	 * word first, so the key bytes go in reversed word order: word 0 takes
+	 * key[12..15]. Loading them straight through decrypts every downstream
+	 * frame with a byte-swapped key and the whole GEM port fails CRC.
+	 */
 	for (i = 0; i < 4; i++)
 		gpon_write(priv, GPON_AES_SHADOW_KEY0 + i * 4,
-			   get_unaligned_be32(key + i * 4));
+			   get_unaligned_be32(key + (3 - i) * 4));
 
 	gpon_write(priv, GPON_AES_CFG,
 		   switch_superframe & AES_KEY_SWITCH_CNT_MASK);
@@ -1248,6 +1254,14 @@ static int gpon_tcont_entity_to_index(struct xpon_priv *priv, u16 entity_id,
 
 	mutex_lock(&priv->tcont_lock);
 	found = gpon_find_tcont_entity_locked(priv, entity_id);
+	if (found < 0 && entity_id >= 0x8000 &&
+	    entity_id < 0x8000 + GPON_MAX_TCONT - 1) {
+		unsigned int fallback = (entity_id - 0x8000) + 1;
+
+		if (fallback < GPON_MAX_TCONT &&
+		    priv->tcont_alloc_id[fallback] != GPON_TCONT_UNASSIGNED)
+			found = fallback;
+	}
 	if (found >= 0)
 		*index = found;
 	mutex_unlock(&priv->tcont_lock);
@@ -1285,6 +1299,9 @@ static int gpon_set_gem_port_hw(struct xpon_priv *priv, u16 gem_port_id,
 
 	if (gem_port_id >= GPON_MAX_GEM_ID)
 		return -EINVAL;
+
+	if (gem_port_id == 0)
+		encrypted = false;
 
 	cfg = GEM_CMD_WRITE | gem_port_id;
 	if (valid)
@@ -1351,8 +1368,11 @@ static int gpon_set_alloc_id_hw(struct xpon_priv *priv, u16 alloc_id,
 	}
 
 	ret = gpon_config_tcont_hw(priv, index, alloc_id, true);
-	if (!ret)
+	if (!ret) {
 		priv->tcont_alloc_id[index] = alloc_id;
+		if (priv->tcont_entity_id[index] == GPON_TCONT_ENTITY_UNASSIGNED)
+			priv->tcont_entity_id[index] = 0x8000 + index - 1;
+	}
 out:
 	mutex_unlock(&priv->tcont_lock);
 	return ret;
@@ -1890,7 +1910,18 @@ static void gpon_cb_set_gem_encryption(void *hw_priv, u16 port_id,
 	struct xpon_priv *priv = hw_priv;
 	int ret;
 
-	ret = gpon_set_gem_port_hw(priv, port_id, true, encrypt_mode == 3);
+	/*
+	 * The OMCC is never encrypted in GPON (G.984.3 12.2), but this
+	 * Nokia/ALCL OLT announces encrypt=3 for GEM 0 as well as for the
+	 * service ports. Honouring that on GEM 0 decrypts a plaintext OMCC and
+	 * every OMCI frame fails, so the ONU never answers and the OLT
+	 * deactivates it. Exempt GEM 0 and take the OLT at its word everywhere
+	 * else: with the port left in the clear the service ports deliver
+	 * high-entropy frames with random MACs and nonsense ethertypes, which
+	 * is ciphertext handed up undecrypted.
+	 */
+	ret = gpon_set_gem_port_hw(priv, port_id, true,
+				   port_id && encrypt_mode == 3);
 	if (ret)
 		dev_err(priv->dev,
 			"failed to update GEM port %u encryption: %d\n",
@@ -1912,6 +1943,8 @@ static void gpon_cb_set_alloc_id(void *hw_priv, u16 alloc_id, bool allocate)
 	if (ret)
 		dev_err(priv->dev, "failed to %s Alloc-ID %u: %d\n",
 			allocate ? "assign" : "remove", alloc_id, ret);
+	else
+		airoha_gpon_omci_reconcile_services(&priv->omci);
 }
 
 int airoha_gpon_omci_hw_set_olt_profile(void *hw_priv,
@@ -2107,6 +2140,33 @@ int airoha_gpon_omci_hw_replace_service(void *hw_priv,
 	};
 	ret = gpon_tcont_entity_to_index(priv, service->tcont_entity_id,
 					 &tcont_index);
+	if (ret && service->alloc_id && service->alloc_id != 0xffff) {
+		unsigned int channel;
+
+		/*
+		 * A GPON restart clears the entity->index map in
+		 * gpon_dev_init(), but the OLT does not re-run OMCI when the
+		 * MIB data sync still matches: it only re-sends Assign_Alloc-ID
+		 * over PLOAM, which never reaches the OMCI agent.  The agent
+		 * then re-applies its retained service graph, every lookup here
+		 * returns -ENOENT, and because apply_services is all-or-nothing
+		 * the whole set is rolled back -- leaving an ONU in O5 with OMCI
+		 * up, service=0 and no datapath at all, permanently.
+		 *
+		 * The Alloc-ID is enough to rebuild it: program the T-CONT and
+		 * re-bind entity->index, which is exactly what a first-time
+		 * provisioning does.
+		 */
+		ret = gpon_set_omci_tcont_hw(priv, service->tcont_entity_id,
+					     service->alloc_id, true, &channel);
+		if (!ret) {
+			tcont_index = channel;
+			dev_info(priv->dev,
+				 "rebuilt T-CONT %#x (alloc-id %u) as channel %u after restart\n",
+				 service->tcont_entity_id, service->alloc_id,
+				 channel);
+		}
+	}
 	if (ret)
 		return ret;
 	cfg.tcont = tcont_index;

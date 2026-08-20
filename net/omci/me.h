@@ -20,12 +20,36 @@ struct omci_mib_object;
 #define OMCI_CLASS_MAC_BRIDGE_PORT_CONFIG_DATA	47
 #define OMCI_CLASS_VLAN_TAGGING_FILTER_DATA	84
 #define OMCI_CLASS_8021P_MAPPER		130
+
+/*
+ * 802.1p mapper instances seeded for the Nokia/ALCL profile. One per GEM
+ * interworking termination point: mapper 1 fronts GEM 256 (management and
+ * VoIP), mapper 2 fronts GEM 257 (high speed internet).
+ */
+#define OMCI_NOKIA_MAPPER_MGMT		1
+#define OMCI_NOKIA_MAPPER_HSI		2
 #define OMCI_CLASS_OLT_G		131
 #define OMCI_CLASS_NETWORK_ADDRESS	137
 #define OMCI_CLASS_AUTH_METHOD		148
 #define OMCI_CLASS_EXTENDED_VLAN	171
 #define OMCI_CLASS_ONU_G		256
 #define OMCI_CLASS_ONU2_G		257
+
+/*
+ * ONU2-G security capability and security mode, G.988 9.1.3: 1 selects
+ * AES-128, the only cipher GPON defines.
+ */
+#define OMCI_ONU2G_SECURITY_AES128	1
+
+/*
+ * ONU2-G connectivity capability, G.988 Table 9.1.3-1. One bit per forwarding
+ * model: N:1 bridging, 1:M mapping, 1:P filtering, N:M bridge-mapping,
+ * 1:MP map-filtering, N:P bridge-filtering and N:MP bridge-map-filtering.
+ * The agent builds its datapath out of MAC bridges, GEM interworking TPs and
+ * a VEIP, so advertise the full set the way a stock ONU does and let the OLT
+ * pick.
+ */
+#define OMCI_ONU2G_CONNECTIVITY_CAPABILITY	0x007f
 #define OMCI_CLASS_TCONT		262
 #define OMCI_CLASS_ANI_G		263
 #define OMCI_CLASS_UNI_G		264
