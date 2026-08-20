@@ -71,6 +71,7 @@
 #define XPON_SERDES_BEN_CTRL		0x4244
 #define XPON_SERDES_CTRL18		0x4248
 #define XPON_SERDES_CTRL19		0x424c
+#define XPON_GPON_TX_BIT_DELAY		0x433c
 #define XPON_RX_MODE_CTRL		0x4344
 #define XPON_CDR_CTRL			0x4530
 #define XPON_FREQ_CTRL			0x4608
@@ -100,6 +101,7 @@
 #define XPON_GPON_EXT_O5_MASK		GENMASK(15, 8)
 #define XPON_GPON_EXT_MODE		BIT(16)
 #define XPON_GPON_EXT_OPER_MASK	GENMASK(18, 17)
+#define XPON_GPON_TX_BIT_DELAY_MASK	GENMASK(7, 0)
 
 #define XPON_GPON_TX_ENABLE_PATTERN	0xaa
 #define XPON_GPON_TX_COUNTER_ENABLE	BIT(3)
@@ -383,6 +385,34 @@ int airoha_xpon_phy_set_gpon_extended_preamble(struct phy *phy,
 	return 0;
 }
 EXPORT_SYMBOL_GPL(airoha_xpon_phy_set_gpon_extended_preamble);
+
+/*
+ * Sub-byte part of the ranging equalisation delay.  The GPON MAC only takes
+ * the byte-aligned part of EqD in G_EQD; the remaining 0-7 bits are a
+ * transmitter delay applied here.  Leaving it at zero shifts every upstream
+ * burst by up to 7 bit times against the position the OLT ranged, which eats
+ * into the guard band and makes bursts marginal on OLTs with a tight one.
+ */
+int airoha_xpon_phy_set_gpon_bit_delay(struct phy *phy, u8 delay)
+{
+	struct airoha_xpon_phy *priv;
+	int ret;
+
+	if (delay > 7)
+		return -EINVAL;
+
+	ret = airoha_xpon_phy_get_active_gpon(phy, &priv);
+	if (ret)
+		return ret;
+
+	airoha_xpon_phy_rmw(priv, XPON_GPON_TX_BIT_DELAY,
+			    XPON_GPON_TX_BIT_DELAY_MASK,
+			    FIELD_PREP(XPON_GPON_TX_BIT_DELAY_MASK, delay));
+	dev_dbg(priv->dev, "GPON PHY TX bit delay=%u reg=%#010x\n", delay,
+		airoha_xpon_phy_read(priv, XPON_GPON_TX_BIT_DELAY));
+	return 0;
+}
+EXPORT_SYMBOL_GPL(airoha_xpon_phy_set_gpon_bit_delay);
 
 int airoha_xpon_phy_set_gpon_oper_state(
 	struct phy *phy, enum airoha_xpon_phy_gpon_oper_state state)

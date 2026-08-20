@@ -1642,6 +1642,23 @@ static void gpon_cb_set_onu_id(void *hw_priv, u8 onu_id)
 	gpon_dump_activation_regs(priv, "ONU-ID assigned");
 }
 
+/*
+ * EqD is split across the two blocks: the byte-aligned part goes to the MAC
+ * in G_EQD and the remaining 0-7 bits are a transmitter delay in the PHY.
+ * Program both, or every upstream burst sits up to 7 bit times away from the
+ * position the OLT ranged.
+ */
+static void gpon_set_bit_delay(struct xpon_priv *priv, u32 bit_delay)
+{
+	int ret;
+
+	ret = airoha_xpon_phy_set_gpon_bit_delay(priv->phy, bit_delay & 7);
+	if (ret)
+		dev_warn(priv->dev,
+			 "failed to program GPON PHY bit delay %u: %d\n",
+			 bit_delay & 7, ret);
+}
+
 static void gpon_cb_set_eqd_o4(void *hw_priv, u32 byte_delay, u32 bit_delay)
 {
 	struct xpon_priv *priv = hw_priv;
@@ -1650,8 +1667,8 @@ static void gpon_cb_set_eqd_o4(void *hw_priv, u32 byte_delay, u32 bit_delay)
 		 byte_delay, bit_delay);
 	priv->byte_delay = byte_delay;
 	priv->bit_delay  = bit_delay;
-	/* Write byte delay to G_EQD; bit delay goes to PHY (not abstracted) */
 	gpon_write(priv, GPON_EQD, byte_delay);
+	gpon_set_bit_delay(priv, bit_delay);
 	gpon_dump_activation_regs(priv, "O4 EqD programmed");
 }
 
@@ -1696,6 +1713,7 @@ static void gpon_cb_adjust_eqd_o5(void *hw_priv, u32 new_eqd)
 	}
 
 	gpon_write(priv, GPON_EQD, priv->byte_delay);
+	gpon_set_bit_delay(priv, priv->bit_delay);
 	dev_info(priv->dev,
 		 "GPON O5 EqD programmed: byte_delay=%u bit_delay=%u sync=%#08x\n",
 		 priv->byte_delay, priv->bit_delay, sync_raw);
@@ -2349,6 +2367,13 @@ static void gpon_cb_state_changed(void *hw_priv, enum gpon_state state)
 		dev_info(priv->dev,
 			 "GPON O2 activation response time=%#06x\n",
 			 gpon_read(priv, GPON_RSP_TIME));
+		/*
+		 * A stale bit delay from the previous session would offset the
+		 * serial-number burst of the next ranging cycle.
+		 */
+		priv->byte_delay = 0;
+		priv->bit_delay = 0;
+		gpon_set_bit_delay(priv, 0);
 		fallthrough;
 	case GPON_O3_SERIAL_NUMBER:
 	case GPON_O4_RANGING:
