@@ -241,6 +241,8 @@ struct omci_telemetry {
  * @gem_ctp_entity_id: GEM port network CTP managed entity
  * @gem_port_id: GEM port identifier programmed in the GPON MAC
  * @tcont_entity_id: T-CONT managed entity associated with the GEM port
+ * @alloc_id: Alloc-ID of that T-CONT, so a backend whose entity map was
+ *	cleared by a GPON restart can still resolve the channel
  * @vlan_id: VLAN identifier used for upstream classification
  * @pcp: IEEE 802.1p priority used for classification and queue selection
  * @queue: hardware upstream queue
@@ -260,6 +262,7 @@ struct omci_service_config {
 	u16 gem_ctp_entity_id;
 	u16 gem_port_id;
 	u16 tcont_entity_id;
+	u16 alloc_id;
 	u16 vlan_id;
 	u8 pcp;
 	u8 queue;
@@ -355,5 +358,6 @@ int omci_device_set_dying_gasp_enabled(struct omci_device *odev,
 int omci_device_send_dying_gasp(struct omci_device *odev);
 void omci_device_receive(struct omci_device *odev, struct sk_buff *skb,
 			 u16 gem_port_id, u32 flags);
+int omci_device_reconcile_services(struct omci_device *odev);
 
 #endif /* _NET_OMCI_H */
