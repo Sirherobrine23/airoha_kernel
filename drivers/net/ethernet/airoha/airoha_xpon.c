@@ -2803,14 +2803,33 @@ static void gpon_to2_work_fn(struct work_struct *work)
 	struct xpon_priv *priv =
 		container_of(to_delayed_work(work), struct xpon_priv, to2_work);
 
-	if (ploam_get_state(priv->ploam) == GPON_O6_POPUP) {
-		dev_warn(priv->dev, "GPON TO2 expired in O6, resetting\n");
+	bool ready, los;
+	int ret;
+
+	if (ploam_get_state(priv->ploam) != GPON_O6_POPUP)
+		return;
+
+	/*
+	 * O6 is entered on LOS, so ask the PHY whether the fibre came back
+	 * before scheduling anything.  While the light is still gone a restart
+	 * cannot succeed: it relocks nothing, fails, and re-arms itself, which
+	 * on a dirty connector turns one glitch into a restart storm.  Stop the
+	 * MAC and wait instead -- gpon_sfp_link_up() restarts the session when
+	 * the fibre is back.  The vendor TO2 handler makes the same check.
+	 */
+	ret = airoha_xpon_phy_get_link_state(priv->phy, &ready, &los);
+	if (!ret && (los || !ready)) {
+		dev_warn(priv->dev,
+			 "GPON TO2 expired in O6 with the optical link still down, waiting for the fibre\n");
 		gpon_disable(priv);
-		if (READ_ONCE(priv->started) &&
-		    READ_ONCE(priv->optical_active))
-			mod_delayed_work(priv->fsm_wq, &priv->restart_work,
-					 msecs_to_jiffies(GPON_DEACTIVATE_RESTART_MS));
+		return;
 	}
+
+	dev_warn(priv->dev, "GPON TO2 expired in O6, resetting\n");
+	gpon_disable(priv);
+	if (READ_ONCE(priv->started) && READ_ONCE(priv->optical_active))
+		mod_delayed_work(priv->fsm_wq, &priv->restart_work,
+				 msecs_to_jiffies(GPON_DEACTIVATE_RESTART_MS));
 }
 
 static bool
