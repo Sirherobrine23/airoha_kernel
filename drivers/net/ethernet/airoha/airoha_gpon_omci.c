@@ -213,6 +213,12 @@ void airoha_gpon_omci_set_state(struct airoha_gpon_omci *omci, u8 state)
 	omci_device_set_state(omci->odev, state);
 }
 
+void airoha_gpon_omci_reconcile_services(struct airoha_gpon_omci *omci)
+{
+	if (omci && omci->odev)
+		omci_device_reconcile_services(omci->odev);
+}
+
 void airoha_gpon_omci_reset_session(struct airoha_gpon_omci *omci)
 {
 	omci_device_reset_session(omci->odev);

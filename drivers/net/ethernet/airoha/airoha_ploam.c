@@ -204,8 +204,10 @@ static void ploam_send_encrypt_key(struct ploam_priv *pp)
 	u8 content[PLOAM_CONTENT_LEN] = {};
 	int i;
 
-	/* Two fragments of 8 key bytes each.
-	 * content[0] = key_idx, content[1] = frag_idx, content[2..9] = key[8] */
+	/* Two fragments of 8 key bytes each, as the Nokia/ALCL OLT expects:
+	 * octet 3 (content[0]) = key_idx (0 or 1)
+	 * octet 4 (content[1]) = frag_idx (0 or 1)
+	 * octets 5..12 (content[2..9]) = 8 key bytes */
 	for (i = 0; i < 2; i++) {
 		content[0] = pp->key_idx;
 		content[1] = i;
@@ -452,10 +454,15 @@ static void handle_request_key(struct ploam_priv *pp, u8 onu_id)
 		return;
 
 	pp->key_exchange_pending = true;
-	pp->key_idx ^= 1;
 	/* Hardware generates a random key and loads shadow regs */
 	pp->ops->request_new_key(pp->hw_priv);
+	/*
+	 * Announce the key under the index the OLT is still using and only
+	 * then flip: toggling first sends Encryption_Key with the index of a
+	 * key the OLT has not been given yet.
+	 */
 	ploam_send_encrypt_key(pp);
+	pp->key_idx ^= 1;
 }
 
 /* PLOAM_DOWN_CONFIGURE_PORT_ID (0x0E) — unicast */

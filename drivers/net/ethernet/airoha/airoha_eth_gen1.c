@@ -62,6 +62,14 @@ struct econet_hw_stats {
 	u64 rx_len[7];
 };
 
+/*
+ * How many OMCI services may share one data-plane rule.  The OMCI agent
+ * stages one service per UNI, so a single (GEM, VLAN, PCP, T-CONT, queue)
+ * rule arrives once per LAN port plus the VEIP.  They are the same rule for
+ * the classifier, so they share a slot and each contributes a cookie.
+ */
+#define ECONET_XPON_SVC_MAX_COOKIES	8
+
 struct econet_gdm_port {
 	/* Must stay first for common GDM/phylink and PPE metadata. */
 	struct airoha_gdm_common common;
@@ -106,6 +114,10 @@ struct econet_gdm_port {
 	spinlock_t xpon_service_lock;
 	struct airoha_xpon_service_cfg
 		xpon_services[AIROHA_XPON_MAX_SERVICES];
+	/* Cookies referencing each rule; the slot lives until the last one goes. */
+	u32	xpon_service_cookies[AIROHA_XPON_MAX_SERVICES]
+				    [ECONET_XPON_SVC_MAX_COOKIES];
+	u8	xpon_service_ncookies[AIROHA_XPON_MAX_SERVICES];
 
 	struct econet_qdma *qdma;
 
@@ -1382,6 +1394,56 @@ static int econet_xpon_get_tx_info(struct net_device *netdev, bool vlan_valid,
 					  pcp_valid, pcp, info);
 }
 
+/* Same rule from the classifier's point of view?  The cookie is not part of it. */
+static bool econet_xpon_rule_eq(const struct airoha_xpon_service_cfg *a,
+				const struct airoha_xpon_service_cfg *b)
+{
+	return a->gem_port_id == b->gem_port_id && a->tcont == b->tcont &&
+	       a->queue == b->queue &&
+	       a->vlan_valid == b->vlan_valid && a->vlan_id == b->vlan_id &&
+	       a->pcp_valid == b->pcp_valid && a->pcp == b->pcp &&
+	       a->default_service == b->default_service;
+}
+
+/* Slot currently referenced by @cookie, or -1. Caller holds the lock. */
+static int econet_xpon_find_cookie(struct econet_gdm_port *port, u32 cookie)
+{
+	int i, j;
+
+	for (i = 0; i < AIROHA_XPON_MAX_SERVICES; i++) {
+		if (!port->xpon_services[i].valid)
+			continue;
+		for (j = 0; j < port->xpon_service_ncookies[i]; j++)
+			if (port->xpon_service_cookies[i][j] == cookie)
+				return i;
+	}
+	return -1;
+}
+
+/*
+ * Drop @cookie from whichever rule holds it, freeing the slot once no cookie
+ * references it any more.  Caller holds the lock.
+ */
+static void econet_xpon_forget_cookie(struct econet_gdm_port *port, u32 cookie)
+{
+	int i, j;
+
+	i = econet_xpon_find_cookie(port, cookie);
+	if (i < 0)
+		return;
+	for (j = 0; j < port->xpon_service_ncookies[i]; j++) {
+		if (port->xpon_service_cookies[i][j] != cookie)
+			continue;
+		port->xpon_service_ncookies[i]--;
+		port->xpon_service_cookies[i][j] =
+			port->xpon_service_cookies[i][port->xpon_service_ncookies[i]];
+		break;
+	}
+	if (!port->xpon_service_ncookies[i])
+		memset(&port->xpon_services[i], 0,
+		       sizeof(port->xpon_services[i]));
+}
+
 static int econet_xpon_add_service(struct net_device *netdev,
 				   const struct airoha_xpon_service_cfg *cfg)
 {
@@ -1396,11 +1458,32 @@ static int econet_xpon_add_service(struct net_device *netdev,
 		return ret;
 
 	spin_lock_bh(&port->xpon_service_lock);
+
+	/* A cookie may come back with a changed rule: detach it first. */
+	econet_xpon_forget_cookie(port, cfg->cookie);
+
+	/*
+	 * Share the slot when the very same rule is already installed.  Without
+	 * this the table fills with duplicates -- the OMCI agent stages one
+	 * service per UNI, so on a 4-LAN ONT every rule lands four or five
+	 * times and a real provisioning run exhausts all 256 slots (measured on
+	 * a Movistar AR line: 115 entries on GEM 257 alone, three of them byte
+	 * identical apart from the cookie), making the last services fail with
+	 * -ENOSPC.  Fewer entries also shortens the TX classifier scan.
+	 */
 	for (i = 0; i < AIROHA_XPON_MAX_SERVICES; i++) {
-		if (!port->xpon_services[i].valid && empty < 0)
-			empty = i;
-		if (port->xpon_services[i].valid &&
-		    port->xpon_services[i].cookie == cfg->cookie) {
+		if (!port->xpon_services[i].valid ||
+		    !econet_xpon_rule_eq(&port->xpon_services[i], cfg) ||
+		    port->xpon_service_ncookies[i] >= ECONET_XPON_SVC_MAX_COOKIES)
+			continue;
+		port->xpon_service_cookies[i][port->xpon_service_ncookies[i]++] =
+			cfg->cookie;
+		spin_unlock_bh(&port->xpon_service_lock);
+		return 0;
+	}
+
+	for (i = 0; i < AIROHA_XPON_MAX_SERVICES; i++) {
+		if (!port->xpon_services[i].valid) {
 			empty = i;
 			break;
 		}
@@ -1414,6 +1497,8 @@ static int econet_xpon_add_service(struct net_device *netdev,
 			port->xpon_services[i].default_service = false;
 	port->xpon_services[empty] = *cfg;
 	port->xpon_services[empty].valid = true;
+	port->xpon_service_cookies[empty][0] = cfg->cookie;
+	port->xpon_service_ncookies[empty] = 1;
 	spin_unlock_bh(&port->xpon_service_lock);
 
 	return 0;
@@ -1430,15 +1515,13 @@ static bool econet_xpon_del_service(struct net_device *netdev, u32 cookie,
 		return false;
 
 	spin_lock_bh(&port->xpon_service_lock);
-	for (i = 0; i < AIROHA_XPON_MAX_SERVICES; i++) {
-		if (!port->xpon_services[i].valid ||
-		    port->xpon_services[i].cookie != cookie)
-			continue;
+	i = econet_xpon_find_cookie(port, cookie);
+	if (i >= 0) {
 		if (gem_port_id)
 			*gem_port_id = port->xpon_services[i].gem_port_id;
-		memset(&port->xpon_services[i], 0, sizeof(port->xpon_services[i]));
+		/* Frees the slot only when this was the last cookie on it. */
+		econet_xpon_forget_cookie(port, cookie);
 		found = true;
-		break;
 	}
 	spin_unlock_bh(&port->xpon_service_lock);
 
@@ -1476,6 +1559,8 @@ static void econet_xpon_flush_services(struct net_device *netdev)
 
 	spin_lock_bh(&port->xpon_service_lock);
 	memset(port->xpon_services, 0, sizeof(port->xpon_services));
+	memset(port->xpon_service_cookies, 0, sizeof(port->xpon_service_cookies));
+	memset(port->xpon_service_ncookies, 0, sizeof(port->xpon_service_ncookies));
 	spin_unlock_bh(&port->xpon_service_lock);
 }
 
