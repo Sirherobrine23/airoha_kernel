@@ -568,6 +568,12 @@ static void airoha_xpon_phy_stop(struct device *dev, struct phy *phy,
 
 /* TO1 timer: 10 seconds in O3/O4 without Ranging_Time → return to O2 */
 #define GPON_TO1_MS		10000
+/*
+ * Consecutive TO1 expiries tolerated before the MAC and the PHY are reset.
+ * Matches the vendor driver: a normal ranging failure only costs a return to
+ * O2, and only a run of them is treated as wedged hardware.
+ */
+#define GPON_TO1_MAX_RETRIES	20
 /* TO2 timer: 100 ms in O6 without Popup/Swift_Popup → reset to O1 */
 #define GPON_TO2_MS		100
 /* Restart delay after an OLT Deactivate_ONU-ID request. */
@@ -731,6 +737,9 @@ struct xpon_priv {
 	/* EqD state for O5 incremental adjustment */
 	u32			byte_delay;
 	u32			bit_delay;
+
+	/* Consecutive TO1 expiries; cleared on O5. */
+	unsigned int		to1_failures;
 
 };
 
@@ -2388,6 +2397,7 @@ static void gpon_cb_state_changed(void *hw_priv, enum gpon_state state)
 			mod_timer(&priv->ber_timer,
 				  jiffies +
 				  msecs_to_jiffies(priv->ber_interval_ms));
+		priv->to1_failures = 0;
 		dev_info(priv->dev, "GPON O5: operational, ONU-ID=%u\n",
 			 ploam_get_onu_id(priv->ploam));
 		break;
@@ -2753,14 +2763,38 @@ static void gpon_to1_work_fn(struct work_struct *work)
 	 * processing, so Upstream_Overhead cannot re-enter O3 in the middle
 	 * of the O3/O4 -> O2 transition.
 	 */
-	if (st == GPON_O3_SERIAL_NUMBER || st == GPON_O4_RANGING) {
-		gpon_dump_activation_regs(priv, "TO1 expired");
+	if (st != GPON_O3_SERIAL_NUMBER && st != GPON_O4_RANGING)
+		return;
+
+	gpon_dump_activation_regs(priv, "TO1 expired");
+	priv->to1_failures++;
+
+	/*
+	 * A ranging cycle that does not complete is normal on a busy or
+	 * misconfigured OLT, and the recovery for it is cheap: drop back to O2
+	 * and answer the next Upstream_Overhead.  Restarting the MAC and the
+	 * PHY here instead would cost an optical relock on every miss.  Only a
+	 * long run of failures means the hardware itself is stuck, and that is
+	 * what the vendor driver escalates on.
+	 */
+	if (priv->to1_failures < GPON_TO1_MAX_RETRIES) {
 		dev_warn(priv->dev,
-			 "GPON TO1 expired in O%d, returning to O2\n", (int)st);
+			 "GPON TO1 expired in O%d (%u/%u), returning to O2\n",
+			 (int)st, priv->to1_failures, GPON_TO1_MAX_RETRIES);
 		gpon_write(priv, GPON_ONU_ID, PLOAM_ONU_UNASSIGNED);
 		ploam_reset(priv->ploam);
 		ploam_start(priv->ploam);
+		return;
 	}
+
+	dev_err(priv->dev,
+		"GPON TO1 expired %u times without reaching O5, resetting MAC and PHY\n",
+		priv->to1_failures);
+	priv->to1_failures = 0;
+	gpon_disable(priv);
+	if (READ_ONCE(priv->started) && READ_ONCE(priv->optical_active))
+		mod_delayed_work(priv->fsm_wq, &priv->restart_work,
+				 msecs_to_jiffies(GPON_DEACTIVATE_RESTART_MS));
 }
 
 /* TO2: O6 timeout — no Popup received within 100 ms → full disable */
