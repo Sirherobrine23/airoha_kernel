@@ -4,6 +4,7 @@
 #include <linux/arm-smccc.h>
 #endif
 #include <linux/bitfield.h>
+#include <linux/bitops.h>
 #include <linux/delay.h>
 #include <linux/clk-provider.h>
 #include <linux/io.h>
@@ -17,10 +18,12 @@
 #include <linux/reset-controller.h>
 #include <dt-bindings/clock/en7523-clk.h>
 #include <dt-bindings/clock/econet,en751221-scu.h>
+#include <dt-bindings/clock/econet,en7528-scu.h>
 #include <dt-bindings/reset/airoha,en7523-reset.h>
 #include <dt-bindings/reset/airoha,en7581-reset.h>
 #include <dt-bindings/reset/airoha,an7583-reset.h>
 #include <dt-bindings/reset/econet,en751221-scu.h>
+#include <dt-bindings/reset/econet,en7528-scu.h>
 
 #define RST_NR_PER_BANK			32
 
@@ -110,6 +113,17 @@
 #define   EN751221_XPON_TOD_DIV_EN	BIT(1)
 #define EN751221_MAX_CLKS		5
 
+/* EN7528 CHIP-SCU differs from both EN751221 and EN7523. */
+#define EN7528_REG_SPI_DIV		0x0cc
+#define EN7528_REG_SPI_DIV_MASK	GENMASK(15, 8)
+#define EN7528_SPI_BASE		400000000
+#define EN7528_SPI_DIV_DEFAULT		10
+#define EN7528_REG_NP_PER_DOM_CLK_GAT_1	0x13c
+#define   EN7528_XPON_TOD_CLK_EN	BIT(8)
+#define EN7528_REG_TOD_DIVIDER_ENABLE	0x144
+#define   EN7528_XPON_TOD_DIV_EN	BIT(1)
+#define EN7528_MAX_CLKS		5
+
 enum en_hir {
 	HIR_UNKNOWN	= -1,
 	HIR_TC3169	= 0,
@@ -179,6 +193,20 @@ struct en_rst_data {
 	struct reset_controller_dev rcdev;
 };
 
+struct econet_clk_soc_data {
+	const char *chip_scu_compatible;
+	u32 spi_base;
+	u32 spi_alt_base;
+	enum en_hir spi_alt_hir;
+	u16 spi_div_reg;
+	u32 spi_div_mask;
+	u32 spi_div_default;
+	u16 xpon_tod_clk_reg;
+	u32 xpon_tod_clk_mask;
+	u16 xpon_tod_div_reg;
+	u32 xpon_tod_div_mask;
+};
+
 struct en_clk_soc_data {
 	bool probe_child;
 	u32 num_clocks;
@@ -187,6 +215,7 @@ struct en_clk_soc_data {
 	const u16 *rst_ofs;
 	int nr_resets;
 	const struct en_clk_desc *base_clks;
+	const struct econet_clk_soc_data *econet;
 	const struct clk_ops pcie_ops;
 	int (*hw_init)(struct platform_device *pdev,
 		       const struct en_clk_soc_data *soc_data,
@@ -204,8 +233,18 @@ static const u32 bus7581_base[] = { 600000000, 540000000 };
 static const u32 npu7581_base[] = { 800000000, 750000000, 720000000, 600000000 };
 static const u32 crypto_base[] = { 540000000, 480000000 };
 static const u32 emmc7581_base[] = { 200000000, 150000000 };
-/* EN751221 */
+/* EN751221 / EN7528 */
 static const u32 gsw751221_base[] = { 500000000, 250000000, 400000000, 200000000 };
+
+enum econet_clk_id {
+	ECONET_CLK_PCIE,
+	ECONET_CLK_SPI,
+	ECONET_CLK_BUS,
+	ECONET_CLK_CPU,
+	ECONET_CLK_GSW,
+	ECONET_MAX_CLKS,
+};
+
 /* AN7583 */
 static const u32 gsw7583_base[] = { 540672000, 270336000, 400000000, 200000000 };
 static const u32 emi7583_base[] = { 540672000, 480000000, 400000000, 300000000 };
@@ -1706,13 +1745,13 @@ static enum en_hir en751221_get_hw_id(struct regmap *clk_map)
 	return HIR_UNKNOWN;
 }
 
-static int en751221_register_fixed_rate(struct device *dev, int key,
-					struct clk_hw_onecell_data *clk_data,
-					const char *name, u32 rate)
+static int econet_register_fixed_rate(struct device *dev, int key,
+				      struct clk_hw_onecell_data *clk_data,
+				      const char *name, u32 rate)
 {
 	struct clk_hw *hw;
 
-	if (WARN_ON_ONCE(key >= EN751221_MAX_CLKS))
+	if (WARN_ON_ONCE(key >= clk_data->num))
 		return -EINVAL;
 
 	hw = devm_clk_hw_register_fixed_rate(dev, name, NULL, 0, rate);
@@ -1725,10 +1764,12 @@ static int en751221_register_fixed_rate(struct device *dev, int key,
 	return 0;
 }
 
-static int en751221_register_clocks(struct device *dev,
-				    struct clk_hw_onecell_data *clk_data,
-				    struct regmap *map, struct regmap *clk_map)
+static int econet_register_clocks(struct device *dev,
+				  const struct en_clk_soc_data *soc_data,
+				  struct clk_hw_onecell_data *clk_data,
+				  struct regmap *map, struct regmap *clk_map)
 {
+	const struct econet_clk_soc_data *data = soc_data->econet;
 	enum en_hir hid = en751221_get_hw_id(clk_map);
 	struct clk_hw *hw;
 	u32 rate, val;
@@ -1739,24 +1780,24 @@ static int en751221_register_clocks(struct device *dev,
 	if (IS_ERR(hw))
 		return PTR_ERR(hw);
 
-	clk_data->hws[EN751221_CLK_PCIE] = hw;
+	clk_data->hws[ECONET_CLK_PCIE] = hw;
 
 	/* SPI */
-	rate = EN751221_SPI_BASE;
-	if (hid == HIR_EN7526C)
-		rate = EN751221_SPI_BASE_EN7526C;
+	rate = data->spi_base;
+	if (data->spi_alt_base && hid == data->spi_alt_hir)
+		rate = data->spi_alt_base;
 
-	err = regmap_read(map, EN751221_REG_SPI_DIV, &val);
+	err = regmap_read(map, data->spi_div_reg, &val);
 	if (err)
 		return dev_err_probe(dev, err,
 				     "Failed reading fixed clk div spi\n");
 
-	val = FIELD_GET(EN751221_REG_SPI_DIV_MASK, val) * 2;
+	val = ((val & data->spi_div_mask) >> __ffs(data->spi_div_mask)) * 2;
 	if (!val)
-		val = EN751221_SPI_DIV_DEFAULT;
+		val = data->spi_div_default;
 
-	err = en751221_register_fixed_rate(dev, EN751221_CLK_SPI, clk_data,
-					   "spi", rate / val);
+	err = econet_register_fixed_rate(dev, ECONET_CLK_SPI, clk_data,
+					 "spi", rate / val);
 	if (err)
 		return err;
 
@@ -1767,14 +1808,14 @@ static int en751221_register_clocks(struct device *dev,
 				     "Failed reading fixed clk rate bus\n");
 
 	rate = FIELD_GET(EN751221_REG_BUS_MASK, val) * 1000000;
-	err = en751221_register_fixed_rate(dev, EN751221_CLK_BUS, clk_data,
-					   "bus", rate);
+	err = econet_register_fixed_rate(dev, ECONET_CLK_BUS, clk_data,
+					 "bus", rate);
 	if (err)
 		return err;
 
 	/* CPU */
-	err = en751221_register_fixed_rate(dev, EN751221_CLK_CPU, clk_data,
-					   "cpu", rate * 4);
+	err = econet_register_fixed_rate(dev, ECONET_CLK_CPU, clk_data,
+					 "cpu", rate * 4);
 	if (err)
 		return err;
 
@@ -1789,19 +1830,25 @@ static int en751221_register_clocks(struct device *dev,
 		return dev_err_probe(dev, -EINVAL,
 				     "Invalid GSW clock selector %u\n", val);
 
-	return en751221_register_fixed_rate(dev, EN751221_CLK_GSW, clk_data,
-					    "gsw", gsw751221_base[val]);
+	return econet_register_fixed_rate(dev, ECONET_CLK_GSW, clk_data,
+					  "gsw", gsw751221_base[val]);
 }
 
-static int en751221_clk_hw_init(struct platform_device *pdev,
-				const struct en_clk_soc_data *soc_data,
-				struct clk_hw_onecell_data *clk_data)
+static int econet_clk_hw_init(struct platform_device *pdev,
+			      const struct en_clk_soc_data *soc_data,
+			      struct clk_hw_onecell_data *clk_data)
 {
+	const struct econet_clk_soc_data *data = soc_data->econet;
+	struct device *dev = &pdev->dev;
 	struct regmap *map, *clk_map;
 	void __iomem *base;
 	int err;
 
-	map = syscon_regmap_lookup_by_compatible("airoha,chip-scu");
+	if (of_property_present(dev->of_node, "airoha,chip-scu"))
+		map = syscon_regmap_lookup_by_phandle(dev->of_node,
+						      "airoha,chip-scu");
+	else
+		map = syscon_regmap_lookup_by_compatible(data->chip_scu_compatible);
 	if (IS_ERR(map))
 		return PTR_ERR(map);
 
@@ -1809,39 +1856,31 @@ static int en751221_clk_hw_init(struct platform_device *pdev,
 	if (IS_ERR(base))
 		return PTR_ERR(base);
 
-	clk_map = devm_regmap_init_mmio(&pdev->dev, base,
-					&en7523_clk_regmap_config);
+	clk_map = devm_regmap_init_mmio(dev, base, &en7523_clk_regmap_config);
 	if (IS_ERR(clk_map))
 		return PTR_ERR(clk_map);
 
-	err = en751221_register_clocks(&pdev->dev, clk_data, map, clk_map);
+	err = econet_register_clocks(dev, soc_data, clk_data, map, clk_map);
 	if (err)
 		return err;
 
-	/*
-	 * The EN751221 xPON_1g SDK enables these CHIP-SCU gates during
-	 * gpon_init() before normal GPON MAC bring-up:
-	 *
-	 *   0x1fa200e4 |= BIT(8);
-	 *   0x1fa200ec |= BIT(1);
-	 *
-	 * Program them from the SCU provider so xPON consumers cannot reach
-	 * the MAC reset/register path with the vendor-required ToD clock path
-	 * still gated.
-	 */
-	err = regmap_set_bits(map, EN751221_REG_NP_PER_DOM_CLK_GAT_1,
-			      EN751221_XPON_TOD_CLK_EN);
-	if (err)
-		return dev_err_probe(&pdev->dev, err,
-				     "failed to enable EN751221 xPON ToD clock\n");
+	if (data->xpon_tod_clk_mask) {
+		err = regmap_set_bits(map, data->xpon_tod_clk_reg,
+				      data->xpon_tod_clk_mask);
+		if (err)
+			return dev_err_probe(dev, err,
+					     "failed to enable xPON ToD clock\n");
+	}
 
-	err = regmap_set_bits(map, EN751221_REG_TOD_DIVIDER_ENABLE,
-			      EN751221_XPON_TOD_DIV_EN);
-	if (err)
-		return dev_err_probe(&pdev->dev, err,
-				     "failed to enable EN751221 xPON ToD divider\n");
+	if (data->xpon_tod_div_mask) {
+		err = regmap_set_bits(map, data->xpon_tod_div_reg,
+				      data->xpon_tod_div_mask);
+		if (err)
+			return dev_err_probe(dev, err,
+					     "failed to enable xPON ToD divider\n");
+	}
 
-	return register_resets(&pdev->dev, clk_map, soc_data);
+	return register_resets(dev, clk_map, soc_data);
 }
 
 static int en7523_clk_probe(struct platform_device *pdev)
@@ -1928,17 +1967,59 @@ static const struct en_clk_soc_data an7583_data = {
 	.hw_init = an7583_clk_hw_init,
 };
 
+static const struct econet_clk_soc_data en751221_econet_data = {
+	.chip_scu_compatible = "airoha,chip-scu",
+	.spi_base = EN751221_SPI_BASE,
+	.spi_alt_base = EN751221_SPI_BASE_EN7526C,
+	.spi_alt_hir = HIR_EN7526C,
+	.spi_div_reg = EN751221_REG_SPI_DIV,
+	.spi_div_mask = EN751221_REG_SPI_DIV_MASK,
+	.spi_div_default = EN751221_SPI_DIV_DEFAULT,
+	.xpon_tod_clk_reg = EN751221_REG_NP_PER_DOM_CLK_GAT_1,
+	.xpon_tod_clk_mask = EN751221_XPON_TOD_CLK_EN,
+	.xpon_tod_div_reg = EN751221_REG_TOD_DIVIDER_ENABLE,
+	.xpon_tod_div_mask = EN751221_XPON_TOD_DIV_EN,
+};
+
+static const struct econet_clk_soc_data en7528_econet_data = {
+	.chip_scu_compatible = "airoha,chip-scu",
+	.spi_base = EN7528_SPI_BASE,
+	.spi_div_reg = EN7528_REG_SPI_DIV,
+	.spi_div_mask = EN7528_REG_SPI_DIV_MASK,
+	.spi_div_default = EN7528_SPI_DIV_DEFAULT,
+	.xpon_tod_clk_reg = EN7528_REG_NP_PER_DOM_CLK_GAT_1,
+	.xpon_tod_clk_mask = EN7528_XPON_TOD_CLK_EN,
+	.xpon_tod_div_reg = EN7528_REG_TOD_DIVIDER_ENABLE,
+	.xpon_tod_div_mask = EN7528_XPON_TOD_DIV_EN,
+};
+
 static const struct en_clk_soc_data en751221_data = {
 	.num_clocks = EN751221_MAX_CLKS,
 	.rst_map = en751221_rst_map,
 	.rst_ofs = en751221_rst_ofs,
 	.nr_resets = ARRAY_SIZE(en751221_rst_map),
+	.econet = &en751221_econet_data,
 	.pcie_ops = {
 		.is_enabled = en7523_pci_is_enabled,
 		.prepare = en7523_pci_prepare,
 		.unprepare = en7523_pci_unprepare,
 	},
-	.hw_init = en751221_clk_hw_init,
+	.hw_init = econet_clk_hw_init,
+};
+
+static const struct en_clk_soc_data en7528_data = {
+	.num_clocks = EN7528_MAX_CLKS,
+	/* EN7528 keeps the EN751221 NP-SCU reset layout. */
+	.rst_map = en751221_rst_map,
+	.rst_ofs = en751221_rst_ofs,
+	.nr_resets = ARRAY_SIZE(en751221_rst_map),
+	.econet = &en7528_econet_data,
+	.pcie_ops = {
+		.is_enabled = en7523_pci_is_enabled,
+		.prepare = en7523_pci_prepare,
+		.unprepare = en7523_pci_unprepare,
+	},
+	.hw_init = econet_clk_hw_init,
 };
 
 static const struct of_device_id of_match_clk_en7523[] = {
@@ -1946,6 +2027,7 @@ static const struct of_device_id of_match_clk_en7523[] = {
 	{ .compatible = "airoha,en7581-scu", .data = &en7581_data },
 	{ .compatible = "airoha,an7583-scu", .data = &an7583_data },
 	{ .compatible = "econet,en751221-scu", .data = &en751221_data },
+	{ .compatible = "econet,en7528-scu", .data = &en7528_data },
 	{ /* sentinel */ }
 };
 
