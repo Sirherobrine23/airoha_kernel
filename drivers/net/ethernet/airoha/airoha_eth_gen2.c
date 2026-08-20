@@ -207,12 +207,20 @@ static int airoha_eth_gen2_set_xpon_mode(struct net_device *netdev,
 			EN7523_GPON_MAX_FRAME_LEN : AIROHA_MAX_RX_SIZE;
 	airoha_fe_rmw(dev->eth, REG_GDM_LEN_CFG(AIROHA_GDM2_IDX),
 		      GDM_SHORT_LEN_MASK | GDM_LONG_LEN_MASK,
-		      FIELD_PREP(GDM_SHORT_LEN_MASK, ETH_ZLEN) |
+		      FIELD_PREP(GDM_SHORT_LEN_MASK, ETH_HLEN) |
 		      FIELD_PREP(GDM_LONG_LEN_MASK, max_frame_len));
 
 	/* gpon_init_qdma_tx_buff() starts with the implicit ONU-ID T-CONT. */
-	if (mode == AIROHA_XPON_MODE_GPON)
+	if (mode == AIROHA_XPON_MODE_GPON) {
+		/*
+		 * Downstream GPON frames reach GDM2 after the GPON MAC has
+		 * already checked them, and a frame that failed decryption is
+		 * more useful counted than silently dropped here.
+		 */
+		airoha_fe_clear(dev->eth, REG_GDM_FWD_CFG(AIROHA_GDM2_IDX),
+				GDM_DROP_CRC_ERR_MASK);
 		airoha_eth_update_gpon_pse_buf(dev, 1);
+	}
 
 	/* A mode switch starts from a quiescent GDM2/CDM2 datapath. */
 	airoha_fe_clear(dev->eth, REG_GDM_TXCHN_EN(AIROHA_GDM2_IDX), ~0U);
@@ -1579,17 +1587,18 @@ static int airoha_dev_open(struct net_device *netdev)
 	u32 pse_port = FE_PSE_PORT_PPE1;
 	int err, qdma_id;
 
-	/* HW LRO is configured on the QDMA and it is shared between
-	 * all the devices using it. Refuse to open a second device on
-	 * the same QDMA if LRO is enabled on any device sharing it.
+	/* HW LRO is configured on the QDMA and it is shared between all the
+	 * devices using it. Opening a second device on the same QDMA turns HW
+	 * GRO off rather than refusing to open: on an xPON board GDM2 and the
+	 * WAN share QDMA1, and failing here leaves the PON interface down.
 	 */
 	qdma = airoha_qdma_deref(dev);
 	qdma_id = qdma - &eth->qdma[0];
 
 	if (qdma->users && airoha_fe_lro_is_enabled(eth, qdma_id)) {
-		netdev_warn(netdev, "required to disable HW GRO on QDMA%d\n",
+		netdev_info(netdev, "disabling HW GRO on shared QDMA%d\n",
 			    qdma_id);
-		return -EBUSY;
+		airoha_fe_lro_disable(eth, qdma_id);
 	}
 
 	/*
@@ -1608,8 +1617,24 @@ static int airoha_dev_open(struct net_device *netdev)
 		netdev_dbg(netdev,
 			   "no PHY or fixed-link, using xPON link state\n");
 
-	if (dev->flags & AIROHA_PRIV_F_XPON_MANAGED)
-		netif_carrier_off(netdev);
+	if (dev->flags & AIROHA_PRIV_F_XPON_MANAGED) {
+		unsigned long flags;
+		bool link;
+
+		/*
+		 * Forcing carrier off here loses an O5 link that came up before
+		 * the interface was opened, and nothing re-announces it: adopt
+		 * the state the xPON provider already published.
+		 */
+		spin_lock_irqsave(&dev->xpon_state_lock, flags);
+		link = dev->xpon_link.valid && dev->xpon_link.link;
+		spin_unlock_irqrestore(&dev->xpon_state_lock, flags);
+
+		if (link)
+			netif_carrier_on(netdev);
+		else
+			netif_carrier_off(netdev);
+	}
 
 	netif_tx_start_all_queues(netdev);
 	err = airoha_set_vip_for_gdm_port(dev, true);
@@ -1635,7 +1660,8 @@ static int airoha_dev_open(struct net_device *netdev)
 	airoha_set_gdm_port_fwd_cfg(eth, REG_GDM_FWD_CFG(port->id),
 				    pse_port);
 
-	if (netdev->features & NETIF_F_GRO_HW)
+	/* airoha_qdma_start() above already counted this device in. */
+	if ((netdev->features & NETIF_F_GRO_HW) && qdma->users <= 1)
 		airoha_dev_lro_enable(dev);
 
 	airoha_update_netdev_features(dev);
@@ -1855,7 +1881,8 @@ static void airoha_dev_set_qdma(struct airoha_gdm_dev *dev)
 			((dev->port->id == AIROHA_GDM3_IDX ||
 			  dev->port->id == AIROHA_GDM4_IDX ||
 			  dev->port->id == AIROHA_GDM2_IDX) &&
-			  airoha_ppe_is_enabled(eth, 1)) ? 1 : 0);
+			  airoha_ppe_is_enabled(eth, 1)) ?
+			FE_PSE_PORT_PPE2 : FE_PSE_PORT_PPE1);
 	}
 
 	ppe_id = !airoha_is_lan_gdm_dev(dev) && airoha_ppe_is_enabled(eth, 1);
@@ -4148,6 +4175,9 @@ static int airoha_en7523_get_sport(struct airoha_gdm_port *port, int nbq)
 static u32 airoha_en7523_get_vip_port(struct airoha_gdm_port *port, int nbq)
 {
 	switch (port->id) {
+	case AIROHA_GDM2_IDX:
+		/* GDM2 carries the PON datapath and needs its own VIP port. */
+		return BIT(AIROHA_GDM2_IDX);
 	case AIROHA_GDM3_IDX:
 		if (nbq == 4)
 			return XSI_PCIE0_VIP_PORT_MASK;
