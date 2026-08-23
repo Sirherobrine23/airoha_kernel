@@ -118,9 +118,9 @@
 #define EN7528_REG_SPI_DIV_MASK	GENMASK(15, 8)
 #define EN7528_SPI_BASE		400000000
 #define EN7528_SPI_DIV_DEFAULT		10
-#define EN7528_REG_NP_PER_DOM_CLK_GAT_1	0x13c
+#define EN7528_REG_NP_PER_DOM_CLK_GAT_1	0x0e4
 #define   EN7528_XPON_TOD_CLK_EN	BIT(8)
-#define EN7528_REG_TOD_DIVIDER_ENABLE	0x144
+#define EN7528_REG_TOD_DIVIDER_ENABLE	0x0ec
 #define   EN7528_XPON_TOD_DIV_EN	BIT(1)
 #define EN7528_MAX_CLKS		5
 
@@ -1982,7 +1982,7 @@ static const struct econet_clk_soc_data en751221_econet_data = {
 };
 
 static const struct econet_clk_soc_data en7528_econet_data = {
-	.chip_scu_compatible = "airoha,chip-scu",
+	.chip_scu_compatible = "econet,en7528-chip-scu",
 	.spi_base = EN7528_SPI_BASE,
 	.spi_div_reg = EN7528_REG_SPI_DIV,
 	.spi_div_mask = EN7528_REG_SPI_DIV_MASK,
