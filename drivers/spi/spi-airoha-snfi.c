@@ -804,8 +804,28 @@ static int airoha_spi_probe(struct platform_device *pdev)
 		dev_info(dev, "using external GPIO chip-select mux\n");
 
 	np = of_parse_phandle(dev->of_node, "airoha,scu", 0);
-	if (!np)
-		return dev_err_probe(dev, -EINVAL, "cannot get scuclk");
+	if (!np) {
+		struct of_phandle_args clkspec;
+		int index;
+
+		/*
+		 * Older EcoNet device trees only describe the SCU through the
+		 * SPI clock.  The SCU clock provider is also a syscon, so use
+		 * the named clock provider as a backwards-compatible fallback.
+		 */
+		index = of_property_match_string(dev->of_node, "clock-names",
+						 "spi");
+		if (index < 0)
+			return dev_err_probe(dev, index, "cannot find spi clock");
+
+		err = of_parse_phandle_with_args(dev->of_node, "clocks",
+						 "#clock-cells", index,
+						 &clkspec);
+		if (err)
+			return dev_err_probe(dev, err, "cannot get scuclk");
+
+		np = clkspec.np;
+	}
 
 	as_ctrl->scuclk = syscon_node_to_regmap(np);
 	of_node_put(np);
