@@ -4,30 +4,33 @@
 $id: http://devicetree.org/schemas/net/semtech,gn25l95.yaml#
 $schema: http://devicetree.org/meta-schemas/core.yaml#
 
-title: Semtech GN25L95 xPON optical frontend
+title: Semtech GN25L95 and GN25L98 xPON optical frontends
 
 maintainers:
   - Matheus Sampaio Queiroga <srherobrine20@gmail.com>
 
 description: |
-  The GN25L95 is a 2.5 Gbit/s burst-mode laser driver and limiting post
-  amplifier intended for GPON and EPON optical network units.  It provides
-  SFF-8472 compatible digital diagnostics over I2C.  The host A2 page normally
-  appears at 7-bit address 0x51; the address can be changed by device NVM.
+  The GN25L95 and GN25L98 are 2.5 Gbit/s burst-mode laser drivers and limiting
+  post amplifiers intended for GPON and EPON optical network units. They
+  provide SFF-8472 compatible digital diagnostics over I2C. The host A2 page
+  normally appears at 7-bit address 0x51; the address can be changed by device
+  NVM.
 
 properties:
   compatible:
-    const: semtech,gn25l95
+    enum:
+      - semtech,gn25l95
+      - semtech,gn25l98
 
   reg:
     maxItems: 1
     description:
-      I2C address of the GN25L95 A2 host page, normally 0x51.
+      I2C address of the GN25L95/GN25L98 A2 host page, normally 0x51.
 
   '#optical-frontend-cells':
     const: 0
     description:
-      The GN25L95 exposes one optical frontend provider.
+      The device exposes one optical frontend provider.
 
   tx-disable-gpios:
     $ref: /schemas/types.yaml#/definitions/phandle-array
@@ -38,10 +41,14 @@ properties:
   firmware-name:
     $ref: /schemas/types.yaml#/definitions/string
     description: |
-      Name of the 2048-byte board-specific BOSA calibration image. The image
-      uses the MediaTek/EcoNet vendor /bosa/hwconfig layout and is required
-      when STATUS_0 reports that no external EEPROM is present. If omitted,
-      the driver requests semtech/gn25l95-hwconfig.bin.
+      Name of the board-specific BOSA calibration image. GN25L95 uses the
+      2048-byte MediaTek/EcoNet /bosa/hwconfig layout. GN25L98 uses a 640-byte
+      final calibrated image containing table 6, table 5, table 4, table 2 and
+      table 0, each occupying 128 bytes. The table 6 block must contain the
+      board-specific APD LUT in bytes 0x00..0x3f. GN25L98 calibration images
+      must not be reused on GN25L95 devices. If omitted, the driver requests
+      the chip-specific semtech/gn25l95-hwconfig.bin or
+      semtech/gn25l98-hwconfig.bin image.
 
 required:
   - compatible
@@ -57,9 +64,9 @@ examples:
         #size-cells = <0>;
 
         optical-frontend@51 {
-            compatible = "semtech,gn25l95";
+            compatible = "semtech,gn25l98";
             reg = <0x51>;
             #optical-frontend-cells = <0>;
-            firmware-name = "semtech/gpt2741-gn25l95-hwconfig.bin";
+            firmware-name = "semtech/board-gn25l98-hwconfig.bin";
         };
     };
