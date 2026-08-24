@@ -278,7 +278,7 @@ static int lddla_bob_import(struct airoha_lddla *lddla, const u8 *data,
 
 	if (!expected || expected > sizeof(lddla->bob))
 		return -EINVAL;
-	if (len < expected) {
+	if (len < 0xff) {
 		dev_err(lddla->dev, "%s BOB is too small (%zu < %zu bytes)\n",
 			source, len, expected);
 		return -EINVAL;
