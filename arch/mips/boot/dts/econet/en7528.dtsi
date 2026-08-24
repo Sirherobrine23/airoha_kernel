@@ -480,13 +480,15 @@
 
 			interrupt-parent = <&gic>;
 
-			interrupts = <GIC_SHARED 41 IRQ_TYPE_LEVEL_HIGH>,
-			             <GIC_SHARED 40 IRQ_TYPE_LEVEL_HIGH>,
-			             <GIC_SHARED 39 IRQ_TYPE_LEVEL_HIGH>,
-			             <GIC_SHARED 21 IRQ_TYPE_LEVEL_HIGH>,
-			             <GIC_SHARED 44 IRQ_TYPE_LEVEL_HIGH>,
-			             <GIC_SHARED 43 IRQ_TYPE_LEVEL_HIGH>,
-			             <GIC_SHARED 42 IRQ_TYPE_LEVEL_HIGH>,
+			// interrupts = <GIC_SHARED 41 IRQ_TYPE_LEVEL_HIGH>,
+			//              <GIC_SHARED 40 IRQ_TYPE_LEVEL_HIGH>,
+			//              <GIC_SHARED 39 IRQ_TYPE_LEVEL_HIGH>,
+			//              <GIC_SHARED 21 IRQ_TYPE_LEVEL_HIGH>,
+			//              <GIC_SHARED 44 IRQ_TYPE_LEVEL_HIGH>,
+			//              <GIC_SHARED 43 IRQ_TYPE_LEVEL_HIGH>,
+			//              <GIC_SHARED 42 IRQ_TYPE_LEVEL_HIGH>,
+			//              <GIC_SHARED 22 IRQ_TYPE_LEVEL_HIGH>;
+			interrupts = <GIC_SHARED 21 IRQ_TYPE_LEVEL_HIGH>,
 			             <GIC_SHARED 22 IRQ_TYPE_LEVEL_HIGH>;
 
 			#address-cells = <1>;
