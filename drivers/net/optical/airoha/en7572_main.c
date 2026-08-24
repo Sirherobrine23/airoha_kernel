@@ -410,9 +410,14 @@ static const struct airoha_lddla_ops en7572_ops = {
 	.part_number	= "EN7572",
 	.serial		= "0000000000000000",
 	.date_code	= "000000",
-	.protocols	= BIT(OPTICAL_FRONTEND_PROTO_GPON),
+	.protocols	= BIT(OPTICAL_FRONTEND_PROTO_EPON) |
+			  BIT(OPTICAL_FRONTEND_PROTO_GPON) |
+			  BIT(OPTICAL_FRONTEND_PROTO_XGPON) |
+			  BIT(OPTICAL_FRONTEND_PROTO_XGSPON) |
+			  BIT(OPTICAL_FRONTEND_PROTO_NGPON2),
 	.thresholds	= &en7572_thresholds,
-	.bob_size	= EN7572_BOB_SIZE,
+	.bob_size_min	= EN7572_BOB_SIZE,
+	.bob_size_max	= EN7572_BOB_SIZE,
 	.temp_refresh	= en7572_temp_refresh,
 	.vcc_refresh	= en7572_vcc_refresh,
 	.bias_refresh	= en7572_bias_refresh,

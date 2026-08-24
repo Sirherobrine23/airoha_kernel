@@ -271,40 +271,45 @@ static int lddla_bob_import(struct airoha_lddla *lddla, const u8 *data,
 			    size_t len, const char *source)
 {
 	enum airoha_lddla_bob_endian endian;
+	size_t min_bob = lddla->ops->bob_size_min;
+	size_t max_bob = lddla->ops->bob_size_max;
+	size_t copy_len, i;
 	u32 magic;
-	size_t expected = lddla->ops->bob_size;
-	size_t i;
 	int ret;
 
-	if (!expected || expected > sizeof(lddla->bob))
+	if (!min_bob || !max_bob || min_bob > max_bob ||
+	    max_bob > sizeof(lddla->bob))
 		return -EINVAL;
-	if (len < 0xff) {
+
+	if (len < min_bob) {
 		dev_err(lddla->dev, "%s BOB is too small (%zu < %zu bytes)\n",
-			source, len, expected);
+			source, len, min_bob);
 		return -EINVAL;
 	}
-	if (len > expected)
+
+	copy_len = min(len, max_bob);
+	if (len > max_bob)
 		dev_warn(lddla->dev,
 			 "%s BOB has %zu extra bytes; ignoring them\n",
-			 source, len - expected);
+			 source, len - max_bob);
 
-	ret = lddla_bob_check(lddla, data, expected, &endian, &magic);
+	ret = lddla_bob_check(lddla, data, copy_len, &endian, &magic);
 	if (ret)
 		return ret;
 
 	memset(lddla->bob, 0xff, sizeof(lddla->bob));
 	if (endian == AIROHA_LDDLA_BOB_ENDIAN_LITTLE) {
-		memcpy(lddla->bob, data, expected);
+		memcpy(lddla->bob, data, copy_len);
 	} else {
 		/* Normalize every 32-bit factory word to little-endian bytes. */
-		for (i = 0; i + sizeof(u32) <= expected; i += sizeof(u32))
+		for (i = 0; i + sizeof(u32) <= copy_len; i += sizeof(u32))
 			put_unaligned_le32(get_unaligned_be32(data + i),
 					   lddla->bob + i);
-		if (i < expected)
-			memcpy(lddla->bob + i, data + i, expected - i);
+		if (i < copy_len)
+			memcpy(lddla->bob + i, data + i, copy_len - i);
 	}
 
-	lddla->bob_len = expected;
+	lddla->bob_len = copy_len;
 	lddla->bob_valid = true;
 	lddla->bob_source_endian = endian;
 	lddla->bob_magic = magic;
@@ -313,7 +318,7 @@ static int lddla_bob_import(struct airoha_lddla *lddla, const u8 *data,
 
 	dev_info(lddla->dev,
 		 "loaded %zu-byte %s-endian BOB from %s: magic 0x%08x, chip-id 0x%02x, profile 0x%02x\n",
-		 expected,
+		 copy_len,
 		 endian == AIROHA_LDDLA_BOB_ENDIAN_BIG ? "big" : "little",
 		 source, magic, lddla->bob_chip_id, lddla->bob_profile);
 	return 0;
@@ -433,7 +438,7 @@ u32 lddla_flash_read(struct airoha_lddla *lddla, u32 off)
 
 void lddla_flash_defaults(struct airoha_lddla *lddla)
 {
-	size_t size = lddla->ops ? lddla->ops->bob_size : 0;
+	size_t size = lddla->ops ? lddla->ops->bob_size_min : 0;
 
 	memset(lddla->bob, 0xff, sizeof(lddla->bob));
 	lddla->bob_len = min_t(size_t, size, sizeof(lddla->bob));
