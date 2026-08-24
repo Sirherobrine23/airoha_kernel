@@ -392,7 +392,8 @@ static const struct airoha_lddla_ops en7571_ops = {
 	.protocols = BIT(OPTICAL_FRONTEND_PROTO_EPON) |
 		     BIT(OPTICAL_FRONTEND_PROTO_GPON),
 	.thresholds = &airoha_lddla_default_thresholds,
-	.bob_size = AIROHA_LDDLA_FLASH_WORDS * sizeof(u32),
+	.bob_size_min = AIROHA_LDDLA_BOB_MIN_SIZE,
+	.bob_size_max = AIROHA_LDDLA_BOB_MAX_SIZE,
 	.temp_refresh = en7571_op_temp,
 	.bosa_temp_refresh = en7571_op_bosa_temp,
 	.vcc_refresh = en7571_op_vcc,
