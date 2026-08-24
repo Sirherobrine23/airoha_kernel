@@ -1306,7 +1306,10 @@ static void econet_init_en751221_qdma(struct econet_qdma *qdma)
 	econet_wreg(val, &qdma->regs->buf_usage_cfg);
 
 	/* Match qdma_dev.c: 16-byte WRR scale, accounting weights by byte. */
-	set_qregs_wrr_mode_use_16b(&wrr, true);
+	if (airoha_is(qdma->common.eth, econet_en7528))
+		set_qregs_wrr_mode_use_16b(&wrr, false);
+	else
+		set_qregs_wrr_mode_use_16b(&wrr, true);
 	set_qregs_wrr_mode_by_byte(&wrr, true);
 	econet_wreg(wrr, &qdma->regs->wrr_mode);
 
@@ -1464,14 +1467,19 @@ static int econet_init_final(struct econet_qdma *qdma)
 	set_qregs_qcfg_msg_word_swap(&qcfg, true);
 	set_qregs_qcfg_dscp_byte_swap(&qcfg, airoha_is(qdma->common.eth, econet_en751221));
 	set_qregs_qcfg_payload_byte_sw(&qcfg, true);
-	if (airoha_is(qdma->common.eth, econet_en751221))
+	if (airoha_is_gen1(qdma->common.eth))
 		set_qregs_qcfg_dma_pref(&qcfg, QREGS_QCFG_DMA_PREF_ROUND_ROBIN);
 	else
 		set_qregs_qcfg_dma_pref(&qcfg, QREGS_QCFG_DMA_PREF_TX1_FRX_TX0);
 	set_qregs_qcfg_rx_2b_offset(&qcfg, qdma->cfg.rx_2b_offset);
 	set_qregs_qcfg_irq_en(&qcfg, true);
-	set_qregs_qcfg_check_done(&qcfg, !airoha_is(qdma->common.eth, econet_en751221));
+	set_qregs_qcfg_check_done(&qcfg, !airoha_is_gen1(qdma->common.eth));
 	set_qregs_qcfg_tx_wb_done(&qcfg, true);
+
+	if (airoha_is(qdma->common.eth, econet_en7528) &&
+	    qdma->common.id == 0)
+		set_qregs_qcfg_tx_immediate_done(&qcfg, true);
+	
 	if (airoha_is(qdma->common.eth, econet_en751221)) {
 		/*
 		 * Stock QDMA_LAN uses TX_IMMEDIATE_DONE (0x9c180075), while

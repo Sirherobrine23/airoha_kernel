@@ -201,7 +201,7 @@ static void econet_set_gdm_port_fwd_cfg(struct econet_gdm_port *port,
 	 * disabled when special-tag mode is enabled. Do not preserve the
 	 * reset value here: some bootloaders leave bit 25 set.
 	 */
-	if (airoha_is(port->eth, econet_en751221))
+	if (airoha_is_gen1(port->eth))
 		fc.word &= ~EN751221_GDM_UNTAG_EN;
 	else
 		set_gdm_fwd_cfg_drop_oversize(&fc, true);
@@ -218,7 +218,7 @@ static int econet_dev_init(struct net_device *dev)
 		port->fport == ETX_FPORT_GDM2 ?
 		ETX_FPORT_QDMA1_CPU : ETX_FPORT_QDMA0_CPU);
 
-	if (airoha_is(port->eth, econet_en751221) &&
+	if (airoha_is_gen1(port->eth) &&
 	    port->fport == ETX_FPORT_GDM1) {
 		struct g1_cport_cfg cport_cfg;
 		struct gdm_vlan vlan;
@@ -265,7 +265,7 @@ static int econet_dev_open(struct net_device *dev)
 	 * used by the vendor special-tag datapath.
 	 */
 	scoped_guard(spinlock, &port->reg_lock) {
-		if (airoha_is(port->eth, econet_en751221) &&
+		if (airoha_is_gen1(port->eth) &&
 		    port->fport == ETX_FPORT_GDM1) {
 			struct fwd_cfg fc = econet_rreg(&port->regs->fwd_cfg);
 
@@ -321,7 +321,7 @@ static int econet_dev_stop(struct net_device *dev)
 
 	scoped_guard(spinlock, &port->reg_lock) {
 		econet_wreg(0U, &port->regs->stag_en);
-		if (airoha_is(port->eth, econet_en751221) &&
+		if (airoha_is_gen1(port->eth) &&
 		    port->fport == ETX_FPORT_GDM1) {
 			struct fwd_cfg fc = econet_rreg(&port->regs->fwd_cfg);
 
