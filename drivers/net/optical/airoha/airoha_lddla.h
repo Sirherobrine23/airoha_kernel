@@ -42,6 +42,7 @@ struct airoha_lddla;
 #define AIROHA_LDDLA_FLASH_ERASED	0xffffffff
 #define AIROHA_LDDLA_BOB_MAGIC_OFFSET		0x094
 #define AIROHA_LDDLA_BOB_MAX_SIZE		512
+#define AIROHA_LDDLA_BOB_MIN_SIZE		161
 
 /*
  * Every known Airoha LDD/LA BOB magic has the form 0xPP0507CC:
@@ -128,7 +129,8 @@ struct airoha_lddla_ops {
 	const char *date_code;
 	u32 protocols;
 	const struct optical_frontend_thresholds *thresholds;
-	size_t bob_size;
+	size_t bob_size_min;
+	size_t bob_size_max;
 
 	s32 (*temp_refresh)(struct airoha_lddla *lddla);
 	s32 (*bosa_temp_refresh)(struct airoha_lddla *lddla);
