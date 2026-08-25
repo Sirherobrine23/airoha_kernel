@@ -66,9 +66,9 @@ config SPI_AIROHA_SNFI
 	depends on SPI_MASTER
 	select REGMAP_MMIO
 	help
-	  This enables support for SPI mode on the Airoha Flash
-	  Interface found on Airoha ARM SoCs. This controller is
-	  implemented as a SPI-MEM controller.
+	  This enables support for the SPI Flash Interface found on
+	  Airoha and EcoNet SoCs. Newer SoCs combine the SFC with an
+	  NFI2SPI engine, while EN751221 uses the manual SFC FIFO only.
 
 config SPI_ALTERA
 	tristate "Altera SPI Controller platform driver"
