@@ -144,13 +144,27 @@ int en7570_init(struct en7570_priv *priv)
 
 	/* Branch on the PON-mode magic number. */
 	magic = lddla_flash_read(&priv->lddla, EN7570_FL_MAGIC);
-	if (magic == EN7570_MAGIC_GPON) {
-		priv->lddla.pon_mode = EN7570_PON_GPON;
-	} else if (magic == EN7570_MAGIC_EPON) {
-		priv->lddla.pon_mode = EN7570_PON_EPON;
-	} else {
-		dev_warn(priv->lddla.dev, "unknown PON magic 0x%08x; DDMI disabled\n",
+	if (!AIROHA_LDDLA_BOB_MAGIC_VALID(magic, EN7570_BOB_VARIANT)) {
+		dev_warn(priv->lddla.dev,
+			 "invalid BOB magic 0x%08x for EN7570; DDMI disabled\n",
 			 magic);
+		priv->internal_ddmi = EN7570_DDMI_OFF;
+		return 0;
+	}
+
+	switch (magic) {
+	case AIROHA_LDDLA_BOB_MAGIC(AIROHA_LDDLA_BOB_PROFILE_GPON,
+				    EN7570_BOB_VARIANT):
+		priv->lddla.pon_mode = EN7570_PON_GPON;
+		break;
+	case AIROHA_LDDLA_BOB_MAGIC(AIROHA_LDDLA_BOB_PROFILE_EPON,
+				    EN7570_BOB_VARIANT):
+		priv->lddla.pon_mode = EN7570_PON_EPON;
+		break;
+	default:
+		dev_warn(priv->lddla.dev,
+			 "unsupported EN7570 BOB profile 0x%02lx (magic 0x%08x); DDMI disabled\n",
+			 AIROHA_LDDLA_BOB_MAGIC_PROFILE(magic), magic);
 		priv->internal_ddmi = EN7570_DDMI_OFF;
 		return 0;	/* leave the optical chain in its default state */
 	}

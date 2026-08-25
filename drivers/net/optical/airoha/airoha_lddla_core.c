@@ -210,18 +210,17 @@ int lddla_lock(struct airoha_lddla *lddla)
 
 static bool lddla_bob_magic_valid(u32 magic)
 {
-	return (magic & AIROHA_LDDLA_BOB_MAGIC_COMMON_MASK) ==
-	       AIROHA_LDDLA_BOB_MAGIC_COMMON_MIN;
+	return AIROHA_LDDLA_BOB_MAGIC_FAMILY_VALID(magic);
 }
 
 static u8 lddla_bob_magic_chip_id(u32 magic)
 {
-	return magic & AIROHA_LDDLA_BOB_MAGIC_CHIP_MASK;
+	return AIROHA_LDDLA_BOB_MAGIC_VARIANT(magic);
 }
 
 static u8 lddla_bob_magic_profile(u32 magic)
 {
-	return (magic & AIROHA_LDDLA_BOB_MAGIC_PROFILE_MASK) >> 24;
+	return AIROHA_LDDLA_BOB_MAGIC_PROFILE(magic);
 }
 
 /*
