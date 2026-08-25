@@ -212,6 +212,15 @@
 #define SNAND_FIFO_RX_BUSWIDTH_SINGLE		0x0c
 #define SNAND_FIFO_RX_BUSWIDTH_DUAL		0x0e
 #define SNAND_FIFO_RX_BUSWIDTH_QUAD		0x0f
+#define SNAND_FIFO_TXRX_SINGLE_SINGLE		0x10
+#define SNAND_FIFO_TXRX_SINGLE_DUAL		0x11
+#define SNAND_FIFO_TXRX_SINGLE_QUAD		0x12
+#define SNAND_FIFO_TXRX_DUAL_SINGLE		0x13
+#define SNAND_FIFO_TXRX_DUAL_DUAL		0x14
+#define SNAND_FIFO_TXRX_DUAL_QUAD		0x15
+#define SNAND_FIFO_TXRX_QUAD_SINGLE		0x16
+#define SNAND_FIFO_TXRX_QUAD_DUAL		0x17
+#define SNAND_FIFO_TXRX_QUAD_QUAD		0x18
 
 #define SPI_NAND_CACHE_SIZE			(SZ_4K + SZ_256)
 #define SPI_MAX_TRANSFER_SIZE			511
@@ -241,6 +250,14 @@ enum airoha_spi_cs {
 	SPI_CHIP_SEL_LOW,
 };
 
+struct airoha_spi_soc_data {
+	bool has_nfi;
+	bool has_nfi2spi;
+	bool has_boot_trp;
+	bool double_cs;
+	u8 manual_dummy;
+};
+
 struct airoha_spi_ctrl {
 	struct device *dev;
 	struct regmap *regmap_ctrl;
@@ -248,6 +265,7 @@ struct airoha_spi_ctrl {
 	struct regmap *scuclk;
 	struct clk *spi_clk;
 	struct gpio_desc *cs_mux;
+	const struct airoha_spi_soc_data *soc;
 	enum airoha_spi_type boot_type;
 };
 
@@ -255,19 +273,22 @@ static enum airoha_spi_type airoha_spi_type(struct airoha_spi_ctrl *as_ctrl)
 {
 	u32 val;
 
-	regmap_read(as_ctrl->scuclk, REG_SCUCLK_BOOT_TRP, &val);
-	if (val & (0x01 << 6))
-		return SPI_CTRL_EMMC;
+	if (as_ctrl->soc->has_boot_trp) {
+		regmap_read(as_ctrl->scuclk, REG_SCUCLK_BOOT_TRP, &val);
+		if (val & BIT(6))
+			return SPI_CTRL_EMMC;
+	}
 
-	regmap_read(as_ctrl->regmap_nfi, REG_SPI_NFI_SNF_NFI_CNFG, &val);
-	if ((val & 0x04) == 0)
-		return SPI_CTRL_PARALLEL_NAND;
+	if (as_ctrl->soc->has_nfi) {
+		regmap_read(as_ctrl->regmap_nfi,
+			    REG_SPI_NFI_SNF_NFI_CNFG, &val);
+		if (!(val & BIT(2)))
+			return SPI_CTRL_PARALLEL_NAND;
+	}
 
 	regmap_read(as_ctrl->regmap_ctrl, REG_SPI_CTRL_SFC_STRAP, &val);
-	if (val & 2)
-		return SPI_CTRL_NAND;
 
-	return SPI_CTRL_NOR;
+	return val & BIT(1) ? SPI_CTRL_NAND : SPI_CTRL_NOR;
 }
 
 static int airoha_spi_set_fifo_op(struct airoha_spi_ctrl *as_ctrl,
@@ -302,6 +323,16 @@ static int airoha_spi_set_fifo_op(struct airoha_spi_ctrl *as_ctrl,
 
 static int airoha_spi_set_cs(struct airoha_spi_ctrl *as_ctrl, u8 cs)
 {
+	int err;
+
+	err = airoha_spi_set_fifo_op(as_ctrl, cs, sizeof(cs));
+	if (err || !as_ctrl->soc->double_cs)
+		return err;
+
+	/*
+	 * EN751221 can drop a chip-select FIFO command.  The vendor SFC
+	 * implementation and the old Linux port issue the command twice.
+	 */
 	return airoha_spi_set_fifo_op(as_ctrl, cs, sizeof(cs));
 }
 
@@ -419,10 +450,12 @@ static int airoha_spi_set_mode(struct airoha_spi_ctrl *as_ctrl,
 	case SPI_MODE_MANUAL: {
 		u32 val;
 
-		err = regmap_write(as_ctrl->regmap_ctrl,
-				   REG_SPI_CTRL_NFI2SPI_EN, 0);
-		if (err)
-			return err;
+		if (as_ctrl->soc->has_nfi2spi) {
+			err = regmap_write(as_ctrl->regmap_ctrl,
+					   REG_SPI_CTRL_NFI2SPI_EN, 0);
+			if (err)
+				return err;
+		}
 
 		err = regmap_write(as_ctrl->regmap_ctrl,
 				   REG_SPI_CTRL_READ_IDLE_EN, 0);
@@ -448,32 +481,100 @@ static int airoha_spi_set_mode(struct airoha_spi_ctrl *as_ctrl,
 		break;
 	}
 	case SPI_MODE_DMA:
+		if (!as_ctrl->soc->has_nfi2spi)
+			return -EOPNOTSUPP;
+
 		err = regmap_write(as_ctrl->regmap_ctrl,
 				   REG_SPI_CTRL_NFI2SPI_EN,
-				   SPI_CTRL_MANUAL_EN);
-		if (err < 0)
+				   SPI_CTRL_NFI2SPI_EN);
+		if (err)
 			return err;
 
 		err = regmap_write(as_ctrl->regmap_ctrl,
-				   REG_SPI_CTRL_MTX_MODE_TOG, 0x0);
-		if (err < 0)
+				   REG_SPI_CTRL_MTX_MODE_TOG, 0);
+		if (err)
 			return err;
 
 		err = regmap_write(as_ctrl->regmap_ctrl,
-				   REG_SPI_CTRL_MANUAL_EN, 0x0);
-		if (err < 0)
+				   REG_SPI_CTRL_MANUAL_EN, 0);
+		if (err)
 			return err;
 		break;
 	case SPI_MODE_AUTO:
-	default:
+		if (as_ctrl->soc->has_nfi2spi) {
+			err = regmap_write(as_ctrl->regmap_ctrl,
+					   REG_SPI_CTRL_NFI2SPI_EN, 0);
+			if (err)
+				return err;
+		}
+
+		err = regmap_write(as_ctrl->regmap_ctrl,
+				   REG_SPI_CTRL_MTX_MODE_TOG, 0);
+		if (err)
+			return err;
+
+		err = regmap_write(as_ctrl->regmap_ctrl,
+				   REG_SPI_CTRL_MANUAL_EN, 0);
+		if (err)
+			return err;
+
+		err = regmap_write(as_ctrl->regmap_ctrl,
+				   REG_SPI_CTRL_READ_IDLE_EN, 1);
+		if (err)
+			return err;
 		break;
 	}
 
-	return regmap_write(as_ctrl->regmap_ctrl, REG_SPI_CTRL_DUMMY, 0);
+	return regmap_write(as_ctrl->regmap_ctrl, REG_SPI_CTRL_DUMMY,
+			    mode == SPI_MODE_DMA ? 0 :
+			    as_ctrl->soc->manual_dummy);
+}
+
+static int airoha_spi_txrx_op(int tx_buswidth, int rx_buswidth)
+{
+	switch (tx_buswidth) {
+	case 0:
+	case 1:
+		switch (rx_buswidth) {
+		case 0:
+		case 1:
+			return SNAND_FIFO_TXRX_SINGLE_SINGLE;
+		case 2:
+			return SNAND_FIFO_TXRX_SINGLE_DUAL;
+		case 4:
+			return SNAND_FIFO_TXRX_SINGLE_QUAD;
+		}
+		break;
+	case 2:
+		switch (rx_buswidth) {
+		case 0:
+		case 1:
+			return SNAND_FIFO_TXRX_DUAL_SINGLE;
+		case 2:
+			return SNAND_FIFO_TXRX_DUAL_DUAL;
+		case 4:
+			return SNAND_FIFO_TXRX_DUAL_QUAD;
+		}
+		break;
+	case 4:
+		switch (rx_buswidth) {
+		case 0:
+		case 1:
+			return SNAND_FIFO_TXRX_QUAD_SINGLE;
+		case 2:
+			return SNAND_FIFO_TXRX_QUAD_DUAL;
+		case 4:
+			return SNAND_FIFO_TXRX_QUAD_QUAD;
+		}
+		break;
+	}
+
+	return -EINVAL;
 }
 
 static int airoha_spi_write_data(struct airoha_spi_ctrl *as_ctrl,
-				   const u8 *data, int len, int buswidth)
+				   const u8 *data, int len, int buswidth,
+				   int next_rx_buswidth)
 {
 	int i, data_len;
 	u8 cmd;
@@ -494,10 +595,17 @@ static int airoha_spi_write_data(struct airoha_spi_ctrl *as_ctrl,
 	}
 
 	for (i = 0; i < len; i += data_len) {
-		int err;
+		int err, fifo_cmd = cmd;
 
 		data_len = min(len - i, SPI_MAX_TRANSFER_SIZE);
-		err = airoha_spi_set_fifo_op(as_ctrl, cmd, data_len);
+		if (next_rx_buswidth && i + data_len == len) {
+			fifo_cmd = airoha_spi_txrx_op(buswidth,
+						      next_rx_buswidth);
+			if (fifo_cmd < 0)
+				return fifo_cmd;
+		}
+
+		err = airoha_spi_set_fifo_op(as_ctrl, fifo_cmd, data_len);
 		if (err)
 			return err;
 
@@ -588,7 +696,8 @@ static bool airoha_spi_is_page_ops(const struct spi_mem_op *op)
 
 	switch (op->data.dir) {
 	case SPI_MEM_DATA_IN:
-		if (op->dummy.nbytes * BITS_PER_BYTE / op->dummy.buswidth > 0xf)
+		if (op->dummy.nbytes &&
+		    op->dummy.nbytes * BITS_PER_BYTE / op->dummy.buswidth > 0xf)
 			return false;
 
 		/* quad in / quad out */
@@ -631,7 +740,7 @@ static int airoha_spi_exec_op(struct spi_mem *mem,
 {
 	struct airoha_spi_ctrl *as_ctrl;
 	unsigned int cs = spi_get_chipselect(mem->spi, 0);
-	int op_len, addr_len, dummy_len;
+	int op_len, addr_len, dummy_len, next_rx_buswidth = 0;
 	u8 buf[20], *data;
 	int i, err, cs_err;
 
@@ -673,10 +782,15 @@ static int airoha_spi_exec_op(struct spi_mem *mem,
 	if (err)
 		goto out_deassert_cs;
 
+	if (op->data.nbytes && op->data.dir == SPI_MEM_DATA_IN)
+		next_rx_buswidth = op->data.buswidth;
+
 	/* Opcode. */
 	data = buf;
 	err = airoha_spi_write_data(as_ctrl, data, op_len,
-				    op->cmd.buswidth);
+				    op->cmd.buswidth,
+				    !addr_len && !dummy_len ?
+				    next_rx_buswidth : 0);
 	if (err)
 		goto out_deassert_cs;
 
@@ -684,7 +798,9 @@ static int airoha_spi_exec_op(struct spi_mem *mem,
 	data += op_len;
 	if (addr_len) {
 		err = airoha_spi_write_data(as_ctrl, data, addr_len,
-					    op->addr.buswidth);
+					    op->addr.buswidth,
+					    !dummy_len ?
+					    next_rx_buswidth : 0);
 		if (err)
 			goto out_deassert_cs;
 	}
@@ -693,7 +809,8 @@ static int airoha_spi_exec_op(struct spi_mem *mem,
 	data += addr_len;
 	if (dummy_len) {
 		err = airoha_spi_write_data(as_ctrl, data, dummy_len,
-					    op->dummy.buswidth);
+					    op->dummy.buswidth,
+					    next_rx_buswidth);
 		if (err)
 			goto out_deassert_cs;
 	}
@@ -707,13 +824,109 @@ static int airoha_spi_exec_op(struct spi_mem *mem,
 		else
 			err = airoha_spi_write_data(as_ctrl, op->data.buf.out,
 						    op->data.nbytes,
-						    op->data.buswidth);
+						    op->data.buswidth, 0);
 	}
 
 out_deassert_cs:
 	cs_err = airoha_spi_set_cs(as_ctrl, SPI_CHIP_SEL_HIGH);
 
 	return err ?: cs_err;
+}
+
+static size_t airoha_spi_max_transfer_size(struct spi_device *spi)
+{
+	return SPI_MAX_TRANSFER_SIZE;
+}
+
+static int airoha_spi_transfer_one_message(struct spi_controller *ctrl,
+					   struct spi_message *msg)
+{
+	struct airoha_spi_ctrl *as_ctrl = spi_controller_get_devdata(ctrl);
+	unsigned int cs = spi_get_chipselect(msg->spi, 0);
+	struct spi_transfer *xfer;
+	int err = 0, cs_err;
+
+	if (cs >= AIROHA_SPI_NUM_CHIPSELECTS) {
+		err = -EINVAL;
+		goto out_finalize;
+	}
+
+	err = airoha_spi_set_mode(as_ctrl, SPI_MODE_MANUAL);
+	if (err)
+		goto out_finalize;
+
+	err = airoha_spi_set_cs(as_ctrl, SPI_CHIP_SEL_HIGH);
+	if (err)
+		goto out_auto;
+
+	err = airoha_spi_select_device(as_ctrl, cs);
+	if (err)
+		goto out_auto;
+
+	err = airoha_spi_set_cs(as_ctrl, SPI_CHIP_SEL_LOW);
+	if (err)
+		goto out_auto;
+
+	list_for_each_entry(xfer, &msg->transfers, transfer_list) {
+		struct spi_transfer *next = NULL;
+		int next_rx_buswidth = 0;
+
+		if (xfer->tx_buf && xfer->rx_buf) {
+			err = -EOPNOTSUPP;
+			break;
+		}
+
+		if (!list_is_last(&xfer->transfer_list, &msg->transfers))
+			next = list_next_entry(xfer, transfer_list);
+
+		if (xfer->tx_buf && next && !xfer->cs_change && next->rx_buf)
+			next_rx_buswidth = next->rx_nbits ?: SPI_NBITS_SINGLE;
+
+		if (xfer->tx_buf)
+			err = airoha_spi_write_data(as_ctrl, xfer->tx_buf,
+						    xfer->len,
+						    xfer->tx_nbits ?:
+						    SPI_NBITS_SINGLE,
+						    next_rx_buswidth);
+		else if (xfer->rx_buf)
+			err = airoha_spi_read_data(as_ctrl, xfer->rx_buf,
+						   xfer->len,
+						   xfer->rx_nbits ?:
+						   SPI_NBITS_SINGLE);
+
+		if (err)
+			break;
+
+		msg->actual_length += xfer->len;
+		spi_transfer_delay_exec(xfer);
+
+		if (xfer->cs_change && next) {
+			err = airoha_spi_set_cs(as_ctrl, SPI_CHIP_SEL_HIGH);
+			if (err)
+				break;
+
+			spi_transfer_cs_change_delay_exec(msg, xfer);
+
+			err = airoha_spi_set_cs(as_ctrl, SPI_CHIP_SEL_LOW);
+			if (err)
+				break;
+		}
+	}
+
+	cs_err = airoha_spi_set_cs(as_ctrl, SPI_CHIP_SEL_HIGH);
+	if (!err)
+		err = cs_err;
+
+out_auto:
+	cs_err = airoha_spi_set_mode(as_ctrl, SPI_MODE_AUTO);
+	if (!err)
+		err = cs_err;
+
+out_finalize:
+	msg->status = err;
+	spi_finalize_current_message(ctrl);
+
+	return 0;
 }
 
 static const struct spi_controller_mem_ops airoha_spi_mem_ops = {
@@ -769,26 +982,31 @@ static int airoha_spi_probe(struct platform_device *pdev)
 
 	as_ctrl = spi_controller_get_devdata(ctrl);
 	as_ctrl->dev = dev;
+	as_ctrl->soc = device_get_match_data(dev);
+	if (!as_ctrl->soc)
+		return -EINVAL;
 
 	base = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(base))
 		return PTR_ERR(base);
 
 	as_ctrl->regmap_ctrl = devm_regmap_init_mmio(dev, base,
-						     &spi_ctrl_regmap_config);
+					     &spi_ctrl_regmap_config);
 	if (IS_ERR(as_ctrl->regmap_ctrl))
 		return dev_err_probe(dev, PTR_ERR(as_ctrl->regmap_ctrl),
 				     "failed to init spi ctrl regmap\n");
 
-	base = devm_platform_ioremap_resource(pdev, 1);
-	if (IS_ERR(base))
-		return PTR_ERR(base);
+	if (as_ctrl->soc->has_nfi) {
+		base = devm_platform_ioremap_resource(pdev, 1);
+		if (IS_ERR(base))
+			return PTR_ERR(base);
 
-	as_ctrl->regmap_nfi = devm_regmap_init_mmio(dev, base,
-						    &spi_nfi_regmap_config);
-	if (IS_ERR(as_ctrl->regmap_nfi))
-		return dev_err_probe(dev, PTR_ERR(as_ctrl->regmap_nfi),
-				     "failed to init spi nfi regmap\n");
+		as_ctrl->regmap_nfi = devm_regmap_init_mmio(dev, base,
+							    &spi_nfi_regmap_config);
+		if (IS_ERR(as_ctrl->regmap_nfi))
+			return dev_err_probe(dev, PTR_ERR(as_ctrl->regmap_nfi),
+					     "failed to init spi nfi regmap\n");
+	}
 
 	as_ctrl->spi_clk = devm_clk_get_enabled(dev, "spi");
 	if (IS_ERR(as_ctrl->spi_clk))
@@ -796,75 +1014,104 @@ static int airoha_spi_probe(struct platform_device *pdev)
 				     "unable to get spi clk\n");
 
 	as_ctrl->cs_mux = devm_gpiod_get_optional(dev, "airoha,cs-mux",
-						 GPIOD_OUT_HIGH);
+					 GPIOD_OUT_HIGH);
 	if (IS_ERR(as_ctrl->cs_mux))
 		return dev_err_probe(dev, PTR_ERR(as_ctrl->cs_mux),
 				     "failed to get external CS mux GPIO\n");
 	if (as_ctrl->cs_mux)
 		dev_info(dev, "using external GPIO chip-select mux\n");
 
-	np = of_parse_phandle(dev->of_node, "airoha,scu", 0);
-	if (!np) {
-		struct of_phandle_args clkspec;
-		int index;
+	if (as_ctrl->soc->has_boot_trp) {
+		np = of_parse_phandle(dev->of_node, "airoha,scu", 0);
+		if (!np) {
+			struct of_phandle_args clkspec;
+			int index;
 
-		/*
-		 * Older EcoNet device trees only describe the SCU through the
-		 * SPI clock.  The SCU clock provider is also a syscon, so use
-		 * the named clock provider as a backwards-compatible fallback.
-		 */
-		index = of_property_match_string(dev->of_node, "clock-names",
-						 "spi");
-		if (index < 0)
-			return dev_err_probe(dev, index, "cannot find spi clock");
+			/*
+			 * Older device trees only describe the SCU through the
+			 * SPI clock.  The SCU clock provider is also a syscon, so
+			 * use the named clock provider as a fallback.
+			 */
+			index = of_property_match_string(dev->of_node,
+							 "clock-names", "spi");
+			if (index < 0)
+				return dev_err_probe(dev, index,
+						     "cannot find spi clock");
 
-		err = of_parse_phandle_with_args(dev->of_node, "clocks",
-						 "#clock-cells", index,
-						 &clkspec);
-		if (err)
-			return dev_err_probe(dev, err, "cannot get scuclk");
+			err = of_parse_phandle_with_args(dev->of_node, "clocks",
+							 "#clock-cells", index,
+							 &clkspec);
+			if (err)
+				return dev_err_probe(dev, err, "cannot get scuclk");
 
-		np = clkspec.np;
+			np = clkspec.np;
+		}
+
+		as_ctrl->scuclk = syscon_node_to_regmap(np);
+		of_node_put(np);
+		if (IS_ERR(as_ctrl->scuclk))
+			return dev_err_probe(dev, PTR_ERR(as_ctrl->scuclk),
+					     "cannot get scuclk regmap");
 	}
 
-	as_ctrl->scuclk = syscon_node_to_regmap(np);
-	of_node_put(np);
-	if (IS_ERR(as_ctrl->scuclk))
-		return dev_err_probe(dev, PTR_ERR(as_ctrl->scuclk),
-				     "cannot get scuclk regmap");
-
-	err = dma_set_mask(as_ctrl->dev, DMA_BIT_MASK(32));
-	if (err)
-		return err;
+	if (as_ctrl->soc->has_nfi) {
+		err = dma_set_mask(as_ctrl->dev, DMA_BIT_MASK(32));
+		if (err)
+			return err;
+	}
 
 	ctrl->num_chipselect = AIROHA_SPI_NUM_CHIPSELECTS;
+	ctrl->flags = SPI_CONTROLLER_HALF_DUPLEX;
 	ctrl->mem_ops = &airoha_spi_mem_ops;
 	ctrl->bits_per_word_mask = SPI_BPW_MASK(8);
-	ctrl->mode_bits = SPI_RX_DUAL | SPI_TX_DUAL;
+	ctrl->mode_bits = SPI_RX_DUAL | SPI_TX_DUAL |
+			  SPI_RX_QUAD | SPI_TX_QUAD;
+	ctrl->max_transfer_size = airoha_spi_max_transfer_size;
+	ctrl->transfer_one_message = airoha_spi_transfer_one_message;
 	ctrl->setup = airoha_spi_setup;
 	device_set_node(&ctrl->dev, dev_fwnode(dev));
 
-	// Get bootstrap pin to determine the boot type (NOR/NAND/eMMC)
+	/* Get bootstrap pins to determine the boot flash type. */
 	as_ctrl->boot_type = airoha_spi_type(as_ctrl);
 	dev_info(dev, "boot type: %s\n",
 		 as_ctrl->boot_type == SPI_CTRL_EMMC ? "eMMC" :
-		 as_ctrl->boot_type == SPI_CTRL_NOR ? "NOR" : "NAND");
+		 as_ctrl->boot_type == SPI_CTRL_PARALLEL_NAND ? "parallel NAND" :
+		 as_ctrl->boot_type == SPI_CTRL_NOR ? "NOR" : "SPI NAND");
 
-	if (as_ctrl->boot_type == SPI_CTRL_EMMC)
-		return dev_err_probe(dev, -EINVAL, "Cannot user eMMC with SPI Controller");
+	if (as_ctrl->boot_type == SPI_CTRL_EMMC ||
+	    as_ctrl->boot_type == SPI_CTRL_PARALLEL_NAND)
+		return dev_err_probe(dev, -ENODEV,
+				     "boot flash is not connected to SPI controller");
 
-	err = as_ctrl->boot_type == SPI_CTRL_NOR ?
-				    airoha_spi_nor_init(as_ctrl) :
-				    airoha_spi_nfi_init(as_ctrl);
-
+	/*
+	 * EN751221 predates NFI2SPI.  Its SPI-NAND path uses the SFC manual
+	 * FIFO and the flash on-die ECC, so it is initialized like the SFC
+	 * NOR path rather than trying to access a non-existent NFI resource.
+	 */
+	if (as_ctrl->boot_type == SPI_CTRL_NAND && as_ctrl->soc->has_nfi)
+		err = airoha_spi_nfi_init(as_ctrl);
+	else
+		err = airoha_spi_nor_init(as_ctrl);
 	if (err)
 		return err;
 
 	return devm_spi_register_controller(dev, ctrl);
 }
 
+static const struct airoha_spi_soc_data en751221_spi_data = {
+	.double_cs = true,
+	.manual_dummy = 1,
+};
+
+static const struct airoha_spi_soc_data en7523_spi_data = {
+	.has_nfi = true,
+	.has_nfi2spi = true,
+	.has_boot_trp = true,
+};
+
 static const struct of_device_id airoha_spi_ids[] = {
-	{ .compatible	= "airoha,en7523-spi" },
+	{ .compatible = "econet,en751221-spi", .data = &en751221_spi_data },
+	{ .compatible = "airoha,en7523-spi", .data = &en7523_spi_data },
 	{ /* sentinel */ }
 };
 MODULE_DEVICE_TABLE(of, airoha_spi_ids);
