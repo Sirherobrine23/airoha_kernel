@@ -216,9 +216,8 @@
 #define EN7570_LOOP_SCL			0x80000000	/* single-closed-loop */
 #define EN7570_LOOP_DOL			0xc0000000	/* dual-open-loop */
 
-/* PON-mode magic numbers (flash offset 0x094). */
-#define EN7570_MAGIC_GPON		0x07050700
-#define EN7570_MAGIC_EPON		0xe7050700
+/* BOB magic variant byte (flash offset 0x094). */
+#define EN7570_BOB_VARIANT		0x00
 
 /* xPON mode enumeration (struct en7570_priv .pon_mode). */
 #define EN7570_PON_UNKNOWN		(-1)
