@@ -41,17 +41,21 @@
 		#interrupt-cells = <1>;
 	};
 
-	spi_ctrl: spi_controller@1fa10000 {
-		compatible = "airoha,en7523-spi";
+	spi_ctrl: spi@1fa10000 {
+		compatible = "econet,en751221-spi";
 		reg = <0x1fa10000 0x140>;
+
+		clocks = <&scuclk EN751221_CLK_SPI>;
+		clock-names = "spi";
 		#address-cells = <1>;
 		#size-cells = <0>;
-		spi-rx-bus-width = <2>;
-		spi-tx-bus-width = <2>;
 
 		nand: nand@0 {
 			compatible = "spi-nand";
 			reg = <0>;
+			spi-max-frequency = <25000000>;
+			spi-rx-bus-width = <2>;
+			spi-tx-bus-width = <1>;
 			nand-ecc-engine = <&nand>;
 		};
 	};

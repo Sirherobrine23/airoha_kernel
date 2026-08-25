@@ -99,7 +99,7 @@
 #define EN751221_REG_RST_DMT		0x84
 #define EN751221_REG_RST_USB		0xec
 #define EN751221_REG_SPI_DIV		0x0cc
-#define EN751221_REG_SPI_DIV_MASK	GENMASK(31, 8)
+#define EN751221_REG_SPI_DIV_MASK	GENMASK(15, 8)
 #define EN751221_SPI_BASE		500000000
 #define EN751221_SPI_BASE_EN7526C	400000000
 #define EN751221_SPI_DIV_DEFAULT	40
@@ -1847,8 +1847,11 @@ static int econet_clk_hw_init(struct platform_device *pdev,
 	if (of_property_present(dev->of_node, "airoha,chip-scu"))
 		map = syscon_regmap_lookup_by_phandle(dev->of_node,
 						      "airoha,chip-scu");
-	else
-		map = syscon_regmap_lookup_by_compatible(data->chip_scu_compatible);
+	else {
+		map = syscon_regmap_lookup_by_compatible("airoha,chip-scu");
+		if (IS_ERR(map))
+			map = syscon_regmap_lookup_by_compatible(data->chip_scu_compatible);
+	}
 	if (IS_ERR(map))
 		return PTR_ERR(map);
 
@@ -1968,7 +1971,7 @@ static const struct en_clk_soc_data an7583_data = {
 };
 
 static const struct econet_clk_soc_data en751221_econet_data = {
-	.chip_scu_compatible = "airoha,chip-scu",
+	.chip_scu_compatible = "econet,en751221-chip-scu",
 	.spi_base = EN751221_SPI_BASE,
 	.spi_alt_base = EN751221_SPI_BASE_EN7526C,
 	.spi_alt_hir = HIR_EN7526C,
