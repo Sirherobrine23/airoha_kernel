@@ -29,6 +29,6 @@ config PHY_AIROHA_XPON
 	depends on MFD_SYSCON
 	select GENERIC_PHY
 	help
-	  Enable the digital GPON/EPON PHY found in Airoha EN7523-family and
+	  Enable the digital GPON/EPON PHY found in Airoha EN7523/EN7528 and
 	  EcoNet EN751221 SoCs. The driver programs the common xPON receiver,
 	  selects the protocol mode and runs the SoC-specific PHY bring-up.

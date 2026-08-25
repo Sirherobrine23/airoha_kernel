@@ -511,29 +511,40 @@ static void econet_qdma_set_irqmask(struct econet_qdma *qdma, union irq_bit b, b
 	econet_rreg(irq->mask_reg[b.reg_idx]);
 }
 
-int airoha_qdma_gen1_set_xpon_irq(struct econet_qdma *qdma,
-				  enum airoha_xpon_mode mode, bool enable)
+static int econet_qdma_xpon_irq_bit(enum airoha_xpon_mode mode,
+				    union irq_bit *bit)
 {
-	union econet_irq_purpose purpose;
-	union irq_bit bit;
-
-	if (!qdma || qdma->common.id != 1)
-		return -EINVAL;
+	*bit = (union irq_bit) {
+		.irq_idx = 0,
+		.reg_idx = 0,
+	};
 
 	switch (mode) {
 	case AIROHA_XPON_MODE_GPON:
-		purpose = IRQ_PURPOSE(GPON_INT, UNSPEC, -1);
-		break;
+		bit->bit_idx = 16;
+		return 0;
 	case AIROHA_XPON_MODE_EPON:
-		purpose = IRQ_PURPOSE(EPON_INT, UNSPEC, -1);
-		break;
+		bit->bit_idx = 17;
+		return 0;
 	default:
 		return -EINVAL;
 	}
+}
 
-	bit = en751221_irq_bit(purpose);
-	if (!en751221_valid_irq_bit(bit))
+int airoha_qdma_gen1_set_xpon_irq(struct econet_qdma *qdma,
+				  enum airoha_xpon_mode mode, bool enable)
+{
+	union irq_bit bit;
+	int ret;
+
+	if (!qdma || qdma->common.id != 1)
 		return -EINVAL;
+	if (!qdma->soc->xpon_irq_via_qdma)
+		return -EOPNOTSUPP;
+
+	ret = econet_qdma_xpon_irq_bit(mode, &bit);
+	if (ret)
+		return ret;
 
 	econet_qdma_set_irqmask(qdma, bit, enable);
 	if (!enable)
@@ -627,10 +638,10 @@ static irqreturn_t econet_irq_handler(int irq_num, void *dev_instance)
 		}
 	}
 
-	/* The EN751221 vendor stack registers GPON/EPON MAC handlers through
-	 * QDMA_WAN.  Invoke the MAC after acknowledging the QDMA aggregator and
-	 * after dropping irq->lock_irq; the MAC ISR performs its own W1C and FIFO
-	 * drain operations.
+	/* Generation-1 xPON_1g parts can deliver GPON/EPON MAC events through
+	 * QDMA_WAN. Invoke the MAC after acknowledging the QDMA status and
+	 * after dropping irq->lock_irq; the MAC ISR performs its own W1C and
+	 * FIFO drain operations.
 	 */
 	if (xpon_pending & BIT(AIROHA_XPON_MODE_GPON))
 		airoha_eth_gen1_xpon_irq(qdma->common.eth, qdma->common.id,
@@ -1449,10 +1460,6 @@ static int econet_init_final(struct econet_qdma *qdma)
 					en |= (p.type == IPS_ERR_COHERENT);
 					en |= (p.type == IPS_OVERFLOW);
 
-					/* External hardware */
-					en |= (p.type == IPS_GPON_INT);
-					en |= (p.type == IPS_EPON_INT);
-					en |= (p.type == IPS_XPON_INT);
 				}
 
 				mask |= en << k;

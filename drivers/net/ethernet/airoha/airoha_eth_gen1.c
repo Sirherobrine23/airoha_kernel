@@ -363,7 +363,7 @@ static int econet_validate_xpon_gdm2(struct net_device *netdev,
 		return -EINVAL;
 
 	port = netdev_priv(netdev);
-	if (!port->eth || !airoha_is(port->eth, econet_en751221) ||
+	if (!port->eth || !airoha_is_gen1(port->eth) ||
 	    port->fport != ETX_FPORT_GDM2)
 		return -EOPNOTSUPP;
 
@@ -966,13 +966,13 @@ static inline struct airoha_eth_gen1 *airoha_eth_gen1_priv(struct airoha_eth *et
 }
 
 
-#define EN751221_DSA_SPORT_BASE		8
-#define EN751221_DSA_NUM_PORTS		5
+#define ECONET_DSA_SPORT_BASE		8
+#define ECONET_DSA_NUM_PORTS		5
 
-static bool econet_en751221_dsa_sport(u8 sport)
+static bool econet_gen1_dsa_sport(u8 sport)
 {
-	return sport >= EN751221_DSA_SPORT_BASE &&
-	       sport < EN751221_DSA_SPORT_BASE + EN751221_DSA_NUM_PORTS;
+	return sport >= ECONET_DSA_SPORT_BASE &&
+	       sport < ECONET_DSA_SPORT_BASE + ECONET_DSA_NUM_PORTS;
 }
 
 static struct net_device *econet_get_sport_dev(struct airoha_eth *eth,
@@ -989,8 +989,7 @@ static struct net_device *econet_get_sport_dev(struct airoha_eth *eth,
 		return priv->ports[1];
 
 	if (sport == ETX_FPORT_GDM1 || sport == ETX_FPORT_QDMA0_CPU ||
-	    (airoha_is(eth, econet_en751221) &&
-	     econet_en751221_dsa_sport(sport)))
+	    (airoha_is_gen1(eth) && econet_gen1_dsa_sport(sport)))
 		return priv->ports[0];
 
 	dev_info_ratelimited(eth->dev, "rx: on unexpected sport %u\n", sport);
@@ -1163,16 +1162,20 @@ static int econet_register_xpon(struct net_device *netdev,
 	spin_unlock_irqrestore(&port->xpon_state_lock, flags);
 	netif_carrier_off(netdev);
 
-	/* EN751221 has no standalone xPON platform IRQ. The MAC interrupt is
-	 * aggregated into QDMA_WAN bits 16/17 and is enabled only after the
-	 * provider callback is fully published.
+	/* The EN7516-family xPON_1g stack registers GPON/EPON MAC callbacks
+	 * through QDMA_WAN. Enable the external QDMA source only after the
+	 * provider callback is fully published. EN751221 uses the legacy
+	 * shared topology; EN7528 uses the same callback delivery path even
+	 * though the SoC also exposes separate GIC source numbers.
 	 */
-	ret = airoha_qdma_gen1_set_xpon_irq(port->qdma, mode, true);
-	if (ret) {
-		port->xpon_managed = false;
-		port->xpon_ops = NULL;
-		port->xpon_priv = NULL;
-		goto out_unlock;
+	if (port->eth->soc->xpon_irq_via_qdma) {
+		ret = airoha_qdma_gen1_set_xpon_irq(port->qdma, mode, true);
+		if (ret) {
+			port->xpon_managed = false;
+			port->xpon_ops = NULL;
+			port->xpon_priv = NULL;
+			goto out_unlock;
+		}
 	}
 
 out_unlock:
@@ -1198,10 +1201,11 @@ static void econet_unregister_xpon(struct net_device *netdev,
 	if (READ_ONCE(port->xpon_ops) != ops || READ_ONCE(port->xpon_priv) != priv)
 		return;
 
-	/* Mask the QDMA aggregator first and wait out an in-flight hard IRQ
+	/* Mask the QDMA xPON source first and wait out an in-flight hard IRQ
 	 * before the provider private pointer can disappear.
 	 */
-	airoha_qdma_gen1_set_xpon_irq(port->qdma, port->xpon_mode, false);
+	if (port->eth->soc->xpon_irq_via_qdma)
+		airoha_qdma_gen1_set_xpon_irq(port->qdma, port->xpon_mode, false);
 	econet_xpon_stop(port);
 
 	mutex_lock(&port->xpon_lock);
@@ -1575,7 +1579,7 @@ bool airoha_eth_gen1_rx_xpon_oam(struct airoha_eth *eth, u8 qdma_id,
 	u32 skb_len;
 	bool consumed = false;
 
-	if (!airoha_is(eth, econet_en751221) || qdma_id != 1 || !priv->ports[1])
+	if (!airoha_is_gen1(eth) || qdma_id != 1 || !priv->ports[1])
 		return false;
 
 	raw0 = READ_ONCE(msg->raw[0]);
@@ -1611,7 +1615,7 @@ bool airoha_eth_gen1_rx_xpon_oam(struct airoha_eth *eth, u8 qdma_id,
 	}
 
 	dev_dbg_ratelimited(eth->dev,
-			    "EN751221 xPON OAM RX: len=%u msg0=%#010x channel=%u gem=%u crc=%u runt=%u long=%u consumed=%u\n",
+			    "generation-1 xPON OAM RX: len=%u msg0=%#010x channel=%u gem=%u crc=%u runt=%u long=%u consumed=%u\n",
 			    skb_len, raw0,
 			    (unsigned int)FIELD_GET(ERX_XPON_CHANNEL_MASK, raw0),
 			    gem_port_id, !!(raw0 & ERX_XPON_CRC_ERROR),
@@ -1629,7 +1633,7 @@ void airoha_eth_gen1_xpon_irq(struct airoha_eth *eth, u8 qdma_id,
 	struct econet_gdm_port *port;
 	void *xpon_priv;
 
-	if (!airoha_is(eth, econet_en751221) || qdma_id != 1 || !priv->ports[1])
+	if (!eth->soc->xpon_irq_via_qdma || qdma_id != 1 || !priv->ports[1])
 		return;
 
 	port = netdev_priv(priv->ports[1]);
@@ -1917,6 +1921,8 @@ const struct airoha_eth_soc_data econet_en751221_soc_data = {
 	.version = econet_en751221,
 	.eth_ops = &airoha_eth_gen1_ops,
 	.xpon_ops = &econet_xpon_ops,
+	.xpon_irq_via_qdma = true,
+	.xpon_irq_shared = true,
 	.num_ppe = 1,
 	.ppe_dram_entries = 16 * 1024,
 };
@@ -1924,6 +1930,9 @@ const struct airoha_eth_soc_data econet_en751221_soc_data = {
 const struct airoha_eth_soc_data econet_en7528_soc_data = {
 	.version = econet_en7528,
 	.eth_ops = &airoha_eth_gen1_ops,
+	.xpon_ops = &econet_xpon_ops,
+	.xpon_irq_via_qdma = true,
+	.xpon_irq_shared = false,
 	.num_ppe = 1,
 	.ppe_dram_entries = 16 * 1024,
 };

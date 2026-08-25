@@ -957,6 +957,10 @@ struct airoha_eth_soc_data {
 	enum airoha_ids version;
 	const struct airoha_eth_ops *eth_ops;
 	const struct airoha_eth_xpon_ops *xpon_ops;
+	/* xPON MAC events are delivered by the generation-1 WAN QDMA ISR. */
+	bool xpon_irq_via_qdma;
+	/* The SoC has the legacy shared-QDMA xPON interrupt topology. */
+	bool xpon_irq_shared;
 	const char * const *xsi_rsts_names;
 	int num_xsi_rsts;
 	int num_ppe;

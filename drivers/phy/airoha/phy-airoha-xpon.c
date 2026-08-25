@@ -2,10 +2,10 @@
 /*
  * Airoha/EcoNet xPON PHY driver
  *
- * EN7523 and EN751221 share the digital GPON/EPON register block at
- * 0x1faf0000.  The EN7523 generation also integrates the PMA/SerDes
- * controls used by the EN7571 optical front end, while EN751221 uses the
- * older SoC-specific PHY bring-up sequence.
+ * EN7523, EN7528 and EN751221 share the digital GPON/EPON register block at
+ * 0x1faf0000. The EN7523 generation also integrates the PMA/SerDes controls
+ * used by the EN7571 optical front end. EN751221 and EN7528 use the older
+ * digital PHY sequence, with EN751221 requiring additional legacy SCU setup.
  */
 
 #include <linux/bitfield.h>
@@ -22,14 +22,15 @@
 #include <linux/workqueue.h>
 
 #define EN751221_XPON_PHY_MIN_SIZE	0x0600
+#define EN7528_XPON_PHY_MIN_SIZE		0x0600
 #define EN7523_XPON_PHY_MIN_SIZE		0x480c
 
 #define EN751221_CHIP_SCU_IOMUX_CTRL	0x104
 #define EN751221_CHIP_SCU_IOMUX_PON_EN	BIT(15)
-#define EN751221_SCU_PHY_CTRL0		0x860
-#define EN751221_SCU_PHY_CTRL0_DIS	BIT(10)
-#define EN751221_SCU_PHY_CTRL1		0x92c
-#define EN751221_SCU_PHY_CTRL1_DIS	BIT(2)
+#define ECONET_SCU_PHY_CTRL0		0x860
+#define ECONET_SCU_PHY_CTRL0_DIS	BIT(10)
+#define ECONET_SCU_PHY_CTRL1		0x92c
+#define ECONET_SCU_PHY_CTRL1_DIS	BIT(2)
 
 #define EN7523_SCU_WAN_CONF		0x070
 #define EN7523_SCU_WAN_MODE_MASK	GENMASK(7, 0)
@@ -694,51 +695,21 @@ econet_en751221_xpon_phy_counter_init(struct airoha_xpon_phy *priv)
 					       EN751221_COUNTER_ENABLE_MASK);
 }
 
-static int econet_en751221_xpon_phy_configure(struct airoha_xpon_phy *priv)
+static void econet_gen1_xpon_phy_prepare(struct airoha_xpon_phy *priv)
 {
-	u32 val;
-	int ret;
-
 	/*
-	 * EN751221 phy_dev_init(): route the PON pins to the xPON block and
-	 * release the legacy PHY disables in CHIP-SCU/NP-SCU.  These controls
-	 * are outside the common 0x1faf0000 digital PHY register window.
-	 */
-	ret = regmap_update_bits(priv->chip_scu,
-				 EN751221_CHIP_SCU_IOMUX_CTRL,
-				 EN751221_CHIP_SCU_IOMUX_PON_EN,
-				 EN751221_CHIP_SCU_IOMUX_PON_EN);
-	if (ret)
-		return dev_err_probe(priv->dev, ret,
-				     "failed to enable EN751221 PON I/O mux\n");
-
-	/*
-	 * PON I2C is a separate pinctrl function (IOMUX bit 0).  Do not claim
-	 * it from the xPON PHY: the I2C controller owns that mux.
-	 *
-	 * Clear FW_READY before reconfiguring, matching xpon_phy_stop().
+	 * Clear FW_READY before reconfiguring, matching xpon_phy_stop(), then
+	 * preserve the vendor phy_dev_init() ordering around PHYSET3[2].
 	 */
 	airoha_xpon_phy_rmw(priv, XPON_PHYFWREADY, XPON_PHYFWREADY_READY, 0);
-
-	/* Preserve the vendor phy_dev_init() ordering around PHYSET3[2]. */
 	airoha_xpon_phy_rmw(priv, XPON_PHYSET3, BIT(2), 0);
+}
 
-	ret = regmap_clear_bits(priv->scu, EN751221_SCU_PHY_CTRL1,
-				EN751221_SCU_PHY_CTRL1_DIS);
-	if (ret)
-		return dev_err_probe(priv->dev, ret,
-				     "failed to enable EN751221 xPON PHY control 1\n");
+static int econet_gen1_xpon_phy_configure(struct airoha_xpon_phy *priv)
+{
+	u32 val;
 
-	ret = regmap_clear_bits(priv->scu, EN751221_SCU_PHY_CTRL0,
-				EN751221_SCU_PHY_CTRL0_DIS);
-	if (ret)
-		return dev_err_probe(priv->dev, ret,
-				     "failed to enable EN751221 xPON PHY control 0\n");
-
-	/*
-	 * Complete the counter side of vendor phy_dev_init().  This was missing
-	 * from the initial EN751221 port and left 0x0230 disabled.
-	 */
+	/* Complete the counter side of the generation-1 phy_dev_init(). */
 	econet_en751221_xpon_phy_counter_init(priv);
 	airoha_xpon_phy_write(priv, XPON_GPON_DELIMITER_GUARD,
 			      XPON_GPON_DELIMITER_DEFAULT);
@@ -746,21 +717,16 @@ static int econet_en751221_xpon_phy_configure(struct airoha_xpon_phy *priv)
 					       EN751221_COUNTER_CLEAR_ALL);
 
 	/*
-	 * EN751221 phy_mode_config(): bit 5 is cleared while switching mode,
-	 * PHYSET10[31] selects GPON, and the PLL/counter reset is pulsed after
-	 * the mode change.  EPON sets PHYSET3[5] again after the reset pulse.
+	 * Generation-1 phy_mode_config(): bit 5 is cleared while switching
+	 * mode, PHYSET10[31] selects GPON, and the PLL/counter reset is pulsed
+	 * after the mode change. EPON sets PHYSET3[5] again after the pulse.
 	 */
 	airoha_xpon_phy_rmw(priv, XPON_PHYSET3, BIT(5), 0);
 	airoha_xpon_phy_rmw(priv, XPON_PHYSET10, XPON_PHYSET10_GPON,
 			    priv->submode == AIROHA_XPON_PHY_SUBMODE_GPON ?
 			     XPON_PHYSET10_GPON : 0);
 
-	/*
-	 * Apply the transceiver pin conventions before the PLL and counter
-	 * reset, so they are in place when the reset is released.  The reset
-	 * default inverts receive signal detect, which reports a permanent LOS
-	 * on a board whose optics drive it in the default sense.
-	 */
+	/* Apply board-specific transceiver signal polarity before reset. */
 	airoha_xpon_phy_rmw(priv, XPON_SETTING, XPON_SETTING_INV_MASK,
 			    priv->trans_invert);
 
@@ -774,27 +740,76 @@ static int econet_en751221_xpon_phy_configure(struct airoha_xpon_phy *priv)
 	if (priv->submode == AIROHA_XPON_PHY_SUBMODE_EPON)
 		airoha_xpon_phy_rmw(priv, XPON_PHYSET3, BIT(5), BIT(5));
 
-	/*
-	 * The vendor enables PHY interrupts here, but this driver monitors LOS
-	 * and PHY_READY by delayed work.  Keep interrupts masked until an IRQ
-	 * consumer is added instead of enabling an unhandled source.
-	 *
-	 * Only the pin-convention bits of XPON_SETTING are written on EN751221;
-	 * the vendor derives the rest from the optical transceiver model.
-	 */
+	/* PHY interrupts are not consumed by this driver yet. */
 	val = airoha_xpon_phy_read(priv, XPON_INT_STATUS);
 	airoha_xpon_phy_write(priv, XPON_INT_STATUS_CLR, val);
 	airoha_xpon_phy_write(priv, XPON_INT_ENABLE, 0);
 
-	/*
-	 * The vendor exposes phy_fw_ready(1) as a distinct xPON PHY command.
-	 * Linux owns the whole bring-up sequence, so assert the software-ready
-	 * bit only after the mode, reset and counter programming is complete.
-	 */
+	/* Publish firmware-ready only after mode programming is complete. */
 	airoha_xpon_phy_rmw(priv, XPON_PHYFWREADY, XPON_PHYFWREADY_READY,
 			    XPON_PHYFWREADY_READY);
 
 	return 0;
+}
+
+static int econet_gen1_xpon_phy_enable_scu(struct airoha_xpon_phy *priv)
+{
+	int ret;
+
+	/*
+	 * EN751221 and EN7528 both gate the generation-1 xPON PHY through
+	 * the legacy SCU controls.  The EN7528 vendor phy_dev_init() clears
+	 * these same bits before programming the digital PHY.
+	 */
+	ret = regmap_clear_bits(priv->scu, ECONET_SCU_PHY_CTRL1,
+				ECONET_SCU_PHY_CTRL1_DIS);
+	if (ret)
+		return dev_err_probe(priv->dev, ret,
+				     "failed to enable xPON PHY control 1\n");
+
+	ret = regmap_clear_bits(priv->scu, ECONET_SCU_PHY_CTRL0,
+				ECONET_SCU_PHY_CTRL0_DIS);
+	if (ret)
+		return dev_err_probe(priv->dev, ret,
+				     "failed to enable xPON PHY control 0\n");
+
+	return 0;
+}
+
+static int econet_en751221_xpon_phy_configure(struct airoha_xpon_phy *priv)
+{
+	int ret;
+
+	/* EN751221 additionally routes PON through its CHIP-SCU I/O mux. */
+	ret = regmap_update_bits(priv->chip_scu,
+				 EN751221_CHIP_SCU_IOMUX_CTRL,
+				 EN751221_CHIP_SCU_IOMUX_PON_EN,
+				 EN751221_CHIP_SCU_IOMUX_PON_EN);
+	if (ret)
+		return dev_err_probe(priv->dev, ret,
+				     "failed to enable EN751221 PON I/O mux\n");
+
+	econet_gen1_xpon_phy_prepare(priv);
+
+	ret = econet_gen1_xpon_phy_enable_scu(priv);
+	if (ret)
+		return ret;
+
+	return econet_gen1_xpon_phy_configure(priv);
+}
+
+static int econet_en7528_xpon_phy_configure(struct airoha_xpon_phy *priv)
+{
+	int ret;
+
+	/* EN7528 routes PON through pinctrl and uses dedicated GIC IRQs. */
+	econet_gen1_xpon_phy_prepare(priv);
+
+	ret = econet_gen1_xpon_phy_enable_scu(priv);
+	if (ret)
+		return ret;
+
+	return econet_gen1_xpon_phy_configure(priv);
 }
 
 static int airoha_xpon_phy_configure(struct airoha_xpon_phy *priv)
@@ -1041,6 +1056,13 @@ static const struct airoha_xpon_phy_soc_data econet_en751221_xpon_phy_data = {
 	.configure = econet_en751221_xpon_phy_configure,
 };
 
+static const struct airoha_xpon_phy_soc_data airoha_en7528_xpon_phy_data = {
+	.name = "EN7528",
+	.min_size = EN7528_XPON_PHY_MIN_SIZE,
+	.manages_fw_ready = true,
+	.configure = econet_en7528_xpon_phy_configure,
+};
+
 static const struct airoha_xpon_phy_soc_data airoha_en7523_xpon_phy_data = {
 	.name = "EN7523",
 	.min_size = EN7523_XPON_PHY_MIN_SIZE,
@@ -1056,6 +1078,10 @@ static const struct of_device_id airoha_xpon_phy_of_match[] = {
 	{
 		.compatible = "airoha,en7523-xpon-phy",
 		.data = &airoha_en7523_xpon_phy_data,
+	},
+	{
+		.compatible = "airoha,en7528-xpon-phy",
+		.data = &airoha_en7528_xpon_phy_data,
 	},
 	{ }
 };
