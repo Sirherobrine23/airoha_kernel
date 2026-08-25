@@ -309,10 +309,8 @@
 #define EN7571_FL_RX_SD_MASK		0x007f0000
 #define EN7571_FL_KT_DEFAULT		0x00060020
 
-/* PON-mode magic numbers (flash offset 0x094). */
-#define EN7571_MAGIC_GPON		0x07050701
-#define EN7571_MAGIC_EPON		0xe7050701
-#define EN7571_MAGIC_XPON		0xa7050701	/* adapter mode, runs as GPON */
+/* BOB magic variant byte (flash offset 0x094). */
+#define EN7571_BOB_VARIANT		0x01
 
 /* xPON mode enumeration (struct en7571_priv .pon_mode). */
 #define EN7571_PON_UNKNOWN		(-1)

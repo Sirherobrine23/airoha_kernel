@@ -129,6 +129,7 @@ static void en7571_load_config(struct en7571_priv *priv)
  */
 int en7571_init(struct en7571_priv *priv)
 {
+	static const u8 zero[4] = { 0, 0, 0, 0 };
 	u32 magic;
 
 	en7571_load_config(priv);
@@ -153,35 +154,36 @@ int en7571_init(struct en7571_priv *priv)
 
 	/* Branch on the PON-mode magic number. */
 	magic = lddla_flash_read(&priv->lddla, EN7571_FL_MAGIC);
-	if (magic == EN7571_MAGIC_GPON) {
+	if (!AIROHA_LDDLA_BOB_MAGIC_VALID(magic, EN7571_BOB_VARIANT))
+		goto invalid_bob;
+
+	switch (magic) {
+	case AIROHA_LDDLA_BOB_MAGIC(AIROHA_LDDLA_BOB_PROFILE_GPON,
+				    EN7571_BOB_VARIANT):
 		priv->lddla.pon_mode = EN7571_PON_GPON;
 		en7571_tgen_recall(priv);
 		en7571_set_t0t1_delay(priv, EN7571_T1_T0_DELAY_GPON);
 		en7571_apd_init(priv);
 		en7571_apd_control(priv);
-	} else if (magic == EN7571_MAGIC_EPON) {
+		break;
+	case AIROHA_LDDLA_BOB_MAGIC(AIROHA_LDDLA_BOB_PROFILE_EPON,
+				    EN7571_BOB_VARIANT):
 		priv->lddla.pon_mode = EN7571_PON_EPON;
 		en7571_tgen_recall(priv);
 		en7571_set_t0t1_delay(priv, EN7571_T1_T0_DELAY_EPON);
 		/* EPON does not run APD control. */
-	} else if (magic == EN7571_MAGIC_XPON) {
+		break;
+	case AIROHA_LDDLA_BOB_MAGIC(AIROHA_LDDLA_BOB_PROFILE_XPON,
+				    EN7571_BOB_VARIANT):
 		/* Adapter mode: run as GPON but with the EPON burst delay. */
 		priv->lddla.pon_mode = EN7571_PON_GPON;
 		en7571_tgen_recall(priv);
 		en7571_set_t0t1_delay(priv, EN7571_T1_T0_DELAY_EPON);
 		en7571_apd_init(priv);
 		en7571_apd_control(priv);
-	} else {
-		static const u8 zero[4] = { 0, 0, 0, 0 };
-
-		dev_warn(priv->lddla.dev, "unknown PON magic 0x%08x; DDMI disabled\n",
-			 magic);
-		/* Quiesce the loop set-points, then minimal LOS-only mode. */
-		lddla_wr(&priv->lddla, EN7571_PWR_CTRL_9, zero, 4);
-		lddla_wr(&priv->lddla, EN7571_PWR_CTRL_D, zero, 4);
-		en7571_los_init(priv);
-		priv->internal_ddmi = EN7571_DDMI_OFF;
-		return 0;
+		break;
+	default:
+		goto invalid_bob;
 	}
 
 	en7571_reg_init(priv);
@@ -199,6 +201,17 @@ int en7571_init(struct en7571_priv *priv)
 		 "EN7571 initialised: %s, rev %d, KT%d, DDMI%d\n",
 		 priv->lddla.pon_mode == EN7571_PON_GPON ? "GPON" : "EPON",
 		 priv->ver, priv->kt, priv->internal_ddmi);
+	return 0;
+
+invalid_bob:
+	dev_warn(priv->lddla.dev,
+		 "invalid or unsupported EN7571 BOB magic 0x%08x; DDMI disabled\n",
+		 magic);
+	/* Quiesce the loop set-points, then minimal LOS-only mode. */
+	lddla_wr(&priv->lddla, EN7571_PWR_CTRL_9, zero, 4);
+	lddla_wr(&priv->lddla, EN7571_PWR_CTRL_D, zero, 4);
+	en7571_los_init(priv);
+	priv->internal_ddmi = EN7571_DDMI_OFF;
 	return 0;
 }
 
