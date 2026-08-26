@@ -227,9 +227,13 @@ static void airoha_ppe_hw_init(struct airoha_ppe *ppe)
 	struct airoha_eth *eth = ppe->common.eth;
 	int i, sram_num_stats_entries;
 
-	if (eth->soc->foe_format == AIROHA_FOE_FORMAT_V1) {
+	switch (eth->soc->foe_format) {
+	case AIROHA_FOE_FORMAT_V1:
 		airoha_ppe_v1_hw_init(ppe);
 		return;
+	case AIROHA_FOE_FORMAT_V2:
+	case AIROHA_FOE_FORMAT_V2_TUNNEL:
+		break;
 	}
 
 	dev_info(eth->dev, "Initializing PPE Hardware\n");
@@ -261,8 +265,7 @@ static void airoha_ppe_hw_init(struct airoha_ppe *ppe)
 			      FIELD_PREP(PPE_BIND_AGE1_DELTA_TCP_FIN, 1) |
 			      FIELD_PREP(PPE_BIND_AGE1_DELTA_TCP, 60));
 
-		switch (eth->soc->version) {
-		case airoha_en7523:
+		if (eth->soc->foe_format == AIROHA_FOE_FORMAT_V2) {
 			/**
 			 * the airoha_en7523 support for 64 and 80 bytes, current use 80 bytes for ppe
 			 * 0 = 64 Bytes
@@ -361,9 +364,7 @@ static void airoha_ppe_hw_init(struct airoha_ppe *ppe)
 			airoha_fe_wr(eth, REG_PPE_MTU_BASE(i) + 0x08, 0x07e407e0);
 			airoha_fe_wr(eth, REG_PPE_MTU_BASE(i) + 0x0c, 0x07f007e8);
 
-			break;
-		case airoha_en7581:
-		case airoha_an7583:
+		} else {
 			airoha_fe_rmw(eth, REG_PPE_TB_HASH_CFG(i),
 				      EN7581_PPE_SRAM_TABLE_EN_MASK |
 				      EN7581_PPE_SRAM_HASH1_EN_MASK |
@@ -400,7 +401,6 @@ static void airoha_ppe_hw_init(struct airoha_ppe *ppe)
 				      PPE_FLOW_CFG_IP6_3T_ROUTE_MASK |
 				      PPE_FLOW_CFG_IP6_5T_ROUTE_MASK |
 				      PPE_FLOW_CFG_L2_BRIDGE_MASK);
-			break;
 		}
 
 		airoha_fe_rmw(eth, REG_PPE_BIND_RATE(i),
