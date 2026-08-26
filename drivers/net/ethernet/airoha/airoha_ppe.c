@@ -135,7 +135,7 @@ u32 airoha_ppe_get_total_num_entries(struct airoha_ppe *ppe)
 
 bool airoha_ppe_is_enabled(struct airoha_eth *eth, int index)
 {
-	if (airoha_is_gen1(eth))
+	if (airoha_is_econet(eth))
 		return !index && eth->ppe_dev && eth->ppe_dev->enabled;
 
 	if (index >= eth->soc->num_ppe)
@@ -2391,7 +2391,7 @@ static void airoha_ppe_common_disable(struct airoha_ppe_common *common)
 		common->eth->ppe_dev = NULL;
 }
 
-static int airoha_ppe_gen2_init(struct airoha_eth *eth)
+static int airoha_ppe_datapath_init(struct airoha_eth *eth)
 {
 	int foe_size, err, ppe_num_stats_entries;
 	u32 ppe_num_entries;
@@ -2479,7 +2479,7 @@ error_flow_table_destroy:
 	return err;
 }
 
-static void airoha_ppe_gen2_deinit(struct airoha_eth *eth)
+static void airoha_ppe_datapath_deinit(struct airoha_eth *eth)
 {
 	struct airoha_npu *npu;
 
@@ -3786,7 +3786,7 @@ static int econet_ppe_setup_tc(struct airoha_ppe_dev *ppe_dev,
 	}
 }
 
-static int airoha_ppe_gen1_init(struct airoha_eth *eth)
+static int econet_ppe_init(struct airoha_eth *eth)
 {
 	u32 dram_entries = eth->soc->ppe_dram_entries;
 	size_t foe_size = econet_ppe_foe_size(eth);
@@ -3889,7 +3889,7 @@ static int airoha_ppe_gen1_init(struct airoha_eth *eth)
 	return 0;
 }
 
-static void airoha_ppe_gen1_deinit(struct airoha_eth *eth)
+static void econet_ppe_deinit(struct airoha_eth *eth)
 {
 	struct airoha_ppe_dev *ppe_dev = eth->ppe_dev;
 	struct econet_ppe *ppe;
@@ -3907,19 +3907,19 @@ static void airoha_ppe_gen1_deinit(struct airoha_eth *eth)
 
 int airoha_ppe_init(struct airoha_eth *eth)
 {
-	if (airoha_is_gen1(eth))
-		return airoha_ppe_gen1_init(eth);
+	if (airoha_is_econet(eth))
+		return econet_ppe_init(eth);
 
-	return airoha_ppe_gen2_init(eth);
+	return airoha_ppe_datapath_init(eth);
 }
 EXPORT_SYMBOL_GPL(airoha_ppe_init);
 
 void airoha_ppe_deinit(struct airoha_eth *eth)
 {
-	if (airoha_is_gen1(eth))
-		airoha_ppe_gen1_deinit(eth);
+	if (airoha_is_econet(eth))
+		econet_ppe_deinit(eth);
 	else
-		airoha_ppe_gen2_deinit(eth);
+		airoha_ppe_datapath_deinit(eth);
 }
 EXPORT_SYMBOL_GPL(airoha_ppe_deinit);
 
