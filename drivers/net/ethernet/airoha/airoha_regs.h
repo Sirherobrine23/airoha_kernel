@@ -40,11 +40,7 @@
 #define FE_RST_CORE_MASK		BIT(0)
 
 
-/* EN751221/EN7528 generation-1 frame-engine layout. */
-#define EN751221_FE_GDM1_OFFSET		0x0400
-#define EN751221_FE_GDM2_OFFSET		0x1400
-#define EN751221_FE_MIN_SIZE		0x2600
-
+/* EN751221/EN7528 frame-engine layout uses the shared CDM/GDM bases. */
 #define EN751221_CDM_STAG_EN		BIT(0)
 #define EN751221_GDM_STAG_EN		BIT(24)
 #define EN751221_GDM_UNTAG_EN		BIT(25)
@@ -148,7 +144,8 @@
 #define REG_FE_PSE_QUEUE_CFG_VAL	0x0084
 #define PSE_CFG_OQ_RSV_MASK		GENMASK(13, 0)
 
-#define PSE_FQ_CFG			0x008c
+#define PSE_FQ_CFG			0x014c
+#define PSE_FQ_CFG_EN7523		0x008c
 #define PSE_FQ_LIMIT_MASK		GENMASK(14, 0)
 
 #define REG_FE_PSE_BUF_SET		0x0090
