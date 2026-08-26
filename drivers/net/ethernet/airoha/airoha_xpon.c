@@ -65,6 +65,7 @@
 
 #define XPON_SCU_WAN_CONF              0x070
 #define EN7523_SCU_WAN_MODE_MASK       GENMASK(7, 0)
+#define EN7528_SCU_WAN_MODE_MASK       GENMASK(2, 0)
 #define EN751221_SCU_WAN_MODE_MASK     GENMASK(2, 0)
 #define XPON_SCU_WAN_MODE_GPON         0x00
 #define XPON_SCU_WAN_MODE_EPON         0x01
@@ -563,6 +564,7 @@ static void airoha_xpon_phy_stop(struct device *dev, struct phy *phy,
  */
 #define GPON_RSP_TIME_RESET		0x058b
 #define GPON_RSP_TIME_ACT_EN7523	0x0577
+#define GPON_RSP_TIME_ACT_EN7528	0x0577
 #define GPON_RSP_TIME_ACT_EN751221	0x058b
 #define GPON_IDLE_GEM_THLD_DEFAULT	0x001A
 
@@ -4134,6 +4136,15 @@ static const struct airoha_xpon_match_data en7523_epon_data = {
 	.en7523_gpon_defaults = true,
 };
 
+static const struct airoha_xpon_match_data en7528_xpon_data = {
+	.mode = AIROHA_XPON_MODE_GPON,
+	.mode_from_dt = true,
+	.wan_mode_mask = EN7528_SCU_WAN_MODE_MASK,
+	.gpon_fine_delay = 0x1c,
+	.gpon_rsp_time_activation = GPON_RSP_TIME_ACT_EN7528,
+	.gpon_reset_on_start = true,
+};
+
 static const struct airoha_xpon_match_data en751221_xpon_data = {
 	.mode = AIROHA_XPON_MODE_GPON,
 	.mode_from_dt = true,
@@ -4662,6 +4673,7 @@ static void airoha_xpon_remove(struct platform_device *pdev)
 
 static const struct of_device_id airoha_xpon_of_match[] = {
 	{ .compatible = "airoha,en7523-xpon", .data = &en7523_xpon_data },
+	{ .compatible = "airoha,en7528-xpon", .data = &en7528_xpon_data },
 	{ .compatible = "econet,en751221-xpon", .data = &en751221_xpon_data },
 	{}
 };
