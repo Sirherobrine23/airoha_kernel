@@ -10,12 +10,12 @@ maintainers:
   - Matheus Sampaio Queiroga <srherobrine20@gmail.com>
 
 description: |
-  The Airoha EN7523 and EcoNet EN751221/EN7521 families contain one xPON
+  The Airoha EN7523/EN7528 and EcoNet EN751221/EN7521 families contain one xPON
   MAC complex shared by the GPON and EPON protocol engines. Both generations
   use GDM2/CDM2 as the packet datapath and expose the xPON register region at
   0x1fb60000, with GPON at offset 0x4000 and EPON at offset 0x6000.
 
-  EN7523 exposes a standalone xPON MAC interrupt. On EN751221-family MIPS
+  EN7523 and EN7528 expose a standalone xPON MAC interrupt. On EN751221-family MIPS
   SoCs the GPON/EPON MAC interrupt is aggregated by the WAN QDMA block and
   therefore is not described as a platform interrupt on this node.
 
@@ -24,6 +24,7 @@ properties:
     oneOf:
       - enum:
           - airoha,en7523-xpon
+          - airoha,en7528-xpon
           - econet,en751221-xpon
           - econet,en7521-xpon
           - econet,en7526-xpon
@@ -163,6 +164,7 @@ allOf:
         compatible:
           enum:
             - airoha,en7523-xpon
+            - airoha,en7528-xpon
             - econet,en751221-xpon
             - econet,en7521-xpon
             - econet,en7526-xpon
@@ -185,6 +187,7 @@ allOf:
         compatible:
           enum:
             - airoha,en7523-xpon
+            - airoha,en7528-xpon
             - airoha,en7523-gpon
             - airoha,en7523-epon
     then:
