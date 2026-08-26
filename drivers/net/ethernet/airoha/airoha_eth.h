@@ -1180,7 +1180,7 @@ struct airoha_eth_soc_data {
 	struct {
 		int (*get_sport)(struct airoha_gdm_port *port, int nbq);
 		u32 (*get_vip_port)(struct airoha_gdm_port *port, int nbq);
-		int (*get_dev_from_sport)(struct airoha_qdma_desc *desc,
+		int (*get_dev_from_sport)(struct airoha_eth *eth, u32 sport,
 					  u16 *port, u16 *dev);
 	} ops;
 };
@@ -1706,6 +1706,7 @@ struct qdma_desc_erx {
 #define ERX_L2VLD					BIT(24)
 #define ERX_L4F						BIT(23)
 #define ERX_SPORT_MASK					GENMASK(22, 19)
+#define EN7528_ERX_SPORT_MASK				GENMASK(23, 19)
 #define ERX_CRSN_MASK					GENMASK(18, 14)
 #define ERX_PPE_ENTRY_MASK				GENMASK(13, 0)
 
