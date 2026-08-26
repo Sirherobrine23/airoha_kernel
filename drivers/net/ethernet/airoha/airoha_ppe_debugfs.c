@@ -690,7 +690,7 @@ int airoha_ppe_debugfs_init(struct airoha_ppe_common *common)
 {
 	int err;
 
-	if (!airoha_is_gen1(common->eth))
+	if (!airoha_is_econet(common->eth))
 		return airoha_ppe_debugfs_create_common(common,
 			&airoha_ppe_debugfs_foe_all_fops,
 			&airoha_ppe_debugfs_foe_json_fops,
