@@ -10,18 +10,26 @@ maintainers:
   - Matheus Sampaio Queiroga <srherobrine20@gmail.com>
 
 description: |
-  Airoha EN7523 and EcoNet EN751221 contain a digital xPON PHY shared by the
+  Airoha EN7523/EN7528 and EcoNet EN751221 contain a digital xPON PHY shared by the
   GPON and EPON MAC engines. The generations share the GPON/EPON digital
-  register block; EN7523 additionally integrates PMA/SerDes controls.
+  register block; EN7523 and EN7528 additionally integrate PMA/SerDes controls.
 
 properties:
   compatible:
     enum:
       - airoha,en7523-xpon-phy
+      - airoha,en7528-xpon-phy
       - econet,en751221-xpon-phy
 
   reg:
     maxItems: 1
+
+  interrupts:
+    maxItems: 1
+    description: Optional EN7528 digital PHY interrupt.
+
+  interrupt-names:
+    const: phy
 
   resets:
     maxItems: 1
