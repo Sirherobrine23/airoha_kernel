@@ -258,7 +258,8 @@ airoha_gdm_common_from_netdev(struct net_device *netdev)
 #define QDMA_METER_IDX(_n)		((_n) & 0xff)
 #define QDMA_METER_GROUP(_n)		(((_n) >> 8) & 0x3)
 
-#define PPE_ENTRY_SIZE			64
+#define AIROHA_FOE_ENTRY_SIZE		80
+#define AIROHA_FOE_ENTRY_WORDS		(AIROHA_FOE_ENTRY_SIZE / sizeof(u32))
 #define PPE_RAM_NUM_ENTRIES_SHIFT(_n)	((_n) == 512 ? 7 : __ffs((_n) >> 10))
 
 enum {
@@ -462,6 +463,12 @@ enum {
 	AIROHA_FOE_STATE_FIN
 };
 
+enum airoha_foe_format {
+	AIROHA_FOE_FORMAT_V1,
+	AIROHA_FOE_FORMAT_V2,
+	AIROHA_FOE_FORMAT_V2_TUNNEL,
+};
+
 enum {
 	PPE_PKT_TYPE_IPV4_HNAPT = 0,
 	PPE_PKT_TYPE_IPV4_ROUTE = 1,
@@ -471,6 +478,47 @@ enum {
 	PPE_PKT_TYPE_IPV6_ROUTE_5T = 5,
 	PPE_PKT_TYPE_IPV6_6RD = 7,
 };
+
+/* FoE hardware words use the same bit numbering on big and little endian
+ * CPUs.  Keep mixed-width fields encoded as u32 words instead of relying on
+ * C bitfield or u16 member layout.
+ */
+#define AIROHA_FOE_WORD_IB1			0
+#define AIROHA_FOE_PORTS_SPORT			GENMASK(31, 16)
+#define AIROHA_FOE_PORTS_DPORT			GENMASK(15, 0)
+#define AIROHA_FOE_L2_ETYPE			GENMASK(31, 16)
+#define AIROHA_FOE_L2_VLAN1			GENMASK(15, 0)
+#define AIROHA_FOE_L2_DMAC_LO			GENMASK(31, 16)
+#define AIROHA_FOE_L2_VLAN2			GENMASK(15, 0)
+#define AIROHA_FOE_L2_SMAC_LO			GENMASK(31, 16)
+#define AIROHA_FOE_L2_PPPOE_ID			GENMASK(15, 0)
+
+/* FoE v1: EN751221 and EN7528. */
+#define AIROHA_FOE_V1_INVALID_HASH		0xffff
+#define AIROHA_FOE_V1_FP_QDMA_HW		6
+
+#define AIROHA_FOE_V1_IPV4_IB2_WORD		4
+#define AIROHA_FOE_V1_IPV4_DATA_WORD		10
+#define AIROHA_FOE_V1_IPV4_L2_WORD		11
+#define AIROHA_FOE_V1_IPV6_DATA_WORD		13
+#define AIROHA_FOE_V1_IPV6_IB2_WORD		14
+#define AIROHA_FOE_V1_IPV6_L2_WORD		15
+
+#define AIROHA_FOE_V1_IB1_BIND_VLAN_LAYER	GENMASK(18, 16)
+#define AIROHA_FOE_V1_IB1_BIND_PPPOE		BIT(19)
+#define AIROHA_FOE_V1_IB1_BIND_VLAN_TAG	BIT(20)
+#define AIROHA_FOE_V1_IB1_BIND_CACHE		BIT(22)
+
+#define AIROHA_FOE_V1_IB2_QID			GENMASK(3, 0)
+#define AIROHA_FOE_V1_IB2_PSE_QOS		BIT(4)
+#define AIROHA_FOE_V1_IB2_PSE_PORT		GENMASK(7, 5)
+#define AIROHA_FOE_V1_IB2_MULTICAST		BIT(8)
+#define AIROHA_FOE_V1_IB2_PORT_MG		GENMASK(17, 12)
+#define AIROHA_FOE_V1_IB2_PORT_AG		GENMASK(23, 18)
+
+#define AIROHA_FOE_V1_ACTDP			GENMASK(31, 24)
+#define AIROHA_FOE_V1_SHAPER_ID		GENMASK(23, 16)
+#define AIROHA_FOE_V1_CHANNEL			GENMASK(15, 8)
 
 #define AIROHA_FOE_MAC_SMAC_ID		GENMASK(20, 16)
 #define AIROHA_FOE_MAC_PPPOE_ID		GENMASK(15, 0)
@@ -497,9 +545,6 @@ struct airoha_foe_mac_info {
 	u16 pppoe_id;
 	u16 src_mac_lo;
 
-	/* 64-byte FOE entry mode (EN7523): no room for the trailing meter
-	 * word; the per-flow meter/stats path is NPU-only and unused here.
-	 */
 };
 
 #define AIROHA_FOE_IB1_UNBIND_PREBIND		BIT(24)
@@ -618,9 +663,6 @@ struct airoha_foe_ipv6 {
 		u32 ports;
 	};
 
-	/* 64-byte FOE entry mode (EN7523): drop rsv2[3] and the trailing
-	 * meter word so the entry fits in 64 bytes.
-	 */
 	u32 data;
 
 	u32 ib2;
@@ -640,9 +682,37 @@ struct airoha_foe_entry {
 				DECLARE_FLEX_ARRAY(u32, d);
 			};
 		};
-		u8 data[PPE_ENTRY_SIZE];
+		u32 words[AIROHA_FOE_ENTRY_WORDS];
+		u8 data[AIROHA_FOE_ENTRY_SIZE];
 	};
 };
+
+static inline bool airoha_foe_v1_is_ipv6_5t(const struct airoha_foe_entry *entry)
+{
+	return FIELD_GET(AIROHA_FOE_IB1_BIND_PACKET_TYPE, entry->ib1) ==
+	       PPE_PKT_TYPE_IPV6_ROUTE_5T;
+}
+
+static inline unsigned int
+airoha_foe_v1_ib2_word(const struct airoha_foe_entry *entry)
+{
+	return airoha_foe_v1_is_ipv6_5t(entry) ? AIROHA_FOE_V1_IPV6_IB2_WORD :
+					       AIROHA_FOE_V1_IPV4_IB2_WORD;
+}
+
+static inline unsigned int
+airoha_foe_v1_data_word(const struct airoha_foe_entry *entry)
+{
+	return airoha_foe_v1_is_ipv6_5t(entry) ? AIROHA_FOE_V1_IPV6_DATA_WORD :
+					       AIROHA_FOE_V1_IPV4_DATA_WORD;
+}
+
+static inline unsigned int
+airoha_foe_v1_l2_word(const struct airoha_foe_entry *entry)
+{
+	return airoha_foe_v1_is_ipv6_5t(entry) ? AIROHA_FOE_V1_IPV6_L2_WORD :
+					       AIROHA_FOE_V1_IPV4_L2_WORD;
+}
 
 struct airoha_foe_stats {
 	u32 bytes;
@@ -1008,6 +1078,17 @@ struct airoha_ppe_common {
 	struct dentry *debugfs_dir;
 };
 
+struct airoha_foe_v1_flow_entry;
+
+struct airoha_ppe_v1 {
+	/* Protects flow ownership in the hardware-created V1 hash buckets. */
+	spinlock_t lock;
+	struct list_head flows;
+	struct airoha_foe_v1_flow_entry **foe_owner;
+	struct list_head block_cb_list;
+	bool armed;
+};
+
 struct airoha_ppe {
 	struct airoha_ppe_common common;
 
@@ -1025,80 +1106,18 @@ struct airoha_ppe {
 	 * the airoha-npu module) on every flow.
 	 */
 	bool offload_setup_done;
+
+	struct airoha_ppe_v1 v1;
 };
 
-/*
- * EcoNet PPE/FoE logical layout.
- *
- * Keep the mixed-width fields in the same lane order as the EN7512 SDK
- * _ipv4_hnapt structure.  The first 64 bytes are the IPv4 HNAPT payload;
- * struct econet_foe_entry remains 80 bytes because the hardware table uses
- * the largest FoE V1 union member as its stride.
+/* Generation-1 flow ownership. FoE data uses the common raw 80-byte
+ * representation. EN751221 is big-endian while EN7528 is little-endian; the
+ * word-oriented representation keeps the hardware bit layout identical.
+ * EN7528 cnt_g2 is optional and remains zero until accounting uses it.
  */
-struct econet_foe_mac_info {
-	u16 etype;
-	u16 vlan1;
-	u32 dest_mac_hi;
-	u16 dest_mac_lo;
-	u16 vlan2;
-	u32 src_mac_hi;
-	u16 src_mac_lo;
-	u16 pppoe_id;
-};
-
-struct econet_ipv4_tuple {
-	u32 src_ip;
-	u32 dest_ip;
-	union {
-		struct {
-			u16 src_port;
-			u16 dest_port;
-		};
-		u32 ports;
-	};
-};
-
-struct econet_foe_ipv4 {
-	struct econet_ipv4_tuple orig;
-	u32 ib2;
-	struct econet_ipv4_tuple new;
-	u32 reserved[2];
-	u32 udf_tsid;
-	struct econet_foe_mac_info l2;
-};
-
-/* EN7512 SDK _ipv6_5t_route layout. The hardware keeps the 5-tuple in
- * words 1..9 and PpeClearEntryInfo() clears the entry starting at byte 40.
- */
-struct econet_foe_ipv6 {
-	u32 src_ip[4];
-	u32 dest_ip[4];
-	union {
-		struct {
-			u16 src_port;
-			u16 dest_port;
-		};
-		u32 ports;
-	};
-	u32 reserved[3];
-	u32 udf_tsid;
-	u32 ib2;
-	struct econet_foe_mac_info l2;
-};
-
-struct econet_foe_entry {
-	u32 ib1;
-	union {
-		struct econet_foe_ipv4 ipv4;
-		struct econet_foe_ipv6 ipv6;
-		u32 data[19];
-	};
-};
-
-
-struct econet_flow_entry {
+struct airoha_foe_v1_flow_entry {
 	struct list_head list;
-	struct econet_foe_entry data;
+	struct airoha_foe_entry data;
 	unsigned long cookie;
 	u32 src_ip;
 	u32 dest_ip;
@@ -1108,17 +1127,6 @@ struct econet_flow_entry {
 	u16 dest_port;
 	u16 hash;
 	u16 addr_type;
-};
-
-struct econet_ppe {
-	struct airoha_ppe_common common;
-
-	/* Protects flows and FoE slot ownership in RX and TC paths. */
-	spinlock_t lock;
-	struct list_head flows;
-	struct econet_flow_entry **foe_owner;
-	struct list_head block_cb_list;
-	bool armed;
 };
 
 enum airoha_ids {
@@ -1177,6 +1185,7 @@ struct airoha_eth_soc_data {
 	u32 ppe_stats_entries;
 	u32 ppe_sram_entries;
 	u32 ppe_dram_entries;
+	enum airoha_foe_format foe_format;
 	struct {
 		int (*get_sport)(struct airoha_gdm_port *port, int nbq);
 		u32 (*get_vip_port)(struct airoha_gdm_port *port, int nbq);
@@ -1371,10 +1380,8 @@ struct airoha_foe_entry *airoha_ppe_foe_get_entry(struct airoha_ppe *ppe,
 						  u32 hash);
 void airoha_ppe_foe_entry_get_stats(struct airoha_ppe *ppe, u32 hash,
 				    struct airoha_foe_stats64 *stats);
-void econet_ppe_read_entry(struct econet_ppe *ppe, u16 hash,
-			   struct econet_foe_entry *entry);
-void econet_ppe_decode_entry(const struct econet_foe_entry *raw,
-			     struct econet_foe_entry *entry);
+void airoha_ppe_v1_read_entry(struct airoha_ppe *ppe, u16 hash,
+			   struct airoha_foe_entry *entry);
 
 #if IS_ENABLED(CONFIG_NET_AIROHA_PPE_DEBUGFS)
 int airoha_ppe_debugfs_init(struct airoha_ppe_common *ppe);

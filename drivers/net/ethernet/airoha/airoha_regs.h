@@ -61,13 +61,10 @@
 #define EN751221_QDMA_IRQ_RING_IDX_MASK	BIT(16)
 #define EN751221_QDMA_IRQ_DESC_IDX_MASK	GENMASK(11, 0)
 
-#define EN751221_PPE_INVALID_HASH	0xffff
-
 /* EN751221 GDM FWD_CFG destination-port coding. */
 #define EN751221_GDM_FPORT_QDMA0_CPU	0
 #define EN751221_GDM_FPORT_PPE		4
 #define EN751221_GDM_FPORT_QDMA1_CPU	5
-#define EN751221_DPORT_QDMA_HW		6
 
 /* Legacy PPE cache control retained by the generation-1 engine. */
 #define REG_EN751221_PPE_CACHE_CTL	(PPE1_BASE + 0x320)
@@ -77,28 +74,6 @@
 #define REG_EN751221_PPE_CAH_GATE	(PPE1_BASE + 0x334)
 #define EN751221_PPE_CAH_GATE_EN	BIT(0)
 #define EN751221_PPE_CAH_GATE_DEFAULT	0x33
-
-#define EN751221_FOE_IB1_BIND_VLAN_LAYER	GENMASK(18, 16)
-#define EN751221_FOE_IB1_BIND_PPPOE	BIT(19)
-#define EN751221_FOE_IB1_BIND_VLAN_TAG	BIT(20)
-#define EN751221_FOE_IB1_BIND_CACHE	BIT(22)
-
-#define EN751221_FOE_IB2_QID		GENMASK(3, 0)
-#define EN751221_FOE_IB2_PSE_QOS	BIT(4)
-#define EN751221_FOE_IB2_DEST_PORT	GENMASK(7, 5)
-#define EN751221_FOE_IB2_MULTICAST	BIT(8)
-#define EN751221_FOE_IB2_PORT_MG	GENMASK(17, 12)
-#define EN751221_FOE_IB2_PORT_AG	GENMASK(23, 18)
-
-/*
- * UDF word (offset 40) as laid out by the EN7512 SDK _ipv4_hnapt structure on
- * the big-endian host: act_dp, ts_id, channel, reserved.  set_act_dp_bits()
- * writes act_dp as the byte at offset 40 and PpeSetPortInfo() writes ts_id and
- * channel as the bytes at offsets 41 and 42.
- */
-#define EN751221_FOE_UDF_ACT_DP		GENMASK(31, 24)
-#define EN751221_FOE_UDF_TSID		GENMASK(23, 16)
-#define EN751221_FOE_UDF_CHANNEL	GENMASK(15, 8)
 
 #define EN751221_PPE_CPU_REASON_NO_FLOW	0x07
 
