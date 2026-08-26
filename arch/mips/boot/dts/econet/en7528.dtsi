@@ -492,7 +492,7 @@
 			         <&scuclk EN7528_FE_QDMA1_RST>,
 			         <&scuclk EN7528_FE_QDMA2_RST>,
 			         <&scuclk EN7528_GDMP_RST>;
-			reset-names = "fe", "qdma0", "qdma1", "gdmp";
+			reset-names = "fe", "pdma", "qdma", "gdmp";
 
 			airoha,wed = <&wed0>, <&wed1>;
 			interrupts = <GIC_SHARED 21 IRQ_TYPE_LEVEL_HIGH>,  /* QDMA LAN0 */
