@@ -9510,6 +9510,7 @@ const struct airoha_eth_soc_data econet_en751221_soc_data = {
 	.max_gdm_ports = 2,
 	.pse_fq_cfg = PSE_FQ_CFG,
 	.ppe_dram_entries = 16 * 1024,
+	.foe_format = AIROHA_FOE_FORMAT_V1,
 	.ops = {
 		.get_sport = airoha_en751221_get_sport,
 		.get_dev_from_sport = airoha_en751221_get_dev_from_sport,
@@ -9523,6 +9524,7 @@ const struct airoha_eth_soc_data econet_en7528_soc_data = {
 	.max_gdm_ports = 2,
 	.pse_fq_cfg = PSE_FQ_CFG,
 	.ppe_dram_entries = 16 * 1024,
+	.foe_format = AIROHA_FOE_FORMAT_V1,
 	.ops = {
 		.get_sport = airoha_en7528_get_sport,
 		.get_dev_from_sport = airoha_en7528_get_dev_from_sport,
@@ -9542,6 +9544,7 @@ const struct airoha_eth_soc_data airoha_en7581_soc_data = {
 	.ppe_stats_entries = 4 * 1024,
 	.ppe_sram_entries = 8 * 1024,
 	.ppe_dram_entries = 16 * 1024,
+	.foe_format = AIROHA_FOE_FORMAT_V2_TUNNEL,
 	.ops = {
 		.get_sport = airoha_en7581_get_sport,
 		.get_vip_port = airoha_en7581_get_vip_port,
@@ -9562,6 +9565,7 @@ const struct airoha_eth_soc_data airoha_an7583_soc_data = {
 	.ppe_stats_entries = 4 * 1024,
 	.ppe_sram_entries = 8 * 1024,
 	.ppe_dram_entries = 16 * 1024,
+	.foe_format = AIROHA_FOE_FORMAT_V2_TUNNEL,
 	.ops = {
 		.get_sport = airoha_an7583_get_sport,
 		.get_vip_port = airoha_an7583_get_vip_port,
@@ -9581,11 +9585,12 @@ const struct airoha_eth_soc_data airoha_en7523_soc_data = {
 	.max_gdm_ports = 3,
 	.pse_fq_cfg = PSE_FQ_CFG_EN7523,
 	.ppe_stats_entries = 0,
-	/* 64-byte entry mode: 512 on-chip SRAM FOE entries (EN7523 hw default,
-	 * "512 at 64byte"), 16K DRAM entries.
+	/* The vendor PPE runs EN7523 in 80-byte FoE mode with 512 SRAM and
+	 * 16K DRAM entries.
 	 */
 	.ppe_sram_entries = 512,
 	.ppe_dram_entries = 16 * 1024,
+	.foe_format = AIROHA_FOE_FORMAT_V2,
 	.ops = {
 		.get_sport = airoha_en7523_get_sport,
 		.get_vip_port = airoha_en7523_get_vip_port,
