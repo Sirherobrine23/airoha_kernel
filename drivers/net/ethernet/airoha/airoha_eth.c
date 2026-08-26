@@ -226,7 +226,6 @@ void airoha_gdm_common_init(struct airoha_gdm_common *gdm,
 	gdm->phylink_config.dev = &netdev->dev;
 	gdm->phylink_config.type = PHYLINK_NETDEV;
 }
-EXPORT_SYMBOL_GPL(airoha_gdm_common_init);
 
 int airoha_gdm_phylink_create(struct airoha_gdm_common *gdm,
 			      struct device_node *np,
@@ -243,7 +242,6 @@ int airoha_gdm_phylink_create(struct airoha_gdm_common *gdm,
 	gdm->phylink = phylink;
 	return 0;
 }
-EXPORT_SYMBOL_GPL(airoha_gdm_phylink_create);
 
 int airoha_gdm_phylink_connect(struct airoha_gdm_common *gdm,
 			       bool allow_no_phy)
@@ -265,7 +263,6 @@ int airoha_gdm_phylink_connect(struct airoha_gdm_common *gdm,
 	gdm->phylink_started = true;
 	return 0;
 }
-EXPORT_SYMBOL_GPL(airoha_gdm_phylink_connect);
 
 void airoha_gdm_phylink_disconnect(struct airoha_gdm_common *gdm)
 {
@@ -276,7 +273,6 @@ void airoha_gdm_phylink_disconnect(struct airoha_gdm_common *gdm)
 	phylink_disconnect_phy(gdm->phylink);
 	gdm->phylink_started = false;
 }
-EXPORT_SYMBOL_GPL(airoha_gdm_phylink_disconnect);
 
 void airoha_gdm_phylink_destroy(struct airoha_gdm_common *gdm)
 {
@@ -287,7 +283,6 @@ void airoha_gdm_phylink_destroy(struct airoha_gdm_common *gdm)
 	phylink_destroy(gdm->phylink);
 	gdm->phylink = NULL;
 }
-EXPORT_SYMBOL_GPL(airoha_gdm_phylink_destroy);
 
 
 /* ------------------------------------------------------------------------- */
@@ -369,7 +364,6 @@ void airoha_qdma_skb_get_mtk_meta(struct sk_buff *skb,
 	airoha_qdma_skb_meta_init(meta);
 #endif
 }
-EXPORT_SYMBOL_GPL(airoha_qdma_skb_get_mtk_meta);
 
 /* QDMA datapath. */
 /* The non-dma part of RX packet descriptor */
@@ -9966,7 +9960,6 @@ int airoha_eth_xpon_get_tx_info(struct net_device *netdev, bool vlan_valid,
 		ops->get_tx_info(netdev, vlan_valid, vlan_id, pcp_valid, pcp, info) :
 		-EOPNOTSUPP;
 }
-EXPORT_SYMBOL_GPL(airoha_eth_xpon_get_tx_info);
 
 bool airoha_eth_xpon_del_service(struct net_device *netdev, u32 cookie,
 				 u16 *gem_port_id)
