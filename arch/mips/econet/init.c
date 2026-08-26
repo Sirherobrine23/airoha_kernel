@@ -18,8 +18,11 @@
 #include <asm/reboot.h>
 #include <asm/mips-cps.h>
 
+#include "linux/soc/airoha/pkgids.h"
+
 #define CR_AHB_RSTCR		((void __iomem *)CKSEG1ADDR(0x1fb00040))
 #define RESET			BIT(31)
+#define NP_SCU_BASE		((void __iomem *)CKSEG1ADDR(0x1fb00000))
 
 #ifdef CONFIG_CPU_LITTLE_ENDIAN
 #define UART_BASE		CKSEG1ADDR(0x1fbf0000)	/* LE: byte at offset 0 */
@@ -77,7 +80,17 @@ void __init device_tree_init(void)
 
 const char *get_system_type(void)
 {
-	return "EcoNet-EN75xx";
+	static char system_type[64];
+	u32 hir, pkgid, pdidr;
+	const char *soc;
+
+	hir = get_pkg_mem(NP_SCU_BASE);
+	pkgid = get_pkgid_mem(NP_SCU_BASE);
+	pdidr = get_pdidr_mem(NP_SCU_BASE);
+	soc = airoha_soc_name_from_regs(hir, pkgid, pdidr);
+
+	snprintf(system_type, sizeof(system_type), "EcoNet %s", soc);
+	return system_type;
 }
 
 /* 4. Initialize the IRQ subsystem */
