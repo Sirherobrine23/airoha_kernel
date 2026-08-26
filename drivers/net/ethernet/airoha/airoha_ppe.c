@@ -143,7 +143,6 @@ bool airoha_ppe_is_enabled(struct airoha_eth *eth, int index)
 
 	return airoha_fe_rr(eth, REG_PPE_GLO_CFG(index)) & PPE_GLO_CFG_EN_MASK;
 }
-EXPORT_SYMBOL_GPL(airoha_ppe_is_enabled);
 
 static u32 airoha_ppe_get_timestamp(struct airoha_ppe *ppe)
 {
@@ -165,7 +164,6 @@ void airoha_ppe_set_cpu_port(struct airoha_gdm_dev *dev, u8 ppe_id, u8 fport)
 		      DFT_CPORT_MASK(fport),
 		      __field_prep(DFT_CPORT_MASK(fport), fe_cpu_port));
 }
-EXPORT_SYMBOL_GPL(airoha_ppe_set_cpu_port);
 
 void airoha_ppe_set_mtu(struct airoha_gdm_dev *dev)
 {
@@ -218,7 +216,6 @@ void airoha_ppe_set_mtu(struct airoha_gdm_dev *dev)
 		      FP_EGRESS_MTU_MASK(index),
 		      __field_prep(FP_EGRESS_MTU_MASK(index), len));
 }
-EXPORT_SYMBOL_GPL(airoha_ppe_set_mtu);
 
 static void airoha_ppe_hw_init(struct airoha_ppe *ppe)
 {
@@ -2248,7 +2245,6 @@ int airoha_ppe_setup_tc_block_cb(struct airoha_ppe_dev *dev, void *type_data)
 
 	return err;
 }
-EXPORT_SYMBOL_GPL(airoha_ppe_setup_tc_block_cb);
 
 void airoha_ppe_check_skb(struct airoha_ppe_dev *dev, struct sk_buff *skb,
 			  u16 hash, bool rx_wlan)
@@ -2268,7 +2264,6 @@ void airoha_ppe_check_skb(struct airoha_ppe_dev *dev, struct sk_buff *skb,
 	ppe->foe_check_time[sw_idx] = now;
 	airoha_ppe_foe_insert_entry(ppe, skb, sw_idx, rx_wlan);
 }
-EXPORT_SYMBOL_GPL(airoha_ppe_check_skb);
 
 void airoha_ppe_init_upd_mem(struct airoha_gdm_dev *dev, const u8 *addr)
 {
@@ -2291,7 +2286,6 @@ void airoha_ppe_init_upd_mem(struct airoha_gdm_dev *dev, const u8 *addr)
 		     FIELD_PREP(PPE_UPDMEM_OFFSET_MASK, 1) |
 		     PPE_UPDMEM_WR_MASK | PPE_UPDMEM_REQ_MASK);
 }
-EXPORT_SYMBOL_GPL(airoha_ppe_init_upd_mem);
 
 struct airoha_ppe_dev *airoha_ppe_get_dev(struct device *dev)
 {
@@ -3910,7 +3904,6 @@ int airoha_ppe_init(struct airoha_eth *eth)
 
 	return airoha_ppe_datapath_init(eth);
 }
-EXPORT_SYMBOL_GPL(airoha_ppe_init);
 
 void airoha_ppe_deinit(struct airoha_eth *eth)
 {
@@ -3919,7 +3912,6 @@ void airoha_ppe_deinit(struct airoha_eth *eth)
 	else
 		airoha_ppe_datapath_deinit(eth);
 }
-EXPORT_SYMBOL_GPL(airoha_ppe_deinit);
 
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("Airoha and EcoNet PPE flow offload");
