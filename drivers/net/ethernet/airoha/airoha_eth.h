@@ -780,6 +780,25 @@ struct airoha_flow_table_entry {
 	struct rhash_head node;
 	unsigned long cookie;
 
+	/* FoE v1 binds a software flow to a hardware-created hash bucket on
+	 * RX. The same flow object is kept in the global cookie table; this
+	 * list and tuple are only used by the v1 bind-on-RX backend.
+	 */
+	struct list_head v1_list;
+	u16 addr_type;
+	u16 src_port;
+	u16 dest_port;
+	union {
+		struct {
+			u32 src_ip;
+			u32 dest_ip;
+		};
+		struct {
+			struct in6_addr src_ip6;
+			struct in6_addr dest_ip6;
+		};
+	};
+
 	/* Must be last --ends in a flexible-array member. */
 	struct airoha_foe_entry data;
 };
@@ -1078,19 +1097,21 @@ struct airoha_ppe_common {
 	struct dentry *debugfs_dir;
 };
 
-struct airoha_foe_v1_flow_entry;
-
 struct airoha_ppe_v1 {
 	/* Protects flow ownership in the hardware-created V1 hash buckets. */
 	spinlock_t lock;
 	struct list_head flows;
-	struct airoha_foe_v1_flow_entry **foe_owner;
-	struct list_head block_cb_list;
+	struct airoha_flow_table_entry **foe_owner;
 	bool armed;
 };
 
 struct airoha_ppe {
 	struct airoha_ppe_common common;
+
+	/* TC block ownership is common; only the v1 backend needs to arm the
+	 * engine on first bind and disarm it after the last user.
+	 */
+	struct list_head block_cb_list;
 
 	struct rhashtable l2_flows;
 	struct hlist_head pending_flows;
@@ -1108,25 +1129,6 @@ struct airoha_ppe {
 	bool offload_setup_done;
 
 	struct airoha_ppe_v1 v1;
-};
-
-/* Generation-1 flow ownership. FoE data uses the common raw 80-byte
- * representation. EN751221 is big-endian while EN7528 is little-endian; the
- * word-oriented representation keeps the hardware bit layout identical.
- * EN7528 cnt_g2 is optional and remains zero until accounting uses it.
- */
-struct airoha_foe_v1_flow_entry {
-	struct list_head list;
-	struct airoha_foe_entry data;
-	unsigned long cookie;
-	u32 src_ip;
-	u32 dest_ip;
-	struct in6_addr src_ip6;
-	struct in6_addr dest_ip6;
-	u16 src_port;
-	u16 dest_port;
-	u16 hash;
-	u16 addr_type;
 };
 
 enum airoha_ids {
@@ -1186,6 +1188,8 @@ struct airoha_eth_soc_data {
 	u32 ppe_sram_entries;
 	u32 ppe_dram_entries;
 	enum airoha_foe_format foe_format;
+	u8 ppe_fport;
+	u8 ppe_cpu_fport[AIROHA_MAX_NUM_QDMA];
 	struct {
 		int (*get_sport)(struct airoha_gdm_port *port, int nbq);
 		u32 (*get_vip_port)(struct airoha_gdm_port *port, int nbq);
