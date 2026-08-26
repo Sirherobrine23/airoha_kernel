@@ -1889,7 +1889,7 @@ static int econet_qdma_destroy_locked(struct airoha_qdma_mips *qdma)
 	return 0;
 }
 
-int econet_qdma_destroy(struct airoha_qdma_mips *qdma)
+static int econet_qdma_destroy(struct airoha_qdma_mips *qdma)
 {
 	guard(mutex)(&qdma->lock);
 
@@ -1971,25 +1971,25 @@ static int econet_qdma_unuse_mips(struct airoha_qdma_mips *qdma)
 
 static int airoha_qdma_mips_use(struct airoha_qdma *qdma)
 {
-	return qdma->mips ? econet_qdma_use_mips(qdma->mips) : -ENODEV;
+	return qdma->econet ? econet_qdma_use_mips(qdma->econet) : -ENODEV;
 }
 
 static int airoha_qdma_mips_unuse(struct airoha_qdma *qdma)
 {
-	return qdma->mips ? econet_qdma_unuse_mips(qdma->mips) : -ENODEV;
+	return qdma->econet ? econet_qdma_unuse_mips(qdma->econet) : -ENODEV;
 }
 
 static int airoha_qdma_mips_xmit(struct airoha_qdma *qdma,
 				 struct sk_buff *skb, union desc_msg *msg, int qid)
 {
-	return qdma->mips ? econet_qdma_xmit_mips(qdma->mips, skb, msg, qid) :
+	return qdma->econet ? econet_qdma_xmit_mips(qdma->econet, skb, msg, qid) :
 			     -ENODEV;
 }
 
 static int airoha_qdma_mips_set_xpon_irq(struct airoha_qdma *qdma,
 					 enum airoha_xpon_mode mode, bool enable)
 {
-	return qdma->mips ? econet_qdma_set_xpon_irq_mips(qdma->mips, mode, enable) :
+	return qdma->econet ? econet_qdma_set_xpon_irq_mips(qdma->econet, mode, enable) :
 			     -ENODEV;
 }
 
@@ -1997,7 +1997,7 @@ static int airoha_qdma_init_mips(struct platform_device *pdev,
 			 struct airoha_eth *eth, struct airoha_qdma *qdma,
 			 int *irqs, struct airoha_qdma_mips_cfg *cfg)
 {
-	struct airoha_qdma_mips *mips;
+	struct airoha_qdma_mips *econet;
 	int id = qdma - &eth->qdma[0];
 	const char *res;
 	int err;
@@ -2011,21 +2011,21 @@ static int airoha_qdma_init_mips(struct platform_device *pdev,
 		return dev_err_probe(eth->dev, PTR_ERR(qdma->regs),
 				     "failed to iomap qdma%d regs\n", id);
 
-	mips = devm_kzalloc(eth->dev, sizeof(*mips), GFP_KERNEL);
-	if (!mips)
+	econet = devm_kzalloc(eth->dev, sizeof(*econet), GFP_KERNEL);
+	if (!econet)
 		return -ENOMEM;
 
 	airoha_qdma_setup(qdma, eth, qdma->regs, id, cfg->num_channels);
-	qdma->mips = mips;
-	mips->qdma = qdma;
-	mips->regs = qdma->regs;
-	mutex_init(&mips->lock);
-	memcpy(&mips->cfg, cfg, sizeof(*cfg));
+	qdma->econet = econet;
+	econet->qdma = qdma;
+	econet->regs = qdma->regs;
+	mutex_init(&econet->lock);
+	memcpy(&econet->cfg, cfg, sizeof(*cfg));
 
-	err = econet_init(eth->dev, mips, irqs);
+	err = econet_init(eth->dev, econet, irqs);
 	if (err) {
-		econet_qdma_destroy(mips);
-		qdma->mips = NULL;
+		econet_qdma_destroy(econet);
+		qdma->econet = NULL;
 		return err;
 	}
 
@@ -3499,12 +3499,11 @@ int airoha_qdma_init(struct platform_device *pdev,
 
 void airoha_qdma_cleanup(struct airoha_qdma *qdma)
 {
-	struct airoha_eth *eth = qdma->eth;
 	int i;
 
-	if (qdma->mips) {
-		econet_qdma_destroy(qdma->mips);
-		qdma->mips = NULL;
+	if (qdma->econet) {
+		econet_qdma_destroy(qdma->econet);
+		qdma->econet = NULL;
 		return;
 	}
 
@@ -3541,7 +3540,7 @@ void airoha_qdma_start_napi(struct airoha_qdma *qdma)
 {
 	int i;
 
-	if (qdma->mips)
+	if (qdma->econet)
 		return;
 
 	for (i = 0; i < ARRAY_SIZE(qdma->q_tx_irq); i++)
@@ -3559,7 +3558,7 @@ void airoha_qdma_stop_napi(struct airoha_qdma *qdma)
 {
 	int i;
 
-	if (qdma->mips)
+	if (qdma->econet)
 		return;
 
 	for (i = 0; i < ARRAY_SIZE(qdma->q_tx_irq); i++)
@@ -3621,16 +3620,16 @@ static void econet_set_macaddr(struct airoha_gdm_dev *port, const u8 *addr)
 	struct gdm_mymac_lsb lsb;
 
 	scoped_guard(spinlock, &port->reg_lock) {
-		msb = econet_rreg(&port->regs->mymac_msb);
-		lsb = econet_rreg(&port->regs->mymac_lsb);
+		msb = econet_rreg(&port->econet_regs->mymac_msb);
+		lsb = econet_rreg(&port->econet_regs->mymac_lsb);
 		set_gdm_mymac_msb_a(&msb, addr[0]);
 		set_gdm_mymac_msb_b(&msb, addr[1]);
 		set_gdm_mymac_lsb_c(&lsb, addr[2]);
 		set_gdm_mymac_lsb_d(&lsb, addr[3]);
 		set_gdm_mymac_lsb_e(&lsb, addr[4]);
 		set_gdm_mymac_lsb_f(&lsb, addr[5]);
-		econet_wreg(lsb, &port->regs->mymac_lsb);
-		econet_wreg(msb, &port->regs->mymac_msb);
+		econet_wreg(lsb, &port->econet_regs->mymac_lsb);
+		econet_wreg(msb, &port->econet_regs->mymac_msb);
 	}
 
 }
@@ -3674,7 +3673,7 @@ static void econet_set_gdm_port_fwd_cfg(struct airoha_gdm_dev *port,
 	struct fwd_cfg fc;
 
 	guard(spinlock)(&port->reg_lock);
-	fc = econet_rreg(&port->regs->fwd_cfg);
+	fc = econet_rreg(&port->econet_regs->fwd_cfg);
 	set_gdm_fwd_cfg_mymac_fport(&fc, val);
 	set_gdm_fwd_cfg_mcast_fport(&fc, val);
 	set_gdm_fwd_cfg_bcast_fport(&fc, val);
@@ -3689,7 +3688,7 @@ static void econet_set_gdm_port_fwd_cfg(struct airoha_gdm_dev *port,
 		fc.word &= ~EN751221_GDM_UNTAG_EN;
 	else
 		set_gdm_fwd_cfg_drop_oversize(&fc, true);
-	econet_wreg(fc, &port->regs->fwd_cfg);
+	econet_wreg(fc, &port->econet_regs->fwd_cfg);
 }
 
 static int econet_dev_init(struct net_device *dev)
@@ -3714,13 +3713,13 @@ static int econet_dev_init(struct net_device *dev)
 		 * rely on the bootloader leaving either register initialized.
 		 */
 		scoped_guard(spinlock, &port->reg_lock) {
-			vlan = econet_rreg(&port->regs->vlan);
+			vlan = econet_rreg(&port->econet_regs->vlan);
 			vlan.tpid = ETH_P_8021Q;
-			econet_wreg(vlan, &port->regs->vlan);
+			econet_wreg(vlan, &port->econet_regs->vlan);
 
-			cport_cfg = econet_rreg(&port->regs->g1_cport_cfg);
+			cport_cfg = econet_rreg(&port->econet_regs->g1_cport_cfg);
 			set_gdm_g1_cport_cfg_pad(&cport_cfg, true);
-			econet_wreg(cport_cfg, &port->regs->g1_cport_cfg);
+			econet_wreg(cport_cfg, &port->econet_regs->g1_cport_cfg);
 		}
 	}
 
@@ -3751,7 +3750,7 @@ static int econet_dev_open(struct net_device *dev)
 	scoped_guard(spinlock, &port->reg_lock) {
 		if (airoha_is_econet(port->eth) &&
 		    port->fport == ETX_FPORT_GDM1) {
-			struct fwd_cfg fc = econet_rreg(&port->regs->fwd_cfg);
+			struct fwd_cfg fc = econet_rreg(&port->econet_regs->fwd_cfg);
 
 			if (dsa) {
 				fc.word &= ~EN751221_GDM_UNTAG_EN;
@@ -3759,25 +3758,25 @@ static int econet_dev_open(struct net_device *dev)
 			} else {
 				fc.word &= ~EN751221_GDM_STAG_EN;
 			}
-			econet_wreg(fc, &port->regs->fwd_cfg);
+			econet_wreg(fc, &port->econet_regs->fwd_cfg);
 
 			/* CDMA_CSG_CFG is at offset 0 from the GDM1 window. */
 			airoha_rmw(port->regs, 0, EN751221_CDM_STAG_EN,
 				   dsa ? EN751221_CDM_STAG_EN : 0);
 		}
 
-		econet_wreg((u32)dsa, &port->regs->stag_en);
-		rlt = econet_rreg(&port->regs->rx_len_threshold);
+		econet_wreg((u32)dsa, &port->econet_regs->stag_en);
+		rlt = econet_rreg(&port->econet_regs->rx_len_threshold);
 		set_gdm_len_th_runt_len(&rlt, 60);
 		set_gdm_len_th_oversize_len(&rlt,
 					 econet_gdm_oversize_len(port, dev->mtu));
-		econet_wreg(rlt, &port->regs->rx_len_threshold);
+		econet_wreg(rlt, &port->econet_regs->rx_len_threshold);
 	}
 
 	err = airoha_qdma_mips_use(port->qdma);
 	if (err) {
 		scoped_guard(spinlock, &port->reg_lock)
-			econet_wreg(0U, &port->regs->stag_en);
+			econet_wreg(0U, &port->econet_regs->stag_en);
 		airoha_gdm_phylink_disconnect(&port->common);
 		return err;
 	}
@@ -3804,13 +3803,13 @@ static int econet_dev_stop(struct net_device *dev)
 	airoha_gdm_phylink_disconnect(&port->common);
 
 	scoped_guard(spinlock, &port->reg_lock) {
-		econet_wreg(0U, &port->regs->stag_en);
+		econet_wreg(0U, &port->econet_regs->stag_en);
 		if (airoha_is_econet(port->eth) &&
 		    port->fport == ETX_FPORT_GDM1) {
-			struct fwd_cfg fc = econet_rreg(&port->regs->fwd_cfg);
+			struct fwd_cfg fc = econet_rreg(&port->econet_regs->fwd_cfg);
 
 			fc.word &= ~EN751221_GDM_STAG_EN;
-			econet_wreg(fc, &port->regs->fwd_cfg);
+			econet_wreg(fc, &port->econet_regs->fwd_cfg);
 			airoha_rmw(port->regs, 0, EN751221_CDM_STAG_EN, 0);
 		}
 	}
@@ -3824,9 +3823,9 @@ static int econet_dev_change_mtu(struct net_device *dev, int mtu)
 	struct gdm_len_th rlt;
 
 	guard(spinlock)(&port->reg_lock);
-	rlt = econet_rreg(&port->regs->rx_len_threshold);
+	rlt = econet_rreg(&port->econet_regs->rx_len_threshold);
 	set_gdm_len_th_oversize_len(&rlt, econet_gdm_oversize_len(port, mtu));
-	econet_wreg(rlt, &port->regs->rx_len_threshold);
+	econet_wreg(rlt, &port->econet_regs->rx_len_threshold);
 
 	WRITE_ONCE(dev->mtu, mtu);
 
@@ -4072,7 +4071,7 @@ drop:
 
 static void econet_update_hw_stats(struct airoha_gdm_dev *port)
 {
-	struct gdm_counters __iomem *c = &port->regs->counters;
+	struct gdm_counters __iomem *c = &port->econet_regs->counters;
 	struct clear_counters cc = {0};
 	u32 i = 0;
 
@@ -4128,7 +4127,7 @@ static void econet_update_hw_stats(struct airoha_gdm_dev *port)
 
 	set_gdm_cl_cnt_rx(&cc, true);
 	set_gdm_cl_cnt_tx(&cc, true);
-	econet_wreg(cc, &port->regs->clear_counters);
+	econet_wreg(cc, &port->econet_regs->clear_counters);
 
 	u64_stats_update_end(&port->stats.syncp);
 }
@@ -5154,13 +5153,6 @@ static const struct net_device_ops airoha_netdev_ops;
 
 static int airoha_qdma_set_gpon_dba_report(struct net_device *netdev,
 					   int channel, bool enable);
-
-
-#define AIROHA_XPON_TX_OFFLOAD_FEATURES		\
-	(NETIF_F_IP_CSUM | NETIF_F_IPV6_CSUM | \
-	 NETIF_F_SG | NETIF_F_TSO | NETIF_F_TSO6)
-
-
 
 
 static int airoha_set_macaddr(struct airoha_gdm_dev *dev, const u8 *addr)
