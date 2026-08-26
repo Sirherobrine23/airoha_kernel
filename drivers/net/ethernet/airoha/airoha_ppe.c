@@ -40,6 +40,13 @@ static const struct rhashtable_params airoha_l2_flow_table_params = {
 	.automatic_shrinking = true,
 };
 
+static int airoha_ppe_v1_flow_offload_replace(struct net_device *dev,
+					       struct flow_cls_offload *f);
+static int airoha_ppe_v1_flow_offload_destroy(struct net_device *dev,
+					       struct flow_cls_offload *f);
+static int airoha_ppe_v1_flow_offload_stats(struct flow_cls_offload *f);
+static void airoha_ppe_v1_hw_init(struct airoha_ppe *ppe);
+
 static int airoha_ppe_get_num_stats_entries(struct airoha_ppe *ppe)
 {
 	if (!IS_ENABLED(CONFIG_NET_AIROHA_FLOW_STATS))
@@ -220,6 +227,11 @@ static void airoha_ppe_hw_init(struct airoha_ppe *ppe)
 	struct airoha_eth *eth = ppe->common.eth;
 	int i, sram_num_stats_entries;
 
+	if (eth->soc->foe_format == AIROHA_FOE_FORMAT_V1) {
+		airoha_ppe_v1_hw_init(ppe);
+		return;
+	}
+
 	dev_info(eth->dev, "Initializing PPE Hardware\n");
 	sram_num_entries = airoha_ppe_get_total_sram_num_entries(ppe);
 	sram_tb_size = sram_num_entries * AIROHA_FOE_ENTRY_SIZE;
@@ -250,9 +262,6 @@ static void airoha_ppe_hw_init(struct airoha_ppe *ppe)
 			      FIELD_PREP(PPE_BIND_AGE1_DELTA_TCP, 60));
 
 		switch (eth->soc->version) {
-		case econet_en751221:
-		case econet_en7528:
-			break;
 		case airoha_en7523:
 			/**
 			 * the airoha_en7523 support for 64 and 80 bytes, current use 80 bytes for ppe
@@ -2066,20 +2075,27 @@ static int airoha_ppe_flow_offload_stats(struct airoha_eth *eth,
 }
 
 static int airoha_ppe_flow_offload_cmd(struct airoha_eth *eth,
+				       struct net_device *dev,
 				       struct flow_cls_offload *f)
 {
+	bool v1 = eth->soc->foe_format == AIROHA_FOE_FORMAT_V1;
+
+	if (v1 && !dev)
+		return -EOPNOTSUPP;
+
 	switch (f->command) {
 	case FLOW_CLS_REPLACE:
-		return airoha_ppe_flow_offload_replace(eth, f);
+		return v1 ? airoha_ppe_v1_flow_offload_replace(dev, f) :
+			    airoha_ppe_flow_offload_replace(eth, f);
 	case FLOW_CLS_DESTROY:
-		return airoha_ppe_flow_offload_destroy(eth, f);
+		return v1 ? airoha_ppe_v1_flow_offload_destroy(dev, f) :
+			    airoha_ppe_flow_offload_destroy(eth, f);
 	case FLOW_CLS_STATS:
-		return airoha_ppe_flow_offload_stats(eth, f);
+		return v1 ? airoha_ppe_v1_flow_offload_stats(f) :
+			    airoha_ppe_flow_offload_stats(eth, f);
 	default:
-		break;
+		return -EOPNOTSUPP;
 	}
-
-	return -EOPNOTSUPP;
 }
 
 static int airoha_ppe_flush_sram_entries(struct airoha_ppe *ppe)
@@ -2238,7 +2254,7 @@ int airoha_ppe_setup_tc_block_cb(struct airoha_ppe_dev *dev, void *type_data)
 		err = airoha_ppe_offload_setup(eth);
 	}
 	if (!err)
-		err = airoha_ppe_flow_offload_cmd(eth, type_data);
+		err = airoha_ppe_flow_offload_cmd(eth, NULL, type_data);
 
 	mutex_unlock(&flow_offload_mutex);
 
@@ -2400,6 +2416,7 @@ static int airoha_ppe_datapath_init(struct airoha_eth *eth)
 	airoha_ppe_common_init(&ppe->common, eth, ppe);
 	ppe->common.dev.ops.setup_tc_block_cb = airoha_ppe_setup_tc_block_cb;
 	ppe->common.dev.ops.check_skb = airoha_ppe_check_skb;
+	INIT_LIST_HEAD(&ppe->block_cb_list);
 	INIT_HLIST_HEAD(&ppe->pending_flows);
 
 	ppe_num_entries = airoha_ppe_get_total_num_entries(ppe);
@@ -2518,7 +2535,7 @@ void airoha_ppe_v1_read_entry(struct airoha_ppe *ppe, u16 hash,
 		entry->words[i] = READ_ONCE(slot[i]);
 }
 
-static bool econet_ppe_cache_cmd(struct airoha_ppe *ppe, u32 cmd)
+static bool airoha_ppe_v1_cache_cmd(struct airoha_ppe *ppe, u32 cmd)
 {
 	void __iomem *reg = ppe->common.eth->fe_regs + REG_EN751221_PPE_CACHE_CTL;
 	u32 val;
@@ -2530,7 +2547,7 @@ static bool econet_ppe_cache_cmd(struct airoha_ppe *ppe, u32 cmd)
 					 1, 100000);
 }
 
-static void econet_ppe_cache_clean(struct airoha_ppe *ppe)
+static void airoha_ppe_v1_cache_clean(struct airoha_ppe *ppe)
 {
 	u32 gate = airoha_fe_rr(ppe->common.eth, REG_EN751221_PPE_CAH_GATE);
 
@@ -2542,7 +2559,7 @@ static void econet_ppe_cache_clean(struct airoha_ppe *ppe)
 
 	airoha_fe_wr(ppe->common.eth, REG_EN751221_PPE_CAH_GATE,
 		     gate & ~EN751221_PPE_CAH_GATE_EN);
-	if (!econet_ppe_cache_cmd(ppe, 4))
+	if (!airoha_ppe_v1_cache_cmd(ppe, 4))
 		dev_warn(ppe->common.eth->dev,
 			 "PPE cache clear-all timed out\n");
 	airoha_fe_wr(ppe->common.eth, REG_EN751221_PPE_CAH_GATE,
@@ -2750,7 +2767,7 @@ static u32 airoha_foe_v1_packet_type(const struct airoha_foe_entry *entry)
 	return FIELD_GET(AIROHA_FOE_IB1_BIND_PACKET_TYPE, entry->ib1);
 }
 
-static void econet_ppe_commit_entry(struct airoha_ppe *ppe,
+static void airoha_ppe_v1_commit_entry(struct airoha_ppe *ppe,
 				    struct airoha_foe_entry *entry, u16 hash,
 				    const struct airoha_foe_entry *lookup_raw)
 {
@@ -2788,10 +2805,10 @@ static void econet_ppe_commit_entry(struct airoha_ppe *ppe,
 	dma_wmb();
 	WRITE_ONCE(slot[0], entry->words[0]);
 	dma_wmb();
-	econet_ppe_cache_clean(ppe);
+	airoha_ppe_v1_cache_clean(ppe);
 }
 
-static void econet_ppe_invalidate_entry(struct airoha_ppe *ppe, u16 hash)
+static void airoha_ppe_v1_invalidate_entry(struct airoha_ppe *ppe, u16 hash)
 {
 	if (hash == AIROHA_FOE_V1_INVALID_HASH ||
 	    hash >= ppe->common.eth->soc->ppe_dram_entries)
@@ -2801,14 +2818,14 @@ static void econet_ppe_invalidate_entry(struct airoha_ppe *ppe, u16 hash)
 	dma_wmb();
 }
 
-static u32 econet_ppe_raw_state(const struct airoha_foe_entry *raw)
+static u32 airoha_ppe_v1_raw_state(const struct airoha_foe_entry *raw)
 {
 	return FIELD_GET(AIROHA_FOE_IB1_BIND_STATE, raw->ib1);
 }
 
-static void econet_ppe_clear_owner(struct airoha_ppe *ppe, u16 hash)
+static void airoha_ppe_v1_clear_owner(struct airoha_ppe *ppe, u16 hash)
 {
-	struct airoha_foe_v1_flow_entry *owner;
+	struct airoha_flow_table_entry *owner;
 
 	if (hash == AIROHA_FOE_V1_INVALID_HASH ||
 	    hash >= ppe->common.eth->soc->ppe_dram_entries)
@@ -2820,8 +2837,8 @@ static void econet_ppe_clear_owner(struct airoha_ppe *ppe, u16 hash)
 	ppe->v1.foe_owner[hash] = NULL;
 }
 
-static void econet_ppe_release_flow_slot(struct airoha_ppe *ppe,
-					 struct airoha_foe_v1_flow_entry *flow,
+static void airoha_ppe_v1_release_flow_slot(struct airoha_ppe *ppe,
+					 struct airoha_flow_table_entry *flow,
 					 bool invalidate)
 {
 	u16 hash = flow->hash;
@@ -2834,13 +2851,13 @@ static void econet_ppe_release_flow_slot(struct airoha_ppe *ppe,
 	}
 
 	if (invalidate)
-		econet_ppe_invalidate_entry(ppe, hash);
+		airoha_ppe_v1_invalidate_entry(ppe, hash);
 	ppe->v1.foe_owner[hash] = NULL;
 	flow->hash = AIROHA_FOE_V1_INVALID_HASH;
 }
 
-static u16 econet_ppe_find_bind_way(struct airoha_ppe *ppe,
-				    struct airoha_foe_v1_flow_entry *flow, u16 hash,
+static u16 airoha_ppe_v1_find_bind_way(struct airoha_ppe *ppe,
+				    struct airoha_flow_table_entry *flow, u16 hash,
 				    struct airoha_foe_entry *lookup_raw,
 				    bool *lookup_valid)
 {
@@ -2857,17 +2874,17 @@ static u16 econet_ppe_find_bind_way(struct airoha_ppe *ppe,
 	 * the reported way as the first preference and inspect its sibling too.
 	 */
 	for (i = 0; i < ARRAY_SIZE(way); i++) {
-		struct airoha_foe_v1_flow_entry *owner;
+		struct airoha_flow_table_entry *owner;
 
 		if (way[i] >= ppe->common.eth->soc->ppe_dram_entries)
 			continue;
 		airoha_ppe_v1_read_entry(ppe, way[i], &raw[i]);
-		state[i] = econet_ppe_raw_state(&raw[i]);
+		state[i] = airoha_ppe_v1_raw_state(&raw[i]);
 
 		owner = ppe->v1.foe_owner[way[i]];
 		if (owner && state[i] != AIROHA_FOE_STATE_BIND) {
 			/* Hardware aging/replacement ended the previous ownership. */
-			econet_ppe_clear_owner(ppe, way[i]);
+			airoha_ppe_v1_clear_owner(ppe, way[i]);
 			owner = NULL;
 		}
 		if (owner == flow && state[i] == AIROHA_FOE_STATE_BIND)
@@ -2878,7 +2895,7 @@ static u16 econet_ppe_find_bind_way(struct airoha_ppe *ppe,
 	 * Match the EN7512 FoeHashFun() allocation policy: INVALID and UNBIND
 	 * ways are reusable, while BIND and FIN are occupied.  An UNBIND way
 	 * contains the lookup key generated by the PPE and must be preserved;
-	 * an INVALID way has no key, so econet_ppe_commit_entry() encodes the
+	 * an INVALID way has no key, so airoha_ppe_v1_commit_entry() encodes the
 	 * logical tuple from flow->data instead.
 	 */
 	for (i = 0; i < ARRAY_SIZE(way); i++) {
@@ -3013,7 +3030,7 @@ static bool airoha_foe_v1_parse_tuple(struct sk_buff *skb,
 }
 
 static bool
-airoha_foe_v1_flow_matches_tuple(const struct airoha_foe_v1_flow_entry *flow,
+airoha_foe_v1_flow_matches_tuple(const struct airoha_flow_table_entry *flow,
 			      const struct airoha_foe_v1_tuple *tuple)
 {
 	if (flow->addr_type != tuple->addr_type ||
@@ -3032,11 +3049,11 @@ airoha_foe_v1_flow_matches_tuple(const struct airoha_foe_v1_flow_entry *flow,
 	return false;
 }
 
-static void econet_ppe_rx_check(struct airoha_ppe *ppe, struct sk_buff *skb,
+static void airoha_ppe_v1_rx_check(struct airoha_ppe *ppe, struct sk_buff *skb,
 				u16 hash, u8 reason)
 {
 	struct airoha_foe_v1_tuple tuple;
-	struct airoha_foe_v1_flow_entry *flow;
+	struct airoha_flow_table_entry *flow;
 	struct airoha_foe_entry entry, lookup_raw = {};
 	bool lookup_valid;
 	u16 bind_hash;
@@ -3052,11 +3069,11 @@ static void econet_ppe_rx_check(struct airoha_ppe *ppe, struct sk_buff *skb,
 		return;
 
 	spin_lock_bh(&ppe->v1.lock);
-	list_for_each_entry(flow, &ppe->v1.flows, list) {
+	list_for_each_entry(flow, &ppe->v1.flows, v1_list) {
 		if (!airoha_foe_v1_flow_matches_tuple(flow, &tuple))
 			continue;
 
-		bind_hash = econet_ppe_find_bind_way(ppe, flow, hash,
+		bind_hash = airoha_ppe_v1_find_bind_way(ppe, flow, hash,
 						     &lookup_raw, &lookup_valid);
 		if (bind_hash == AIROHA_FOE_V1_INVALID_HASH)
 			break;
@@ -3066,9 +3083,9 @@ static void econet_ppe_rx_check(struct airoha_ppe *ppe, struct sk_buff *skb,
 
 		entry = flow->data;
 		if (flow->hash != bind_hash)
-			econet_ppe_release_flow_slot(ppe, flow, true);
+			airoha_ppe_v1_release_flow_slot(ppe, flow, true);
 
-		econet_ppe_commit_entry(ppe, &entry, bind_hash,
+		airoha_ppe_v1_commit_entry(ppe, &entry, bind_hash,
 				       lookup_valid ? &lookup_raw : NULL);
 		ppe->v1.foe_owner[bind_hash] = flow;
 		flow->hash = bind_hash;
@@ -3077,33 +3094,37 @@ static void econet_ppe_rx_check(struct airoha_ppe *ppe, struct sk_buff *skb,
 	spin_unlock_bh(&ppe->v1.lock);
 }
 
-static void econet_ppe_check_skb_reason(struct airoha_ppe_dev *ppe_dev,
-					struct sk_buff *skb, u16 hash, u8 reason)
+static void airoha_ppe_check_skb_reason(struct airoha_ppe_dev *ppe_dev,
+				       struct sk_buff *skb, u16 hash, u8 reason)
 {
 	struct airoha_ppe *ppe = ppe_dev->priv;
 
-	econet_ppe_rx_check(ppe, skb, hash, reason);
+	if (ppe->common.eth->soc->foe_format == AIROHA_FOE_FORMAT_V1)
+		airoha_ppe_v1_rx_check(ppe, skb, hash, reason);
 }
 
-static void econet_ppe_flush(struct airoha_ppe *ppe)
+static void airoha_ppe_v1_flush(struct airoha_ppe *ppe)
 {
-	struct airoha_foe_v1_flow_entry *flow, *tmp;
+	struct airoha_flow_table_entry *flow, *tmp;
 	LIST_HEAD(free_list);
 
 	spin_lock_bh(&ppe->v1.lock);
-	list_for_each_entry(flow, &ppe->v1.flows, list)
-		econet_ppe_release_flow_slot(ppe, flow, true);
+	list_for_each_entry(flow, &ppe->v1.flows, v1_list)
+		airoha_ppe_v1_release_flow_slot(ppe, flow, true);
 	list_splice_init(&ppe->v1.flows, &free_list);
 	spin_unlock_bh(&ppe->v1.lock);
 
-	list_for_each_entry_safe(flow, tmp, &free_list, list) {
-		list_del(&flow->list);
+	list_for_each_entry_safe(flow, tmp, &free_list, v1_list) {
+		rhashtable_remove_fast(&ppe->common.eth->flow_table, &flow->node,
+				       airoha_flow_table_params);
+		list_del(&flow->v1_list);
 		kfree(flow);
 	}
+
 	memset(ppe->common.foe, 0, airoha_ppe_v1_foe_size(ppe->common.eth));
 	/* Publish the cleared table before invalidating the lookup cache. */
 	dma_wmb();
-	econet_ppe_cache_clean(ppe);
+	airoha_ppe_v1_cache_clean(ppe);
 }
 
 /*
@@ -3138,14 +3159,85 @@ static void econet_ppe_flush(struct airoha_ppe *ppe)
 					 PPE_FLOW_CFG_IP6_3T_ROUTE_MASK | \
 					 PPE_FLOW_CFG_IP4_TCP_FRAG_MASK)
 
-static void econet_ppe_set_flow_profile(struct airoha_ppe *ppe)
+static void airoha_ppe_v1_set_flow_profile(struct airoha_ppe *ppe)
 {
 	airoha_fe_wr(ppe->common.eth, REG_PPE_PPE_FLOW_CFG(0),
 		     EN751221_PPE_FLOW_CFG_TYPE3 |
 		     PPE_FLOW_CFG_IP_PROTO_BLACKLIST_MASK);
 }
 
-static int econet_ppe_engine_set(struct airoha_ppe *ppe, bool enable)
+static void airoha_ppe_v1_hw_init(struct airoha_ppe *ppe)
+{
+	struct airoha_eth *eth = ppe->common.eth;
+	u32 dram_num_entries;
+	u32 tb_cfg;
+
+	dram_num_entries = airoha_ppe_get_num_entries_shift(
+		eth->soc->ppe_dram_entries);
+
+	dev_info(eth->dev, "Initializing generation-1 PPE hardware\n");
+
+	/*
+	 * FoE v1 uses CAH_GATE to enable the lookup cache. CAH_CTRL is the
+	 * cache command register, not an enable bit. Match the vendor hw_nat
+	 * programming and invalidate stale cache contents before publishing
+	 * the DMA-backed 80-byte FoE table.
+	 */
+	airoha_fe_wr(eth, REG_EN751221_PPE_CAH_GATE,
+		     EN751221_PPE_CAH_GATE_DEFAULT);
+	airoha_ppe_v1_cache_clean(ppe);
+
+	memset(ppe->common.foe, 0, airoha_ppe_v1_foe_size(eth));
+	dma_wmb();
+
+	airoha_fe_wr(eth, REG_PPE_TB_BASE(0),
+		     lower_32_bits(ppe->common.foe_dma));
+	tb_cfg = PPE_TB_CFG_AGE_TCP_FIN_MASK | PPE_TB_CFG_AGE_UDP_MASK |
+		 PPE_TB_CFG_AGE_TCP_MASK | PPE_TB_CFG_AGE_UNBIND_MASK |
+		 PPE_TB_CFG_AGE_NON_L4_MASK |
+		 FIELD_PREP(PPE_TB_CFG_SEARCH_MISS_MASK, 3) |
+		 FIELD_PREP(PPE_TB_CFG_HASH_MODE_MASK, 3) |
+		 FIELD_PREP(PPE_TB_CFG_KEEPALIVE_MASK, 3) |
+		 FIELD_PREP(PPE_DRAM_TB_NUM_ENTRY_MASK, dram_num_entries) |
+		 PPE_TB_ENTRY_SIZE_MASK;
+	airoha_fe_wr(eth, REG_PPE_TB_CFG(0), tb_cfg);
+	airoha_fe_wr(eth, REG_PPE_IP_PROTO_CHK(0),
+		     PPE_IP_PROTO_CHK_IPV4_MASK | PPE_IP_PROTO_CHK_IPV6_MASK);
+
+	/* Keep the same protocol classifier programmed by the vendor stack. */
+	airoha_fe_wr(eth, REG_PPE_IP_PROT(0, 0),
+		     FIELD_PREP(GENMASK(7, 0), IPPROTO_TCP) |
+		     FIELD_PREP(GENMASK(15, 8), IPPROTO_UDP) |
+		     FIELD_PREP(GENMASK(23, 16), IPPROTO_IPV6) |
+		     FIELD_PREP(GENMASK(31, 24), IPPROTO_IPIP));
+	airoha_fe_wr(eth, REG_PPE_IP_PROT(0, 1), 0);
+	airoha_fe_wr(eth, REG_PPE_IP_PROT(0, 2), 0);
+	airoha_fe_wr(eth, REG_PPE_IP_PROT(0, 3), 0);
+	airoha_ppe_v1_set_flow_profile(ppe);
+
+	airoha_fe_wr(eth, REG_PPE_UNBIND_AGE(0),
+		     FIELD_PREP(PPE_UNBIND_AGE_MIN_PACKETS_MASK, 1000) |
+		     FIELD_PREP(PPE_UNBIND_AGE_DELTA_MASK, 3));
+	airoha_fe_wr(eth, REG_PPE_BND_AGE0(0),
+		     FIELD_PREP(PPE_BIND_AGE0_DELTA_NON_L4, 15) |
+		     FIELD_PREP(PPE_BIND_AGE0_DELTA_UDP, 15));
+	airoha_fe_wr(eth, REG_PPE_BND_AGE1(0),
+		     FIELD_PREP(PPE_BIND_AGE1_DELTA_TCP_FIN, 5) |
+		     FIELD_PREP(PPE_BIND_AGE1_DELTA_TCP, 15));
+	airoha_fe_wr(eth, REG_PPE_BIND_LIMIT0(0),
+		     FIELD_PREP(PPE_BIND_LIMIT0_HALF_MASK, 800) |
+		     FIELD_PREP(PPE_BIND_LIMIT0_QUARTER_MASK, 1600));
+	airoha_fe_wr(eth, REG_PPE_BIND_LIMIT1(0),
+		     FIELD_PREP(PPE_BIND_LIMIT1_NON_L4_MASK, 1) |
+		     FIELD_PREP(PPE_BIND_LIMIT1_FULL_MASK, 400));
+	airoha_fe_wr(eth, REG_PPE_BIND_RATE(0),
+		     FIELD_PREP(PPE_BIND_RATE_BIND_MASK, 30));
+	airoha_fe_wr(eth, REG_PPE_HASH_SEED(0), PPE_HASH_SEED);
+	airoha_fe_wr(eth, REG_PPE_DFT_CPORT_BASE(0), 0);
+	airoha_fe_clear(eth, REG_PPE_GLO_CFG(0), PPE_GLO_CFG_EN_MASK);
+}
+
+static int airoha_ppe_v1_engine_set(struct airoha_ppe *ppe, bool enable)
 {
 	void __iomem *reg = ppe->common.eth->fe_regs + REG_PPE_GLO_CFG(0);
 	u32 val;
@@ -3174,7 +3266,7 @@ static int econet_ppe_engine_set(struct airoha_ppe *ppe, bool enable)
 	return 0;
 }
 
-static void econet_ppe_set_gdm_ingress(struct airoha_ppe *ppe, int gdm,
+static void airoha_ppe_v1_set_gdm_ingress(struct airoha_ppe *ppe, int gdm,
 				       u8 fport)
 {
 	u32 mask = GDM_UCFQ_MASK | GDM_BCFQ_MASK |
@@ -3192,7 +3284,7 @@ static void econet_ppe_set_gdm_ingress(struct airoha_ppe *ppe, int gdm,
 	airoha_fe_rmw(ppe->common.eth, REG_GDM_FWD_CFG(gdm), mask, val);
 }
 
-static int econet_ppe_engine_arm(struct airoha_ppe *ppe)
+static int airoha_ppe_v1_engine_arm(struct airoha_ppe *ppe)
 {
 	int err;
 
@@ -3222,7 +3314,7 @@ static int econet_ppe_engine_arm(struct airoha_ppe *ppe)
 	 */
 	airoha_fe_wr(ppe->common.eth, REG_EN751221_PPE_CAH_GATE,
 		     EN751221_PPE_CAH_GATE_DEFAULT);
-	econet_ppe_set_flow_profile(ppe);
+	airoha_ppe_v1_set_flow_profile(ppe);
 	airoha_fe_wr(ppe->common.eth, REG_PPE_VPM_TPID(0), ETH_P_8021Q);
 	airoha_fe_wr(ppe->common.eth, REG_CDM_VLAN_CTRL(1),
 		     FIELD_PREP(CDM_VLAN_MASK, ETH_P_8021Q) | STAG_EN);
@@ -3230,99 +3322,44 @@ static int econet_ppe_engine_arm(struct airoha_ppe *ppe)
 	/* SetGdmaFwd() in the stock module writes PPE_DFT_CPORT = 0x500. */
 	airoha_fe_wr(ppe->common.eth, REG_PPE_DFT_CPORT_BASE(0),
 		     FIELD_PREP(DFT_CPORT_MASK(2),
-				EN751221_GDM_FPORT_QDMA1_CPU));
+				ppe->common.eth->soc->ppe_cpu_fport[1]));
 
-	err = econet_ppe_engine_set(ppe, true);
+	err = airoha_ppe_v1_engine_set(ppe, true);
 	if (err)
 		return err;
 
 	/* GDM redirection is deliberately the last arm step. */
-	econet_ppe_set_gdm_ingress(ppe, 1, EN751221_GDM_FPORT_PPE);
-	econet_ppe_set_gdm_ingress(ppe, 2, EN751221_GDM_FPORT_PPE);
+	airoha_ppe_v1_set_gdm_ingress(ppe, 1, ppe->common.eth->soc->ppe_fport);
+	airoha_ppe_v1_set_gdm_ingress(ppe, 2, ppe->common.eth->soc->ppe_fport);
 	WRITE_ONCE(ppe->v1.armed, true);
 	return 0;
 }
 
-static void econet_ppe_engine_disarm(struct airoha_ppe *ppe)
+static void airoha_ppe_v1_engine_disarm(struct airoha_ppe *ppe)
 {
 	if (!ppe || !READ_ONCE(ppe->v1.armed))
 		return;
 
 	/* Restore the CPU ingress paths while preserving STAG/UNTAG state. */
-	econet_ppe_set_gdm_ingress(ppe, 1, EN751221_GDM_FPORT_QDMA0_CPU);
-	econet_ppe_set_gdm_ingress(ppe, 2, EN751221_GDM_FPORT_QDMA1_CPU);
+	airoha_ppe_v1_set_gdm_ingress(ppe, 1, ppe->common.eth->soc->ppe_cpu_fport[0]);
+	airoha_ppe_v1_set_gdm_ingress(ppe, 2, ppe->common.eth->soc->ppe_cpu_fport[1]);
 	WRITE_ONCE(ppe->v1.armed, false);
-	econet_ppe_flush(ppe);
-	econet_ppe_engine_set(ppe, false);
+	airoha_ppe_v1_flush(ppe);
+	airoha_ppe_v1_engine_set(ppe, false);
 }
 
-static void econet_flow_mangle_eth(const struct flow_action_entry *act,
-				   void *header)
-{
-	u8 *dest = header + act->mangle.offset;
-	const u8 *src = (const u8 *)&act->mangle.val;
-
-	if (act->mangle.offset > 8)
-		return;
-	if (!act->mangle.mask)
-		memcpy(dest, src, sizeof(u32));
-	else if (act->mangle.mask == 0xffff0000)
-		memcpy(dest, src + 2, sizeof(u16));
-	else if (act->mangle.mask == 0x0000ffff)
-		memcpy(dest + 2, src, sizeof(u16));
-}
-
-static int econet_flow_mangle_ports(const struct flow_action_entry *act,
-				    __be16 *src_port, __be16 *dest_port)
-{
-	u32 val = ntohl(act->mangle.val);
-
-	switch (act->mangle.offset) {
-	case 0:
-		if (act->mangle.mask == ~htonl(0xffff))
-			*dest_port = cpu_to_be16(val);
-		else
-			*src_port = cpu_to_be16(val >> 16);
-		return 0;
-	case 2:
-		*dest_port = cpu_to_be16(val);
-		return 0;
-	default:
-		return -EINVAL;
-	}
-}
-
-static int econet_flow_mangle_ipv4(const struct flow_action_entry *act,
-				   __be32 *src_addr, __be32 *dest_addr)
-{
-	__be32 *dest;
-
-	switch (act->mangle.offset) {
-	case offsetof(struct iphdr, saddr):
-		dest = src_addr;
-		break;
-	case offsetof(struct iphdr, daddr):
-		dest = dest_addr;
-		break;
-	default:
-		return -EINVAL;
-	}
-	memcpy(dest, &act->mangle.val, sizeof(*dest));
-	return 0;
-}
-
-static struct airoha_ppe *econet_ppe_from_netdev(struct net_device *netdev)
+static struct airoha_ppe *airoha_ppe_from_netdev(struct net_device *netdev)
 {
 	struct airoha_gdm_common *gdm;
 
 	gdm = airoha_gdm_common_from_netdev(netdev);
-	if (!gdm || gdm->family != AIROHA_ETH_FAMILY_ECONET || !gdm->ppe)
+	if (!gdm || !gdm->ppe)
 		return NULL;
 
 	return gdm->ppe->priv;
 }
 
-static int econet_flow_set_output(struct airoha_foe_entry *entry,
+static int airoha_ppe_v1_flow_set_output(struct airoha_foe_entry *entry,
 				  struct net_device *odev, bool vlan_valid,
 				  u16 vlan_id, u8 vlan_prio, bool *xpon)
 {
@@ -3387,33 +3424,21 @@ static int econet_flow_set_output(struct airoha_foe_entry *entry,
 	return 0;
 }
 
-static struct airoha_foe_v1_flow_entry *
-econet_ppe_find_flow(struct airoha_ppe *ppe, unsigned long cookie)
-{
-	struct airoha_foe_v1_flow_entry *flow;
-
-	list_for_each_entry(flow, &ppe->v1.flows, list)
-		if (flow->cookie == cookie)
-			return flow;
-	return NULL;
-}
-
-static int econet_flow_offload_replace(struct net_device *dev,
+static int airoha_ppe_v1_flow_offload_replace(struct net_device *dev,
 				       struct flow_cls_offload *cls)
 {
-	struct airoha_ppe *ppe = econet_ppe_from_netdev(dev);
+	struct airoha_ppe *ppe = airoha_ppe_from_netdev(dev);
 	struct flow_rule *rule = flow_cls_offload_flow_rule(cls);
 	struct flow_match_basic basic;
 	struct flow_match_ports ports;
 	struct flow_action_entry *act;
-	struct airoha_foe_v1_flow_entry *flow;
+	struct airoha_flow_table_entry *flow;
+	struct airoha_flow_data data = {};
 	struct airoha_foe_entry entry;
-	struct ethhdr eth = {};
 	struct net_device *odev = NULL;
 	struct in6_addr src_addr6 = {}, dest_addr6 = {};
 	__be32 src_addr = 0, dest_addr = 0;
-	__be32 new_src_addr = 0, new_dest_addr = 0;
-	__be16 src_port, dest_port, new_src_port, new_dest_port;
+	__be16 src_port, dest_port;
 	__be16 vlan_proto = 0;
 	u16 pppoe_sid = 0, vlan_id = 0, addr_type;
 	u8 l4proto, vlan_prio = 0, pkt_type;
@@ -3422,10 +3447,13 @@ static int econet_flow_offload_replace(struct net_device *dev,
 
 	if (!ppe)
 		return -EOPNOTSUPP;
+	if (rhashtable_lookup(&ppe->common.eth->flow_table, &cls->cookie,
+			      airoha_flow_table_params))
+		return -EEXIST;
 	if (!flow_rule_match_key(rule, FLOW_DISSECTOR_KEY_BASIC) ||
 	    !flow_rule_match_key(rule, FLOW_DISSECTOR_KEY_PORTS)) {
 		NL_SET_ERR_MSG_MOD(cls->common.extack,
-				   "EcoNet PPE requires TCP/UDP 5-tuple flows");
+				   "FoE v1 requires TCP/UDP 5-tuple flows");
 		return -EOPNOTSUPP;
 	}
 
@@ -3446,13 +3474,13 @@ static int econet_flow_offload_replace(struct net_device *dev,
 		if (addrs.mask->src != htonl(0xffffffff) ||
 		    addrs.mask->dst != htonl(0xffffffff)) {
 			NL_SET_ERR_MSG_MOD(cls->common.extack,
-					   "EcoNet PPE requires exact IPv4 addresses");
+					   "FoE v1 requires exact IPv4 addresses");
 			return -EOPNOTSUPP;
 		}
 		src_addr = addrs.key->src;
 		dest_addr = addrs.key->dst;
-		new_src_addr = src_addr;
-		new_dest_addr = dest_addr;
+		data.v4.src_addr = src_addr;
+		data.v4.dst_addr = dest_addr;
 		addr_type = FLOW_DISSECTOR_KEY_IPV4_ADDRS;
 		pkt_type = PPE_PKT_TYPE_IPV4_HNAPT;
 	} else if (basic.key->n_proto == htons(ETH_P_IPV6)) {
@@ -3464,11 +3492,13 @@ static int econet_flow_offload_replace(struct net_device *dev,
 		if (memchr_inv(&addrs.mask->src, 0xff, sizeof(addrs.mask->src)) ||
 		    memchr_inv(&addrs.mask->dst, 0xff, sizeof(addrs.mask->dst))) {
 			NL_SET_ERR_MSG_MOD(cls->common.extack,
-					   "EcoNet PPE requires exact IPv6 addresses");
+					   "FoE v1 requires exact IPv6 addresses");
 			return -EOPNOTSUPP;
 		}
 		src_addr6 = addrs.key->src;
 		dest_addr6 = addrs.key->dst;
+		data.v6.src_addr = src_addr6;
+		data.v6.dst_addr = dest_addr6;
 		addr_type = FLOW_DISSECTOR_KEY_IPV6_ADDRS;
 		pkt_type = PPE_PKT_TYPE_IPV6_ROUTE_5T;
 	} else {
@@ -3479,7 +3509,7 @@ static int econet_flow_offload_replace(struct net_device *dev,
 	if (ports.mask->src != htons(0xffff) ||
 	    ports.mask->dst != htons(0xffff)) {
 		NL_SET_ERR_MSG_MOD(cls->common.extack,
-				   "EcoNet PPE requires exact TCP/UDP ports");
+				   "FoE v1 requires exact TCP/UDP ports");
 		return -EOPNOTSUPP;
 	}
 	if (!flow_action_basic_hw_stats_check(&rule->action,
@@ -3488,21 +3518,20 @@ static int econet_flow_offload_replace(struct net_device *dev,
 
 	src_port = ports.key->src;
 	dest_port = ports.key->dst;
-	new_src_port = src_port;
-	new_dest_port = dest_port;
+	data.src_port = src_port;
+	data.dst_port = dest_port;
 
 	flow_action_for_each(i, act, &rule->action) {
 		switch (act->id) {
 		case FLOW_ACTION_MANGLE:
 			switch (act->mangle.htype) {
 			case FLOW_ACT_MANGLE_HDR_TYPE_ETH:
-				econet_flow_mangle_eth(act, &eth);
+				airoha_ppe_flow_mangle_eth(act, &data.eth);
 				break;
 			case FLOW_ACT_MANGLE_HDR_TYPE_IP4:
 				if (addr_type != FLOW_DISSECTOR_KEY_IPV4_ADDRS)
 					return -EOPNOTSUPP;
-				err = econet_flow_mangle_ipv4(act, &new_src_addr,
-							      &new_dest_addr);
+				err = airoha_ppe_flow_mangle_ipv4(act, &data);
 				if (err)
 					return err;
 				break;
@@ -3513,8 +3542,7 @@ static int econet_flow_offload_replace(struct net_device *dev,
 				 */
 				if (addr_type == FLOW_DISSECTOR_KEY_IPV6_ADDRS)
 					return -EOPNOTSUPP;
-				err = econet_flow_mangle_ports(act, &new_src_port,
-							       &new_dest_port);
+				err = airoha_ppe_flow_mangle_ports(act, &data);
 				if (err)
 					return err;
 				break;
@@ -3545,26 +3573,26 @@ static int econet_flow_offload_replace(struct net_device *dev,
 			break;
 		default:
 			NL_SET_ERR_MSG_MOD(cls->common.extack,
-					   "unsupported action for EcoNet PPE");
+					   "unsupported action for FoE v1");
 			return -EOPNOTSUPP;
 		}
 	}
 
-	if (!is_valid_ether_addr(eth.h_source) ||
-	    !is_valid_ether_addr(eth.h_dest)) {
+	if (!is_valid_ether_addr(data.eth.h_source) ||
+	    !is_valid_ether_addr(data.eth.h_dest)) {
 		NL_SET_ERR_MSG_MOD(cls->common.extack,
 				   "missing Ethernet rewrite addresses");
 		return -EOPNOTSUPP;
 	}
 
 	airoha_foe_v1_entry_prepare(&entry, l4proto, pkt_type, FE_PSE_PORT_GDM1,
-				 eth.h_source, eth.h_dest);
+				 data.eth.h_source, data.eth.h_dest);
 	if (addr_type == FLOW_DISSECTOR_KEY_IPV4_ADDRS) {
 		airoha_foe_v1_entry_set_ipv4_tuple(&entry, false, src_addr, src_port,
 						dest_addr, dest_port);
-		airoha_foe_v1_entry_set_ipv4_tuple(&entry, true, new_src_addr,
-						new_src_port, new_dest_addr,
-						new_dest_port);
+		airoha_foe_v1_entry_set_ipv4_tuple(&entry, true, data.v4.src_addr,
+						data.src_port, data.v4.dst_addr,
+						data.dst_port);
 	} else {
 		airoha_foe_v1_entry_set_ipv6_tuple(&entry, &src_addr6, src_port,
 						&dest_addr6, dest_port);
@@ -3583,7 +3611,7 @@ static int econet_flow_offload_replace(struct net_device *dev,
 	if (pppoe_sid)
 		airoha_foe_v1_entry_set_pppoe(&entry, pppoe_sid);
 
-	err = econet_flow_set_output(&entry, odev, vlan_push, vlan_id,
+	err = airoha_ppe_v1_flow_set_output(&entry, odev, vlan_push, vlan_id,
 				     vlan_prio, &xpon);
 	if (err)
 		return err;
@@ -3606,82 +3634,79 @@ static int econet_flow_offload_replace(struct net_device *dev,
 	flow->src_port = ntohs(src_port);
 	flow->dest_port = ntohs(dest_port);
 	flow->hash = AIROHA_FOE_V1_INVALID_HASH;
+	INIT_LIST_HEAD(&flow->v1_list);
+
+	err = rhashtable_insert_fast(&ppe->common.eth->flow_table, &flow->node,
+				     airoha_flow_table_params);
+	if (err) {
+		kfree(flow);
+		return err;
+	}
 
 	spin_lock_bh(&ppe->v1.lock);
-	if (econet_ppe_find_flow(ppe, cls->cookie)) {
-		spin_unlock_bh(&ppe->v1.lock);
-		kfree(flow);
-		return -EEXIST;
-	}
-	list_add_tail(&flow->list, &ppe->v1.flows);
+	list_add_tail(&flow->v1_list, &ppe->v1.flows);
 	spin_unlock_bh(&ppe->v1.lock);
 	return 0;
 }
 
-static int econet_flow_offload_destroy(struct net_device *dev,
-				       struct flow_cls_offload *cls)
+static int airoha_ppe_v1_flow_offload_destroy(struct net_device *dev,
+					       struct flow_cls_offload *cls)
 {
-	struct airoha_ppe *ppe = econet_ppe_from_netdev(dev);
-	struct airoha_foe_v1_flow_entry *flow;
+	struct airoha_ppe *ppe = airoha_ppe_from_netdev(dev);
+	struct airoha_flow_table_entry *flow;
 
 	if (!ppe)
 		return -EOPNOTSUPP;
+
+	flow = rhashtable_lookup(&ppe->common.eth->flow_table, &cls->cookie,
+				 airoha_flow_table_params);
+	if (!flow)
+		return -ENOENT;
+
 	spin_lock_bh(&ppe->v1.lock);
-	flow = econet_ppe_find_flow(ppe, cls->cookie);
-	if (flow) {
-		econet_ppe_release_flow_slot(ppe, flow, true);
-		econet_ppe_cache_clean(ppe);
-		list_del(&flow->list);
-	}
+	airoha_ppe_v1_release_flow_slot(ppe, flow, true);
+	airoha_ppe_v1_cache_clean(ppe);
+	list_del_init(&flow->v1_list);
 	spin_unlock_bh(&ppe->v1.lock);
+
+	rhashtable_remove_fast(&ppe->common.eth->flow_table, &flow->node,
+			       airoha_flow_table_params);
 	kfree(flow);
+
 	return 0;
 }
 
-static int econet_flow_offload_stats(struct flow_cls_offload *cls)
+static int airoha_ppe_v1_flow_offload_stats(struct flow_cls_offload *cls)
 {
 	flow_stats_update(&cls->stats, 0, 0, 0, jiffies,
 			  FLOW_ACTION_HW_STATS_DELAYED);
 	return 0;
 }
 
-static int econet_flow_offload_cmd(struct net_device *dev,
-				   struct flow_cls_offload *cls)
-{
-	switch (cls->command) {
-	case FLOW_CLS_REPLACE:
-		return econet_flow_offload_replace(dev, cls);
-	case FLOW_CLS_DESTROY:
-		return econet_flow_offload_destroy(dev, cls);
-	case FLOW_CLS_STATS:
-		return econet_flow_offload_stats(cls);
-	default:
-		return -EOPNOTSUPP;
-	}
-}
-
-static int econet_setup_tc_block_cb(enum tc_setup_type type, void *type_data,
-				    void *cb_priv)
+static int airoha_ppe_tc_block_cb(enum tc_setup_type type, void *type_data,
+				void *cb_priv)
 {
 	struct net_device *dev = cb_priv;
+	struct airoha_ppe *ppe = airoha_ppe_from_netdev(dev);
 
-	if (type != TC_SETUP_CLSFLOWER)
+	if (!ppe || type != TC_SETUP_CLSFLOWER)
 		return -EOPNOTSUPP;
-	return econet_flow_offload_cmd(dev, type_data);
+
+	return airoha_ppe_flow_offload_cmd(ppe->common.eth, dev, type_data);
 }
 
-static int econet_setup_tc_block(struct net_device *dev,
+static int airoha_ppe_setup_tc_block(struct net_device *dev,
 				 struct flow_block_offload *offload)
 {
-	struct airoha_ppe *ppe = econet_ppe_from_netdev(dev);
-	flow_setup_cb_t *cb = econet_setup_tc_block_cb;
+	struct airoha_ppe *ppe = airoha_ppe_from_netdev(dev);
+	flow_setup_cb_t *cb = airoha_ppe_tc_block_cb;
 	struct flow_block_cb *block_cb;
 	int err;
 
 	if (!ppe || offload->binder_type != FLOW_BLOCK_BINDER_TYPE_CLSACT_INGRESS)
 		return -EOPNOTSUPP;
 
-	offload->driver_block_list = &ppe->v1.block_cb_list;
+	offload->driver_block_list = &ppe->block_cb_list;
 	switch (offload->command) {
 	case FLOW_BLOCK_BIND:
 		block_cb = flow_block_cb_lookup(offload->block, cb, dev);
@@ -3689,18 +3714,18 @@ static int econet_setup_tc_block(struct net_device *dev,
 			flow_block_cb_incref(block_cb);
 			return 0;
 		}
-		err = econet_ppe_engine_arm(ppe);
+		err = airoha_ppe_v1_engine_arm(ppe);
 		if (err)
 			return err;
 		block_cb = flow_block_cb_alloc(cb, dev, dev, NULL);
 		if (IS_ERR(block_cb)) {
-			if (list_empty(&ppe->v1.block_cb_list))
-				econet_ppe_engine_disarm(ppe);
+			if (list_empty(&ppe->block_cb_list))
+				airoha_ppe_v1_engine_disarm(ppe);
 			return PTR_ERR(block_cb);
 		}
 		flow_block_cb_incref(block_cb);
 		flow_block_cb_add(block_cb, offload);
-		list_add_tail(&block_cb->driver_list, &ppe->v1.block_cb_list);
+		list_add_tail(&block_cb->driver_list, &ppe->block_cb_list);
 		return 0;
 	case FLOW_BLOCK_UNBIND:
 		block_cb = flow_block_cb_lookup(offload->block, cb, dev);
@@ -3710,25 +3735,25 @@ static int econet_setup_tc_block(struct net_device *dev,
 			flow_block_cb_remove(block_cb, offload);
 			list_del(&block_cb->driver_list);
 		}
-		if (list_empty(&ppe->v1.block_cb_list))
-			econet_ppe_engine_disarm(ppe);
+		if (list_empty(&ppe->block_cb_list))
+			airoha_ppe_v1_engine_disarm(ppe);
 		return 0;
 	default:
 		return -EOPNOTSUPP;
 	}
 }
 
-static int econet_ppe_setup_tc(struct airoha_ppe_dev *ppe_dev,
+static int airoha_ppe_setup_tc(struct airoha_ppe_dev *ppe_dev,
 			       struct net_device *dev,
 			       enum tc_setup_type type, void *type_data)
 {
-	if (econet_ppe_from_netdev(dev) != ppe_dev->priv)
+	if (airoha_ppe_from_netdev(dev) != ppe_dev->priv)
 		return -EOPNOTSUPP;
 
 	switch (type) {
 	case TC_SETUP_BLOCK:
 	case TC_SETUP_FT:
-		return econet_setup_tc_block(dev, type_data);
+		return airoha_ppe_setup_tc_block(dev, type_data);
 	default:
 		return -EOPNOTSUPP;
 	}
@@ -3738,10 +3763,8 @@ static int airoha_ppe_v1_init(struct airoha_eth *eth)
 {
 	u32 dram_entries = eth->soc->ppe_dram_entries;
 	size_t foe_size = airoha_ppe_v1_foe_size(eth);
-	u32 dram_num_entries;
 	struct device *dev = eth->dev;
 	struct airoha_ppe *ppe;
-	u32 tb_cfg;
 	int err;
 
 	ppe = devm_kzalloc(dev, sizeof(*ppe), GFP_KERNEL);
@@ -3753,80 +3776,23 @@ static int airoha_ppe_v1_init(struct airoha_eth *eth)
 	if (err)
 		return err;
 
-	dram_num_entries = airoha_ppe_get_num_entries_shift(dram_entries);
 	ppe->v1.foe_owner = devm_kcalloc(dev, dram_entries,
 				      sizeof(*ppe->v1.foe_owner), GFP_KERNEL);
 	if (!ppe->v1.foe_owner)
 		return -ENOMEM;
 
+	err = rhashtable_init(&eth->flow_table, &airoha_flow_table_params);
+	if (err)
+		return err;
+
 	spin_lock_init(&ppe->v1.lock);
 	INIT_LIST_HEAD(&ppe->v1.flows);
-	INIT_LIST_HEAD(&ppe->v1.block_cb_list);
+	INIT_LIST_HEAD(&ppe->block_cb_list);
 
-	/*
-	 * EN751221 uses CAH_GATE to enable the FoE lookup cache. CAH_CTRL is
-	 * the cache command register on this generation, not an enable bit.
-	 * Match the vendor hw_nat driver (CAH_GATE = 0x33) and invalidate any
-	 * stale cache contents before publishing the new DMA-backed FoE table.
-	 */
-	airoha_fe_wr(eth, REG_EN751221_PPE_CAH_GATE,
-		     EN751221_PPE_CAH_GATE_DEFAULT);
-	econet_ppe_cache_clean(ppe);
+	airoha_ppe_hw_init(ppe);
 
-	memset(ppe->common.foe, 0, foe_size);
-	dma_wmb();
-
-	airoha_fe_wr(eth, REG_PPE_TB_BASE(0), lower_32_bits(ppe->common.foe_dma));
-	tb_cfg = PPE_TB_CFG_AGE_TCP_FIN_MASK | PPE_TB_CFG_AGE_UDP_MASK |
-		 PPE_TB_CFG_AGE_TCP_MASK | PPE_TB_CFG_AGE_UNBIND_MASK |
-		 PPE_TB_CFG_AGE_NON_L4_MASK |
-		 FIELD_PREP(PPE_TB_CFG_SEARCH_MISS_MASK, 3) |
-		 FIELD_PREP(PPE_TB_CFG_HASH_MODE_MASK, 3) |
-		 FIELD_PREP(PPE_TB_CFG_KEEPALIVE_MASK, 3) |
-		 FIELD_PREP(PPE_DRAM_TB_NUM_ENTRY_MASK, dram_num_entries) |
-		 PPE_TB_ENTRY_SIZE_MASK;
-	airoha_fe_wr(eth, REG_PPE_TB_CFG(0), tb_cfg);
-	airoha_fe_wr(eth, REG_PPE_IP_PROTO_CHK(0),
-		     PPE_IP_PROTO_CHK_IPV4_MASK | PPE_IP_PROTO_CHK_IPV6_MASK);
-	/*
-	 * PPE_FLOW_CFG already selects the blacklist mode, but the protocol list
-	 * itself is left at its reset value, so the classifier has no entry for
-	 * TCP or UDP and falls back to IPV4_HNAT for every IPv4 flow.  Load the
-	 * same four protocols setup_ip_chk() writes on the vendor stack.
-	 */
-	airoha_fe_wr(eth, REG_PPE_IP_PROT(0, 0),
-		     FIELD_PREP(GENMASK(7, 0), IPPROTO_TCP) |
-		     FIELD_PREP(GENMASK(15, 8), IPPROTO_UDP) |
-		     FIELD_PREP(GENMASK(23, 16), IPPROTO_IPV6) |
-		     FIELD_PREP(GENMASK(31, 24), IPPROTO_IPIP));
-	airoha_fe_wr(eth, REG_PPE_IP_PROT(0, 1), 0);
-	airoha_fe_wr(eth, REG_PPE_IP_PROT(0, 2), 0);
-	airoha_fe_wr(eth, REG_PPE_IP_PROT(0, 3), 0);
-	econet_ppe_set_flow_profile(ppe);
-	airoha_fe_wr(eth, REG_PPE_UNBIND_AGE(0),
-		     FIELD_PREP(PPE_UNBIND_AGE_MIN_PACKETS_MASK, 1000) |
-		     FIELD_PREP(PPE_UNBIND_AGE_DELTA_MASK, 3));
-	/* Vendor defaults before optional userspace timeout retuning. */
-	airoha_fe_wr(eth, REG_PPE_BND_AGE0(0),
-		     FIELD_PREP(PPE_BIND_AGE0_DELTA_NON_L4, 15) |
-		     FIELD_PREP(PPE_BIND_AGE0_DELTA_UDP, 15));
-	airoha_fe_wr(eth, REG_PPE_BND_AGE1(0),
-		     FIELD_PREP(PPE_BIND_AGE1_DELTA_TCP_FIN, 5) |
-		     FIELD_PREP(PPE_BIND_AGE1_DELTA_TCP, 15));
-	airoha_fe_wr(eth, REG_PPE_BIND_LIMIT0(0),
-		     FIELD_PREP(PPE_BIND_LIMIT0_HALF_MASK, 800) |
-		     FIELD_PREP(PPE_BIND_LIMIT0_QUARTER_MASK, 1600));
-	airoha_fe_wr(eth, REG_PPE_BIND_LIMIT1(0),
-		     FIELD_PREP(PPE_BIND_LIMIT1_NON_L4_MASK, 1) |
-		     FIELD_PREP(PPE_BIND_LIMIT1_FULL_MASK, 400));
-	airoha_fe_wr(eth, REG_PPE_BIND_RATE(0),
-		     FIELD_PREP(PPE_BIND_RATE_BIND_MASK, 30));
-	airoha_fe_wr(eth, REG_PPE_HASH_SEED(0), PPE_HASH_SEED);
-	airoha_fe_wr(eth, REG_PPE_DFT_CPORT_BASE(0), 0);
-	airoha_fe_clear(eth, REG_PPE_GLO_CFG(0), PPE_GLO_CFG_EN_MASK);
-
-	ppe->common.dev.ops.check_skb_reason = econet_ppe_check_skb_reason;
-	ppe->common.dev.ops.setup_tc = econet_ppe_setup_tc;
+	ppe->common.dev.ops.check_skb_reason = airoha_ppe_check_skb_reason;
+	ppe->common.dev.ops.setup_tc = airoha_ppe_setup_tc;
 
 	if (airoha_ppe_debugfs_init(&ppe->common))
 		dev_warn(dev, "failed to initialize generation-1 PPE debugfs\n");
@@ -3847,10 +3813,11 @@ static void airoha_ppe_v1_deinit(struct airoha_eth *eth)
 		return;
 
 	if (READ_ONCE(ppe->v1.armed))
-		econet_ppe_engine_disarm(ppe);
+		airoha_ppe_v1_engine_disarm(ppe);
 	else
-		econet_ppe_flush(ppe);
+		airoha_ppe_v1_flush(ppe);
 	airoha_ppe_common_disable(&ppe->common);
+	rhashtable_destroy(&eth->flow_table);
 	eth->ppe = NULL;
 }
 
@@ -3871,4 +3838,4 @@ void airoha_ppe_deinit(struct airoha_eth *eth)
 }
 
 MODULE_LICENSE("GPL");
-MODULE_DESCRIPTION("Airoha and EcoNet PPE flow offload");
+MODULE_DESCRIPTION("Airoha PPE flow offload");
