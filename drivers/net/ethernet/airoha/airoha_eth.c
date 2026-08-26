@@ -9228,7 +9228,6 @@ static int airoha_en7528_get_dev_from_sport(struct airoha_eth *eth, u32 sport,
 					    u16 *port, u16 *dev)
 {
 	*dev = 0;
-	dev_info_ratelimited(eth->dev, "EN7528 RX sport %#x\n", sport);
 
 	if (sport == ETX_FPORT_GDM2 || sport == ETX_FPORT_QDMA1_CPU) {
 		*port = AIROHA_GDM2_IDX - 1;
@@ -9243,6 +9242,7 @@ static int airoha_en7528_get_dev_from_sport(struct airoha_eth *eth, u32 sport,
 		return 0;
 	}
 
+	dev_info_ratelimited(eth->dev, "EN7528 RX sport %#x\n", sport);
 	return -EINVAL;
 }
 
