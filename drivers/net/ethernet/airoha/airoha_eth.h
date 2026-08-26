@@ -31,6 +31,7 @@ struct ethtool_drvinfo;
 struct sk_buff;
 struct airoha_ppe_dev;
 struct airoha_eth;
+struct gdm;
 
 #define AIROHA_MTK_INVALID_CHANNEL		7
 #define AIROHA_MTK_HDR_LEN			4
@@ -60,9 +61,8 @@ struct airoha_eth;
 #define EN7523_GPON_DBA_PBS_BYTES		0xffff
 
 #define AIROHA_XPON_TX_OFFLOAD_FEATURES		\
-	(NETIF_F_IP_CSUM | NETIF_F_IPV6_CSUM | NETIF_F_RXCSUM | \
-	 NETIF_F_SG | NETIF_F_TSO | NETIF_F_TSO6 | NETIF_F_GSO | \
-	 NETIF_F_GRO | NETIF_F_HW_TC)
+	(NETIF_F_IP_CSUM | NETIF_F_IPV6_CSUM | \
+	 NETIF_F_SG | NETIF_F_TSO | NETIF_F_TSO6)
 
 enum airoha_mtk_tag_mode {
 	AIROHA_MTK_TAG_IN_SKB,
@@ -820,7 +820,7 @@ struct airoha_qdma {
 	DECLARE_BITMAP(qos_channel_map, AIROHA_NUM_QOS_CHANNELS);
 
 	/* Private queue/ring state for the MIPS QDMA layout. */
-	struct airoha_qdma_mips *mips;
+	struct airoha_qdma_mips *econet;
 };
 
 enum airoha_priv_flags {
@@ -914,7 +914,10 @@ struct airoha_gdm_dev {
 	struct airoha_eth *eth;
 
 	/* MIPS GDM registers share the same logical GDM device object. */
-	void __iomem *regs;
+	union {
+		void __iomem *regs;
+		struct gdm __iomem *econet_regs;
+	};
 	spinlock_t reg_lock;
 	bool g2_stats;
 	u8 fport;
@@ -1280,7 +1283,7 @@ static inline bool airoha_qdma_is_lro_queue(struct airoha_queue *q)
 	struct airoha_qdma *qdma = q->qdma;
 	int qid = q - &qdma->q_rx[0];
 	
-	switch (qdma->common.eth->soc->version) {
+	switch (qdma->eth->soc->version) {
 	case airoha_en7523:
 		/* EN7523 11-14 */
 		BUILD_BUG_ON(hweight32(EN7523_AIROHA_RXQ_LRO_EN_MASK) >
@@ -4733,18 +4736,11 @@ struct airoha_qdma_mips_cfg {
 	const struct airoha_eth_soc_data *soc;
 };
 
-int econet_qdma_set_xpon_irq(struct airoha_qdma *qdma,
-				  enum airoha_xpon_mode mode, bool enable);
 bool econet_rx_xpon_oam(struct airoha_eth *eth, u8 qdma_id,
 				 struct sk_buff *skb, union desc_msg *msg);
 void econet_xpon_irq(struct airoha_eth *eth, u8 qdma_id,
 			      enum airoha_xpon_mode mode);
 
-
-#define IRQ_PURPOSE(t, s, c) \
-	((union econet_irq_purpose){ \
-		.type = (t), .source = (s), .channel = (c) \
-	})
 
 #define econet_rreg(reg) __extension__({ \
 		BUILD_BUG_ON(sizeof(*(reg)) != sizeof(u32)); \
