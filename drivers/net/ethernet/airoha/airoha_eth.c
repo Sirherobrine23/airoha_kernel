@@ -9511,6 +9511,11 @@ const struct airoha_eth_soc_data econet_en751221_soc_data = {
 	.pse_fq_cfg = PSE_FQ_CFG,
 	.ppe_dram_entries = 16 * 1024,
 	.foe_format = AIROHA_FOE_FORMAT_V1,
+	.ppe_fport = EN751221_GDM_FPORT_PPE,
+	.ppe_cpu_fport = {
+		EN751221_GDM_FPORT_QDMA0_CPU,
+		EN751221_GDM_FPORT_QDMA1_CPU,
+	},
 	.ops = {
 		.get_sport = airoha_en751221_get_sport,
 		.get_dev_from_sport = airoha_en751221_get_dev_from_sport,
@@ -9525,6 +9530,11 @@ const struct airoha_eth_soc_data econet_en7528_soc_data = {
 	.pse_fq_cfg = PSE_FQ_CFG,
 	.ppe_dram_entries = 16 * 1024,
 	.foe_format = AIROHA_FOE_FORMAT_V1,
+	.ppe_fport = EN751221_GDM_FPORT_PPE,
+	.ppe_cpu_fport = {
+		EN751221_GDM_FPORT_QDMA0_CPU,
+		EN751221_GDM_FPORT_QDMA1_CPU,
+	},
 	.ops = {
 		.get_sport = airoha_en7528_get_sport,
 		.get_dev_from_sport = airoha_en7528_get_dev_from_sport,
