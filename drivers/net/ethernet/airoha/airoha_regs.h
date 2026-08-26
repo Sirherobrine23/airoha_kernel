@@ -206,15 +206,6 @@
 #define EN7523_CDM_VIP_QSEL_MASK	GENMASK(27, 24)
 
 #define REG_CDM_CRSN_QSEL(_n, _m)	(CDM_BASE(_n) + 0x10 + ((_m) << 2))
-#define CDM_CRSN_QSEL_REASON_MASK(_n)	\
-	GENMASK(4 + (((_n) % 4) << 3),	(((_n) % 4) << 3))
-#define EN7523_CDM_CRSN_QSEL_REASON_MASK(_n)	\
-	GENMASK(4 + (((_n) % 4) << 2),	(((_n) % 4) << 2))
-#define CDM_CRSN_QSEL_REASON_MASK_TARGET(_eth, _n) airoha_is(_eth, airoha_en7523) ? \
-	EN7523_CDM_CRSN_QSEL_REASON_MASK(_n) : CDM_CRSN_QSEL_REASON_MASK(_n)
-#define CDM_CRSN_QSEL_REASON_MASK_FIELD_PREP(_eth, _n1, _n2) airoha_is(_eth, airoha_en7523) ? \
-	FIELD_PREP(EN7523_CDM_CRSN_QSEL_REASON_MASK(_n1), _n2) : \
-	FIELD_PREP(CDM_CRSN_QSEL_REASON_MASK(_n1), _n2)
 	
 #define REG_CDM_LRO_RXQ(_n, _m)		(CDM_BASE(_n) + 0x78 + ((_m) & 0x4))
 #define LRO_RXQ_MASK(_n)		GENMASK(4 + (((_n) & 0x3) << 3), ((_n) & 0x3) << 3)
