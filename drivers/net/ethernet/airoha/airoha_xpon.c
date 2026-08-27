@@ -2349,6 +2349,8 @@ static void airoha_xpon_phy_link_work_fn(struct work_struct *work)
 		  READ_ONCE(priv->phy_link_up) != link;
 	WRITE_ONCE(priv->phy_link_known, true);
 	WRITE_ONCE(priv->phy_link_up, link);
+	if (priv->xpon)
+		xpon_device_report_optical(priv->xpon, ready, los);
 
 	if (changed)
 		dev_info(priv->dev,
