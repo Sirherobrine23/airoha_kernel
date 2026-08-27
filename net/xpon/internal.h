@@ -46,6 +46,7 @@ int xpon_sysfs_register(struct xpon_device *xpon);
 void xpon_sysfs_unregister(struct xpon_device *xpon);
 void xpon_sysfs_notify(struct xpon_device *xpon, unsigned long changed);
 
+int xpon_leds_register(struct xpon_device *xpon);
 void xpon_leds_update(struct xpon_device *xpon,
 		      const struct xpon_state *state);
 
