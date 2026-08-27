@@ -8,6 +8,7 @@
 
 struct device;
 struct omci_device;
+struct xpon_device;
 struct sk_buff;
 
 #define OMCI_IDENTITY_F_SERIAL_NUMBER	BIT(0)
@@ -331,7 +332,7 @@ struct omci_device_ops {
 };
 
 struct omci_device *
-omci_device_register(struct device *parent, u32 ifindex, u32 capabilities,
+omci_device_register(struct xpon_device *xpon, u32 capabilities,
 		     const struct omci_device_ops *ops, void *priv);
 void omci_device_unregister(struct omci_device *odev);
 int omci_device_start(struct omci_device *odev);

@@ -19,6 +19,7 @@
 #include <net/genetlink.h>
 #include <net/netlink.h>
 
+#include "../internal.h"
 #include "internal.h"
 
 static LIST_HEAD(omci_devices);
@@ -1301,13 +1302,15 @@ static struct notifier_block omci_netlink_nb = {
 };
 
 struct omci_device *
-omci_device_register(struct device *parent, u32 ifindex, u32 capabilities,
+omci_device_register(struct xpon_device *xpon, u32 capabilities,
 		     const struct omci_device_ops *ops, void *priv)
 {
 	struct omci_device *odev;
 
-	if (!parent || !ops || !ops->xmit)
+	if (!xpon || !ops || !ops->xmit)
 		return ERR_PTR(-EINVAL);
+	if (xpon->omci)
+		return ERR_PTR(-EBUSY);
 
 	odev = kzalloc(sizeof(*odev), GFP_KERNEL);
 	if (!odev)
@@ -1319,8 +1322,9 @@ omci_device_register(struct device *parent, u32 ifindex, u32 capabilities,
 	spin_lock_init(&odev->state_lock);
 	skb_queue_head_init(&odev->rx_queue);
 	INIT_WORK(&odev->rx_work, omci_rx_work);
-	odev->parent = parent;
-	odev->ifindex = ifindex;
+	odev->xpon = xpon;
+	odev->parent = xpon->class_dev;
+	odev->ifindex = xpon->netdev->ifindex;
 	odev->capabilities = capabilities | OMCI_CAP_BASELINE_AGENT;
 	odev->ops = ops;
 	odev->priv = priv;
@@ -1336,8 +1340,10 @@ omci_device_register(struct device *parent, u32 ifindex, u32 capabilities,
 			return ERR_PTR(ret);
 		}
 
+		xpon->omci = odev;
 		ret = omci_sysfs_register(odev);
 		if (ret) {
+			xpon->omci = NULL;
 			omci_agent_cleanup(odev);
 			kfree(odev);
 			return ERR_PTR(ret);
@@ -1348,7 +1354,7 @@ omci_device_register(struct device *parent, u32 ifindex, u32 capabilities,
 	list_add_tail(&odev->list, &omci_devices);
 	mutex_unlock(&omci_devices_lock);
 
-	dev_info(parent, "registered OMCI agent device %u\n", odev->id);
+	dev_info(odev->parent, "registered OMCI agent device %u\n", odev->id);
 	return odev;
 }
 EXPORT_SYMBOL_GPL(omci_device_register);
@@ -1421,6 +1427,8 @@ void omci_device_unregister(struct omci_device *odev)
 	if (owner_net)
 		put_net(owner_net);
 	omci_sysfs_unregister(odev);
+	if (odev->xpon && odev->xpon->omci == odev)
+		odev->xpon->omci = NULL;
 	omci_agent_cleanup(odev);
 	kfree(odev);
 }

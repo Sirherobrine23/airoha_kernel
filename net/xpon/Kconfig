@@ -1,0 +1,30 @@
+# SPDX-License-Identifier: GPL-2.0-only
+menuconfig XPON
+	tristate "xPON subsystem"
+	depends on NET
+	help
+	  Generic Passive Optical Network subsystem. It provides the common
+	  representation used by GPON, EPON and XGS-PON devices, including
+	  registration state, optical state, carrier, LEDs, sysfs and Generic
+	  Netlink notifications.
+
+if XPON
+
+config XPON_OMCI
+	tristate "xPON OMCI agent"
+	default y
+	help
+	  In-kernel ONU Management and Control Interface agent used by GPON and
+	  XGS-PON providers. The protocol implementation is owned by the xPON
+	  subsystem and is attached to one xPON device.
+
+config XPON_OAM
+	tristate "xPON IEEE 802.3ah OAM"
+	default y
+	help
+	  IEEE 802.3ah Ethernet OAM support for EPON links. The initial
+	  implementation provides the per-LLID OAM object and Information
+	  OAMPDU wire definitions. Event, variable and vendor extensions are
+	  added on top of this core.
+
+endif # XPON
