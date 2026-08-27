@@ -6,7 +6,7 @@
 #include <linux/errno.h>
 #include <linux/kernel.h>
 #include <linux/string.h>
-#include <net/omci.h>
+#include <net/xpon/omci.h>
 
 #include "internal.h"
 #include "me.h"

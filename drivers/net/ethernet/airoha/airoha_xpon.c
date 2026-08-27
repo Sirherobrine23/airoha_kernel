@@ -43,9 +43,10 @@
 #include <linux/timer.h>
 #include <linux/unaligned.h>
 #include <linux/workqueue.h>
-#include <net/omci.h>
+#include <net/xpon/omci.h>
 
 #include "airoha_eth.h"
+#include "airoha_xpon.h"
 #include "airoha_gpon_omci.h"
 #include "airoha_regs.h"
 #include "airoha_ploam.h"
@@ -58,31 +59,7 @@
 	from_timer(var, callback_timer, timer_fieldname)
 #endif
 
-#define V1_XPON_REGION_SIZE		0x00010000
-#define GPON_REG_OFFSET			0x00004000
-#define XGSPON_REG_OFFSET		0x00005000
-#define EPON_REG_OFFSET			0x00006000
-
-#define XPON_SCU_WAN_CONF              0x070
-#define EN7523_SCU_WAN_MODE_MASK       GENMASK(7, 0)
-#define EN7528_SCU_WAN_MODE_MASK       GENMASK(2, 0)
-#define EN751221_SCU_WAN_MODE_MASK     GENMASK(2, 0)
-#define XPON_SCU_WAN_MODE_GPON         0x00
-#define XPON_SCU_WAN_MODE_EPON         0x01
-
 static const u8 airoha_default_vendor_id[4] = {'M', 'T', 'K', 'G'};
-
-struct airoha_xpon_match_data {
-	enum airoha_xpon_mode mode;
-	bool mode_from_dt;
-	u32 wan_mode_mask;
-	u8 gpon_fine_delay;
-	u16 gpon_rsp_time_activation;
-	bool en7523_gpon_defaults;
-	bool mac_irq_via_eth;
-	bool prepare_before_mmio;
-	bool gpon_reset_on_start;
-};
 
 static int airoha_xpon_tx_rearm(struct device *dev,
 				struct optical_frontend *frontend)
@@ -134,6 +111,18 @@ static const char *airoha_xpon_mode_name(enum airoha_xpon_mode mode)
 	}
 }
 
+static enum xpon_mode airoha_xpon_core_mode(enum airoha_xpon_mode mode)
+{
+	switch (mode) {
+	case AIROHA_XPON_MODE_GPON:
+		return XPON_MODE_GPON;
+	case AIROHA_XPON_MODE_EPON:
+		return XPON_MODE_EPON;
+	default:
+		return XPON_MODE_GPON;
+	}
+}
+
 static int airoha_xpon_get_mode(struct device *dev,
 				const struct airoha_xpon_match_data *data,
 				enum airoha_xpon_mode *mode)
@@ -158,19 +147,17 @@ static int airoha_xpon_get_mode(struct device *dev,
 	return 0;
 }
 
-static void airoha_xpon_update_netdev_link(struct net_device *netdev,
-					   enum airoha_xpon_mode mode,
-					   bool link)
+static void airoha_xpon_update_netdev_link(struct xpon_priv *priv, bool link)
 {
 	struct airoha_xpon_link_state state = {
-		.mode = mode,
+		.mode = priv->mode,
 		.link = link,
 		.duplex = DUPLEX_FULL,
 		.autoneg = AUTONEG_DISABLE,
 		.port = PORT_FIBRE,
 	};
 
-	switch (mode) {
+	switch (priv->mode) {
 	case AIROHA_XPON_MODE_GPON:
 		state.speed = SPEED_2500;
 		state.rx_line_rate_bps = 2488320000ULL;
@@ -181,16 +168,13 @@ static void airoha_xpon_update_netdev_link(struct net_device *netdev,
 		state.rx_line_rate_bps = 1000000000ULL;
 		state.tx_line_rate_bps = 1000000000ULL;
 		break;
-	case AIROHA_XPON_MODE_XGSPON:
-		state.speed = SPEED_10000;
-		state.rx_line_rate_bps = 10000000000ULL;
-		state.tx_line_rate_bps = 10000000000ULL;
-		break;
 	default:
 		return;
 	}
 
-	airoha_eth_xpon_update_link(netdev, &state);
+	if (priv->xpon)
+		xpon_device_report_carrier(priv->xpon, link);
+	airoha_eth_xpon_update_link(priv->gdm_dev, &state);
 }
 
 static int airoha_xpon_set_fe_mode(struct device *dev,
@@ -328,284 +312,6 @@ static void airoha_xpon_phy_stop(struct device *dev, struct phy *phy,
  * EPON live at fixed offsets in that shared xPON MAC region.
  * -------------------------------------------------------------------- */
 
-#define GPON_ONU_ID		0x000
-#define GPON_GBL_CFG		0x004
-#define GPON_INT_STATUS		0x008
-#define GPON_INT_ENABLE		0x00C
-/* T-CONT pair registers (direct access, T-CONTs 0–15) */
-#define GPON_TCONT_ID_0_1	0x020	/* 8 regs, each holds 2 T-CONTs */
-#define GPON_TCONT_ID_14_15	0x03C
-/* T-CONTs 16–31 indirect access */
-#define GPON_TCONT_ID_16_31_CFG	0x180
-#define GPON_TCONT_ID_16_31_STS	0x184
-/* GEM port indirect access */
-#define GPON_GEM_PORT_CFG	0x040
-#define GPON_GEM_PORT_STS	0x044
-/* OMCI GEM port */
-#define GPON_OMCI_ID		0x048
-/* GEM table init control.  The EN7523 vendor runtime path does not use
- * this register during normal activation; it clears GEM entries through
- * G_GEM_PORT_CFG instead.  Keep the offset documented for diagnostics.
- */
-#define GPON_GEM_TBL_INIT	0x04C
-/* Upstream PLOAM FIFO */
-#define GPON_PLOAMu_FIFO_STS	0x050
-#define GPON_PLOAMu_WDATA	0x054
-/* Downstream PLOAM FIFO */
-#define GPON_PLOAMd_FIFO_STS	0x058
-#define GPON_PLOAMd_RDATA	0x05C
-/* AES shadow key and switch-time config */
-#define GPON_AES_CFG		0x060
-#define GPON_AES_ACTIVE_KEY0	0x064	/* 4 × 32-bit, read-only */
-#define GPON_AES_SHADOW_KEY0	0x074	/* 4 × 32-bit, write to program */
-/* PLOu burst parameters */
-#define GPON_PLOu_OVERHEAD	0x090
-#define GPON_PLOu_GUARD_BIT	0x094
-#define GPON_PLOu_PRMBL_TYPE1_2	0x098
-#define GPON_PLOu_PRMBL_TYPE3	0x09C
-#define GPON_PLOu_DELM_BIT	0x0A0
-#define GPON_PRE_ASSIGNED_DLY	0x0A4
-#define GPON_EQD		0x0A8
-#define GPON_RSP_TIME		0x0AC
-/* Serial number registers */
-#define GPON_VENDOR_ID		0x0B0
-#define GPON_VS_SN		0x0B4
-#define GPON_SN_MSG_CFG		0x0B8
-#define GPON_ACTIVATION_ST	0x0BC
-/* Time of Day */
-#define GPON_TOD_CFG		0x0D0
-#define GPON_NEW_TOD_SEC_L32	0x0D4
-#define GPON_NEW_TOD_NANO_SEC	0x0D8
-#define GPON_CUR_TOD_SEC_L32	0x0DC
-#define GPON_CUR_TOD_NANO_SEC	0x0E0
-/* FCS / MIB tables */
-#define GPON_TX_FCS_TBL_INIT	0x100
-#define GPON_MIB_CTRL_STS	0x120
-#define GPON_MIB_RDATA_L32	0x124
-#define GPON_MIB_RDATA_H32	0x128
-#define GPON_MIB_TBL_INIT	0x134
-/* GPON/PSE memory-bus interface control */
-#define GPON_MBI_MPI_STOP	0x160
-/* EN7523 GPON debug and timing registers */
-#define GPON_DBG_DLY		0x208
-#define GPON_DBG_IDLE_GEM_THLD	0x20C
-#define GPON_DBG_BWM_FILTER_CTRL	0x220
-#define GPON_DBG_BWM_SFIFO_STS	0x224
-#define GPON_DBG_GRP_0		0x228
-#define GPON_DBG_GRP_1		0x22C
-#define GPON_DBG_BWM_BFIFO_STS	0x250
-#define GPON_DBG_ERR_CTRL	0x260
-#define GPON_DBG_RX_GEM_CNT	0x300
-#define GPON_DBG_RX_CRC_ERR_CNT	0x304
-#define GPON_DBG_RX_GTC_CNT	0x308
-#define GPON_DBG_TX_GEM_CNT	0x30C
-#define GPON_DBG_TX_BST_CNT	0x310
-#define GPON_DBG_GEM_HEC_ONE_ERR_CNT	0x330
-#define GPON_DBG_GEM_HEC_TWO_ERR_CNT	0x334
-#define GPON_DBG_GEM_HEC_UC_ERR_CNT	0x338
-/* Debug / TX sync (EN7521 EqD adjustment) */
-#define GPON_DBG_TX_SYNC_OFFSET	0x35C
-/* Power management (always-on domain) */
-#define GPON_SLEEP_GLB_CFG	0x3A4
-#define GPON_SLEEP_CNT		0x3A8
-
-/* -----------------------------------------------------------------------
- * Register bit definitions
- * -------------------------------------------------------------------- */
-
-/* G_ONU_ID */
-#define ONU_ID_VLD		BIT(15)
-#define ONU_ID_MASK		0xFF
-
-/* G_GBL_CFG */
-#define GBL_CFG_US_FEC_EN	BIT(16)
-#define GBL_CFG_SR_BLK_SIZE_MASK	GENMASK(7, 0)
-
-/*
- * The GPON MAC stores the reciprocal of the DBRu block size with the bit
- * order reversed.  The vendor SDK programs a 48-byte block, encoded as
- * bitrev8(round(2048 / 48)) = bitrev8(43) = 0xd4.
- */
-#define GPON_DBRU_BLOCK_SIZE_48B	0xd4
-
-/* G_SN_MSG_CFG */
-#define SN_MSG_CFG_SN_REQ_THR_MASK	GENMASK(31, 24)
-#define SN_MSG_CFG_TX_POWER_MODE_MASK	GENMASK(17, 16)
-#define SN_MSG_CFG_RANDOM_DELAY_MASK	GENMASK(11, 0)
-
-/* G_INT_STATUS / G_INT_ENABLE */
-#define INT_PLOAMD_RECV		BIT(0)
-#define INT_PLOAMU_SEND		BIT(1)
-#define INT_SN_REQ_RECV		BIT(2)
-#define INT_SN_ONU_SEND_O3	BIT(3)
-#define INT_RANGING_REQ_RECV	BIT(4)
-#define INT_SN_ONU_SEND_O4	BIT(5)
-#define INT_SN_REQ_CRS		BIT(6)
-#define INT_LOSS_GEM_DEL	BIT(7)
-#define INT_AES_KEY_SWITCH_DONE	BIT(8)
-#define INT_TOD_UPDATE_DONE	BIT(9)
-#define INT_TOD_1PPS		BIT(10)
-#define INT_DYING_GASP		BIT(11)
-/*
- * G_INT_STATUS layout from the vendor EN7521/EN7523 register header.
- * Bits 13 and 14 are reserved on EN7523. Bit 15 reports completion of
- * the grant-size calculation used by the EN7523 DBA block.
- */
-#define INT_CAL_GNT_SIZE_DONE	BIT(15)
-#define INT_RX_ERR		BIT(16)
-#define INT_FIFO_ERR		BIT(17)
-#define INT_BST_SGL_DIFF	BIT(18)
-#define INT_TX_LATE_START	BIT(19)
-#define INT_RX_EOF_ERR		BIT(20)
-#define INT_RX_GEM_INTLV_ERR	BIT(21)
-#define INT_BFIFO_FULL		BIT(22)
-#define INT_SFIFO_FULL		BIT(23)
-#define INT_O5_EQD_ADJ_DONE	BIT(24)
-#define INT_OLT_DS_FEC_CHG	BIT(25)
-#define INT_ONU_US_FEC_CHG	BIT(26)
-#define INT_POP_UP_RECV_O6	BIT(27)
-#define INT_FWI			BIT(28)
-#define INT_LWI			BIT(29)
-#define INT_BWM_STOP_TIME_ERR	BIT(30)
-#define INT_BWM_US_FEC_ERR	BIT(31)
-
-#define GPON_INT_ACTIVATION_MASK	(INT_PLOAMD_RECV | INT_SN_REQ_RECV | \
-				 INT_SN_ONU_SEND_O3 | INT_RANGING_REQ_RECV | \
-				 INT_SN_ONU_SEND_O4 | INT_SN_REQ_CRS | \
-				 INT_LOSS_GEM_DEL | INT_AES_KEY_SWITCH_DONE | \
-				 INT_DYING_GASP | INT_CAL_GNT_SIZE_DONE)
-/*
- * The EN7523 vendor driver enables only the common receive/burst errors.
- * The interleave, BWM FIFO and BWM timing interrupts are EN7521-only and
- * may expose unrelated status bits when enabled on EN7523.
- */
-#define GPON_INT_ERROR_MASK		(INT_RX_ERR | INT_FIFO_ERR | \
-				 INT_BST_SGL_DIFF | INT_TX_LATE_START | \
-				 INT_RX_EOF_ERR)
-#define GPON_INT_DEFAULT_MASK		(GPON_INT_ACTIVATION_MASK | \
-				 INT_TX_LATE_START)
-
-/* G_GEM_PORT_CFG */
-#define GEM_CMD_WRITE		BIT(31)
-#define GEM_ENCRYPT		BIT(17)
-#define GEM_VALID		BIT(16)
-
-/* G_GEM_PORT_STS */
-#define GEM_CMD_DONE		BIT(31)
-#define GEM_STS_ENCRYPT		BIT(1)
-#define GEM_STS_VALID		BIT(0)
-
-/* G_GEM_TBL_INIT */
-#define GEM_TBL_INIT_DONE	BIT(8)
-#define GEM_TBL_INIT_START	BIT(0)
-
-/* G_PLOAMu_FIFO_STS */
-#define PLOAMu_FIFO_AVAIL_MASK	0xFF
-
-/* G_PLOAMd_FIFO_STS */
-#define PLOAMd_FIFO_USED_MASK	0xFF
-
-/* G_TCONT_ID pair register */
-#define TCONT_ID_MASK		0x0FFF
-#define TCONT0_VALID		BIT(15)
-#define TCONT1_ID_SHIFT		16
-#define TCONT1_VALID		BIT(31)
-#define TCONT_PAIR_INVALID	0x00000000	/* validity bits cleared */
-
-/* G_TCONT_ID_16_31_CFG */
-#define TCONT16_CMD_EXEC	BIT(31)
-#define TCONT16_VALID		BIT(27)
-#define TCONT16_IDX_SHIFT	16
-#define TCONT16_ALLOC_MASK	0x0FFF
-
-/* G_TCONT_ID_16_31_STS */
-#define TCONT16_CMD_DONE	BIT(31)
-
-/* G_MIB_TBL_INIT */
-#define MIB_TBL_INIT_DONE	BIT(8)
-#define MIB_TBL_INIT_START	BIT(0)
-
-/* G_OMCI_ID */
-#define OMCI_PORT_VLD		BIT(16)
-#define OMCI_GPID_MASK		0xFFF
-
-/* G_AES_CFG: bits[29:0] = key-switch superframe counter */
-#define AES_KEY_SWITCH_CNT_MASK	0x3FFFFFFF
-
-/* G_PRE_ASSIGNED_DLY */
-#define PRE_DLY_EN		BIT(31)
-#define PRE_DLY_MASK		0xFFFF
-
-/* G_MBI_MPI_STOP */
-#define MBI_RX_STOP		BIT(0)
-#define MBI_TX_STOP		BIT(8)
-
-/* DBG_DLY */
-#define DBG_DLY_FINE_INT_MASK	GENMASK(15, 8)
-#define DBG_DLY_FINE_INT_DEFAULT	0x0D
-#define DBG_DLY_RESET_DEFAULT	0x80800F00
-
-/* DBG_BWM_FILTER_CTRL */
-#define BWM_FILTER_LEN_VALID_CHECK_EN	BIT(17)
-
-/* G_DBG_TX_SYNC_OFFSET bits[1:0] = internal byte delay */
-#define DBG_TX_SYNC_OFFSET_MASK	GENMASK(1, 0)
-
-/*
- * G_RSP_TIME carries the ONU response time in units of 32 bits, so one unit is
- * 25.72ns at the 1.24416Gbit/s upstream rate and the 0x0551 reset value is the
- * 35us of G.984.3.  The MAC is held at 0x058b while it is reset or in O1.
- *
- * The activation value is generation-specific.  The EN7523 vendor driver
- * switches to 0x0577 before serial-number activation in O2, while the EN751221
- * driver programs its configured response time of 0x058b there and leaves the
- * FEC-adjusted variant disabled.  Responding 0x14 units early on EN751221 does
- * not match the timing the OLT ranges against.
- */
-#define GPON_RSP_TIME_RESET		0x058b
-#define GPON_RSP_TIME_ACT_EN7523	0x0577
-#define GPON_RSP_TIME_ACT_EN7528	0x0577
-#define GPON_RSP_TIME_ACT_EN751221	0x058b
-#define GPON_IDLE_GEM_THLD_DEFAULT	0x001A
-
-/* TO1 timer: 10 seconds in O3/O4 without Ranging_Time → return to O2 */
-#define GPON_TO1_MS		10000
-/*
- * Consecutive TO1 expiries tolerated before the MAC and the PHY are reset.
- * Matches the vendor driver: a normal ranging failure only costs a return to
- * O2, and only a run of them is treated as wedged hardware.
- */
-#define GPON_TO1_MAX_RETRIES	20
-/* TO2 timer: 100 ms in O6 without Popup/Swift_Popup → reset to O1 */
-#define GPON_TO2_MS		100
-/* Restart delay after an OLT Deactivate_ONU-ID request. */
-#define GPON_DEACTIVATE_RESTART_MS	500
-/* Coalesce a net/omci apply batch into one complete MAC/PHY restart. */
-#define GPON_CONFIG_RESTART_DEBOUNCE_MS	250
-#define XPON_LINK_POLL_MS		250
-#define GPON_REARM_RETRY_MS		1000
-
-#define GPON_MAX_GEM_ID		4096
-#define GPON_MAX_TCONT		32
-#define GPON_TCONT_UNASSIGNED	0xffff
-#define GPON_TCONT_ENTITY_UNASSIGNED	0xffff
-#define GPON_SN_REQ_THRESHOLD	10
-
-#define GPON_PLOAM_RX_QUEUE_LEN	128
-#define GPON_PLOAM_RX_QUEUE_MASK	(GPON_PLOAM_RX_QUEUE_LEN - 1)
-
-#define GPON_CMD_TIMEOUT_US		10000
-#define GPON_TABLE_TIMEOUT_US		100000
-#define GPON_PLOAM_TX_TIMEOUT_US	1000
-
-/*
- * Fallback TX-enable guard, used only when an OLT announces none.  The guard
- * time is the OLT's to choose: it sizes the quiet period between upstream
- * bursts, and every ONU on the PON is told the same value in
- * Upstream_Overhead.
- */
-#define GPON_PHY_GUARD_BIT_NUM	20
-
 /* -----------------------------------------------------------------------
  * GPON private data
  * -------------------------------------------------------------------- */
@@ -631,119 +337,6 @@ static const char *gpon_state_name(enum gpon_state state)
 		return "unknown";
 	}
 }
-
-#define EPON_MAX_LLID		8
-
-/* LLID registration states */
-enum llid_state {
-	LLID_STATE_WAIT		= 0,
-	LLID_STATE_REGISTERING	= 1,
-	LLID_STATE_REGISTERED	= 2,
-};
-
-struct epon_llid {
-	enum llid_state	state;
-	bool		valid;
-	u16		value;
-};
-
-struct xpon_priv {
-	void __iomem		*base;
-	void __iomem		*gpon_reg;
-	void __iomem		*epon_reg;
-	void __iomem		*xgspon_reg;
-	void __iomem		*epon_reset_reg;
-	struct device		*dev;
-	struct regmap		*scu;
-	const struct airoha_xpon_match_data *match_data;
-	struct reset_control	*mac_reset;
-	struct phy		*phy;
-	enum airoha_xpon_mode	mode;
-	bool			phy_initialized;
-	bool			phy_powered;
-	struct net_device	*gdm_dev;
-	bool			started;
-	bool			optical_active;
-	bool			mac_enabled;
-	bool			phy_link_known;
-	bool			phy_link_up;
-	struct airoha_gpon_omci omci;
-	struct airoha_xpon_oam_handler omci_handler;
-	struct sfp_bus		*sfp_bus;
-	struct optical_frontend	*frontend;
-	int			irq;
-	int			dying_gasp_irq;
-
-	struct epon_llid	llid[EPON_MAX_LLID];
-
-	struct ploam_priv	*ploam;
-	int			registered_llids;
-
-	u8			hw_sn[8];
-	u8			hw_passwd[10];
-	struct omci_identity	identity;
-	u8			aes_key[16];
-
-	/*
-	 * Serialize downstream PLOAM protocol handling and activation
-	 * timeouts. The IRQ top half only performs the hardware-critical
-	 * FIFO drain and ONU-ID fast path.
-	 */
-	struct workqueue_struct	*fsm_wq;
-	struct work_struct	irq_work;
-	struct delayed_work	to1_work;	/* O3/O4: 10 s → O2 */
-	struct delayed_work	to2_work;	/* O6: 100 ms → O1 */
-	struct delayed_work	restart_work;	/* OLT deactivation recovery */
-	struct delayed_work	phy_link_work;	/* Digital PHY link monitor */
-	atomic_t		pending_irqs;
-
-	/*
-	 * The IRQ top half drains the hardware FIFO into this single-producer,
-	 * single-consumer queue. Keeping the FIFO drain in hard IRQ avoids
-	 * losing the first ranging allocation while the ordered workqueue is
-	 * processing printk output or earlier PLOAM copies.
-	 */
-	struct ploam_msg	ploam_rx_queue[GPON_PLOAM_RX_QUEUE_LEN];
-	u16			ploam_rx_head;
-	u16			ploam_rx_tail;
-	u32			ploam_rx_drops;
-	u32			ploam_rx_messages;
-	u32			assign_onu_fastpath;
-
-	/* BER measurement timer */
-	struct timer_list	ber_timer;
-	u32			ber_interval_ms;
-
-	/* Protects the hardware T-CONT table and its software allocation maps. */
-	struct mutex		tcont_lock;
-
-	/* Protects the active OMCI OLT interoperability policy. */
-	struct mutex		omci_profile_lock;
-	struct omci_olt_profile_state omci_profile;
-
-	/* Protects pending runtime identity updates from OMCI. */
-	struct mutex		omci_config_lock;
-	struct omci_identity	pending_identity;
-	bool			config_restart_pending;
-	u16			config_restart_key;
-
-	/* Protects the GPON carrier readiness inputs. */
-	struct mutex		link_state_lock;
-	DECLARE_BITMAP(service_gems, GPON_MAX_GEM_ID);
-	bool			gpon_o5;
-	bool			omci_operational;
-	bool			netdev_link;
-	u16			tcont_alloc_id[GPON_MAX_TCONT];
-	u16			tcont_entity_id[GPON_MAX_TCONT];
-
-	/* EqD state for O5 incremental adjustment */
-	u32			byte_delay;
-	u32			bit_delay;
-
-	/* Consecutive TO1 expiries; cleared on O5. */
-	unsigned int		to1_failures;
-
-};
 
 static int airoha_xpon_frontend_set_mode(struct xpon_priv *priv)
 {
@@ -817,8 +410,7 @@ static void gpon_refresh_netdev_link(struct xpon_priv *priv, bool force)
 	dev_info(priv->dev,
 		 "GPON netdev link %s: O5=%u OMCI=%u service=%u started=%u\n",
 		 link ? "ready" : "not-ready", o5, omci, service, started);
-	airoha_xpon_update_netdev_link(priv->gdm_dev,
-				       AIROHA_XPON_MODE_GPON, link);
+	airoha_xpon_update_netdev_link(priv, link);
 }
 
 /* -----------------------------------------------------------------------
@@ -2354,6 +1946,31 @@ static void gpon_cb_state_changed(void *hw_priv, enum gpon_state state)
 		 gpon_state_name(state), state,
 		 gpon_read(priv, GPON_ACTIVATION_ST));
 	airoha_gpon_omci_set_state(&priv->omci, state);
+	if (priv->xpon) {
+		enum xpon_registration_state registration;
+
+		switch (state) {
+		case GPON_O1_INITIAL:
+		case GPON_O7_EMERGENCY_STOP:
+			registration = XPON_REGISTRATION_DOWN;
+			break;
+		case GPON_O2_STANDBY:
+			registration = XPON_REGISTRATION_DISCOVERY;
+			break;
+		case GPON_O3_SERIAL_NUMBER:
+		case GPON_O4_RANGING:
+		case GPON_O6_POPUP:
+			registration = XPON_REGISTRATION_REGISTERING;
+			break;
+		case GPON_O5_OPERATION:
+			registration = XPON_REGISTRATION_OPERATIONAL;
+			break;
+		default:
+			registration = XPON_REGISTRATION_DOWN;
+			break;
+		}
+		xpon_device_report_registration(priv->xpon, registration);
+	}
 
 	if (state == GPON_O4_RANGING || state == GPON_O5_OPERATION)
 		gpon_dump_activation_regs(priv, "state transition");
@@ -3264,152 +2881,14 @@ static const struct airoha_xpon_link_ops gpon_link_ops = {
 /* -------------------------------------------------------------------------
  * EPON implementation
  * ------------------------------------------------------------------------- */
-/* Register offsets from EPON MAC base */
-#define EPON_GLB_CFG		0x000
-#define EPON_INT_STATUS		0x004
-#define EPON_INT_EN		0x008
-#define EPON_RPT_MPCP_TIMEOUT	0x00C
-#define EPON_DYINGGSP_CFG	0x010
-#define EPON_PENDING_GNT_NUM	0x014
-#define EPON_LLID0_3_CFG	0x020
-#define EPON_LLID4_7_CFG	0x024
-#define EPON_LLID_DSCVRY_CTRL	0x028
-#define EPON_LLID0_DSCVRY_STS	0x02C
-#define EPON_MAC_ADDR_CFG	0x050
-#define EPON_MAC_ADDR_VALUE	0x054
-#define EPON_SECURITY_KEY_CFG	0x058
-#define EPON_SECURITY_KEY_DATA	0x05C
-#define EPON_RPT_DATA		0x060
-#define EPON_RPT_LEN		0x064
-#define EPON_RPT_CFG		0x068
-#define EPON_LOCAL_TIME		0x080
-#define EPON_TOD_SYNC_X		0x084
-#define EPON_TOD_LTNCY		0x088
-#define EPON_P2P_TX_TAG1	0x08C
-#define EPON_P2P_TX_TAG2	0x090
-#define EPON_TXFETCH_CFG	0x0D0
-#define EPON_SYNC_TIME		0x0D4
-#define EPON_TX_CAL_CNST	0x0D8
-#define EPON_LASER_ONOFF_TIME	0x0DC
-#define EPON_GRD_THRSHLD	0x0E0
-#define EPON_MPCP_TIMEOUT_INTVL	0x0E4
-#define EPON_RPT_TIMEOUT_INTVL	0x0E8
-#define EPON_MAX_FUTURE_GNT	0x0EC
-#define EPON_MIN_PROC_TIME	0x0F0
-#define EPON_TRX_ADJUST_TIME1	0x0F4
-#define EPON_TRX_ADJUST_TIME2	0x0F8
-#define EPON_TIME_DRFT_STAT	0x134
-
-/* e_glb_cfg bits */
-#define GLB_CFG_MODE_SEL	BIT(0)
-#define GLB_CFG_RPT_TXPRI_CTRL	BIT(1)
-#define GLB_CFG_EPON_MAC_SW_RST	BIT(4)
-#define GLB_CFG_TXMBI_STOP	BIT(8)
-#define GLB_CFG_RXMBI_STOP	BIT(9)
-#define GLB_CFG_FCS_ERR_FWD	BIT(17)
-#define GLB_CFG_MPCP_FWD	BIT(22)
-#define GLB_CFG_DISCV_BURST_EN	BIT(23)
-
-/*
- * e_int_status / e_int_en bit positions (from epon_reg.h):
- *   bit  0: RCV_DSCVRY_GATE_INT   — discovery gate received
- *   bits 1-8: LLID0..7_RCV_RGST_INT — per-LLID REGISTER frame received
- *   bit  9: GNT_BUF_OVRRUN_INT
- *   bit 13: TIMEDRFT_INT          — time drift
- *   bit 14: MPCP_TIMEOUT_INT
- *   bit 15: RPT_OVERINTVL_INT
- *   bit 24: REG_REQ_DONE_INT      — REGISTER_REQUEST sent by HW
- *   bit 25: REG_ACK_DONE_INT      — REGISTER_ACK sent by HW
- */
-#define EPON_INT_DISCV_GATE	BIT(0)
-#define EPON_INT_LLID0_RGST	BIT(1)	/* BIT(1+n) for LLID n */
-#define EPON_INT_GNT_OVRRUN	BIT(9)
-#define EPON_INT_TIMEDRFT	BIT(13)
-#define EPON_INT_MPCP_TIMEOUT	BIT(14)
-#define EPON_INT_RPT_OVRFLW	BIT(15)
-#define EPON_INT_REG_REQ_DONE	BIT(24)
-#define EPON_INT_REG_ACK_DONE	BIT(25)
-
-/* e_llid_dscvry_ctrl bits (from epon_reg.h REG_e_llid_dscvry_ctrl) */
-#define DSCVRY_MPCP_CMD_MASK	(3U << 30)
-#define DSCVRY_MPCP_REG_REQ	BIT(30)	/* send REGISTER_REQUEST */
-#define DSCVRY_MPCP_NORMAL	BIT(31)
-#define DSCVRY_MPCP_ACK		(3U << 30)	/* send REGISTER_ACK */
-#define DSCVRY_CMD_DONE		BIT(16)
-#define DSCVRY_RGSTR_ACK_FLG	BIT(12)
-#define DSCVRY_RGSTR_REQ_FLG	BIT(8)
-#define DSCVRY_TX_MPCP_LLID_MASK 0x7
-
-/*
- * e_llid0_dscvry_sts bit layout (little-endian packed struct from epon_reg.h):
- *   bits [15:0]  llidValue
- *   bit  16      llidValid
- *   bits [23:17] reserved
- *   bits [25:24] rgstrFlgSts   — see MPCP_REG_* below
- *   bits [29:26] reserved
- *   bits [31:30] llidDscvrySts — 0=unregistered, 1=registering, 2=registered
- */
-#define LLID_STS_DSCVRY_SHIFT	30
-#define LLID_STS_RGST_FLG_SHIFT	24
-#define LLID_STS_RGST_FLG_MASK	(3U << 24)
-#define LLID_STS_VALID		BIT(16)
-#define LLID_STS_VALUE_MASK	0xFFFF
-
-/* rgstrFlgSts values */
-#define MPCP_REG_RE_REGISTER	0
-#define MPCP_REG_DE_REGISTER	1
-#define MPCP_REG_ACK		2
-#define MPCP_REG_NACK		3
-
-/*
- * e_mac_addr_cfg indirect register (from epon_reg.h REG_e_mac_addr_cfg):
- *   bit  0      mac_addr_dw_idx   — 0=low 32 bits, 1=high 16 bits
- *   bits [3:1]  mac_addr_llid_indx
- *   bit  16     mac_addr_rwcmd_done — 1=busy/in-progress
- *   bit  31     mac_addr_rwcmd    — write 1 to trigger write
- */
-#define MAC_ADDR_RWCMD		BIT(31)
-#define MAC_ADDR_DONE		BIT(16)
-#define MAC_ADDR_LLID_SHIFT	1
-#define MAC_ADDR_DW_IDX		BIT(0)
-
-/* e_security_key_cfg */
-#define SEC_KEY_WRITE_CMD	BIT(31)
-#define SEC_KEY_LLID_SHIFT	24
-#define SEC_KEY_IDX_SHIFT	16
-#define SEC_KEY_DW_SHIFT	8
-
-/* Dying gasp init value per ref (hw_dying_gasp_en=1, dygsp_num_of_times=1,
- * dygsp_code=0, other fields=0x02) */
-#define DYINGGSP_CFG_HW_ENABLE	0x80000102
-
-/* Guard threshold for time drift detection (ref: EPON_TIMEDRIFT_THRSHLD) */
-#define EPON_TIMEDRIFT_THRSHLD	0x10
-
-/* Default register values */
-#define EPON_PENDING_GNT_DEFAULT	0x40
-#define EPON_MPCP_TIMEOUT_DEFAULT	0x03B9ACA0
-#define EPON_RPT_TIMEOUT_DEFAULT	0x002FAF08
-#define EPON_MAX_FUTURE_GNT_DEFAULT	0x03B9ACA0
-#define EPON_MIN_PROC_TIME_DEFAULT	0x400
-#define EPON_LASER_ONOFF_DEFAULT	0x2020
-#define EPON_TX_CAL_CNST_DEFAULT	0x2612040C
-#define EPON_TXFETCH_DEFAULT		0x202403E8
-#define EPON_TRX_ADJUST_TIME1_DEF	0x004FFFF1
-#define EPON_TRX_ADJUST_TIME2_DEF	0x6
-
-/* External SW reset register bit (REG_E_SW_RST, outside EPON MAC block) */
-#define EPON_EXT_SW_RST_BIT	BIT(31)
-#define EPON_RESET_DELAY_US	100
-
-static const char *epon_llid_state_name(enum llid_state state)
+static const char *epon_llid_state_name(enum airoha_epon_llid_state state)
 {
 	switch (state) {
-	case LLID_STATE_WAIT:
+	case AIROHA_EPON_LLID_WAIT:
 		return "wait";
-	case LLID_STATE_REGISTERING:
+	case AIROHA_EPON_LLID_REGISTERING:
 		return "registering";
-	case LLID_STATE_REGISTERED:
+	case AIROHA_EPON_LLID_REGISTERED:
 		return "registered";
 	default:
 		return "unknown";
@@ -3515,18 +2994,38 @@ static int epon_program_mac_address(struct xpon_priv *priv, int llid_idx,
 /* --- MPCP discovery control --- */
 
 /*
- * Submit an MPCP command to hardware and poll for completion.
- * Setting CMD_DONE in the write triggers execution; poll until HW confirms.
+ * Submit one MPCP command. In interrupt mode mpcp_cmd_done is hardware
+ * status; REG_REQ_DONE/REG_ACK_DONE drive the software state transition.
  */
 static void epon_discv_cmd(struct xpon_priv *priv, u32 cmd, int llid_idx)
 {
-	u32 ctrl = cmd | DSCVRY_CMD_DONE | (llid_idx & DSCVRY_TX_MPCP_LLID_MASK);
+	u32 ctrl = cmd | (llid_idx & DSCVRY_TX_MPCP_LLID_MASK);
 
-	dev_info(priv->dev, "EPON discovery command: llid=%d cmd=%#08x ctrl=%#08x\n",
-		llid_idx, cmd, ctrl);
+	dev_info(priv->dev,
+		 "EPON discovery command: llid=%d cmd=%#08x ctrl=%#08x\n",
+		 llid_idx, cmd, ctrl);
 	epon_write(priv, EPON_LLID_DSCVRY_CTRL, ctrl);
-	while (!(epon_read(priv, EPON_LLID_DSCVRY_CTRL) & DSCVRY_CMD_DONE))
-		cpu_relax();
+}
+
+static void epon_report_registration(struct xpon_priv *priv)
+{
+	if (!priv->xpon)
+		return;
+
+	xpon_device_report_registration(priv->xpon,
+		priv->registered_llids ? XPON_REGISTRATION_OPERATIONAL :
+		XPON_REGISTRATION_REGISTERING);
+}
+
+static void epon_llid_drop(struct xpon_priv *priv, int idx)
+{
+	if (priv->llid[idx].valid) {
+		priv->llid[idx].valid = false;
+		if (priv->registered_llids > 0)
+			priv->registered_llids--;
+	}
+	if (priv->oam)
+		xpon_oam_llid_unregistered(priv->oam, idx);
 }
 
 /* --- Security key --- */
@@ -3667,7 +3166,6 @@ static irqreturn_t epon_isr(int irq, void *data)
 	status = raw & enabled;
 	/* W1C: acknowledge the complete hardware snapshot. */
 	epon_write(priv, EPON_INT_STATUS, raw);
-
 	if (!status)
 		return IRQ_HANDLED;
 
@@ -3675,71 +3173,75 @@ static irqreturn_t epon_isr(int irq, void *data)
 		 "EPON IRQ: status=%#08x enabled=%#08x registered_llids=%d\n",
 		 status, enabled, priv->registered_llids);
 
-	/* Time drift: read stat, log, reset counter */
 	if (status & EPON_INT_TIMEDRFT) {
-		u32 drift = epon_read(priv, EPON_TIME_DRFT_STAT) & 0xFF;
+		u32 drift = epon_read(priv, EPON_TIME_DRFT_STAT) & 0xff;
 
 		dev_info(priv->dev, "EPON: time drift %u\n", drift);
 		epon_write(priv, EPON_TIME_DRFT_STAT, 0);
 	}
 
-	/*
-	 * MPCP timeout: e_rpt_mpcp_timeout_llid_idx layout (little-endian):
-	 *   bits [23:16] = mpcpTmoutLlid bitmask
-	 * Clear by writing back with bits [31:16] zeroed.
-	 */
 	if (status & EPON_INT_MPCP_TIMEOUT) {
-		u32 tmout    = epon_read(priv, EPON_RPT_MPCP_TIMEOUT);
-		u8  llidmask = (tmout >> 16) & 0xFF;
+		u32 tmout = epon_read(priv, EPON_RPT_MPCP_TIMEOUT);
+		u8 llidmask = (tmout >> 16) & 0xff;
 
 		for (idx = 0; idx < EPON_MAX_LLID; idx++) {
 			if (!(llidmask & BIT(idx)))
 				continue;
+
 			dev_info(priv->dev, "EPON: MPCP timeout LLID%d\n", idx);
-			if (priv->llid[idx].valid) {
-				priv->llid[idx].valid = false;
-				if (priv->registered_llids > 0)
-					priv->registered_llids--;
-			}
-			priv->llid[idx].state = LLID_STATE_REGISTERING;
+			epon_llid_drop(priv, idx);
+			priv->llid[idx].state = AIROHA_EPON_LLID_REGISTERING;
+			epon_llid_set_registering(priv, idx);
 		}
-		epon_write(priv, EPON_RPT_MPCP_TIMEOUT, tmout & 0x0000FF00);
+		epon_write(priv, EPON_RPT_MPCP_TIMEOUT, tmout & 0x0000ff00);
 		if (!priv->registered_llids)
-			airoha_xpon_update_netdev_link(priv->gdm_dev,
-						       AIROHA_XPON_MODE_EPON, false);
+			airoha_xpon_update_netdev_link(priv, false);
+		epon_report_registration(priv);
 	}
 
 	/*
-	 * Discovery gate: for each LLID in REGISTERING state, prepare HW
-	 * state and send REGISTER_REQUEST.  Send one at a time (ref pattern).
+	 * A discovery GATE starts exactly one REGISTER_REQUEST. Completion is
+	 * reported by REG_REQ_DONE; the command-done bit is not software-owned.
 	 */
 	if (status & EPON_INT_DISCV_GATE) {
+		if (priv->xpon && !priv->registered_llids)
+			xpon_device_report_registration(priv->xpon,
+						XPON_REGISTRATION_DISCOVERY);
 		dev_info(priv->dev, "EPON discovery GATE received\n");
 		for (idx = 0; idx < EPON_MAX_LLID; idx++) {
-			if (priv->llid[idx].state != LLID_STATE_REGISTERING)
+			if (priv->llid[idx].state != AIROHA_EPON_LLID_REGISTERING)
 				continue;
 			epon_llid_set_registering(priv, idx);
 			epon_discv_cmd(priv, DSCVRY_MPCP_REG_REQ, idx);
-			/* State advances to WAIT until the REGISTER frame arrives */
-			priv->llid[idx].state = LLID_STATE_WAIT;
 			break;
 		}
 	}
 
-	/*
-	 * Per-LLID REGISTER frame received (bits 1..8 for LLID0..7).
-	 * Read rgstrFlgSts from e_llid{n}_dscvry_sts bits[25:24].
-	 */
+	if (status & EPON_INT_REG_REQ_DONE) {
+		idx = epon_read(priv, EPON_LLID_DSCVRY_CTRL) &
+			DSCVRY_TX_MPCP_LLID_MASK;
+		if (idx < EPON_MAX_LLID &&
+		    priv->llid[idx].state == AIROHA_EPON_LLID_REGISTERING) {
+			priv->llid[idx].state = AIROHA_EPON_LLID_REGISTER_REQUEST;
+			dev_info(priv->dev,
+				 "EPON LLID%d REGISTER_REQUEST sent\n", idx);
+			if (priv->xpon && !priv->registered_llids)
+				xpon_device_report_registration(priv->xpon,
+							XPON_REGISTRATION_REGISTERING);
+		}
+	}
+
+	/* REGISTER frames are reported by bits 1..8, one bit per LLID slot. */
 	for (idx = 0; idx < EPON_MAX_LLID; idx++) {
 		u32 sts;
 		int flag;
-		u8  mac[ETH_ALEN];
+		u8 mac[ETH_ALEN];
 		u32 mac_low;
 
 		if (!(status & (EPON_INT_LLID0_RGST << idx)))
 			continue;
 
-		sts  = epon_llid_sts(priv, idx);
+		sts = epon_llid_sts(priv, idx);
 		flag = (sts >> LLID_STS_RGST_FLG_SHIFT) & 3;
 		dev_info(priv->dev,
 			 "EPON LLID%d registration event: flag=%d status=%#08x state=%s valid=%u\n",
@@ -3749,75 +3251,106 @@ static irqreturn_t epon_isr(int irq, void *data)
 
 		switch (flag) {
 		case MPCP_REG_ACK:
+			if (priv->llid[idx].state != AIROHA_EPON_LLID_REGISTER_REQUEST)
+				break;
 			if (!(sts & LLID_STS_VALID)) {
 				dev_err(priv->dev,
-					"EPON: LLID%d ACK but LLID invalid\n", idx);
+					"EPON: LLID%d ACK without a valid LLID\n", idx);
+				priv->llid[idx].state = AIROHA_EPON_LLID_REGISTERING;
 				break;
 			}
-			priv->llid[idx].value = sts & LLID_STS_VALUE_MASK;
 
-			/* Assign unique MAC per LLID (add llid_idx to low bytes) */
+			priv->llid[idx].value = sts & LLID_STS_VALUE_MASK;
+			priv->llid[idx].state = AIROHA_EPON_LLID_REGISTER_PENDING;
+
 			ether_addr_copy(mac, priv->gdm_dev->dev_addr);
 			mac_low = ((u32)mac[2] << 24) | ((u32)mac[3] << 16) |
-				  ((u32)mac[4] <<  8) | mac[5];
+				  ((u32)mac[4] << 8) | mac[5];
 			mac_low += idx;
-			mac[3] = (mac_low >> 16) & 0xFF;
-			mac[4] = (mac_low >>  8) & 0xFF;
-			mac[5] =  mac_low        & 0xFF;
+			mac[3] = (mac_low >> 16) & 0xff;
+			mac[4] = (mac_low >> 8) & 0xff;
+			mac[5] = mac_low & 0xff;
 			epon_program_mac_address(priv, idx, mac);
 
-			/* Send REGISTER_ACK */
-			epon_discv_cmd(priv, DSCVRY_MPCP_ACK | DSCVRY_RGSTR_ACK_FLG, idx);
-
-			/* Update HW discovery status to REGISTERED (bits[31:30]=10) */
-			sts = (epon_llid_sts(priv, idx) & 0x3FFFFFFF) | (2U << 30);
-			epon_llid_sts_write(priv, idx, sts);
-
-			priv->llid[idx].state = LLID_STATE_REGISTERED;
-			priv->llid[idx].valid = true;
-			priv->registered_llids++;
-			dev_info(priv->dev, "EPON LLID%d registered: 0x%04X\n",
-				 idx, priv->llid[idx].value);
-			airoha_xpon_update_netdev_link(priv->gdm_dev,
-						       AIROHA_XPON_MODE_EPON, true);
+			epon_discv_cmd(priv,
+					DSCVRY_MPCP_ACK | DSCVRY_RGSTR_ACK_FLG,
+					idx);
+			priv->llid[idx].state = AIROHA_EPON_LLID_REGISTER_ACK;
 			break;
 
 		case MPCP_REG_NACK:
 			dev_info(priv->dev, "EPON: LLID%d NACK, retrying\n", idx);
-			priv->llid[idx].state = LLID_STATE_REGISTERING;
+			epon_llid_drop(priv, idx);
+			priv->llid[idx].state = AIROHA_EPON_LLID_REGISTERING;
+			epon_llid_set_registering(priv, idx);
+			if (!priv->registered_llids)
+				airoha_xpon_update_netdev_link(priv, false);
+			epon_report_registration(priv);
 			break;
 
 		case MPCP_REG_DE_REGISTER:
 			dev_info(priv->dev, "EPON: LLID%d deregistered\n", idx);
-			if (priv->llid[idx].valid) {
-				priv->llid[idx].valid = false;
-				if (priv->registered_llids > 0)
-					priv->registered_llids--;
-			}
-			priv->llid[idx].state = LLID_STATE_REGISTERING;
+			epon_llid_drop(priv, idx);
+			priv->llid[idx].state = AIROHA_EPON_LLID_REGISTERING;
+			epon_llid_set_registering(priv, idx);
 			if (!priv->registered_llids)
-				airoha_xpon_update_netdev_link(priv->gdm_dev,
-							       AIROHA_XPON_MODE_EPON, false);
+				airoha_xpon_update_netdev_link(priv, false);
+			epon_report_registration(priv);
 			break;
 
 		case MPCP_REG_RE_REGISTER:
+			if (priv->llid[idx].state != AIROHA_EPON_LLID_REGISTERED)
+				break;
 			dev_info(priv->dev, "EPON: LLID%d re-register\n", idx);
-			epon_discv_cmd(priv, DSCVRY_MPCP_ACK | DSCVRY_RGSTR_ACK_FLG, idx);
+			epon_llid_drop(priv, idx);
+			priv->llid[idx].state = AIROHA_EPON_LLID_REGISTER_PENDING;
+			epon_discv_cmd(priv,
+					DSCVRY_MPCP_ACK | DSCVRY_RGSTR_ACK_FLG,
+					idx);
+			priv->llid[idx].state = AIROHA_EPON_LLID_REGISTER_ACK;
+			if (!priv->registered_llids)
+				airoha_xpon_update_netdev_link(priv, false);
+			epon_report_registration(priv);
 			break;
 		}
 	}
 
-	if (status & EPON_INT_REG_REQ_DONE)
-		dev_info(priv->dev, "EPON: REGISTER_REQUEST sent\n");
+	/*
+	 * REGISTER_ACK completion is the point at which the LLID becomes
+	 * operational. This follows the vendor interrupt-mode MPCP FSM.
+	 */
+	if (status & EPON_INT_REG_ACK_DONE) {
+		u32 sts;
 
-	if (status & EPON_INT_REG_ACK_DONE)
-		dev_info(priv->dev, "EPON: REGISTER_ACK sent\n");
+		idx = epon_read(priv, EPON_LLID_DSCVRY_CTRL) &
+			DSCVRY_TX_MPCP_LLID_MASK;
+		if (idx < EPON_MAX_LLID &&
+		    priv->llid[idx].state == AIROHA_EPON_LLID_REGISTER_ACK) {
+			sts = epon_llid_sts(priv, idx);
+			sts &= 0x3fffffff;
+			sts |= 2U << LLID_STS_DSCVRY_SHIFT;
+			epon_llid_sts_write(priv, idx, sts);
 
-	/* Report over-interval: clear bits[31:24] of e_rpt_mpcp_timeout */
+			priv->llid[idx].state = AIROHA_EPON_LLID_REGISTERED;
+			if (!priv->llid[idx].valid) {
+				priv->llid[idx].valid = true;
+				priv->registered_llids++;
+			}
+			if (priv->oam)
+				xpon_oam_llid_registered(priv->oam, idx,
+						 priv->llid[idx].value);
+			dev_info(priv->dev,
+				 "EPON LLID%d registered: 0x%04x\n",
+				 idx, priv->llid[idx].value);
+			airoha_xpon_update_netdev_link(priv, true);
+			epon_report_registration(priv);
+		}
+	}
+
 	if (status & EPON_INT_RPT_OVRFLW) {
 		u32 tmout = epon_read(priv, EPON_RPT_MPCP_TIMEOUT);
 
-		epon_write(priv, EPON_RPT_MPCP_TIMEOUT, tmout & 0x000000FF);
+		epon_write(priv, EPON_RPT_MPCP_TIMEOUT, tmout & 0x000000ff);
 	}
 
 	return IRQ_HANDLED;
@@ -3853,7 +3386,7 @@ static int epon_enable(struct xpon_priv *priv)
 
 	/* Put all LLIDs into REGISTERING state */
 	for (idx = 0; idx < EPON_MAX_LLID; idx++) {
-		priv->llid[idx].state = LLID_STATE_REGISTERING;
+		priv->llid[idx].state = AIROHA_EPON_LLID_REGISTERING;
 		priv->llid[idx].valid = false;
 		epon_llid_set_registering(priv, idx);
 	}
@@ -3955,12 +3488,11 @@ static void epon_disable(struct xpon_priv *priv)
 			      &priv->phy_powered);
 
 	for (idx = 0; idx < EPON_MAX_LLID; idx++) {
-		priv->llid[idx].state = LLID_STATE_WAIT;
+		priv->llid[idx].state = AIROHA_EPON_LLID_WAIT;
 		priv->llid[idx].valid = false;
 	}
 	priv->registered_llids = 0;
-	airoha_xpon_update_netdev_link(priv->gdm_dev,
-				       AIROHA_XPON_MODE_EPON, false);
+	airoha_xpon_update_netdev_link(priv, false);
 	dev_info(priv->dev, "EPON MAC stopped: glb_cfg=%#08x\n",
 		 epon_read(priv, EPON_GLB_CFG));
 }
@@ -4031,8 +3563,7 @@ static void epon_sfp_link_down(void *upstream)
 	struct xpon_priv *priv = upstream;
 
 	dev_warn(priv->dev, "EPON optical link down / LOS\n");
-	airoha_xpon_update_netdev_link(priv->gdm_dev,
-				       AIROHA_XPON_MODE_EPON, false);
+	airoha_xpon_update_netdev_link(priv, false);
 }
 
 static void epon_sfp_link_up(void *upstream)
@@ -4063,8 +3594,7 @@ static int epon_link_start(void *data)
 	if (READ_ONCE(priv->started))
 		return 0;
 	WRITE_ONCE(priv->started, true);
-	airoha_xpon_update_netdev_link(priv->gdm_dev,
-				       AIROHA_XPON_MODE_EPON, false);
+	airoha_xpon_update_netdev_link(priv, false);
 	if (priv->sfp_bus) {
 		if (!READ_ONCE(priv->optical_active))
 			sfp_upstream_start(priv->sfp_bus);
@@ -4089,8 +3619,7 @@ static void epon_link_stop(void *data)
 	if (!READ_ONCE(priv->started))
 		return;
 	WRITE_ONCE(priv->started, false);
-	airoha_xpon_update_netdev_link(priv->gdm_dev,
-				       AIROHA_XPON_MODE_EPON, false);
+	airoha_xpon_update_netdev_link(priv, false);
 	/* Keep optical activation alive while userspace cycles pon0. */
 }
 
@@ -4338,14 +3867,34 @@ static void airoha_xpon_cleanup_gpon(struct xpon_priv *priv)
 static int airoha_xpon_init_epon(struct platform_device *pdev,
 				 struct xpon_priv *priv)
 {
+	int ret;
+
 	if (!priv->epon_reg)
 		return dev_err_probe(&pdev->dev, -EINVAL,
 				     "missing EPON register window\n");
 
+	priv->fsm_wq = alloc_ordered_workqueue("airoha-epon", WQ_MEM_RECLAIM);
+	if (!priv->fsm_wq)
+		return -ENOMEM;
+
 	/* Keep the Linux IRQ line enabled and quiesce the MAC at its source. */
 	epon_write(priv, EPON_INT_EN, 0);
 	epon_write(priv, EPON_INT_STATUS, ~0U);
-	return airoha_xpon_request_mac_irq(pdev, priv, epon_isr);
+	ret = airoha_xpon_request_mac_irq(pdev, priv, epon_isr);
+	if (ret) {
+		destroy_workqueue(priv->fsm_wq);
+		priv->fsm_wq = NULL;
+	}
+
+	return ret;
+}
+
+static void airoha_xpon_cleanup_epon(struct xpon_priv *priv)
+{
+	if (!priv->fsm_wq)
+		return;
+	destroy_workqueue(priv->fsm_wq);
+	priv->fsm_wq = NULL;
 }
 
 static int airoha_xpon_register_gpon_omci(struct xpon_priv *priv)
@@ -4359,7 +3908,7 @@ static int airoha_xpon_register_gpon_omci(struct xpon_priv *priv)
 	if (ret)
 		return ret;
 
-	ret = airoha_gpon_omci_register(&priv->omci, priv->dev, priv->gdm_dev,
+	ret = airoha_gpon_omci_register(&priv->omci, priv->xpon, priv->gdm_dev,
 					priv, &priv->identity);
 	if (ret)
 		goto err_unregister_oam;
@@ -4398,6 +3947,7 @@ static int airoha_xpon_probe(struct platform_device *pdev)
 	const struct airoha_xpon_link_ops *link_ops;
 	const struct sfp_upstream_ops *sfp_ops;
 	struct device_node *eth_node;
+	struct xpon_device_desc xpon_desc = {};
 	struct xpon_priv *priv;
 	struct resource *res;
 	int ret;
@@ -4511,17 +4061,8 @@ static int airoha_xpon_probe(struct platform_device *pdev)
 			 airoha_xpon_mode_name(priv->mode));
 	}
 
-	switch (priv->mode) {
-	case AIROHA_XPON_MODE_XGSPON:
-		priv->xgspon_reg = priv->base + XGSPON_REG_OFFSET;
-		fallthrough;
-	case AIROHA_XPON_MODE_GPON:
-	case AIROHA_XPON_MODE_EPON:
-	default:
-		priv->gpon_reg = priv->base + GPON_REG_OFFSET;
-		priv->epon_reg = priv->base + EPON_REG_OFFSET;
-		break;
-	}
+	priv->gpon_reg = priv->base + GPON_REG_OFFSET;
+	priv->epon_reg = priv->base + EPON_REG_OFFSET;
 
 	res = platform_get_resource_byname(pdev, IORESOURCE_MEM,
 					   "epon-reset");
@@ -4556,17 +4097,32 @@ static int airoha_xpon_probe(struct platform_device *pdev)
 		goto err_cleanup_mode;
 	}
 
+	xpon_desc.netdev = priv->gdm_dev;
+	xpon_desc.optical = priv->frontend ?
+		optical_frontend_get_device(priv->frontend) : NULL;
+	xpon_desc.modes = XPON_MODE_CAP(XPON_MODE_GPON) |
+			  XPON_MODE_CAP(XPON_MODE_EPON);
+	xpon_desc.mode = airoha_xpon_core_mode(priv->mode);
+	xpon_desc.priv = priv;
+	priv->xpon = xpon_device_register(dev, &xpon_desc);
+	if (IS_ERR(priv->xpon)) {
+		ret = dev_err_probe(dev, PTR_ERR(priv->xpon),
+				    "failed to register generic xPON device\n");
+		priv->xpon = NULL;
+		goto err_cleanup_mode;
+	}
+
 	priv->sfp_bus = sfp_bus_find_fwnode(dev->fwnode);
 	if (IS_ERR(priv->sfp_bus)) {
 		ret = PTR_ERR(priv->sfp_bus);
 		dev_err(dev, "failed to find SFP bus: %d\n", ret);
 		priv->sfp_bus = NULL;
-		goto err_cleanup_mode;
+		goto err_unregister_core;
 	}
 	if (!priv->sfp_bus && !priv->frontend) {
 		ret = -ENODEV;
 		dev_err(dev, "missing SFP or optical frontend reference\n");
-		goto err_cleanup_mode;
+		goto err_unregister_core;
 	}
 
 	if (priv->sfp_bus) {
@@ -4582,8 +4138,7 @@ static int airoha_xpon_probe(struct platform_device *pdev)
 	if (ret)
 		goto err_del_upstream;
 
-	airoha_xpon_update_netdev_link(priv->gdm_dev,
-				       priv->mode, false);
+	airoha_xpon_update_netdev_link(priv, false);
 
 	if (airoha_xpon_is_gpon(priv)) {
 		ret = airoha_xpon_register_gpon_omci(priv);
@@ -4611,9 +4166,14 @@ err_del_upstream:
 err_put_sfp:
 	if (priv->sfp_bus)
 		sfp_bus_put(priv->sfp_bus);
+err_unregister_core:
+	xpon_device_unregister(priv->xpon);
+	priv->xpon = NULL;
 err_cleanup_mode:
 	if (airoha_xpon_is_gpon(priv))
 		airoha_xpon_cleanup_gpon(priv);
+	else
+		airoha_xpon_cleanup_epon(priv);
 err_put_gdm:
 	if (priv->gdm_dev) {
 		dev_put(priv->gdm_dev);
@@ -4661,12 +4221,17 @@ static void airoha_xpon_remove(struct platform_device *pdev)
 		cancel_delayed_work_sync(&priv->to2_work);
 	}
 
+	xpon_device_unregister(priv->xpon);
+	priv->xpon = NULL;
+
 	if (priv->sfp_bus) {
 		sfp_bus_del_upstream(priv->sfp_bus);
 		sfp_bus_put(priv->sfp_bus);
 	}
 	if (airoha_xpon_is_gpon(priv))
 		airoha_xpon_cleanup_gpon(priv);
+	else
+		airoha_xpon_cleanup_epon(priv);
 	dev_put(priv->gdm_dev);
 	priv->gdm_dev = NULL;
 }

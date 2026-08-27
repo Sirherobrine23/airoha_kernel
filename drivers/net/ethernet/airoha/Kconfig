@@ -68,7 +68,9 @@ config AIROHA_XPON_V1
 	depends on OPTICAL_FRONTEND || OPTICAL_FRONTEND=n
 	depends on MFD_SYSCON
 	select PHY_AIROHA_XPON
-	select OMCI
+	select XPON
+	select XPON_OMCI
+	select XPON_OAM
 	help
 	  Driver for the shared xPON MAC complex found in Airoha/EcoNet SoCs.
 	  GPON and EPON are implemented by one platform driver and selected by
