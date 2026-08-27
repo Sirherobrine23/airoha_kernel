@@ -509,7 +509,10 @@ static int dsa_port_setup(struct dsa_port *dp)
 
 		break;
 	case DSA_PORT_TYPE_USER:
-		of_get_mac_address(dp->dn, dp->mac);
+		err = of_get_mac_address(dp->dn, dp->mac);
+		if (err == -EPROBE_DEFER)
+			break;
+
 		err = dsa_user_create(dp);
 		break;
 	}
@@ -750,6 +753,8 @@ static int dsa_tree_setup_ports(struct dsa_switch_tree *dst)
 	list_for_each_entry(dp, &dst->ports, list) {
 		if (dsa_port_is_user(dp) || dsa_port_is_unused(dp)) {
 			err = dsa_port_setup(dp);
+			if (err == -EPROBE_DEFER)
+				goto teardown;
 			if (err) {
 				err = dsa_port_setup_as_unused(dp);
 				if (err)
