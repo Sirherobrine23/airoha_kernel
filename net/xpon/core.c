@@ -95,6 +95,12 @@ xpon_device_register(struct device *parent,
 	xpon->state.valid = 0;
 	xpon->notify_old = xpon->state;
 
+	ret = xpon_leds_register(xpon);
+	if (ret) {
+		kfree(xpon);
+		return ERR_PTR(ret);
+	}
+	
 	ret = xpon_sysfs_register(xpon);
 	if (ret) {
 		kfree(xpon);
@@ -105,6 +111,7 @@ xpon_device_register(struct device *parent,
 	list_add_tail(&xpon->list, &xpon_devices);
 	mutex_unlock(&xpon_devices_lock);
 
+	xpon_leds_update(xpon, &xpon->state);
 	dev_info(parent, "registered xPON device for %s\n", desc->netdev->name);
 	return xpon;
 }
