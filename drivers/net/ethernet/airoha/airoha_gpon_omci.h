@@ -13,6 +13,7 @@ struct omci_telemetry;
 struct omci_olt_profile_state;
 struct omci_service_config;
 struct sk_buff;
+struct xpon_device;
 
 struct airoha_gpon_omci {
 	struct omci_device *odev;
@@ -21,7 +22,7 @@ struct airoha_gpon_omci {
 };
 
 int airoha_gpon_omci_register(struct airoha_gpon_omci *omci,
-			      struct device *dev,
+			      struct xpon_device *xpon,
 			      struct net_device *gdm_dev,
 			      void *hw_priv,
 			      const struct omci_identity *identity);
@@ -35,7 +36,7 @@ void airoha_gpon_omci_set_state(struct airoha_gpon_omci *omci, u8 state);
 void airoha_gpon_omci_reconcile_services(struct airoha_gpon_omci *omci);
 void airoha_gpon_omci_reset_session(struct airoha_gpon_omci *omci);
 int airoha_gpon_omci_send_dying_gasp(struct airoha_gpon_omci *omci);
-bool airoha_gpon_omci_receive(void *data, struct sk_buff *skb,
+bool airoha_gpon_omci_receive(void *data, struct sk_buff *skb, u8 channel,
 			      u16 gem_port_id, u32 flags);
 
 int airoha_gpon_omci_hw_get_ani_topology(void *hw_priv,

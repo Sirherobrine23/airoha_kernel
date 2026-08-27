@@ -6,7 +6,8 @@
 #include <linux/err.h>
 #include <linux/netdevice.h>
 #include <linux/skbuff.h>
-#include <net/omci.h>
+#include <net/xpon.h>
+#include <net/xpon/omci.h>
 
 #include "airoha_eth.h"
 #include "airoha_gpon_omci.h"
@@ -40,7 +41,7 @@ static int airoha_gpon_omci_xmit(struct omci_device *odev,
 {
 	struct airoha_gpon_omci *omci = omci_device_priv(odev);
 
-	return airoha_eth_xmit_xpon_oam(omci->gdm_dev, skb, gem_port_id);
+	return airoha_eth_xmit_xpon_oam(omci->gdm_dev, skb, 0, gem_port_id);
 }
 
 static int
@@ -153,7 +154,7 @@ static const struct omci_device_ops airoha_gpon_omci_ops = {
 };
 
 int airoha_gpon_omci_register(struct airoha_gpon_omci *omci,
-			      struct device *dev,
+			      struct xpon_device *xpon,
 			      struct net_device *gdm_dev,
 			      void *hw_priv,
 			      const struct omci_identity *identity)
@@ -162,7 +163,7 @@ int airoha_gpon_omci_register(struct airoha_gpon_omci *omci,
 
 	omci->gdm_dev = gdm_dev;
 	omci->hw_priv = hw_priv;
-	omci->odev = omci_device_register(dev, gdm_dev->ifindex,
+	omci->odev = omci_device_register(xpon,
 					  OMCI_CAP_HW_MIC | OMCI_CAP_TELEMETRY,
 					  &airoha_gpon_omci_ops, omci);
 	if (IS_ERR(omci->odev))
@@ -229,11 +230,13 @@ int airoha_gpon_omci_send_dying_gasp(struct airoha_gpon_omci *omci)
 	return omci_device_send_dying_gasp(omci->odev);
 }
 
-bool airoha_gpon_omci_receive(void *data, struct sk_buff *skb,
+bool airoha_gpon_omci_receive(void *data, struct sk_buff *skb, u8 channel,
 			      u16 gem_port_id, u32 flags)
 {
 	struct airoha_gpon_omci *omci = data;
 	u32 omci_flags = 0;
+
+	(void)channel;
 
 	if (flags & AIROHA_XPON_OAM_RX_F_MIC_PRESENT)
 		omci_flags |= OMCI_F_MIC_PRESENT;

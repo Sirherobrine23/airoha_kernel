@@ -12,7 +12,7 @@
 #include <linux/workqueue.h>
 #include <linux/xarray.h>
 #include <net/net_namespace.h>
-#include <net/omci.h>
+#include <net/xpon/omci.h>
 
 #include "me.h"
 
@@ -113,8 +113,8 @@ struct omci_agent {
 
 struct omci_device {
 	struct list_head list;
+	struct xpon_device *xpon;
 	struct device *parent;
-	struct device *class_dev;
 	const struct omci_device_ops *ops;
 	void *priv;
 	u32 id;
