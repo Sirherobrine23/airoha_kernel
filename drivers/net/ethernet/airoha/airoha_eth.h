@@ -923,8 +923,8 @@ enum airoha_priv_flags {
 #define AIROHA_XPON_OAM_RX_F_CRC_ERROR	BIT(2)
 
 struct airoha_xpon_oam_handler {
-	bool (*rx)(void *priv, struct sk_buff *skb, u16 gem_port_id,
-		   u32 flags);
+	bool (*rx)(void *priv, struct sk_buff *skb, u8 channel,
+		   u16 gem_port_id, u32 flags);
 	void *priv;
 };
 
@@ -1163,7 +1163,7 @@ struct airoha_eth_xpon_ops {
 	void (*unregister_oam)(struct net_device *netdev,
 			       struct airoha_xpon_oam_handler *handler);
 	int (*xmit_oam)(struct net_device *netdev, struct sk_buff *skb,
-			u16 gem_port_id);
+			u8 channel, u16 gem_port_id);
 	int (*add_service)(struct net_device *netdev,
 			   const struct airoha_xpon_service_cfg *cfg);
 	int (*get_tx_info)(struct net_device *netdev, bool vlan_valid, u16 vlan_id,
@@ -1339,7 +1339,7 @@ int airoha_eth_register_xpon_oam(struct net_device *netdev,
 void airoha_eth_unregister_xpon_oam(struct net_device *netdev,
 				    struct airoha_xpon_oam_handler *handler);
 int airoha_eth_xmit_xpon_oam(struct net_device *netdev, struct sk_buff *skb,
-			     u16 gem_port_id);
+			     u8 channel, u16 gem_port_id);
 int airoha_eth_xpon_add_service(struct net_device *netdev,
 				const struct airoha_xpon_service_cfg *cfg);
 int airoha_eth_xpon_get_tx_info(struct net_device *netdev, bool vlan_valid,

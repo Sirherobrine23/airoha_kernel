@@ -2463,9 +2463,8 @@ static int airoha_qdma_rx_process(struct airoha_queue *q, int budget)
 				handler = rcu_dereference(dev->xpon_oam);
 				if (handler && handler->rx)
 					consumed = handler->rx(handler->priv,
-							       q->skb,
-							       gem_port_id,
-							       flags);
+							       q->skb, channel,
+							       gem_port_id, flags);
 				else
 					atomic64_inc(&dev->xpon_oam_rx_no_handler);
 				rcu_read_unlock();
@@ -4673,7 +4672,7 @@ static void econet_unregister_xpon_oam(struct net_device *netdev,
 }
 
 static int econet_xmit_xpon_oam(struct net_device *netdev, struct sk_buff *skb,
-				u16 gem_port_id)
+				u8 channel, u16 gem_port_id)
 {
 	struct airoha_gdm_dev *port;
 	struct netdev_queue *txq;
@@ -4690,7 +4689,7 @@ static int econet_xmit_xpon_oam(struct net_device *netdev, struct sk_buff *skb,
 		return -ENOMEM;
 
 	set_etx_queue(&msg.etx, 0);
-	set_etx_channel(&msg.etx, 0);
+	set_etx_channel(&msg.etx, channel);
 	set_etx_oam(&msg.etx, true);
 	set_etx_xpon_gem(&msg.etx, gem_port_id);
 	set_etx_fport(&msg.etx, ETX_FPORT_GDM2);
@@ -4907,6 +4906,7 @@ bool econet_rx_xpon_oam(struct airoha_eth *eth, u8 qdma_id,
 	struct airoha_gdm_dev *port;
 	u32 raw0, flags = 0;
 	u16 gem_port_id;
+	u8 channel;
 	u32 skb_len;
 	bool consumed = false;
 
@@ -4925,6 +4925,7 @@ bool econet_rx_xpon_oam(struct airoha_eth *eth, u8 qdma_id,
 		return false;
 
 	gem_port_id = FIELD_GET(ERX_XPON_GEM_MASK, raw0);
+	channel = FIELD_GET(ERX_XPON_CHANNEL_MASK, raw0);
 	if (raw0 & ERX_XPON_CRC_ERROR)
 		flags |= AIROHA_XPON_OAM_RX_F_CRC_ERROR;
 
@@ -4936,7 +4937,7 @@ bool econet_rx_xpon_oam(struct airoha_eth *eth, u8 qdma_id,
 	rcu_read_lock();
 	handler = rcu_dereference(port->xpon_oam);
 	if (handler && handler->rx)
-		consumed = handler->rx(handler->priv, skb, gem_port_id, flags);
+		consumed = handler->rx(handler->priv, skb, channel, gem_port_id, flags);
 	else
 		atomic64_inc(&port->xpon_oam_rx_no_handler);
 	rcu_read_unlock();
@@ -4951,8 +4952,7 @@ bool econet_rx_xpon_oam(struct airoha_eth *eth, u8 qdma_id,
 	dev_dbg_ratelimited(eth->dev,
 			    "EN751221 xPON OAM RX: len=%u msg0=%#010x channel=%u gem=%u crc=%u runt=%u long=%u consumed=%u\n",
 			    skb_len, raw0,
-			    (unsigned int)FIELD_GET(ERX_XPON_CHANNEL_MASK, raw0),
-			    gem_port_id, !!(raw0 & ERX_XPON_CRC_ERROR),
+			    channel, gem_port_id, !!(raw0 & ERX_XPON_CRC_ERROR),
 			    !!(raw0 & ERX_XPON_RUNT), !!(raw0 & ERX_XPON_LONG),
 			    consumed);
 
@@ -7583,10 +7583,10 @@ static netdev_tx_t airoha_dev_xmit(struct sk_buff *skb,
 }
 
 static int airoha_xpon_xmit_oam(struct net_device *netdev, struct sk_buff *skb,
-			     u16 gem_port_id)
+			     u8 channel, u16 gem_port_id)
 {
 	struct airoha_xpon_tx_info info = {
-		.tcont = 0,
+		.tcont = channel,
 		.queue = 7,
 		.oam = true,
 	};
@@ -9946,12 +9946,12 @@ void airoha_eth_unregister_xpon_oam(struct net_device *netdev,
 EXPORT_SYMBOL_GPL(airoha_eth_unregister_xpon_oam);
 
 int airoha_eth_xmit_xpon_oam(struct net_device *netdev, struct sk_buff *skb,
-			     u16 gem_port_id)
+			     u8 channel, u16 gem_port_id)
 {
 	const struct airoha_eth_xpon_ops *ops = airoha_eth_get_xpon_ops(netdev, NULL);
 
 	return ops && ops->xmit_oam ?
-		ops->xmit_oam(netdev, skb, gem_port_id) : -EOPNOTSUPP;
+		ops->xmit_oam(netdev, skb, channel, gem_port_id) : -EOPNOTSUPP;
 }
 EXPORT_SYMBOL_GPL(airoha_eth_xmit_xpon_oam);
 

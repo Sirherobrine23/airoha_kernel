@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * OMCI sysfs compatibility interface
+ * OMCI sysfs interface below the owning xPON device.
  *
- * Generic Netlink remains the structured management API.  This class exports
- * the small, stable subset of state and configuration that is useful to shell
- * scripts and early userspace without requiring a Generic Netlink client.
+ * Generic Netlink remains the structured management API. The sysfs group
+ * exports the small, stable subset useful to shell scripts and early userspace.
  */
 
 #include <linux/ctype.h>
@@ -14,9 +13,15 @@
 #include <linux/slab.h>
 #include <linux/string.h>
 
+#include "../internal.h"
 #include "internal.h"
 
-static struct class *omci_class;
+static struct omci_device *omci_dev_from_dev(struct device *dev)
+{
+	struct xpon_device *xpon = dev_get_drvdata(dev);
+
+	return xpon ? xpon->omci : NULL;
+}
 
 static int omci_sysfs_config_set(struct omci_device *odev, u16 key,
 				 const void *value, size_t len)
@@ -47,7 +52,7 @@ static int omci_sysfs_config_get_u8(struct omci_device *odev, u16 key,
 static ssize_t dev_id_show(struct device *dev, struct device_attribute *attr,
 			   char *buf)
 {
-	struct omci_device *odev = dev_get_drvdata(dev);
+	struct omci_device *odev = omci_dev_from_dev(dev);
 
 	return sysfs_emit(buf, "%u\n", odev->id);
 }
@@ -56,7 +61,7 @@ static DEVICE_ATTR_RO(dev_id);
 static ssize_t ifindex_show(struct device *dev, struct device_attribute *attr,
 			    char *buf)
 {
-	struct omci_device *odev = dev_get_drvdata(dev);
+	struct omci_device *odev = omci_dev_from_dev(dev);
 
 	return sysfs_emit(buf, "%u\n", odev->ifindex);
 }
@@ -81,7 +86,7 @@ static void omci_sysfs_channel_snapshot(struct omci_device *odev, u16 *onu_id,
 static ssize_t onu_id_show(struct device *dev, struct device_attribute *attr,
 			   char *buf)
 {
-	struct omci_device *odev = dev_get_drvdata(dev);
+	struct omci_device *odev = omci_dev_from_dev(dev);
 	u16 value;
 
 	omci_sysfs_channel_snapshot(odev, &value, NULL, NULL, NULL);
@@ -92,7 +97,7 @@ static DEVICE_ATTR_RO(onu_id);
 static ssize_t gem_port_id_show(struct device *dev,
 				struct device_attribute *attr, char *buf)
 {
-	struct omci_device *odev = dev_get_drvdata(dev);
+	struct omci_device *odev = omci_dev_from_dev(dev);
 	u16 value;
 
 	omci_sysfs_channel_snapshot(odev, NULL, &value, NULL, NULL);
@@ -103,7 +108,7 @@ static DEVICE_ATTR_RO(gem_port_id);
 static ssize_t state_show(struct device *dev, struct device_attribute *attr,
 			  char *buf)
 {
-	struct omci_device *odev = dev_get_drvdata(dev);
+	struct omci_device *odev = omci_dev_from_dev(dev);
 	u8 value;
 
 	omci_sysfs_channel_snapshot(odev, NULL, NULL, &value, NULL);
@@ -114,7 +119,7 @@ static DEVICE_ATTR_RO(state);
 static ssize_t channel_up_show(struct device *dev,
 			       struct device_attribute *attr, char *buf)
 {
-	struct omci_device *odev = dev_get_drvdata(dev);
+	struct omci_device *odev = omci_dev_from_dev(dev);
 	bool value;
 
 	omci_sysfs_channel_snapshot(odev, NULL, NULL, NULL, &value);
@@ -125,7 +130,7 @@ static DEVICE_ATTR_RO(channel_up);
 static ssize_t capabilities_show(struct device *dev,
 				 struct device_attribute *attr, char *buf)
 {
-	struct omci_device *odev = dev_get_drvdata(dev);
+	struct omci_device *odev = omci_dev_from_dev(dev);
 
 	return sysfs_emit(buf, "0x%08x\n", odev->capabilities);
 }
@@ -135,7 +140,7 @@ static DEVICE_ATTR_RO(capabilities);
 static ssize_t _name##_show(struct device *dev, \
 			    struct device_attribute *attr, char *buf) \
 { \
-	struct omci_device *odev = dev_get_drvdata(dev); \
+	struct omci_device *odev = omci_dev_from_dev(dev); \
 	return sysfs_emit(buf, "%lld\n", \
 			  (long long)atomic64_read(&odev->_member)); \
 } \
@@ -152,7 +157,7 @@ OMCI_ATOMIC64_ATTR_RO(tx_errors, tx_errors);
 static ssize_t _name##_show(struct device *dev, \
 			    struct device_attribute *attr, char *buf) \
 { \
-	struct omci_device *odev = dev_get_drvdata(dev); \
+	struct omci_device *odev = omci_dev_from_dev(dev); \
 	return sysfs_emit(buf, "%lld\n", \
 			  (long long)atomic64_read(&odev->agent._member)); \
 } \
@@ -166,7 +171,7 @@ OMCI_AGENT_ATOMIC64_ATTR_RO(agent_fake_responses, fake_responses);
 static ssize_t mib_sync_show(struct device *dev, struct device_attribute *attr,
 			     char *buf)
 {
-	struct omci_device *odev = dev_get_drvdata(dev);
+	struct omci_device *odev = omci_dev_from_dev(dev);
 	u16 value;
 
 	mutex_lock(&odev->agent.lock);
@@ -179,7 +184,7 @@ static DEVICE_ATTR_RO(mib_sync);
 static ssize_t agent_operational_show(struct device *dev,
 				      struct device_attribute *attr, char *buf)
 {
-	struct omci_device *odev = dev_get_drvdata(dev);
+	struct omci_device *odev = omci_dev_from_dev(dev);
 	bool value;
 
 	mutex_lock(&odev->agent.lock);
@@ -193,7 +198,7 @@ static DEVICE_ATTR_RO(agent_operational);
 static ssize_t _name##_show(struct device *dev, \
 			    struct device_attribute *attr, char *buf) \
 { \
-	struct omci_device *odev = dev_get_drvdata(dev); \
+	struct omci_device *odev = omci_dev_from_dev(dev); \
 	u8 value; \
 	int ret = omci_sysfs_config_get_u8(odev, _key, &value); \
 	if (ret) \
@@ -204,7 +209,7 @@ static ssize_t _name##_store(struct device *dev, \
 			     struct device_attribute *attr, \
 			     const char *buf, size_t count) \
 { \
-	struct omci_device *odev = dev_get_drvdata(dev); \
+	struct omci_device *odev = omci_dev_from_dev(dev); \
 	u8 value; \
 	int ret = kstrtou8(buf, 0, &value); \
 	if (ret) \
@@ -218,7 +223,7 @@ static DEVICE_ATTR_RW(_name)
 static ssize_t _name##_show(struct device *dev, \
 			    struct device_attribute *attr, char *buf) \
 { \
-	struct omci_device *odev = dev_get_drvdata(dev); \
+	struct omci_device *odev = omci_dev_from_dev(dev); \
 	u8 value; \
 	int ret = omci_sysfs_config_get_u8(odev, _key, &value); \
 	if (ret) \
@@ -229,7 +234,7 @@ static ssize_t _name##_store(struct device *dev, \
 			     struct device_attribute *attr, \
 			     const char *buf, size_t count) \
 { \
-	struct omci_device *odev = dev_get_drvdata(dev); \
+	struct omci_device *odev = omci_dev_from_dev(dev); \
 	bool enabled; \
 	u8 value; \
 	int ret = kstrtobool(buf, &enabled); \
@@ -281,13 +286,13 @@ static ssize_t omci_sysfs_string_store(struct omci_device *odev, u16 key,
 static ssize_t _name##_show(struct device *dev, \
 			    struct device_attribute *attr, char *buf) \
 { \
-	return omci_sysfs_string_show(dev_get_drvdata(dev), _key, buf); \
+	return omci_sysfs_string_show(omci_dev_from_dev(dev), _key, buf); \
 } \
 static ssize_t _name##_store(struct device *dev, \
 			     struct device_attribute *attr, \
 			     const char *buf, size_t count) \
 { \
-	return omci_sysfs_string_store(dev_get_drvdata(dev), _key, buf, count); \
+	return omci_sysfs_string_store(omci_dev_from_dev(dev), _key, buf, count); \
 } \
 static DEVICE_ATTR_RW(_name)
 
@@ -299,7 +304,7 @@ OMCI_CONFIG_STRING_ATTR_RW(software_version_1, OMCI_CONFIG_SOFTWARE_VERSION_1);
 static ssize_t vendor_id_show(struct device *dev,
 			      struct device_attribute *attr, char *buf)
 {
-	struct omci_device *odev = dev_get_drvdata(dev);
+	struct omci_device *odev = omci_dev_from_dev(dev);
 	u8 value[4];
 	size_t len = sizeof(value);
 	unsigned int i;
@@ -318,7 +323,7 @@ static ssize_t vendor_id_store(struct device *dev,
 			       struct device_attribute *attr,
 			       const char *buf, size_t count)
 {
-	return omci_sysfs_string_store(dev_get_drvdata(dev),
+	return omci_sysfs_string_store(omci_dev_from_dev(dev),
 				       OMCI_CONFIG_VENDOR_ID, buf, count);
 }
 static DEVICE_ATTR_RW(vendor_id);
@@ -326,7 +331,7 @@ static DEVICE_ATTR_RW(vendor_id);
 static ssize_t serial_number_show(struct device *dev,
 				  struct device_attribute *attr, char *buf)
 {
-	struct omci_device *odev = dev_get_drvdata(dev);
+	struct omci_device *odev = omci_dev_from_dev(dev);
 	u8 value[8];
 	size_t len = sizeof(value);
 	unsigned int i;
@@ -349,7 +354,7 @@ static ssize_t serial_number_store(struct device *dev,
 				   struct device_attribute *attr,
 				   const char *buf, size_t count)
 {
-	return omci_sysfs_string_store(dev_get_drvdata(dev),
+	return omci_sysfs_string_store(omci_dev_from_dev(dev),
 				       OMCI_CONFIG_SERIAL_NUMBER, buf, count);
 }
 static DEVICE_ATTR_RW(serial_number);
@@ -358,7 +363,7 @@ static ssize_t password_store(struct device *dev,
 			      struct device_attribute *attr,
 			      const char *buf, size_t count)
 {
-	return omci_sysfs_string_store(dev_get_drvdata(dev), OMCI_CONFIG_PASSWORD,
+	return omci_sysfs_string_store(omci_dev_from_dev(dev), OMCI_CONFIG_PASSWORD,
 				       buf, count);
 }
 static DEVICE_ATTR_WO(password);
@@ -418,7 +423,7 @@ static int omci_sysfs_parse_onu_type(const char *buf, size_t count, u8 *type)
 static ssize_t onu_type_show(struct device *dev,
 			     struct device_attribute *attr, char *buf)
 {
-	struct omci_device *odev = dev_get_drvdata(dev);
+	struct omci_device *odev = omci_dev_from_dev(dev);
 	u8 type;
 	int ret;
 
@@ -432,7 +437,7 @@ static ssize_t onu_type_store(struct device *dev,
 			      struct device_attribute *attr,
 			      const char *buf, size_t count)
 {
-	struct omci_device *odev = dev_get_drvdata(dev);
+	struct omci_device *odev = omci_dev_from_dev(dev);
 	u8 type;
 	int ret;
 
@@ -448,7 +453,7 @@ static DEVICE_ATTR_RW(onu_type);
 static ssize_t onu_type_id_show(struct device *dev,
 				struct device_attribute *attr, char *buf)
 {
-	struct omci_device *odev = dev_get_drvdata(dev);
+	struct omci_device *odev = omci_dev_from_dev(dev);
 	u8 type;
 	int ret;
 
@@ -497,7 +502,7 @@ static int omci_sysfs_parse_profile(const char *buf, size_t count,
 static ssize_t olt_profile_show(struct device *dev,
 				struct device_attribute *attr, char *buf)
 {
-	struct omci_device *odev = dev_get_drvdata(dev);
+	struct omci_device *odev = omci_dev_from_dev(dev);
 	u8 profile;
 	int ret;
 
@@ -512,7 +517,7 @@ static ssize_t olt_profile_store(struct device *dev,
 				 struct device_attribute *attr,
 				 const char *buf, size_t count)
 {
-	struct omci_device *odev = dev_get_drvdata(dev);
+	struct omci_device *odev = omci_dev_from_dev(dev);
 	u8 profile;
 	int ret;
 
@@ -528,7 +533,7 @@ static DEVICE_ATTR_RW(olt_profile);
 static ssize_t olt_profile_force_show(struct device *dev,
 				      struct device_attribute *attr, char *buf)
 {
-	struct omci_device *odev = dev_get_drvdata(dev);
+	struct omci_device *odev = omci_dev_from_dev(dev);
 	u8 profile;
 	int ret;
 
@@ -544,7 +549,7 @@ static ssize_t olt_profile_force_store(struct device *dev,
 				       struct device_attribute *attr,
 				       const char *buf, size_t count)
 {
-	struct omci_device *odev = dev_get_drvdata(dev);
+	struct omci_device *odev = omci_dev_from_dev(dev);
 	u8 profile;
 	int ret;
 
@@ -561,7 +566,7 @@ static ssize_t olt_profile_effective_show(struct device *dev,
 					  struct device_attribute *attr,
 					  char *buf)
 {
-	struct omci_device *odev = dev_get_drvdata(dev);
+	struct omci_device *odev = omci_dev_from_dev(dev);
 	u8 profile;
 
 	mutex_lock(&odev->agent.lock);
@@ -575,7 +580,7 @@ static DEVICE_ATTR_RO(olt_profile_effective);
 static ssize_t olt_profile_quirks_show(struct device *dev,
 				       struct device_attribute *attr, char *buf)
 {
-	struct omci_device *odev = dev_get_drvdata(dev);
+	struct omci_device *odev = omci_dev_from_dev(dev);
 	u32 quirks;
 
 	mutex_lock(&odev->agent.lock);
@@ -588,7 +593,7 @@ static DEVICE_ATTR_RO(olt_profile_quirks);
 static ssize_t olt_vendor_id_show(struct device *dev,
 				  struct device_attribute *attr, char *buf)
 {
-	struct omci_device *odev = dev_get_drvdata(dev);
+	struct omci_device *odev = omci_dev_from_dev(dev);
 	struct omci_olt_g olt = {};
 
 	if (omci_agent_olt_g_get(odev, &olt) || !olt.vendor_id_valid)
@@ -600,7 +605,7 @@ static DEVICE_ATTR_RO(olt_vendor_id);
 static ssize_t olt_equipment_id_show(struct device *dev,
 				     struct device_attribute *attr, char *buf)
 {
-	struct omci_device *odev = dev_get_drvdata(dev);
+	struct omci_device *odev = omci_dev_from_dev(dev);
 	struct omci_olt_g olt = {};
 
 	if (omci_agent_olt_g_get(odev, &olt) || !olt.equipment_id_valid)
@@ -612,7 +617,7 @@ static DEVICE_ATTR_RO(olt_equipment_id);
 static ssize_t olt_version_show(struct device *dev,
 				struct device_attribute *attr, char *buf)
 {
-	struct omci_device *odev = dev_get_drvdata(dev);
+	struct omci_device *odev = omci_dev_from_dev(dev);
 	struct omci_olt_g olt = {};
 
 	if (omci_agent_olt_g_get(odev, &olt) || !olt.version_valid)
@@ -666,34 +671,27 @@ static struct attribute *omci_attrs[] = {
 	&dev_attr_olt_version.attr,
 	NULL,
 };
-ATTRIBUTE_GROUPS(omci);
+static const struct attribute_group omci_group = {
+	.name = "omci",
+	.attrs = omci_attrs,
+};
 
 int omci_sysfs_init(void)
 {
-	omci_class = class_create("omci");
-	return PTR_ERR_OR_ZERO(omci_class);
+	return 0;
 }
 
 void omci_sysfs_exit(void)
 {
-	class_destroy(omci_class);
-	omci_class = NULL;
 }
 
 int omci_sysfs_register(struct omci_device *odev)
 {
-	odev->class_dev = device_create_with_groups(omci_class, odev->parent,
-						    MKDEV(0, 0), odev,
-						    omci_groups, "omci%u",
-						    odev->id);
-	return PTR_ERR_OR_ZERO(odev->class_dev);
+	return sysfs_create_group(&odev->xpon->class_dev->kobj, &omci_group);
 }
 
 void omci_sysfs_unregister(struct omci_device *odev)
 {
-	if (IS_ERR_OR_NULL(odev->class_dev))
-		return;
-
-	device_unregister(odev->class_dev);
-	odev->class_dev = NULL;
+	if (odev->xpon && odev->xpon->class_dev)
+		sysfs_remove_group(&odev->xpon->class_dev->kobj, &omci_group);
 }
