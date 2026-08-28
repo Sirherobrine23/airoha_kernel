@@ -450,17 +450,38 @@ static void airoha_ppe_hw_init(struct airoha_ppe *ppe)
 static void airoha_ppe_flow_mangle_eth(const struct flow_action_entry *act, void *eth)
 {
 	void *dest = eth + act->mangle.offset;
-	const void *src = &act->mangle.val;
+	u16 val16;
 
 	if (act->mangle.offset > 8)
 		return;
 
-	if (act->mangle.mask == 0xffff) {
-		src += 2;
-		dest += 2;
+	/*
+	 * nf_flow_table builds Ethernet rewrites as one full 32-bit mangle and
+	 * two possible 16-bit partial mangles.  Do not select the partial value
+	 * by taking a byte pointer into mangle.val: that relies on the CPU being
+	 * little-endian and corrupts both MAC addresses on EN751221 MIPS.
+	 *
+	 * For mask 0x0000ffff, bits 31:16 contain the replacement and apply to
+	 * the upper half of the 32-bit Ethernet word (dest + 2).  For mask
+	 * 0xffff0000, bits 15:0 contain the replacement and apply to the lower
+	 * half at dest.  Copying a native u16 obtained by shifting the scalar
+	 * preserves the original packet-byte order on both endian variants.
+	 */
+	switch (act->mangle.mask) {
+	case 0:
+		memcpy(dest, &act->mangle.val, sizeof(act->mangle.val));
+		break;
+	case 0x0000ffff:
+		val16 = act->mangle.val >> 16;
+		memcpy(dest + 2, &val16, sizeof(val16));
+		break;
+	case 0xffff0000:
+		val16 = act->mangle.val;
+		memcpy(dest, &val16, sizeof(val16));
+		break;
+	default:
+		break;
 	}
-
-	memcpy(dest, src, act->mangle.mask ? 2 : 4);
 }
 
 static int airoha_ppe_flow_mangle_ports(const struct flow_action_entry *act,
