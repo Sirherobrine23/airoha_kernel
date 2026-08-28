@@ -247,10 +247,12 @@ airoha_gdm_common_from_netdev(struct net_device *netdev)
 #define AIROHA_RXQ_LRO_MAX_AGG_TIME		100
 #define AIROHA_RXQ_LRO_MAX_AGE_TIME		2000 /* 1ms */
 
+#define AIROHA_ETH_HW_FEATURES			\
+	(NETIF_F_IP_CSUM | NETIF_F_RXCSUM | NETIF_F_IPV6_CSUM)
+#define AIROHA_QDMA_TSO_HW_FEATURES		\
+	(NETIF_F_SG | NETIF_F_TSO | NETIF_F_TSO6)
 #define AIROHA_HW_FEATURES			\
-	(NETIF_F_IP_CSUM | NETIF_F_RXCSUM |	\
-	 NETIF_F_TSO6 | NETIF_F_IPV6_CSUM |	\
-	 NETIF_F_SG | NETIF_F_TSO | NETIF_F_HW_TC)
+	(AIROHA_ETH_HW_FEATURES | AIROHA_QDMA_TSO_HW_FEATURES | NETIF_F_HW_TC)
 
 #define PSE_RSV_PAGES			128
 #define PSE_QUEUE_RSV_PAGES		64
@@ -1174,8 +1176,14 @@ struct airoha_eth_xpon_ops {
 	void (*flush_services)(struct net_device *netdev);
 };
 
+enum airoha_mac_addr_mode {
+	AIROHA_MAC_ADDR_FE_RANGE,
+	AIROHA_MAC_ADDR_GDM_MASK,
+};
+
 struct airoha_eth_soc_data {
 	enum airoha_ids version;
+	enum airoha_mac_addr_mode mac_addr_mode;
 	const struct airoha_eth_xpon_ops *xpon_ops;
 	const char * const *xsi_rsts_names;
 	int num_xsi_rsts;
