@@ -9212,8 +9212,22 @@ airoha_en751221_get_dev_from_sport(struct airoha_eth *eth, u32 sport,
 		return 0;
 	}
 
-	dev_info_ratelimited(eth->dev, "EN751221 RX sport %#x\n", sport);
-	return -EINVAL;
+	/*
+	 * Keep the generation-1 fallback used before the QDMA lifecycle was
+	 * folded into the common core.  Once HW flow offload is armed, GDM
+	 * ingress is redirected through the PPE and search-miss/CPU-return
+	 * descriptors may carry a PPE/otherwise non-GDM SPORT.  Dropping an
+	 * unknown SPORT here therefore drops ordinary control traffic as well
+	 * (ARP/ICMP) and makes enabling HW offload disconnect the interface.
+	 *
+	 * The legacy EcoNet receive path deliberately returned such frames on
+	 * GDM1; preserve that behaviour for EN751221.
+	 */
+	dev_info_ratelimited(eth->dev,
+			     "EN751221 RX unexpected sport %#x, using GDM1\n",
+			     sport);
+	*port = AIROHA_GDM1_IDX - 1;
+	return 0;
 }
 
 static int airoha_en7528_get_sport(struct airoha_gdm_port *port, int nbq)
