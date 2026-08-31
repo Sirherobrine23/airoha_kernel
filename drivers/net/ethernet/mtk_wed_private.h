@@ -38,6 +38,7 @@ struct mtk_wed_hw {
 	struct regmap *regs;
 	struct regmap *hifsys;
 	struct device *dev;
+	void __iomem *pcie;
 	void __iomem *wdma;
 	phys_addr_t wdma_phy;
 	struct regmap *mirror;
@@ -47,6 +48,7 @@ struct mtk_wed_hw {
 	struct mtk_wed_amsdu *wed_amsdu;
 	u32 pcie_base;
 	u32 debugfs_reg;
+	u32 irq_mask;
 	u32 num_flows;
 	u8 version;
 	char dirname[5];
