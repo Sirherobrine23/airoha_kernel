@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * EN7523 WED (WiFi Ethernet Datapath) driver
+ * Airoha WED v1 (WiFi Ethernet Datapath) driver
  *
  * Implements the mtk_wed_ops interface so that standard mt76 WiFi drivers
- * can offload TX to WED hardware on the EN7523 SoC.
+ * can offload TX to WED hardware on Airoha/EcoNet SoCs.
  *
  * Based on drivers/net/ethernet/mediatek/mtk_wed.c
  * Copyright (C) 2021 Felix Fietkau <nbd@nbd.name>
  *
- * EN7523-specific adaptations:
- *  - No PCIe mirror (EN7523 doesn't support CR mirror HW)
+ * Airoha WED v1 adaptations:
+ *  - No PCIe mirror (these SoCs don't support CR mirror HW)
  *  - No hifsys regmap
  *  - WDMA located via physical address from DT instead of MT7622 hardcoded offsets
  *  - AXI bus interface between WED and WDMA
@@ -35,7 +35,7 @@
 #define MTK_WED_PKT_SIZE		1900
 #define MTK_WED_BUF_SIZE		2048
 #define MTK_WED_TXD_SIZE		128
-#define EN7523_WDMA_DESC_CTRL_LAST_SEG1	BIT(14)
+#define AIROHA_WDMA_DESC_CTRL_LAST_SEG1	BIT(14)
 #define MTK_WED_BUF_PER_PAGE		(PAGE_SIZE / MTK_WED_BUF_SIZE)
 #define MTK_WED_TX_RING_SIZE		2048
 #define MTK_WED_WDMA_RING_SIZE		1024
@@ -51,6 +51,15 @@
 #define AIROHA_WED_PCIE_OFST_VENDOR	0x04200424
 #define AIROHA_PCIE_INT_MASK		0x420
 #define AIROHA_PCIE_MSI_MASK		BIT(23)
+#define ECONET_SCU_LAN_SEL		0x70
+#define ECONET_SCU_LAN_SEL_MASK		GENMASK(5, 4)
+#define ECONET_SCU_LAN_SEL_ARB		FIELD_PREP(ECONET_SCU_LAN_SEL_MASK, 2)
+
+struct airoha_wed_soc_data {
+	phys_addr_t pcie_base[2];
+	u32 wpdma_base[2];
+	bool set_lan_arb;
+};
 
 static struct mtk_wed_hw *hw_list[2];
 static DEFINE_MUTEX(hw_lock);
@@ -63,7 +72,7 @@ static DEFINE_MUTEX(hw_lock);
 	dev_dbg_ratelimited((_dev)->hw->dev, "wed%d: " _fmt, \
 				     (_dev)->hw->index, ##__VA_ARGS__)
 
-static const struct mtk_wed_soc_data en7523_data = {
+static const struct mtk_wed_soc_data airoha_wed_v1_data = {
 	.regmap = {
 		.tx_bm_tkid		= 0x088,
 		.wpdma_rx_ring		= { 0x770, },
@@ -73,6 +82,44 @@ static const struct mtk_wed_soc_data en7523_data = {
 	.tx_ring_desc_size = sizeof(struct mtk_wdma_desc),
 	.wdma_desc_size    = sizeof(struct mtk_wdma_desc),
 };
+
+static const struct airoha_wed_soc_data en751221_wed_data = {
+	.pcie_base = { 0x1fb81000, 0x1fb83000 },
+	.wpdma_base = { 0x20000000, 0x20100000 },
+};
+
+static const struct airoha_wed_soc_data en7528_wed_data = {
+	.pcie_base = { 0x1fb81000, 0x1fb83000 },
+	.wpdma_base = { 0x20000000, 0x20100000 },
+	.set_lan_arb = true,
+};
+
+static const struct airoha_wed_soc_data en7523_wed_data = {
+	.pcie_base = { 0x1fa91000, 0x1fa92000 },
+	.wpdma_base = { 0x20000000, 0x20100000 },
+};
+
+static const struct of_device_id airoha_wed_of_match[] = {
+	{ .compatible = "econet,en751221-wed", .data = &en751221_wed_data },
+	{ .compatible = "econet,en7528-wed", .data = &en7528_wed_data },
+	{ .compatible = "airoha,en7523-wed", .data = &en7523_wed_data },
+	{ /* sentinel */ }
+};
+
+static void airoha_wed_rebase_wpdma(struct mtk_wed_device *dev)
+{
+	u32 old_base = dev->wlan.phy_base;
+	u32 new_base = dev->hw->wpdma_base;
+
+	dev->wlan.wpdma_int = new_base + dev->wlan.wpdma_int - old_base;
+	dev->wlan.wpdma_mask = new_base + dev->wlan.wpdma_mask - old_base;
+	dev->wlan.wpdma_phys = new_base + dev->wlan.wpdma_phys - old_base;
+	dev->wlan.wpdma_tx = new_base + dev->wlan.wpdma_tx - old_base;
+	dev->wlan.wpdma_txfree = new_base + dev->wlan.wpdma_txfree - old_base;
+	dev->wlan.wpdma_rx_glo = new_base + dev->wlan.wpdma_rx_glo - old_base;
+	dev->wlan.wpdma_rx[0] = new_base + dev->wlan.wpdma_rx[0] - old_base;
+	dev->wlan.phy_base = new_base;
+}
 
 /* -------------------------------------------------------------------------
  * Low-level register helpers
@@ -310,7 +357,7 @@ mtk_wed_assign(struct mtk_wed_device *dev)
 {
 	struct mtk_wed_hw *hw;
 
-	/* EN7523 exposes both root ports in one PCI domain. */
+	/* Match the WED instance to the PCI root port/domain. */
 	if (dev->wlan.bus_type == MTK_WED_BUS_PCIE) {
 		struct device *device = &dev->wlan.pci_dev->dev;
 		struct pci_dev *pdev = dev->wlan.pci_dev;
@@ -439,7 +486,7 @@ mtk_wed_tx_buffer_alloc(struct mtk_wed_device *dev)
 			desc->buf1 = cpu_to_le32(buf_phys + MTK_WED_TXD_SIZE);
 			ctrl = FIELD_PREP(MTK_WDMA_DESC_CTRL_LEN0,
 					  MTK_WED_TXD_SIZE) |
-			       EN7523_WDMA_DESC_CTRL_LAST_SEG1 |
+			       AIROHA_WDMA_DESC_CTRL_LAST_SEG1 |
 			       FIELD_PREP(MTK_WDMA_DESC_CTRL_LEN1_V2,
 					  MTK_WED_PKT_SIZE);
 			desc->ctrl = cpu_to_le32(ctrl);
@@ -573,7 +620,7 @@ mtk_wed_dma_disable(struct mtk_wed_device *dev)
 		 MTK_WDMA_GLO_CFG_RX_INFO2_PRERES |
 		 MTK_WDMA_GLO_CFG_RX_INFO3_PRERES);
 
-	/* EN7523 has no PCIe mirror register — skip regmap_write(mirror, ...) */
+	/* Airoha WED v1 has no PCIe mirror register. */
 
 	airoha_wed_info(dev, "dma_disable: done wed_glo=%08x wpdma_glo=%08x wdma_glo=%08x\n",
 			       wed_r32(dev, MTK_WED_GLO_CFG),
@@ -684,7 +731,7 @@ mtk_wed_hw_init_early(struct mtk_wed_device *dev)
 	wed_w32(dev, MTK_WED_WDMA_OFFSET1,
 		dev->hw->index ? 0x65006400 : 0x61006000);
 
-	wed_w32(dev, MTK_WED_PCIE_CFG_BASE, EN7523_PCIE_BASE(dev->hw->index));
+	wed_w32(dev, MTK_WED_PCIE_CFG_BASE, dev->hw->pcie_base);
 	wed_w32(dev, AIROHA_WED_PCIE_OFST, AIROHA_WED_PCIE_OFST_VENDOR);
 	wed_w32(dev, MTK_WED_PCIE_INT_CTRL,
 		FIELD_PREP(MTK_WED_PCIE_INT_CTRL_POLL_EN, 1));
@@ -1053,7 +1100,7 @@ mtk_wed_start(struct mtk_wed_device *dev, u32 irq_mask)
 	mtk_wed_configure_irq(dev, irq_mask);
 	mtk_wed_set_ext_int(dev, true, irq_mask);
 
-	/* EN7523 has no PCIe mirror register — skip regmap_write(mirror, ...) */
+	/* Airoha WED v1 has no PCIe mirror register. */
 
 	mtk_wed_dma_enable(dev);
 	dev->running = true;
@@ -1116,7 +1163,7 @@ mtk_wed_attach(struct mtk_wed_device *dev)
 	dev->irq = hw->irq;
 	dev->wdma_idx = hw->index;
 	dev->version = hw->version;
-	dev->hw->pcie_base = EN7523_PCIE_BASE(hw->index);
+	airoha_wed_rebase_wpdma(dev);
 
 	ret = dma_set_mask_and_coherent(hw->dev, DMA_BIT_MASK(32));
 	dev_dbg(device,
@@ -1147,7 +1194,7 @@ unlock:
 }
 
 static void
-mtk_wed_en7523_clear_tx_ring1(struct mtk_wed_device *dev)
+airoha_wed_clear_unused_tx_ring(struct mtk_wed_device *dev)
 {
 	u32 wpdma_phys, offset;
 
@@ -1210,7 +1257,7 @@ mtk_wed_tx_ring_setup(struct mtk_wed_device *dev, int idx,
 	wed_w32(dev, MTK_WED_WPDMA_RING_TX(idx) + MTK_WED_RING_OFS_DMA_IDX, 0);
 
 	if (!idx)
-		mtk_wed_en7523_clear_tx_ring1(dev);
+		airoha_wed_clear_unused_tx_ring(dev);
 
 	airoha_wed_info(dev, "tx_ring_setup: idx=%d desc=%pad wpdma_base=%08x wed_base=%08x count=%u\n",
 			       idx, &ring->desc_phys,
@@ -1304,7 +1351,7 @@ mtk_wed_irq_set_mask(struct mtk_wed_device *dev, u32 mask)
 }
 
 /* -------------------------------------------------------------------------
- * Flow offload callbacks (PPE not available on EN7523 WED v1)
+ * Flow offload callbacks (PPE is not exposed by this WED v1 driver)
  * ------------------------------------------------------------------------- */
 
 int airoha_wed_flow_add(int index)
@@ -1397,7 +1444,7 @@ out:
 	mutex_unlock(&hw_lock);
 }
 
-/* EN7523 WED v1 has no PPE and no TC offload */
+/* This WED v1 driver has no PPE and no TC offload. */
 static void
 mtk_wed_ppe_check(struct mtk_wed_device *dev, struct sk_buff *skb,
 		  u32 reason, u32 hash)
@@ -1477,9 +1524,12 @@ static const struct mtk_wed_ops airoha_wed_ops = {
 
 int airoha_wed_add_hw(struct device_node *np, int index)
 {
+	const struct airoha_wed_soc_data *soc;
+	const struct of_device_id *match;
 	struct platform_device *pdev;
 	struct resource res;
 	struct mtk_wed_hw *hw;
+	struct regmap *scu;
 	struct regmap *regs;
 	void __iomem *pcie;
 	void __iomem *wdma;
@@ -1493,6 +1543,13 @@ int airoha_wed_add_hw(struct device_node *np, int index)
 		err = -EINVAL;
 		goto err_node_put;
 	}
+
+	match = of_match_node(airoha_wed_of_match, np);
+	if (!match) {
+		err = -EINVAL;
+		goto err_node_put;
+	}
+	soc = match->data;
 
 	pdev = of_find_device_by_node(np);
 	if (!pdev) {
@@ -1512,6 +1569,20 @@ int airoha_wed_add_hw(struct device_node *np, int index)
 		goto err_device_put;
 	}
 
+	if (soc->set_lan_arb) {
+		scu = syscon_regmap_lookup_by_phandle(np, "airoha,scu");
+		if (IS_ERR(scu)) {
+			err = PTR_ERR(scu);
+			goto err_device_put;
+		}
+
+		err = regmap_update_bits(scu, ECONET_SCU_LAN_SEL,
+					 ECONET_SCU_LAN_SEL_MASK,
+					 ECONET_SCU_LAN_SEL_ARB);
+		if (err)
+			goto err_device_put;
+	}
+
 	wdma = of_iomap(np, 1);
 	if (!wdma) {
 		err = -ENOMEM;
@@ -1523,7 +1594,7 @@ int airoha_wed_add_hw(struct device_node *np, int index)
 		goto err_iounmap;
 
 	wdma_phy = res.start;
-	pcie = ioremap(EN7523_PCIE_BASE(index), SZ_4K);
+	pcie = ioremap(soc->pcie_base[index], SZ_4K);
 	if (!pcie) {
 		err = -ENOMEM;
 		goto err_iounmap;
@@ -1539,12 +1610,14 @@ int airoha_wed_add_hw(struct device_node *np, int index)
 	hw->regs = regs;
 	hw->dev = &pdev->dev;
 	hw->pcie = pcie;
+	hw->pcie_base = soc->pcie_base[index];
+	hw->wpdma_base = soc->wpdma_base[index];
 	hw->wdma_phy = wdma_phy;
 	hw->wdma = wdma;
 	hw->index = index;
 	hw->irq = irq;
 	hw->version = 1;
-	hw->soc = &en7523_data;
+	hw->soc = &airoha_wed_v1_data;
 	snprintf(hw->dirname, sizeof(hw->dirname), "wed%d", index);
 
 	mutex_lock(&hw_lock);

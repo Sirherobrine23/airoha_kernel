@@ -47,6 +47,7 @@ struct mtk_wed_hw {
 	struct mtk_wed_wo *wed_wo;
 	struct mtk_wed_amsdu *wed_amsdu;
 	u32 pcie_base;
+	u32 wpdma_base;
 	u32 debugfs_reg;
 	u32 irq_mask;
 	u32 num_flows;

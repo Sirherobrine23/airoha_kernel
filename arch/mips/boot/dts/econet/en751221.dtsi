@@ -235,6 +235,24 @@
 		};
 	};
 
+	wed0: wed@1fa02000 {
+		compatible = "econet,en751221-wed", "syscon";
+		reg = <0x1fa02000 0xb00>,
+		      <0x1fa06000 0x400>;
+		reg-names = "wed", "wdma";
+		interrupt-parent = <&intc>;
+		interrupts = <51>;
+	};
+
+	wed1: wed@1fa03000 {
+		compatible = "econet,en751221-wed", "syscon";
+		reg = <0x1fa03000 0xb00>,
+		      <0x1fa06400 0x400>;
+		reg-names = "wed", "wdma";
+		interrupt-parent = <&intc>;
+		interrupts = <52>;
+	};
+
 	usb: usb@1fb90000 {
 		compatible = "mediatek,mt8173-xhci", "mediatek,mtk-xhci";
 		reg = <0x1fb90000 0x4000>,
@@ -352,6 +370,7 @@
 		interrupt-parent = <&intc>;
 		interrupts = <21>, <22>;
 		interrupt-names = "qdma0", "qdma1";
+		airoha,wed = <&wed0>, <&wed1>;
 
 		resets = <&scuclk EN751221_FE_RST>,
 		         <&scuclk EN751221_FE_QDMA1_RST>,
