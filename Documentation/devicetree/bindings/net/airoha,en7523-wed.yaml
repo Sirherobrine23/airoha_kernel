@@ -4,7 +4,7 @@
 $id: http://devicetree.org/schemas/net/airoha,en7523-wed.yaml#
 $schema: http://devicetree.org/meta-schemas/core.yaml#
 
-title: Airoha EN7523 Wireless Ethernet Dispatch controller
+title: Airoha and EcoNet WED v1 controller
 
 maintainers:
   - Lorenzo Bianconi <lorenzo@kernel.org>
@@ -12,14 +12,22 @@ maintainers:
 description:
   The Wireless Ethernet Dispatch (WED) controller connects a PCIe wireless
   DMA engine to the Ethernet frame engine and offloads the wireless transmit
-  datapath. Each EN7523 WED instance is associated with one PCIe domain and
-  one WDMA instance.
+  datapath. Each WED instance is associated with one PCIe domain and one
+  WDMA instance.
 
 properties:
   compatible:
     items:
-      - const: airoha,en7523-wed
+      - enum:
+          - econet,en751221-wed
+          - econet,en7528-wed
+          - airoha,en7523-wed
       - const: syscon
+
+  airoha,scu:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description:
+      System controller used to select LAN arbitration mode on EN7528.
 
   reg:
     items:
@@ -39,6 +47,16 @@ required:
   - reg
   - reg-names
   - interrupts
+
+allOf:
+  - if:
+      properties:
+        compatible:
+          contains:
+            const: econet,en7528-wed
+    then:
+      required:
+        - airoha,scu
 
 additionalProperties: false
 
