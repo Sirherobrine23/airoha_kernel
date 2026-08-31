@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /*
- * EN7523 WED (Wireless Ethernet Dispatch) private interface.
+ * Airoha WED v1 (Wireless Ethernet Dispatch) private interface.
  */
 
 #ifndef __AIROHA_WED_PRIV_H
@@ -11,9 +11,6 @@
 #else
 struct mtk_wed_hw;
 #endif
-
-/* EN7523 PCIe controller bases (PCIe0 = domain 0, PCIe1 = domain 1). */
-#define EN7523_PCIE_BASE(n)	(0x1fa91000 + (n) * 0x1000)
 
 #if IS_ENABLED(CONFIG_NET_AIROHA_SOC_WED)
 int airoha_wed_add_hw(struct device_node *np, int index);
