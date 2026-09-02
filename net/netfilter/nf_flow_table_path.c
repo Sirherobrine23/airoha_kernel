@@ -205,6 +205,8 @@ static void nft_dev_forward_path(struct nf_flow_route *route,
 
 	if (info.outdev)
 		route->tuple[dir].out.ifindex = info.outdev->ifindex;
+	else
+		route->tuple[dir].out.ifindex = dst->dev->ifindex;
 
 	if (!info.indev || !nft_flowtable_find_dev(info.indev, ft))
 		return;
