@@ -75,6 +75,7 @@
 #define XPON_SERDES_BEN_CTRL		0x4244
 #define XPON_SERDES_CTRL18		0x4248
 #define XPON_SERDES_CTRL19		0x424c
+#define XPON_SERDES_BEN_MODE_MASK	GENMASK(31, 28)
 #define XPON_GPON_TX_BIT_DELAY		0x433c
 #define XPON_RX_MODE_CTRL		0x4344
 #define XPON_CDR_CTRL			0x4530
@@ -140,6 +141,12 @@
 #define XPON_TDCSET2_EN7571		0x0000002d
 #define XPON_GPON_DELIMITER_DEFAULT	0xaaab5983
 #define XPON_READY_RECOVERY_MS		5000
+
+enum airoha_serders_control {
+	XPON_SERDES_BEN_MODE_MANUAL,     /* Control manualy using GPIO PON_BURST_EN (normaly GPIO20) */
+	XPON_SERDES_BEN_MODE_NORMAL,     /* MAC and PHY control burster */
+	XPON_SERDES_BEN_MODE_ROGUE_MODE, /* Rogue mode */
+};
 
 struct airoha_xpon_phy;
 
@@ -631,6 +638,14 @@ airoha_xpon_phy_configure_integrated_pma(struct airoha_xpon_phy *priv)
 	 */
 	airoha_xpon_phy_rmw(priv, XPON_PMA_CTRL0, BIT(29), BIT(29));
 	airoha_xpon_phy_rmw(priv, XPON_SERDES_CTRL0, BIT(24), 0);
+
+	/*
+	 * Select normal burst-enable operation. In this mode PON_BURST_EN is
+	 * driven by the GPON transmitter instead of being forced continuously.
+	 */
+	airoha_xpon_phy_rmw(priv, XPON_SERDES_BEN_CTRL,
+			    XPON_SERDES_BEN_MODE_MASK,
+			    XPON_SERDES_BEN_MODE_NORMAL);
 
 	/* Reset the PLL and counters only after all mode-dependent values have
 	 * been programmed, matching the vendor bring-up order.

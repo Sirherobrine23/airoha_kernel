@@ -22,6 +22,7 @@
 #include <linux/export.h>
 #include <linux/interrupt.h>
 #include <linux/i2c.h>
+#include <linux/gpio.h>
 #include <linux/io.h>
 #include <linux/iopoll.h>
 #include <linux/mfd/syscon.h>
@@ -61,6 +62,57 @@
 
 static const u8 airoha_default_vendor_id[4] = {'M', 'T', 'K', 'G'};
 
+/*
+ * Nokia G-140W-F BOSA-Tx laser 3V3 power gate lives in the EN751221 SoC gpio0
+ * block (phys 0x1fbf0200). Stock's gpio_BOSA_Tx_power_on() drives it, but that
+ * path is #ifdef CONFIG_USE_MT7520_ASIC and absent from the airoha driver, so
+ * the laser rail never powers -> the O3 Serial_Number burst never reaches the
+ * OLT and the ONU loops O3->O2. Applying the stock@O5 gpio0 snapshot (reg 0x204
+ * bit8|bit26 = BOSA-Tx 3V3) lights the laser. LIVE-PROVEN on the econet en751221
+ * port (us5/us6): O3 -> OLT ranges the SN -> O4 -> O5.
+ */
+static bool bosa_tx_gpio = true;
+module_param(bosa_tx_gpio, bool, 0644);
+MODULE_PARM_DESC(bosa_tx_gpio,
+	"Nokia G-140W-F: drive the SoC gpio0 BOSA-Tx 3V3 laser power gate (default on)");
+
+#define EN751221_GPIO0_BASE	0x1fbf0200u
+#define EN751221_GPIO0_SPAN	0x100u
+
+static void airoha_xpon_bosa_tx_power_on(struct device *dev)
+{
+	// return;
+	void __iomem *gpio0;
+	u32 old;
+	u32 set, clear;
+
+	if (!bosa_tx_gpio)
+		return;
+
+	gpio0 = ioremap(EN751221_GPIO0_BASE, EN751221_GPIO0_SPAN);
+	if (!gpio0) {
+		dev_warn(dev, "BOSA-Tx power: gpio ioremap failed\n");
+		return;
+	}
+
+	old = readl(gpio0 + 0x04);
+
+	int new = BIT(20);
+	set = ~old & new;
+	clear = old & ~new;
+
+	dev_info(dev,
+		 "GPIO_DATA: old=%08x new=%08x set=%08x clear=%08x\n",
+		 old, new, set, clear);
+
+	writel(new, gpio0 + 0x04);
+
+	dev_info(dev, "GPIO_DATA: readback=%08x\n",
+		 readl(gpio0 + 0x04));
+
+	iounmap(gpio0);
+}
+
 static int airoha_xpon_tx_rearm(struct device *dev,
 				struct optical_frontend *frontend)
 {
@@ -84,19 +136,39 @@ static int airoha_xpon_tx_enable(struct device *dev,
 				 struct optical_frontend *frontend,
 				 bool enable)
 {
+	struct optical_frontend_state state = {};
+	int state_ret;
 	int ret;
 
-	if (!frontend)
+	if (enable)
+		airoha_xpon_bosa_tx_power_on(dev);
+
+	if (!frontend) {
+		dev_info(dev, "optical TX request=%u: no frontend provider\n",
+			 enable);
 		return 0;
+	}
 
 	ret = optical_frontend_tx_enable(frontend, enable);
-	if (ret == -EOPNOTSUPP)
+	if (ret == -EOPNOTSUPP) {
+		dev_info(dev,
+			 "optical TX request=%u: provider has no TX gate\n",
+			 enable);
 		return 0;
-	if (ret)
+	}
+	if (ret) {
 		dev_err(dev, "failed to %s optical transmitter: %d\n",
 			enable ? "enable" : "disable", ret);
+		return ret;
+	}
 
-	return ret;
+	state_ret = optical_frontend_get_state(frontend, &state);
+	dev_info(dev,
+		 "optical TX request=%u applied: state_ret=%d valid=%#x present=%u ready=%u rx_los=%u tx_fault=%u tx_enabled=%u\n",
+		 enable, state_ret, state.valid, state.present, state.ready,
+		 state.rx_los, state.tx_fault, state.tx_enabled);
+
+	return 0;
 }
 
 static const char *airoha_xpon_mode_name(enum airoha_xpon_mode mode)
@@ -1386,6 +1458,30 @@ static void gpon_cb_set_overhead(void *hw_priv,
 		 gpon_read(priv, GPON_PLOu_PRMBL_TYPE3),
 		 gpon_read(priv, GPON_PLOu_DELM_BIT),
 		 gpon_read(priv, GPON_PRE_ASSIGNED_DLY));
+
+	/*
+	 * SDK modify_mac_internal_delay(): the OLT frames the SN burst by the
+	 * ONU's internal RX->TX delay. Stock MEASURES it from the debug probe
+	 * and rewrites DBG_DLY in FIXED mode (phy_rx_dly_sel=1) with the
+	 * onuResponseTime compensation 4*(rsp-0x577). Without this the burst is
+	 * mistimed and the OLT never returns Assign_ONU_ID (O3 stall).
+	 */
+	/* Ignore on en7523 */
+	if (false) {
+		u32 raw, dbgdly, fix, onuresp = GPON_RSP_TIME_RESET;
+		gpon_write(priv, GPON_DBG_PROBE_CTRL, 0xf);
+		raw = gpon_read(priv, GPON_DBG_PROBE_HIGH32);
+		fix = ((raw & 0x00fff000) >> 12) / 2;
+		if (onuresp > 0x577)
+			fix += 4 * (onuresp - 0x577);
+		dbgdly = gpon_read(priv, GPON_DBG_DLY);
+		dbgdly |= BIT(31);
+		dbgdly = (dbgdly & ~GENMASK(27, 16)) | ((fix & 0xfff) << 16);
+		gpon_write(priv, GPON_DBG_DLY, dbgdly);
+		dev_info(priv->dev,
+			 "modify_mac_internal_delay: probe=%#010x rx_dly=%u fix_phy_rx_dly=%u dbg_dly=%#010x\n",
+			 raw, (raw & 0x00fff000) >> 12, fix, dbgdly);
+	}
 }
 
 static void gpon_cb_set_t3_preamble(void *hw_priv, u8 o3_t3, u8 o5_t3)
@@ -1404,7 +1500,7 @@ static void gpon_cb_set_t3_preamble(void *hw_priv, u8 o3_t3, u8 o5_t3)
 	 * and O5=56.  BIT(16) writes a reserved field and leaves EBL off.
 	 */
 	val = BIT(24) | ((u32)o5_t3 << 8) | o3_t3;
-	dev_dbg(priv->dev, "GPON T3 preamble: O3=%u O5=%u reg=%#08x\n",
+	dev_info(priv->dev, "GPON T3 preamble: O3=%u O5=%u reg=%#08x\n",
 		 o3_t3, o5_t3, val);
 	gpon_write(priv, GPON_PLOu_PRMBL_TYPE3, val);
 
@@ -4086,8 +4182,8 @@ static int airoha_xpon_probe(struct platform_device *pdev)
 
 	priv->frontend = devm_optical_frontend_get_optional(dev, "pon");
 	if (IS_ERR(priv->frontend)) {
-		ret = dev_err_probe(dev, PTR_ERR(priv->frontend),
-				    "failed to get optical frontend\n");
+		ret = PTR_ERR(priv->frontend);
+		dev_err(dev, "DEBUG: optical frontend get = %d\n", ret);
 		priv->frontend = NULL;
 		goto err_cleanup_mode;
 	}

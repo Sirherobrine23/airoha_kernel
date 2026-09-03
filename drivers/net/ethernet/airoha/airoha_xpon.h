@@ -103,6 +103,8 @@ struct airoha_xpon_match_data {
 #define GPON_MBI_MPI_STOP	0x160
 /* EN7523 GPON debug and timing registers */
 #define GPON_DBG_DLY		0x208
+#define GPON_DBG_PROBE_CTRL	0x240
+#define GPON_DBG_PROBE_HIGH32	0x244
 #define GPON_DBG_IDLE_GEM_THLD	0x20C
 #define GPON_DBG_BWM_FILTER_CTRL	0x220
 #define GPON_DBG_BWM_SFIFO_STS	0x224

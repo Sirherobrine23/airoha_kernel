@@ -567,6 +567,38 @@ airoha_lddla_frontend_get_state(struct optical_frontend *frontend,
 	return 0;
 }
 
+/*
+ * Prepare the Airoha laser driver immediately before the generic frontend
+ * core releases TX_DISABLE. EN7570/EN7571 contain internal safe-circuit and
+ * power-loop latches which may be asserted while the xPON MAC/PHY is reset or
+ * reconfigured. Rearming them only at the beginning of the xPON start
+ * sequence is therefore too early.
+ *
+ * Keep disable handling in the generic core-owned TX_DISABLE GPIO. Stopping
+ * the internal control loop here would require rebuilding the calibrated loop
+ * state on every enable and is not necessary to block optical output.
+ */
+static int
+airoha_lddla_frontend_tx_enable(struct optical_frontend *frontend, bool enable)
+{
+	struct airoha_lddla *lddla = optical_frontend_get_drvdata(frontend);
+	int ret;
+
+	if (!lddla)
+		return -EINVAL;
+	if (!enable || !lddla->ops->tx_rearm)
+		return 0;
+
+	ret = lddla_lock(lddla);
+	if (ret)
+		return ret;
+
+	ret = lddla->ops->tx_rearm(lddla);
+	mutex_unlock(&lddla->lock);
+
+	return ret;
+}
+
 static int airoha_lddla_frontend_tx_rearm(struct optical_frontend *frontend)
 {
 	struct airoha_lddla *lddla = optical_frontend_get_drvdata(frontend);
@@ -589,6 +621,7 @@ static const struct optical_frontend_ops airoha_lddla_frontend_ops = {
 	.set_mode = airoha_lddla_frontend_set_mode,
 	.get_telemetry = airoha_lddla_frontend_get_telemetry,
 	.get_state = airoha_lddla_frontend_get_state,
+	.tx_enable = airoha_lddla_frontend_tx_enable,
 	.tx_rearm = airoha_lddla_frontend_tx_rearm,
 };
 
