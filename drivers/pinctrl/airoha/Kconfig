@@ -20,6 +20,7 @@ config PINCTRL_AIROHA
 	imply PINCTRL_AIROHA_EN7523
 	imply PINCTRL_AIROHA_EN7528
 	imply PINCTRL_AIROHA_EN751221
+	imply PINCTRL_AIROHA_EN7580
 	help
 	  Shared pin controller and gpio driver code for different
 	  Airoha SoCs.
@@ -75,5 +76,14 @@ config PINCTRL_AIROHA_EN751221
 	  EcoNet EN7512, EN7513, EN7521 and EN7526 SoC families. The driver
 	  provides GPIO, GPIO interrupt and pin multiplexing support through
 	  the common Airoha pin controller implementation.
+
+config PINCTRL_AIROHA_EN7580
+	tristate "EN7580 pinctrl"
+	depends on SOC_ECONET_EN7580 || COMPILE_TEST
+	depends on PINCTRL_AIROHA
+	help
+	  Say yes here to support the GPIO and pin controller found in the
+	  EcoNet EN7580 SoC through the common Airoha pin controller
+	  implementation.
 
 endmenu
