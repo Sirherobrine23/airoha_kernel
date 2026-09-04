@@ -1136,6 +1136,7 @@ struct airoha_ppe {
 enum airoha_ids {
 	econet_en751221 = 0x751221,
 	econet_en7528 = 0x7528,
+	econet_en7580 = 0x7580,
 	airoha_en7523 = 0x7523,
 	airoha_en7581 = 0x7581,
 	airoha_an7583 = 0x7583,
@@ -1191,6 +1192,7 @@ struct airoha_eth_soc_data {
 	int tx_ring, rx_ring;
 	int irq_banks;
 	int max_gdm_ports;
+	bool legacy_qdma;
 	u32 pse_fq_cfg;
 	u32 ppe_stats_entries;
 	u32 ppe_sram_entries;
@@ -1296,7 +1298,13 @@ static inline bool airoha_is_lan_gdm_dev(struct airoha_gdm_dev *dev)
 
 static inline bool airoha_is_econet(struct airoha_eth *eth)
 {
-	return airoha_is(eth, econet_en751221, econet_en7528);
+	return airoha_is(eth, econet_en751221, econet_en7528,
+			 econet_en7580);
+}
+
+static inline bool airoha_has_legacy_qdma(struct airoha_eth *eth)
+{
+	return eth->soc->legacy_qdma;
 }
 
 static inline bool airoha_qdma_is_lro_queue(struct airoha_queue *q)
