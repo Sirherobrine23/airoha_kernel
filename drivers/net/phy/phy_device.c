@@ -1630,6 +1630,9 @@ static void phy_detach_internal(struct phy_device *phydev, bool notify_bus)
 		phydev->devlink = NULL;
 	}
 
+	if (phydev->drv && phydev->drv->detach)
+		phydev->drv->detach(phydev);
+
 	if (phydev->sysfs_links) {
 		if (dev)
 			sysfs_remove_link(&dev->dev.kobj, "phydev");
