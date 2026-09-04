@@ -2869,6 +2869,19 @@ static bool omci_agent_service_vlan_valid(u16 vid)
 	return vid > 0 && vid < VLAN_VID_MASK;
 }
 
+static bool omci_agent_has_olt_gem_ctp_locked(struct omci_agent *agent)
+{
+	struct omci_mib_object *object;
+	unsigned long index;
+
+	xa_for_each(&agent->mib, index, object) {
+		if (object->class_id == OMCI_CLASS_GEM_PORT_CTP &&
+		    object->origin == OMCI_MIB_ORIGIN_OLT)
+			return true;
+	}
+	return false;
+}
+
 static int
 omci_agent_stage_service_rule_locked(struct omci_device *odev,
 				     struct xarray *services,
@@ -2906,6 +2919,19 @@ omci_agent_stage_service_rule_locked(struct omci_device *odev,
 	if (!gem)
 		return -ENOENT;
 	if (gem->data[4] == OMCI_GEM_PORT_DIRECTION_ANI_TO_UNI)
+		return 0;
+	/*
+	 * Skip the profile reference-seed GEMs (256/257, origin DEFAULT) when
+	 * the OLT provisions its own data GEMs (247/248, origin OLT) and assigns
+	 * the real Alloc-ID over PLOAM.  The seeded T-CONT 0x8000/0x8001
+	 * (Alloc-ID 256/257) otherwise become phantom hardware channels that
+	 * displace the real Alloc-ID's T-CONT, so GEM 247 binds to the wrong
+	 * (seed) channel.  The seed managed entities stay in the MIB, so an OLT
+	 * that really uses GEM 256/257 without OMCI Create (no origin-OLT GEM
+	 * CTP) is unaffected.
+	 */
+	if (gem->origin == OMCI_MIB_ORIGIN_DEFAULT &&
+	    omci_agent_has_olt_gem_ctp_locked(agent))
 		return 0;
 
 	service.uni_entity_id = omci_profile_normalize_uni_entity(
