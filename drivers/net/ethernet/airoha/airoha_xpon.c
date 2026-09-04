@@ -1995,34 +1995,39 @@ int airoha_gpon_omci_hw_replace_service(void *hw_priv,
 		.pcp_valid = service->pcp_valid,
 		.default_service = service->default_service,
 	};
-	ret = gpon_tcont_entity_to_index(priv, service->tcont_entity_id,
-					 &tcont_index);
-	if (ret && service->alloc_id && service->alloc_id != 0xffff) {
+	/*
+	 * Resolve the T-CONT strictly by the OLT-granted Alloc-ID -- it is the
+	 * ground truth the OLT schedules the upstream on.  Do NOT fall back to the
+	 * T-CONT entity when a valid Alloc-ID is present: the nokia-alcl profile
+	 * seeds T-CONT 0x8000/0x8001 with placeholder Alloc-ID 256/257 that claim HW
+	 * channels 1/2, so entity 0x8000 can resolve -- via the cleared-map
+	 * positional fallback (entity-0x8000)+1, or a stale early binding -- to the
+	 * SEED channel (Alloc-ID 256) instead of the real Alloc-ID 307.  GEM 247
+	 * would then queue upstream on a channel the OLT never grants and no PADO
+	 * comes back.  Binding by Alloc-ID (finding it, or programming it if a GPON
+	 * restart cleared the map) makes the channel deterministic regardless of the
+	 * order the seed and real services are applied in.
+	 */
+	if (service->alloc_id && service->alloc_id != 0xffff) {
 		unsigned int channel;
+		int idx;
 
-		/*
-		 * A GPON restart clears the entity->index map in
-		 * gpon_dev_init(), but the OLT does not re-run OMCI when the
-		 * MIB data sync still matches: it only re-sends Assign_Alloc-ID
-		 * over PLOAM, which never reaches the OMCI agent.  The agent
-		 * then re-applies its retained service graph, every lookup here
-		 * returns -ENOENT, and because apply_services is all-or-nothing
-		 * the whole set is rolled back -- leaving an ONU in O5 with OMCI
-		 * up, service=0 and no datapath at all, permanently.
-		 *
-		 * The Alloc-ID is enough to rebuild it: program the T-CONT and
-		 * re-bind entity->index, which is exactly what a first-time
-		 * provisioning does.
-		 */
-		ret = gpon_set_omci_tcont_hw(priv, service->tcont_entity_id,
-					     service->alloc_id, true, &channel);
-		if (!ret) {
-			tcont_index = channel;
-			dev_info(priv->dev,
-				 "rebuilt T-CONT %#x (alloc-id %u) as channel %u after restart\n",
-				 service->tcont_entity_id, service->alloc_id,
-				 channel);
+		mutex_lock(&priv->tcont_lock);
+		idx = gpon_find_tcont_alloc_locked(priv, service->alloc_id);
+		mutex_unlock(&priv->tcont_lock);
+		if (idx >= 0) {
+			tcont_index = idx;
+			ret = 0;
+		} else {
+			ret = gpon_set_omci_tcont_hw(priv, service->tcont_entity_id,
+						     service->alloc_id, true,
+						     &channel);
+			if (!ret)
+				tcont_index = channel;
 		}
+	} else {
+		ret = gpon_tcont_entity_to_index(priv, service->tcont_entity_id,
+						 &tcont_index);
 	}
 	if (ret)
 		return ret;
