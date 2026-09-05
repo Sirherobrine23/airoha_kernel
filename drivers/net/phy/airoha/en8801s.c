@@ -1,4 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0
+/*
+ * Driver for Airoha EN8801S Gigabit Ethernet PHYs.
+ *
+ * Copyright (C) 2023 Airoha Technology Corp.
+ */
 
 #include <linux/kernel.h>
 #include <linux/bitfield.h>
@@ -67,17 +72,8 @@
 
 #define LINK_UP				1
 #define LINK_DOWN			0
-
-/*
-SFP Sample for verification
-Tx Reverse, Rx Reverse
-*/
-#define EN8801S_TX_POLARITY_NORMAL	0x0
-#define EN8801S_TX_POLARITY_REVERSE	0x1
-
-#define EN8801S_RX_POLARITY_NORMAL	BIT(1)
-#define EN8801S_RX_POLARITY_REVERSE	(0x0 << 1)
-
+#define EN8801S_POLARITY(is_rx, reverse) \
+	((!!(reverse) ^ !!(is_rx)) << !!(is_rx))
 
 /*
  * EN8801S hardware defaults. These remain active until the PHY LED
@@ -251,6 +247,8 @@ struct en8801s_priv {
 	struct airoha_leds_config led_cfg[EN8801S_LEDS];
 	struct device *dev;
 	bool first_init;
+	bool rx_reverse;
+	bool tx_reverse;
 	u16 count;
 	u16 pro_version;
 	u8 pbus_addr;
@@ -1087,8 +1085,11 @@ static int en8801s_phase1_init(struct phy_device *phydev)
 	if (err)
 		return err;
 
+	/* Write phy polarity */
 	mdelay(500);
-	pbus_data = (pbus_data & ~BIT(2)) | EN8801S_RX_POLARITY_NORMAL | EN8801S_TX_POLARITY_NORMAL;
+	pbus_data &= ~(BIT(2) | GENMASK(1, 0));
+	pbus_data |= EN8801S_POLARITY(true, priv->rx_reverse) |
+		     EN8801S_POLARITY(false, priv->tx_reverse);
 	err = airoha_pbus_write(mbus, pbus_addr, EN8801S_RG_LTR_CTL, pbus_data);
 	if (err)
 		return err;
@@ -1705,6 +1706,8 @@ static int en8801s_probe(struct phy_device *phydev)
 	priv->dev = dev;
 	priv->pbus_addr = pbus_addr;
 	priv->pbus_addr_from_firmware = pbus_addr_from_firmware;
+	priv->rx_reverse = device_property_present(dev, "airoha,rx-reverse");
+	priv->tx_reverse = device_property_present(dev, "airoha,tx-reverse");
 
 	if (mdiodev->reset_gpio) {
 		dev_dbg(dev, "Assert PHY %lx HWRST until phy_init_hw", phy_addr);
@@ -1820,13 +1823,15 @@ static struct phy_driver Airoha_driver[] = {
 
 module_phy_driver(Airoha_driver);
 
-static const struct mdio_device_id __maybe_unused Airoha_tbl[] = {
+static const struct mdio_device_id __maybe_unused en8801s_tbl[] = {
 	{ PHY_ID_MATCH_EXACT(EN8801SC_PHY_ID) },
 	{ PHY_ID_MATCH_EXACT(EN8801SN_PHY_ID) },
 	{ }
 };
 
-MODULE_DEVICE_TABLE(mdio, Airoha_tbl);
+MODULE_DEVICE_TABLE(mdio, en8801s_tbl);
+
 MODULE_DESCRIPTION("Airoha EN8801S PHY");
 MODULE_AUTHOR("Airoha");
+MODULE_AUTHOR("Matheus Sampaio Queiroga <srherobrine20@gmail.com>");
 MODULE_LICENSE("GPL");
