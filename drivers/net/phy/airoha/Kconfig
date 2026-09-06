@@ -1,10 +1,11 @@
 config AIROHA_EN8801S_PHY
 	tristate "Drivers for Airoha EN8801S Gigabit PHYs"
 	help
-	  Currently supports the Airoha EN8801S PHY.
+	  Currently supports the Airoha EN8801S and AN8801 PHY.
 
 config AIROHA_EN8811H_PHY
 	tristate "Airoha EN8811H 2.5 Gigabit PHY"
 	select PHY_COMMON_PROPS
+	default n
 	help
 	  Currently supports the Airoha EN8811H PHY.
