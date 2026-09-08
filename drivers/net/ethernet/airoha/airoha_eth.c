@@ -3259,16 +3259,14 @@ static void airoha_qdma_init_qos(struct airoha_qdma *qdma)
 	airoha_qdma_clear(qdma, REG_TXWRR_MODE_CFG, TWRR_WEIGHT_SCALE_MASK);
 	airoha_qdma_set(qdma, REG_TXWRR_MODE_CFG, TWRR_WEIGHT_BASE_MASK);
 
-	/* The EN7523 SDK enables PSE buffer estimation only on QDMA WAN.
-	 * QDMA1 is the WAN instance in this driver. Later SoCs explicitly
-	 * keep this estimator disabled, as does EN7523 QDMA LAN.
+	/* The PSE buffer estimator is only meaningful once the GPON buffer
+	 * thresholds in REG_PSE_BUF_USAGE_CFG1 have been programmed, which
+	 * airoha_xpon_set_mode() does for GPON alone. Enabling it here would
+	 * leave it running against unprogrammed thresholds on every other
+	 * uplink, so it is turned on from that path instead.
 	 */
-	if (airoha_is(eth, airoha_en7523) && id == 1)
-		airoha_qdma_set(qdma, REG_PSE_BUF_USAGE_CFG,
-				PSE_BUF_ESTIMATE_EN_MASK);
-	else
-		airoha_qdma_clear(qdma, REG_PSE_BUF_USAGE_CFG,
-				  PSE_BUF_ESTIMATE_EN_MASK);
+	airoha_qdma_clear(qdma, REG_PSE_BUF_USAGE_CFG,
+			  PSE_BUF_ESTIMATE_EN_MASK);
 
 	meter_cfg = EGRESS_RATE_METER_EN_MASK |
 		    EGRESS_RATE_METER_EQ_RATE_EN_MASK;
@@ -5084,6 +5082,20 @@ static int airoha_xpon_set_mode(struct net_device *netdev,
 				GDM_DROP_CRC_ERR_MASK);
 		airoha_eth_update_gpon_pse_buf(dev, 1);
 	}
+
+	/* The SDK enables PSE buffer estimation as part of the GPON path, and
+	 * it depends on the thresholds programmed just above. Keep the two
+	 * together: with the estimator on and the thresholds unset, QDMA1
+	 * eventually stops releasing frames towards GDM2 and transmit stalls
+	 * permanently, with no completion, no drop and no error reported.
+	 */
+	if (airoha_is(dev->eth, airoha_en7523) &&
+	    mode == AIROHA_XPON_MODE_GPON)
+		airoha_qdma_set(&dev->eth->qdma[1], REG_PSE_BUF_USAGE_CFG,
+				PSE_BUF_ESTIMATE_EN_MASK);
+	else
+		airoha_qdma_clear(&dev->eth->qdma[1], REG_PSE_BUF_USAGE_CFG,
+				  PSE_BUF_ESTIMATE_EN_MASK);
 
 	/* A mode switch starts from a quiescent GDM2/CDM2 datapath. */
 	airoha_fe_clear(dev->eth, REG_GDM_TXCHN_EN(AIROHA_GDM2_IDX), ~0U);
