@@ -5,6 +5,7 @@
 #include <linux/delay.h>
 #include <linux/interrupt.h>
 #include <linux/mfd/syscon.h>
+#include <linux/mutex.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
 #include <linux/platform_device.h>
@@ -190,6 +191,8 @@
 #define AN7583_SCU_THERMAL_PROTECT_KEY		0x80
 #define AN7583_NUM_SENSOR			3
 
+#define AN7583_MUX_TRIES			3
+
 #define AIROHA_THERMAL_NO_MUX_SENSOR		-1
 
 /* Convert temp to raw value as read from ADC	((((temp / 100) - init) * slope) / 1000) + offset */
@@ -250,7 +253,9 @@ struct airoha_thermal_priv {
 	struct resource scu_adc_res;
 
 	u32 pllrg_protect;
-	int current_adc;
+
+	/* Serialises mux selection and ADC sampling */
+	struct mutex lock;
 
 	struct thermal_zone_device *tz;
 	int init_temp;
@@ -297,6 +302,7 @@ static int airoha_get_thermal_ADC(struct airoha_thermal_priv *priv)
 static void airoha_set_thermal_mux(struct airoha_thermal_priv *priv,
 				   int tdac_idx, int sensor_idx)
 {
+	unsigned int tries, sel = 0;
 	u32 pllrg;
 
 	/* Save PLLRG current value */
@@ -307,25 +313,51 @@ static void airoha_set_thermal_mux(struct airoha_thermal_priv *priv,
 		     priv->pllrg_protect);
 
 	/*
-	 * Configure Thermal Sensor mux to sensor_idx.
+	 * On AN7583 MUX_SENSOR selects the diode and MUX_TADC the sensor.
 	 * (if not supported, sensor_idx is AIROHA_THERMAL_NO_MUX_SENSOR)
 	 */
 	if (sensor_idx != AIROHA_THERMAL_NO_MUX_SENSOR)
 		regmap_field_write(priv->chip_scu_fields[AIROHA_THERMAL_MUX_SENSOR],
 				   sensor_idx);
 
-	/* Configure Thermal ADC mux to tdac_idx */
-	if (priv->current_adc != tdac_idx) {
+	/* Unprotected writes are dropped silently, so read the value back */
+	tries = AN7583_MUX_TRIES;
+	do {
 		regmap_field_write(priv->chip_scu_fields[AIROHA_THERMAL_MUX_TADC],
 				   tdac_idx);
-		priv->current_adc = tdac_idx;
-	}
+		if (regmap_field_read(priv->chip_scu_fields[AIROHA_THERMAL_MUX_TADC],
+				      &sel))
+			break;
+	} while (sel != tdac_idx && --tries);
 
 	/* Sleep 10 ms for Thermal ADC to enable */
 	usleep_range(10 * USEC_PER_MSEC, 11 * USEC_PER_MSEC);
 
 	/* Restore PLLRG value on exit */
 	regmap_write(priv->chip_scu, EN7581_PLLRG_PROTECT, pllrg);
+}
+
+/*
+ * The selection can change during the 10 ms settle, so check it again after
+ * sampling. Reads need no key.
+ */
+static bool airoha_thermal_mux_holds(struct airoha_thermal_priv *priv,
+				     int sensor, int diode)
+{
+	unsigned int sel;
+
+	if (regmap_field_read(priv->chip_scu_fields[AIROHA_THERMAL_MUX_TADC],
+			      &sel) || sel != sensor)
+		return false;
+
+	if (diode == AIROHA_THERMAL_NO_MUX_SENSOR)
+		return true;
+
+	if (regmap_field_read(priv->chip_scu_fields[AIROHA_THERMAL_MUX_SENSOR],
+			      &sel) || sel != diode)
+		return false;
+
+	return true;
 }
 
 static int en7581_thermal_get_temp(struct thermal_zone_device *tz, int *temp)
@@ -593,31 +625,64 @@ static int en7581_thermal_post_probe(struct platform_device *pdev)
 	return 0;
 }
 
+static int an7583_thermal_read_diode(struct airoha_thermal_priv *priv,
+				     int sensor_idx, int diode, int *val)
+{
+	airoha_set_thermal_mux(priv, sensor_idx, diode);
+	*val = airoha_get_thermal_ADC(priv);
+
+	return airoha_thermal_mux_holds(priv, sensor_idx, diode) ? 0 : -EAGAIN;
+}
+
+static int an7583_thermal_read_diodes(struct airoha_thermal_priv *priv,
+				      int sensor_idx, int *zero, int *d0,
+				      int *d1)
+{
+	int ret;
+
+	ret = an7583_thermal_read_diode(priv, sensor_idx, AN7583_ZERO_TADC,
+					zero);
+	if (ret)
+		return ret;
+
+	ret = an7583_thermal_read_diode(priv, sensor_idx, AN7583_D0_TADC, d0);
+	if (ret)
+		return ret;
+
+	return an7583_thermal_read_diode(priv, sensor_idx, AN7583_D1_TADC, d1);
+}
+
 static int an7583_thermal_get_temp(struct thermal_zone_device *tz, int *temp)
 {
 	struct airoha_thermal_priv *priv = thermal_zone_device_priv(tz);
-	int sensor_idx;
+	int sensor_idx = AN7583_BGP_TEMP_SENSOR;
 	int delta_diode, delta_gain;
 	int coeff, slope, offset;
-
 	int diode_zero, diode_d0, diode_d1;
-
-	/* Always read sensor AN7583_BGP_TEMP_SENSOR */
-	sensor_idx = AN7583_BGP_TEMP_SENSOR;
+	int ret, tries;
 
 	coeff = an7583_thermal_coeff[sensor_idx];
 	slope = an7583_thermal_slope[sensor_idx];
 	offset = an7583_thermal_offset[sensor_idx];
 
-	airoha_set_thermal_mux(priv, sensor_idx, AN7583_ZERO_TADC);
-	diode_zero = airoha_get_thermal_ADC(priv);
-	airoha_set_thermal_mux(priv, sensor_idx, AN7583_D0_TADC);
-	diode_d0 = airoha_get_thermal_ADC(priv);
-	airoha_set_thermal_mux(priv, sensor_idx, AN7583_D1_TADC);
-	diode_d1 = airoha_get_thermal_ADC(priv);
+	mutex_lock(&priv->lock);
+	for (tries = 0; tries < AN7583_MUX_TRIES; tries++) {
+		ret = an7583_thermal_read_diodes(priv, sensor_idx, &diode_zero,
+						 &diode_d0, &diode_d1);
+		if (ret != -EAGAIN)
+			break;
+	}
+	mutex_unlock(&priv->lock);
+
+	if (ret)
+		return ret;
 
 	delta_diode = diode_d1 - diode_d0;
 	delta_gain = (delta_diode * coeff) / 100 + (diode_zero - diode_d1);
+
+	if (!delta_gain)
+		return -EAGAIN;
+
 	*temp = (slope * delta_diode * 10) / delta_gain - offset * 10;
 	*temp *= 100;
 
@@ -672,7 +737,7 @@ static int airoha_thermal_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	priv->pllrg_protect = soc_data->pllrg_protect;
-	priv->current_adc = -1;
+	mutex_init(&priv->lock);
 
 	if (!soc_data->probe)
 		return -EINVAL;
