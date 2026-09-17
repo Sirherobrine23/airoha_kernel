@@ -23,6 +23,8 @@
 #define CR_AHB_RSTCR		((void __iomem *)CKSEG1ADDR(0x1fb00040))
 #define RESET			BIT(31)
 #define NP_SCU_BASE		((void __iomem *)CKSEG1ADDR(0x1fb00000))
+#define CHIP_SCU_BASE		((void __iomem *)CKSEG1ADDR(AIROHA_CHIP_SCU_BASE_PHYS))
+#define EFUSE_BASE		((void __iomem *)CKSEG1ADDR(AIROHA_EFUSE_BASE_PHYS))
 
 #ifdef CONFIG_CPU_LITTLE_ENDIAN
 #define UART_BASE		CKSEG1ADDR(0x1fbf0000)	/* LE: byte at offset 0 */
@@ -35,6 +37,41 @@ static void hw_reset(char *command)
 {
 	iowrite32(RESET, CR_AHB_RSTCR);
 }
+
+/*
+ * vsmp_init_secondary expects either GIC or cascading interrupt configuration.
+ * The EN751221 is a 34Kc with VEIC, but not GIC compatible. The cascading
+ * configuration enables lines 6 and 7 for performance counters, but when this
+ * is done on the EN751221 intc with VEIC enabled, it causes the whole intc to
+ * stop sending interrupts.
+ * Only unmask lines 0 and 1 (software interrupts) in init_secondary.
+ */
+#ifdef CONFIG_MIPS_MT_SMP
+extern const struct plat_smp_ops vsmp_smp_ops;
+static struct plat_smp_ops en75_smp_ops __ro_after_init;
+
+static void en751221_init_secondary(void)
+{
+	write_c0_status((read_c0_status() & ~ST0_IM) |
+			(STATUSF_IP0 | STATUSF_IP1));
+}
+
+static int __init en751221_register_vsmp_smp_ops(void)
+{
+	if (!cpu_has_mipsmt)
+		return -ENODEV;
+
+	en75_smp_ops = vsmp_smp_ops;
+	en75_smp_ops.init_secondary = en751221_init_secondary;
+	register_smp_ops(&en75_smp_ops);
+	return 0;
+}
+#else
+static int __init en751221_register_vsmp_smp_ops(void)
+{
+	return -ENODEV;
+}
+#endif /* CONFIG_MIPS_MT_SMP */
 
 /* 1. Bring up early printk. */
 void __init prom_init(void)
@@ -72,7 +109,7 @@ void __init device_tree_init(void)
 		return;
 
 	/* EN751221: single-core 34Kc with MT ASE -> 2 VPEs via VSMP (SMVP) */
-	if (!register_vsmp_smp_ops())
+	if (!en751221_register_vsmp_smp_ops())
 		return;
 
 	register_up_smp_ops();
@@ -81,13 +118,10 @@ void __init device_tree_init(void)
 const char *get_system_type(void)
 {
 	static char system_type[64];
-	u32 hir, pkgid, pdidr;
 	const char *soc;
 
-	hir = get_pkg_mem(NP_SCU_BASE);
-	pkgid = get_pkgid_mem(NP_SCU_BASE);
-	pdidr = get_pdidr_mem(NP_SCU_BASE);
-	soc = airoha_soc_name_from_regs(hir, pkgid, pdidr);
+	soc = airoha_soc_name_from_mips_mem(NP_SCU_BASE, CHIP_SCU_BASE,
+				     EFUSE_BASE);
 
 	snprintf(system_type, sizeof(system_type), "EcoNet %s", soc);
 	return system_type;
