@@ -82,12 +82,16 @@ static void en7570_load_config(struct en7570_priv *priv)
 	if (((w >> 16) & 0xffff) != 0xffff)
 		priv->env_temp_offset_mc = ((w >> 16) & 0xffff) * 100;
 
+	/*
+	 * Vendor mt7570_APD_control(): slope1 applies above 25 degC and
+	 * slope2 below it, around the voltage stored as the change point.
+	 */
 	w = lddla_flash_read(&priv->lddla, EN7570_FL_APD_SLOPE1);
 	if (w != EN7570_FLASH_ERASED)
-		priv->apd_slope_dn_uv = w * 10000;	/* V/degC x100 -> uV/degC */
+		priv->apd_slope_up_uv = w * 10000;	/* V/degC x100 -> uV/degC */
 	w = lddla_flash_read(&priv->lddla, EN7570_FL_APD_SLOPE2);
 	if (w != EN7570_FLASH_ERASED)
-		priv->apd_slope_up_uv = w * 10000;
+		priv->apd_slope_dn_uv = w * 10000;
 	w = lddla_flash_read(&priv->lddla, EN7570_FL_APD_CHANGE_POINT);
 	if (w != EN7570_FLASH_ERASED)
 		priv->apd_knee_mv = w * 10;		/* V x100 -> mV */
