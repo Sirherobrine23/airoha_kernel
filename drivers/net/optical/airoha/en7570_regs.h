@@ -178,16 +178,23 @@
 #define EN7570_FL_IMOD_INIT		0x004	/* initial laser modulation (10-bit) */
 #define EN7570_FL_P0_TARGET		0x008	/* P0 (high-power) MPD target (10-bit) */
 #define EN7570_FL_P1_TARGET		0x00c	/* P1 (low-power) MPD target (10-bit) */
-#define EN7570_FL_APD_SLOPE1		0x010	/* APD slope below knee (V/degC x100) */
-#define EN7570_FL_APD_SLOPE2		0x014	/* APD slope above knee (V/degC x100) */
-#define EN7570_FL_APD_CHANGE_POINT	0x018	/* APD knee voltage (V x100) */
+#define EN7570_FL_APD_SLOPE1		0x010	/* APD slope ABOVE 25 degC (V/degC x100) */
+#define EN7570_FL_APD_SLOPE2		0x014	/* APD slope BELOW 25 degC (V/degC x100) */
+#define EN7570_FL_APD_CHANGE_POINT	0x018	/* APD voltage at 25 degC (V x100) */
 #define EN7570_FL_T_APD			0x01c	/* APD update interval (seconds) */
 #define EN7570_FL_LOS_HIGH_THLD		0x020	/* LOS high comparator threshold (7-bit) */
 #define EN7570_FL_LOS_LOW_THLD		0x024	/* LOS low comparator threshold (7-bit) */
 #define EN7570_FL_TIAGAIN		0x028	/* Rx TIA gain code (2-bit) */
 #define EN7570_FL_INTERNAL_DDMI		0x02c	/* 0=off, 1=on, 2=fast */
-#define EN7570_FL_APD_VOLTAGE_1		0x030	/* APD anchor voltages 0x00/0x40 (4-seg) */
-#define EN7570_FL_APD_VOLTAGE_2		0x034	/* APD anchor voltages 0x80/0xc0 (4-seg) */
+/*
+ * 0x030/0x034 are overloaded by the factory tool: with both upper halves
+ * populated they are the four-segment anchors (V x10 pairs); otherwise
+ * 0x030 is the DAC step (V/code x1000) and 0x034 the code-0 voltage
+ * (V x100) of the single-slope mapping (flash_APD_voltage_step and
+ * flash_APD_zero_code_voltage in the vendor mt7570_reg.h).
+ */
+#define EN7570_FL_APD_VOLTAGE_1		0x030	/* anchors 0x00/0x40, or DAC step */
+#define EN7570_FL_APD_VOLTAGE_2		0x034	/* anchors 0x80/0xc0, or zero-code V */
 #define EN7570_FL_VOLTAGE_SLOPE		0x038	/* supply-voltage ADC slope correction */
 #define EN7570_FL_VOLTAGE_OFFSET	0x03c	/* supply-voltage ADC offset correction */
 #define EN7570_FL_TX_K1			0x040	/* Tx K-point #1 (tx_power<<16 | mpd_K) */
