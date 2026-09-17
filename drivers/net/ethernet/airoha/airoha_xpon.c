@@ -1374,6 +1374,33 @@ static void gpon_cb_set_overhead(void *hw_priv,
 	gpon_write(priv, GPON_PRE_ASSIGNED_DLY, pre_dly);
 
 	/*
+	 * The vendor driver keeps TX disabled throughout O2.  Receiving
+	 * Upstream_Overhead is the point where it enables the external
+	 * transmitter and then rearms the EN757x safe circuit, immediately
+	 * before entering O3 and answering the serial-number grants.
+	 *
+	 * Keep the same ordering here.  Rearming the LDDLA before releasing
+	 * TX_DISABLE is not equivalent: SAFE_PROTECT may latch again before
+	 * the first O3 burst reaches the fibre.
+	 */
+	ret = airoha_xpon_tx_enable(priv->dev, priv->frontend, true);
+	if (ret) {
+		dev_warn(priv->dev,
+			 "failed to enable optical transmitter for GPON O3: %d\n",
+			 ret);
+		return;
+	}
+
+	ret = airoha_xpon_tx_rearm(priv->dev, priv->frontend);
+	if (ret) {
+		dev_warn(priv->dev,
+			 "failed to rearm optical transmitter for GPON O3: %d\n",
+			 ret);
+		airoha_xpon_tx_enable(priv->dev, priv->frontend, false);
+		return;
+	}
+
+	/*
 	 * G_PLOu_OVERHEAD and G_PLOu_DELM_BIT are currently undocumented in
 	 * this driver.  Dump the complete burst-generator window before
 	 * assigning layouts to those registers.
@@ -2154,11 +2181,13 @@ static int gpon_enable(struct xpon_priv *priv)
 	atomic_set(&priv->pending_irqs, 0);
 	gpon_ploam_rx_queue_reset(priv);
 	WRITE_ONCE(priv->mac_enabled, true);
-	ret = airoha_xpon_tx_enable(priv->dev, priv->frontend, true);
-	if (ret)
-		goto err_disable_mac;
 
-	/* Do not enter O2 until the external transmitter interlock is open. */
+	/*
+	 * Enter O2 with the transmitter interlock still asserted.  The vendor
+	 * sequence releases it only after receiving Upstream_Overhead, in
+	 * gpon_cb_set_overhead(), immediately before the O3 serial-number
+	 * exchange.
+	 */
 	ploam_start(priv->ploam);
 	WRITE_ONCE(priv->phy_link_known, false);
 	mod_delayed_work(priv->fsm_wq, &priv->phy_link_work, 0);
@@ -2180,9 +2209,6 @@ static int gpon_enable(struct xpon_priv *priv)
 
 	return 0;
 
-err_disable_mac:
-	gpon_disable(priv);
-	return ret;
 err_stop_phy:
 	airoha_xpon_tx_enable(priv->dev, priv->frontend, false);
 	airoha_xpon_phy_stop(priv->dev, priv->phy,
