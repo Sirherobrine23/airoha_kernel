@@ -25,10 +25,22 @@
 /* Before i2c reg: 0x1FBF8100 */
 
 /* Physical addresses used by the legacy MIPS EcoNet identification logic. */
-#define AIROHA_EFUSE_VERIFY_DATA0_PHYS	0x1fbf8214
-#define AIROHA_EFUSE_VERIFY_DATA1_PHYS	0x1fbf8218
-#define AIROHA_CHIP_SCU_PACKAGE_PHYS	0x1fa20174
-#define AIROHA_CHIP_SCU_CONFIG_PHYS	0x1fa201ec
+#define AIROHA_CHIP_SCU_BASE_PHYS	0x1fa20000
+#define AIROHA_EFUSE_BASE_PHYS		0x1fbf8000
+
+#define AIROHA_CHIP_SCU_PACKAGE		0x174
+#define AIROHA_CHIP_SCU_CONFIG		0x1ec
+#define AIROHA_EFUSE_VERIFY_DATA0	0x214
+#define AIROHA_EFUSE_VERIFY_DATA1	0x218
+
+#define AIROHA_EFUSE_VERIFY_DATA0_PHYS	(AIROHA_EFUSE_BASE_PHYS + \
+					 AIROHA_EFUSE_VERIFY_DATA0)
+#define AIROHA_EFUSE_VERIFY_DATA1_PHYS	(AIROHA_EFUSE_BASE_PHYS + \
+					 AIROHA_EFUSE_VERIFY_DATA1)
+#define AIROHA_CHIP_SCU_PACKAGE_PHYS	(AIROHA_CHIP_SCU_BASE_PHYS + \
+					 AIROHA_CHIP_SCU_PACKAGE)
+#define AIROHA_CHIP_SCU_CONFIG_PHYS	(AIROHA_CHIP_SCU_BASE_PHYS + \
+					 AIROHA_CHIP_SCU_CONFIG)
 
 /* EN7512/EN7521 and EN7526C/EN7522 eFuse encoding. */
 #define AIROHA_EFUSE_PKG_MASK		GENMASK(5, 0)
@@ -854,6 +866,65 @@ static inline u32 get_pdidr_mem(void __iomem *np_scu)
 static inline u32 get_submodel_mem(void __iomem *np_scu)
 {
 	return readl(np_scu + AIROHA_NP_SCU_SUBMODEL);
+}
+
+/*
+ * Decode the exact legacy MIPS EcoNet SoC variant from the same register set
+ * used by the vendor code/U-Boot.  HIR/PDIDR identify the family, while the
+ * EN7512/EN7521 family (and the other legacy MIPS families) needs eFuse/strap
+ * data to resolve the concrete part number.
+ *
+ * The caller is responsible for supplying uncached/mapped base addresses.
+ */
+static inline const char *
+airoha_soc_name_from_mips_mem(void __iomem *np_scu, void __iomem *chip_scu,
+			      void __iomem *efuse)
+{
+	struct airoha_soc_id_regs regs = { 0 };
+	enum airoha_pkg pkg;
+
+	regs.hir = get_pkg_mem(np_scu);
+	regs.pkgid = get_pkgid_mem(np_scu);
+	regs.pdidr = get_pdidr_mem(np_scu);
+
+	pkg = airoha_pkg_from_id(regs.hir);
+	if (!pkg)
+		pkg = airoha_pkg_from_id(regs.pdidr);
+
+	switch (pkg) {
+	case EN751221_PKG:
+		if (!efuse)
+			return airoha_soc_name(pkg, regs.pkgid);
+
+		regs.efuse_data0 = readl(efuse + AIROHA_EFUSE_VERIFY_DATA0);
+		break;
+	case EN7526C_PKG:
+		if (!chip_scu || !efuse)
+			return airoha_soc_name(pkg, regs.pkgid);
+
+		regs.efuse_data0 = readl(efuse + AIROHA_EFUSE_VERIFY_DATA0);
+		regs.efuse_data1 = readl(efuse + AIROHA_EFUSE_VERIFY_DATA1);
+		regs.chip_scu_config = readl(chip_scu + AIROHA_CHIP_SCU_CONFIG);
+		break;
+	case EN751627_PKG:
+		if (!chip_scu || !efuse)
+			return airoha_soc_name(pkg, regs.pkgid);
+
+		regs.efuse_data0 = readl(efuse + AIROHA_EFUSE_VERIFY_DATA0);
+		regs.chip_scu_package = readl(chip_scu + AIROHA_CHIP_SCU_PACKAGE);
+		break;
+	case MT751020_PKG:
+		if (!efuse)
+			return airoha_soc_name(pkg, regs.pkgid);
+
+		regs.np_scu_submodel = get_submodel_mem(np_scu);
+		regs.efuse_data0 = readl(efuse + AIROHA_EFUSE_VERIFY_DATA0);
+		break;
+	default:
+		break;
+	}
+
+	return airoha_soc_name_from_id_regs(&regs);
 }
 
 #endif
