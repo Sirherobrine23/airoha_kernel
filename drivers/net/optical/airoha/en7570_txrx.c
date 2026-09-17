@@ -390,13 +390,19 @@ static int en7570_apd_voltage_to_code(struct en7570_priv *priv, s32 v_mv)
 				code = 0xc0 + (step ? (v_mv - vc0) / step : 0);
 		}
 	} else {
-		/* Legacy single-slope mode. */
+		/*
+		 * Single-slope mode as in the vendor driver: the same two words
+		 * hold the DAC step (V/code x1000) and the code-0 voltage
+		 * (V x100).  0x038 is the supply-voltage ADC slope used by the
+		 * DDMI Vcc readout and has nothing to do with the APD DAC.
+		 */
 		s32 zero_mv = EN7570_APD_ZERO_CODE_MV_DEF;
 		s32 step_uv = EN7570_APD_STEP_UV_DEF;
-		u32 fstep = lddla_flash_read(&priv->lddla, EN7570_FL_VOLTAGE_SLOPE);
 
-		if (fstep != EN7570_FLASH_ERASED && fstep)
-			step_uv = fstep;	/* flash_APD_voltage_step (uV/code) */
+		if (w1 != EN7570_FLASH_ERASED && w1)
+			step_uv = w1 * 1000;	/* flash_APD_voltage_step */
+		if (w2 != EN7570_FLASH_ERASED && w2)
+			zero_mv = w2 * 10;	/* flash_APD_zero_code_voltage */
 
 		code = div_s64((s64)(v_mv - zero_mv) * 1000, step_uv);
 	}
