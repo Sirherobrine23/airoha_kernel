@@ -890,6 +890,7 @@ static int econet_poll_tx_complete(struct napi_struct *napi, int budget)
 {
 	struct qregs_doneq_state state;
 	struct econet_tx_doneq *done_q;
+	struct net_device *wake_dev = NULL;
 	struct airoha_qdma_mips *qdma;
 	int irq_queued;
 	u32 done = 0, head;
@@ -959,11 +960,29 @@ static int econet_poll_tx_complete(struct napi_struct *napi, int budget)
 		txq = netdev_get_tx_queue(skb->dev,
 					  skb_get_queue_mapping(skb));
 		netdev_tx_completed_queue(txq, 1, skb->len);
-		if (netif_tx_queue_stopped(txq))
-			netif_tx_wake_queue(txq);
+		/* Every net_device TX queue of this conduit (one per DSA user
+		 * port through tag_mtk's queue_mapping, hashed for the rest)
+		 * funnels into the same hardware ring, so the gating resource
+		 * is shared.  A queue stopped on ring-full holds no descriptor
+		 * of its own (econet_qdma_xmit_mips() returns -EBUSY before
+		 * posting the skb), so it can never produce a completion that
+		 * would wake it: waking only the queue of the skb just freed
+		 * strands it forever.  Defer a device-wide wake to after the
+		 * drain loop instead.
+		 */
+		wake_dev = skb->dev;
 
 		dev_kfree_skb_any(skb);
 	}
+
+	/* Freed at least one ring slot: wake every TX queue of the conduit so
+	 * a descriptor-less stranded queue restarts.  netif_tx_wake_all_queues()
+	 * only clears DRV_XOFF, not BQL's STACK_XOFF, so BQL throttling is
+	 * preserved; if the ring fills up again the next xmit re-stops the queue
+	 * and the next completion re-wakes it.
+	 */
+	if (wake_dev)
+		netif_tx_wake_all_queues(wake_dev);
 
 	if (done) {
 		int i, len = done >> 7;
