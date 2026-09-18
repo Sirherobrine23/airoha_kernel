@@ -1337,10 +1337,12 @@ static int econet_en751221_slm_init(struct airoha_qdma_mips *qdma,
 	 * and the board has already completed DRAM/arbiter initialisation.
 	 */
 	glo_cfg = readl(&qdma->slm.regs->glo_cfg);
-	if (glo_cfg & EN751221_SLM_GLO_CFG_BYPASS)
-		return dev_err_probe(qdma->qdma->eth->dev, -EOPNOTSUPP,
-				     "EN751221 SLM is bypassed by firmware (GLO_CFG=%08x)\n",
-				     glo_cfg);
+	if (glo_cfg & EN751221_SLM_GLO_CFG_BYPASS) {
+		dev_info(qdma->qdma->eth->dev,
+			 "EN751221 SLM is bypassed by firmware (GLO_CFG=%08x), using DRAM HWF buffers\n",
+			 glo_cfg);
+		return -EOPNOTSUPP;
+	}
 
 	ret = econet_en751221_slm_wait_idle(qdma);
 	if (ret)
@@ -1414,9 +1416,20 @@ static int econet_qdma_init_hfwd(struct airoha_qdma_mips *qdma)
 	if (econet_en751221_use_slm(qdma)) {
 		size = buf_size * num_desc;
 		ret = econet_en751221_slm_init(qdma, size, &hwf_data_addr);
-		if (ret)
+		if (!ret)
+			goto hwf_data_ready;
+		if (ret != -EOPNOTSUPP)
 			return ret;
-		goto hwf_data_ready;
+
+		/*
+		 * Boot2 images built without SLM leave GLO_CFG.BYPASS set.
+		 * The vendor QDMA_WAN driver has a non-SLM mode which keeps the
+		 * hardware-forwarding payload in DRAM, so use the normal DRAM
+		 * allocation path below instead of failing the whole Ethernet
+		 * probe.  Without a reserved qdma1-buf region the existing
+		 * conservative descriptor cap avoids requiring a large contiguous
+		 * allocation.
+		 */
 	}
 
 	index = of_property_match_string(qdma->qdma->eth->dev->of_node,
@@ -9011,9 +9024,11 @@ static void airoha_eth_cleanup(struct airoha_eth *eth)
 	int i;
 
 	airoha_wed_exit();
-	for (i = 0; i < AIROHA_MAX_NUM_QDMA; i++) {
-		if (eth->qdma[i].eth)
-			airoha_qdma_stop_napi(&eth->qdma[i]);
+	if (test_and_clear_bit(DEV_STATE_NAPI_STARTED, &eth->state)) {
+		for (i = 0; i < AIROHA_MAX_NUM_QDMA; i++) {
+			if (eth->qdma[i].eth)
+				airoha_qdma_stop_napi(&eth->qdma[i]);
+		}
 	}
 
 	if (eth->ports) {
@@ -9702,6 +9717,7 @@ static int airoha_eth_probe(struct platform_device *pdev)
 
 	for (i = 0; i < AIROHA_MAX_NUM_QDMA; i++)
 		airoha_qdma_start_napi(&eth->qdma[i]);
+	set_bit(DEV_STATE_NAPI_STARTED, &eth->state);
 
 	err = airoha_register_gdm_devices(eth);
 	if (err)
