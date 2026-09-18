@@ -35,6 +35,7 @@ struct airoha_xpon_match_data {
 	u32 wan_mode_mask;
 	u8 gpon_fine_delay;
 	u16 gpon_rsp_time_activation;
+	u8 gpon_guard_bits_override;
 	bool en7523_gpon_defaults;
 	bool mac_irq_via_eth;
 	bool prepare_before_mmio;
@@ -320,6 +321,7 @@ struct airoha_xpon_match_data {
  * Upstream_Overhead.
  */
 #define GPON_PHY_GUARD_BIT_NUM	20
+#define GPON_PHY_GUARD_BIT_NUM_EN751221	24
 
 
 #define EPON_MAX_LLID		8
