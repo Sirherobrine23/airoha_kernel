@@ -85,7 +85,12 @@ mt7988_probe(struct platform_device *pdev)
 			return ret;
 	}
 
-	return dsa_register_switch(priv->ds);
+	ret = dsa_register_switch(priv->ds);
+	if (ret)
+		return dev_err_probe(priv->dev, ret,
+				     "failed to register DSA switch\n");
+
+	return 0;
 }
 
 static void mt7988_remove(struct platform_device *pdev)

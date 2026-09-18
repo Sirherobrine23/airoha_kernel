@@ -226,7 +226,12 @@ mt7530_probe(struct mdio_device *mdiodev)
 	if (priv->id == ID_MT7531)
 		priv->create_sgmii = mt7531_create_sgmii;
 
-	return dsa_register_switch(priv->ds);
+	ret = dsa_register_switch(priv->ds);
+	if (ret)
+		return dev_err_probe(priv->dev, ret,
+				     "failed to register DSA switch\n");
+
+	return 0;
 }
 
 static void
@@ -238,15 +243,19 @@ mt7530_remove(struct mdio_device *mdiodev)
 	if (!priv)
 		return;
 
-	ret = regulator_disable(priv->core_pwr);
-	if (ret < 0)
-		dev_err(priv->dev,
-			"Failed to disable core power: %d\n", ret);
+	if (priv->core_pwr) {
+		ret = regulator_disable(priv->core_pwr);
+		if (ret < 0)
+			dev_err(priv->dev,
+				"Failed to disable core power: %d\n", ret);
+	}
 
-	ret = regulator_disable(priv->io_pwr);
-	if (ret < 0)
-		dev_err(priv->dev, "Failed to disable io pwr: %d\n",
-			ret);
+	if (priv->io_pwr) {
+		ret = regulator_disable(priv->io_pwr);
+		if (ret < 0)
+			dev_err(priv->dev,
+				"Failed to disable io pwr: %d\n", ret);
+	}
 
 	mt7530_remove_common(priv);
 
