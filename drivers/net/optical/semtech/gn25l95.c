@@ -106,6 +106,9 @@
 #define GN25L95_SOFT_TX_DELAY_MS	110
 #define GN25L98_TX_START_DELAY_MS	25
 
+#define GN25L98_TABLE2_TX_CTRL	0xa2
+#define GN25L98_TX_OPEN		BIT(5)
+
 enum gn25l9x_variant {
 	GN25L9X_VARIANT_95,
 	GN25L9X_VARIANT_98,
@@ -994,9 +997,49 @@ static int gn25l95_frontend_tx_rearm(struct optical_frontend *frontend)
 	return ret;
 }
 
+static int gn25l98_tx_enable_locked(struct gn25l95_priv *priv, bool enable)
+{
+	unsigned int old_table;
+	int ret;
+
+	ret = regmap_read(priv->regmap, GN25L95_TABLE_SELECT, &old_table);
+	if (ret)
+		return ret;
+
+	ret = gn25l98_select_table(priv, GN25L95_TABLE_2);
+	if (ret)
+		return ret;
+
+	ret = regmap_update_bits(priv->regmap,
+				 GN25L98_TABLE2_TX_CTRL,
+				 GN25L98_TX_OPEN,
+				 enable ? GN25L98_TX_OPEN : 0);
+
+	gn25l98_select_table(priv, old_table);
+
+	return ret;
+}
+
+static int gn25l95_frontend_tx_enable(struct optical_frontend *frontend, bool enable)
+{
+	struct gn25l95_priv *priv =
+		optical_frontend_get_drvdata(frontend);
+	int ret = 0;
+
+	mutex_lock(&priv->lock);
+
+	if (priv->data->variant == GN25L9X_VARIANT_98)
+		ret = gn25l98_tx_enable_locked(priv, enable);
+
+	mutex_unlock(&priv->lock);
+
+	return ret;
+}
+
 static const struct optical_frontend_ops gn25l95_frontend_ops = {
 	.get_telemetry = gn25l95_frontend_get_telemetry,
 	.get_state = gn25l95_frontend_get_state,
+	.tx_enable = gn25l95_frontend_tx_enable,
 	.tx_rearm = gn25l95_frontend_tx_rearm,
 };
 
