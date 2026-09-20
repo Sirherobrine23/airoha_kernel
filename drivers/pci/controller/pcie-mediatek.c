@@ -161,6 +161,7 @@ struct mtk_pcie_port;
  */
 struct mtk_pcie_soc {
 	bool need_fix_class_id;
+	bool phy_before_sys_ck;
 	bool need_fix_device_id;
 	bool no_msi;
 	unsigned int device_id;
@@ -916,16 +917,52 @@ static int mtk_pcie_startup_port(struct mtk_pcie_port *port)
 	return 0;
 }
 
+static int mtk_pcie_port_phy_up(struct mtk_pcie_port *port)
+{
+	struct device *dev = port->pcie->dev;
+	int err;
+
+	err = phy_init(port->phy);
+	if (err) {
+		dev_err(dev, "failed to initialize port%d phy\n", port->slot);
+		return err;
+	}
+
+	err = phy_power_on(port->phy);
+	if (err) {
+		dev_err(dev, "failed to power on port%d phy\n", port->slot);
+		phy_exit(port->phy);
+		return err;
+	}
+
+	return 0;
+}
+
 static int mtk_pcie_enable_port(struct mtk_pcie_port *port)
 {
 	struct mtk_pcie *pcie = port->pcie;
 	struct device *dev = pcie->dev;
+	bool phy_up_early = pcie->soc->phy_before_sys_ck;
 	int err;
+
+	/*
+	 * The "pcie" clock prepare callback of this SoC deasserts PERST# as
+	 * its last step. Preparing it before the port PHY is set up lets the
+	 * endpoint out of reset while its reference clock is still
+	 * unconfigured, which PCIe CEM section 2.2 (PERST# Signal) forbids:
+	 * the reference clock has to be stable for T_PERST-CLK beforehand.
+	 * Bring the PHY up first on the SoCs that need it.
+	 */
+	if (phy_up_early) {
+		err = mtk_pcie_port_phy_up(port);
+		if (err)
+			return err;
+	}
 
 	err = clk_prepare_enable(port->sys_ck);
 	if (err) {
 		dev_err(dev, "failed to enable sys_ck%d clock\n", port->slot);
-		return err;
+		goto err_sys_clk;
 	}
 
 	err = clk_prepare_enable(port->ahb_ck);
@@ -961,16 +998,10 @@ static int mtk_pcie_enable_port(struct mtk_pcie_port *port)
 	reset_control_assert(port->reset);
 	reset_control_deassert(port->reset);
 
-	err = phy_init(port->phy);
-	if (err) {
-		dev_err(dev, "failed to initialize port%d phy\n", port->slot);
-		goto err_phy_init;
-	}
-
-	err = phy_power_on(port->phy);
-	if (err) {
-		dev_err(dev, "failed to power on port%d phy\n", port->slot);
-		goto err_phy_on;
+	if (!phy_up_early) {
+		err = mtk_pcie_port_phy_up(port);
+		if (err)
+			goto err_phy_init;
 	}
 
 	err = pcie->soc->startup(port);
@@ -983,8 +1014,8 @@ static int mtk_pcie_enable_port(struct mtk_pcie_port *port)
 
 err_soc_startup:
 	phy_power_off(port->phy);
-err_phy_on:
 	phy_exit(port->phy);
+	phy_up_early = false;
 err_phy_init:
 	clk_disable_unprepare(port->pipe_ck);
 err_pipe_clk:
@@ -997,6 +1028,11 @@ err_aux_clk:
 	clk_disable_unprepare(port->ahb_ck);
 err_ahb_clk:
 	clk_disable_unprepare(port->sys_ck);
+err_sys_clk:
+	if (phy_up_early) {
+		phy_power_off(port->phy);
+		phy_exit(port->phy);
+	}
 
 	return err;
 }
@@ -1347,6 +1383,7 @@ static const struct mtk_pcie_soc mtk_pcie_soc_mt7629 = {
 };
 
 static const struct mtk_pcie_soc mtk_pcie_soc_en7528 = {
+	.phy_before_sys_ck = true,
 	.ops = &mtk_pcie_ops_v2,
 	.startup = mtk_pcie_startup_port_en7528,
 	.setup_irq = mtk_pcie_setup_irq,
