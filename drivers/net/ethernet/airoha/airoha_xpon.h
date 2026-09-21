@@ -20,17 +20,17 @@
 
 #define V1_XPON_REGION_SIZE		0x00010000
 #define GPON_REG_OFFSET			0x00004000
+#define XGSGPON_REG_OFFSET		0x00005000
 #define EPON_REG_OFFSET			0x00006000
 
-#define XPON_SCU_WAN_CONF              0x070
-#define EN7523_SCU_WAN_MODE_MASK       GENMASK(7, 0)
-#define EN7528_SCU_WAN_MODE_MASK       GENMASK(2, 0)
-#define EN751221_SCU_WAN_MODE_MASK     GENMASK(2, 0)
-#define XPON_SCU_WAN_MODE_GPON         0x00
-#define XPON_SCU_WAN_MODE_EPON         0x01
+#define XPON_SCU_WAN_CONF		0x070
+#define EN7523_SCU_WAN_MODE_MASK	GENMASK(7, 0)
+#define EN7528_SCU_WAN_MODE_MASK	GENMASK(2, 0)
+#define EN751221_SCU_WAN_MODE_MASK	GENMASK(2, 0)
+#define XPON_SCU_WAN_MODE_GPON		0x00
+#define XPON_SCU_WAN_MODE_EPON		0x01
 
 struct airoha_xpon_match_data {
-	enum airoha_xpon_mode mode;
 	bool mode_from_dt;
 	u32 wan_mode_mask;
 	u8 gpon_fine_delay;
@@ -38,7 +38,6 @@ struct airoha_xpon_match_data {
 	u8 gpon_guard_bits_override;
 	bool en7523_gpon_defaults;
 	bool mac_irq_via_eth;
-	bool prepare_before_mmio;
 	bool gpon_reset_on_start;
 };
 
@@ -346,6 +345,7 @@ struct xpon_priv {
 	void __iomem		*base;
 	void __iomem		*gpon_reg;
 	void __iomem		*epon_reg;
+	void __iomem		*xgspon_reg;
 	void __iomem		*epon_reset_reg;
 	struct device		*dev;
 	struct regmap		*scu;
