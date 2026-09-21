@@ -96,12 +96,18 @@ VMLINUZ_LOAD_ADDRESS = $(shell $(obj)/calc_vmlinuz_load_addr \
 endif
 UIMAGE_LOADADDR = $(VMLINUZ_LOAD_ADDRESS)
 
+zboot-dtb-reserve-y := 0x100000
+zboot-dtb-reserve-$(CONFIG_SOC_ECONET_EN7528) := 0x20000
+
 vmlinuzobjs-y += $(obj)/piggy.o
 
 targets += ../../../../vmlinuz
 
 quiet_cmd_zld = LD      $@
-      cmd_zld = $(LD) $(KBUILD_LDFLAGS) -Ttext $(VMLINUZ_LOAD_ADDRESS) -T $< $(vmlinuzobjs-y) -o $@
+	cmd_zld = $(LD) $(KBUILD_LDFLAGS) \
+		--defsym=MIPS_ZBOOT_DTB_RESERVE=$(zboot-dtb-reserve-y) \
+		-Ttext $(VMLINUZ_LOAD_ADDRESS) -T $< \
+		$(vmlinuzobjs-y) -o $@
 quiet_cmd_strip = STRIP   $@
       cmd_strip = $(STRIP) -s $@
 

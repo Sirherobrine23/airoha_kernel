@@ -35,7 +35,7 @@ SECTIONS
 	.appended_dtb : {
 		__appended_dtb = .;
 		/* leave space for appended DTB */
-		. += 0x100000;
+		. += MIPS_ZBOOT_DTB_RESERVE;
 	}
 
 	_edata = .;
