@@ -758,7 +758,8 @@ static int econet_qdma_set_xpon_irq_mips(struct airoha_qdma_mips *qdma,
 	union econet_irq_purpose purpose;
 	union irq_bit bit;
 
-	if (!qdma || qdma->qdma->id != 1)
+	if (!qdma || qdma->qdma->id != 1 ||
+	    !airoha_is(qdma->qdma->eth, econet_en751221))
 		return -EINVAL;
 
 	switch (mode) {
@@ -851,6 +852,7 @@ static irqreturn_t econet_irq_handler(int irq_num, void *dev_instance)
 					disable_int |= BIT(bit);
 					continue;
 				}
+
 				if (p.type == IPS_GPON_INT) {
 					xpon_pending |= BIT(AIROHA_XPON_MODE_GPON);
 					continue;
@@ -871,10 +873,10 @@ static irqreturn_t econet_irq_handler(int irq_num, void *dev_instance)
 		}
 	}
 
-	/* The EN751221 vendor stack registers GPON/EPON MAC handlers through
-	 * QDMA_WAN.  Invoke the MAC after acknowledging the QDMA aggregator and
-	 * after dropping irq->lock_irq; the MAC ISR performs its own W1C and FIFO
-	 * drain operations.
+	/* The EN751221 vendor stacks register GPON/EPON MAC
+	 * handlers through QDMA_WAN. Invoke the MAC after acknowledging the
+	 * QDMA aggregator and after dropping irq->lock_irq; the MAC ISR
+	 * performs its own W1C and FIFO drain operations.
 	 */
 	if (xpon_pending & BIT(AIROHA_XPON_MODE_GPON))
 		econet_xpon_irq(qdma->qdma->eth, qdma->qdma->id,
@@ -1729,9 +1731,13 @@ static int econet_qdma_hw_init(struct airoha_qdma_mips *qdma)
 					en |= (p.type == IPS_OVERFLOW);
 
 					/* External hardware */
-					en |= (p.type == IPS_GPON_INT);
-					en |= (p.type == IPS_EPON_INT);
-					en |= (p.type == IPS_XPON_INT);
+					/*
+					 * Do not enable xPON aggregator sources here.
+					 *
+					 * SoCs whose xPON MAC interrupt is routed through
+					 * QDMA enable the appropriate source explicitly via
+					 * econet_qdma_set_xpon_irq_mips().
+					 */
 				}
 
 				mask |= en << k;
@@ -3759,7 +3765,8 @@ static int econet_validate_xpon_gdm2(struct net_device *netdev,
 		return -EINVAL;
 
 	port = netdev_priv(netdev);
-	if (!port->eth || !airoha_is(port->eth, econet_en751221) ||
+	if (!port->eth ||
+	    !airoha_is(port->eth, econet_en751221, econet_en7528) ||
 	    port->fport != ETX_FPORT_GDM2)
 		return -EOPNOTSUPP;
 
@@ -4651,7 +4658,8 @@ bool econet_rx_xpon_oam(struct airoha_eth *eth, u8 qdma_id,
 	u32 skb_len;
 	bool consumed = false;
 
-	if (!airoha_is(eth, econet_en751221) || qdma_id != 1)
+	if (!airoha_is(eth, econet_en751221, econet_en7528) ||
+	    qdma_id != 1)
 		return false;
 
 	port = airoha_eth_get_gdm_dev(eth, AIROHA_GDM2_IDX);
@@ -4691,7 +4699,7 @@ bool econet_rx_xpon_oam(struct airoha_eth *eth, u8 qdma_id,
 	}
 
 	dev_dbg_ratelimited(eth->dev,
-			    "EN751221 xPON OAM RX: len=%u msg0=%#010x channel=%u gem=%u crc=%u runt=%u long=%u consumed=%u\n",
+			    "EcoNet xPON OAM RX: len=%u msg0=%#010x channel=%u gem=%u crc=%u runt=%u long=%u consumed=%u\n",
 			    skb_len, raw0,
 			    channel, gem_port_id, !!(raw0 & ERX_XPON_CRC_ERROR),
 			    !!(raw0 & ERX_XPON_RUNT), !!(raw0 & ERX_XPON_LONG),
@@ -4721,26 +4729,6 @@ void econet_xpon_irq(struct airoha_eth *eth, u8 qdma_id,
 	if (ops && ops->mac_irq)
 		ops->mac_irq(xpon_priv);
 }
-
-static const struct airoha_eth_xpon_ops econet_xpon_ops = {
-	.set_mode = econet_set_xpon_mode,
-	.set_datapath = econet_set_xpon_datapath,
-	.set_tcont_channel = econet_set_xpon_tcont_channel,
-	.register_link = econet_register_xpon,
-	.unregister_link = econet_unregister_xpon,
-	.update_link = econet_xpon_update_link,
-	.control_start = econet_xpon_control_start,
-	.control_stop = econet_xpon_control_stop,
-	.dump_oam_rx_state = econet_xpon_dump_oam_rx_state,
-	.register_oam = econet_register_xpon_oam,
-	.unregister_oam = econet_unregister_xpon_oam,
-	.xmit_oam = econet_xmit_xpon_oam,
-	.add_service = econet_xpon_add_service,
-	.get_tx_info = econet_xpon_get_tx_info,
-	.del_service = econet_xpon_del_service,
-	.has_gem_service = econet_xpon_has_gem_service,
-	.flush_services = econet_xpon_flush_services,
-};
 
 static int airoha_fe_init(struct airoha_eth *eth);
 
@@ -4907,13 +4895,28 @@ static int airoha_validate_xpon_gdm2(struct net_device *netdev,
 		return -EINVAL;
 
 	common = airoha_gdm_common_from_netdev(netdev);
-	if (!common || !common->eth ||
-	    common->family != AIROHA_ETH_FAMILY_AIROHA)
+	if (!common || !common->eth)
 		return -ENODEV;
 
+	/*
+	 * EN7528 uses the EN7523-style xPON MAC/FE control path, but its
+	 * Ethernet datapath is still represented by the EcoNet/legacy-QDMA
+	 * family.  Accept exactly that combination here instead of requiring
+	 * every user of the modern xPON MAC helpers to be an AIROHA-family
+	 * netdev.
+	 */
+	if (common->family == AIROHA_ETH_FAMILY_AIROHA) {
+		if (!airoha_is(common->eth, airoha_en7523))
+			return -EOPNOTSUPP;
+	} else if (common->family == AIROHA_ETH_FAMILY_ECONET) {
+		if (!airoha_is(common->eth, econet_en7528))
+			return -EOPNOTSUPP;
+	} else {
+		return -ENODEV;
+	}
+
 	dev = common->priv;
-	if (!dev || !dev->port || !airoha_is(common->eth, airoha_en7523) ||
-	    dev->port->id != AIROHA_GDM2_IDX)
+	if (!dev || !dev->port || dev->port->id != AIROHA_GDM2_IDX)
 		return -EOPNOTSUPP;
 
 	*gdm = dev;
@@ -5138,6 +5141,7 @@ static int airoha_xpon_register_link(struct net_device *netdev,
 	dev->xpon_link.mode = mode;
 	spin_unlock_irqrestore(&dev->xpon_state_lock, flags);
 	netif_carrier_off(netdev);
+
 out:
 	mutex_unlock(&dev->xpon_lock);
 	if (ret)
@@ -5158,7 +5162,7 @@ static void airoha_xpon_unregister_link(struct net_device *netdev,
 
 	if (airoha_validate_xpon_gdm2(netdev, &dev))
 		return;
-
+	
 	airoha_gdm_xpon_stop(dev);
 	mutex_lock(&dev->xpon_lock);
 	if (dev->xpon_ops == ops && dev->xpon_priv == priv) {
@@ -9432,6 +9436,26 @@ static int airoha_an7583_get_dev_from_sport(struct airoha_eth *eth, u32 sport,
 	return 0;
 }
 
+static const struct airoha_eth_xpon_ops econet_xpon_ops = {
+	.set_mode = econet_set_xpon_mode,
+	.set_datapath = econet_set_xpon_datapath,
+	.set_tcont_channel = econet_set_xpon_tcont_channel,
+	.register_link = econet_register_xpon,
+	.unregister_link = econet_unregister_xpon,
+	.update_link = econet_xpon_update_link,
+	.control_start = econet_xpon_control_start,
+	.control_stop = econet_xpon_control_stop,
+	.dump_oam_rx_state = econet_xpon_dump_oam_rx_state,
+	.register_oam = econet_register_xpon_oam,
+	.unregister_oam = econet_unregister_xpon_oam,
+	.xmit_oam = econet_xmit_xpon_oam,
+	.add_service = econet_xpon_add_service,
+	.get_tx_info = econet_xpon_get_tx_info,
+	.del_service = econet_xpon_del_service,
+	.has_gem_service = econet_xpon_has_gem_service,
+	.flush_services = econet_xpon_flush_services,
+};
+
 static const struct airoha_eth_xpon_ops airoha_xpon_ops = {
 	.set_mode = airoha_xpon_set_mode,
 	.set_datapath = airoha_xpon_set_datapath,
@@ -9450,6 +9474,33 @@ static const struct airoha_eth_xpon_ops airoha_xpon_ops = {
 	.del_service = airoha_xpon_del_service,
 	.has_gem_service = airoha_xpon_has_gem_service,
 	.flush_services = airoha_xpon_flush_services,
+};
+
+/*
+ * EN7528 is a mixed generation: the xPON MAC/FE programming and
+ * standalone MAC interrupt follow the newer Airoha path, while GDM2
+ * still uses the EcoNet legacy-QDMA descriptor format. Keep link/MAC
+ * control on the Airoha backend and use the EcoNet OAM/service helpers
+ * for descriptor handling.
+ */
+static const struct airoha_eth_xpon_ops en7528_xpon_ops = {
+	.set_mode = airoha_xpon_set_mode,
+	.set_datapath = airoha_xpon_set_datapath,
+	.set_tcont_channel = airoha_xpon_set_tcont_channel,
+	.register_link = airoha_xpon_register_link,
+	.unregister_link = airoha_xpon_unregister_link,
+	.update_link = airoha_xpon_update_link,
+	.control_start = airoha_xpon_control_start,
+	.control_stop = airoha_xpon_control_stop,
+	.dump_oam_rx_state = econet_xpon_dump_oam_rx_state,
+	.register_oam = econet_register_xpon_oam,
+	.unregister_oam = econet_unregister_xpon_oam,
+	.xmit_oam = econet_xmit_xpon_oam,
+	.add_service = econet_xpon_add_service,
+	.get_tx_info = econet_xpon_get_tx_info,
+	.del_service = econet_xpon_del_service,
+	.has_gem_service = econet_xpon_has_gem_service,
+	.flush_services = econet_xpon_flush_services,
 };
 
 const struct airoha_eth_soc_data econet_en751221_soc_data = {
@@ -9476,6 +9527,7 @@ const struct airoha_eth_soc_data econet_en751221_soc_data = {
 
 const struct airoha_eth_soc_data econet_en7528_soc_data = {
 	.version = econet_en7528,
+	.xpon_ops = &en7528_xpon_ops,
 	.num_ppe = 1,
 	.legacy_qdma = true,
 	.irq_banks = 4,
