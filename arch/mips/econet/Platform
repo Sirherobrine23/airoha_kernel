@@ -2,4 +2,4 @@
 # we put the load address well above where the bootloader loads and then use
 # zboot. So please set CONFIG_ZBOOT_LOAD_ADDRESS to the address where your
 # bootloader actually places the kernel.
-load-$(CONFIG_ECONET)	+= 0xffffffff81000000
+load-$(CONFIG_ECONET)	+= 0xffffffff82000000
