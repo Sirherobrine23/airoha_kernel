@@ -2606,8 +2606,9 @@ static u32 *airoha_foe_v1_l2(struct airoha_foe_entry *entry)
 	return &entry->words[airoha_foe_v1_l2_word(entry)];
 }
 
-static void airoha_foe_v1_l2_set(struct airoha_foe_entry *entry,
-				 unsigned int word, u32 mask, u32 val)
+static __always_inline void
+airoha_foe_v1_l2_set(struct airoha_foe_entry *entry,
+		     unsigned int word, u32 mask, u32 val)
 {
 	u32 *l2 = airoha_foe_v1_l2(entry);
 
