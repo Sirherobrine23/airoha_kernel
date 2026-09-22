@@ -98,6 +98,7 @@ UIMAGE_LOADADDR = $(VMLINUZ_LOAD_ADDRESS)
 
 zboot-dtb-reserve-y := 0x100000
 zboot-dtb-reserve-$(CONFIG_SOC_ECONET_EN7528) := 0x20000
+zboot-dtb-reserve-$(CONFIG_SOC_ECONET_EN751221) := 0x20000
 
 vmlinuzobjs-y += $(obj)/piggy.o
 
