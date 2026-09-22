@@ -493,14 +493,6 @@ static int gpon_prepare_hardware(struct xpon_priv *priv)
 	if (ret)
 		return ret;
 
-	/* Select GPON instead of EPON on the shared xPON WAN interface. */
-	dev_info(priv->dev, "selecting GPON on SCU WAN mux\n");
-	ret = airoha_xpon_select_wan(priv->scu, priv->match_data,
-				     AIROHA_XPON_MODE_GPON);
-	if (ret)
-		return dev_err_probe(priv->dev, ret,
-				     "failed to select GPON WAN mode\n");
-
 	/* Match gponDevMbiStop(XPON_DISABLE). The EN757x vendor sequence
 	 * releases the GPON/PSE MBI first, waits 1 ms, releases the two GDM2
 	 * downstream channels, then waits another 1 ms. Do not collapse these
@@ -2090,7 +2082,7 @@ static const struct ploam_ops gpon_ploam_ops = {
 
 static int gpon_enable(struct xpon_priv *priv)
 {
-	u32 fifo_depth, irq_mask, known, pending, unknown;
+	u32 fifo_depth, irq_mask, known, pending, unknown, wan_conf;
 	int ret;
 
 	if (READ_ONCE(priv->mac_enabled))
@@ -2114,6 +2106,30 @@ static int gpon_enable(struct xpon_priv *priv)
 		if (ret)
 			goto err_disable_frontend;
 	}
+
+	/*
+	 * Vendor EN7528 prepare_gpon() selects the shared WAN MAC mux before
+	 * configuring/starting the xPON PHY.  Keep this ordering explicit: the
+	 * mux may feed signals that are sampled while the PHY enters GPON mode,
+	 * including the dedicated XPON_MAC_INTR path.
+	 */
+	ret = airoha_xpon_select_wan(priv->scu, priv->match_data,
+				     AIROHA_XPON_MODE_GPON);
+	if (ret) {
+		dev_err(priv->dev,
+			"failed to select GPON WAN mode before PHY start: %d\n",
+			ret);
+		goto err_disable_frontend;
+	}
+
+	ret = regmap_read(priv->scu, XPON_SCU_WAN_CONF, &wan_conf);
+	if (ret)
+		dev_warn(priv->dev,
+			 "failed to read WAN_CONF before PHY start: %d\n", ret);
+	else
+		dev_info(priv->dev,
+			 "WAN_CONF after GPON select, before PHY start: %#010x\n",
+			 wan_conf);
 
 	ret = airoha_xpon_phy_start(priv->dev, priv->phy,
 				    AIROHA_XPON_MODE_GPON,
@@ -2347,6 +2363,7 @@ static void airoha_xpon_phy_link_work_fn(struct work_struct *work)
 	struct xpon_priv *priv =
 		container_of(to_delayed_work(work), struct xpon_priv,
 			     phy_link_work);
+	u32 mac_active, mac_enable, mac_status;
 	bool ready, los, link, changed;
 	int ret;
 
@@ -2370,6 +2387,24 @@ static void airoha_xpon_phy_link_work_fn(struct work_struct *work)
 			 "%s digital PHY link %s: ready=%u LOS=%u\n",
 			 airoha_xpon_mode_name(priv->mode),
 			 link ? "up" : "down", ready, los);
+
+	/*
+	 * EN7528 has a standalone XPON_MAC interrupt.  Do not clear anything
+	 * here: a pending enabled bit that survives until this poll proves that
+	 * the MAC generated an interrupt condition but the hard IRQ path did
+	 * not service it.
+	 */
+	if (priv->mode == AIROHA_XPON_MODE_GPON && priv->irq >= 0 &&
+	    READ_ONCE(priv->mac_enabled) &&
+	    of_device_is_compatible(priv->dev->of_node, "airoha,en7528-xpon")) {
+		mac_status = gpon_read(priv, GPON_INT_STATUS);
+		mac_enable = gpon_read(priv, GPON_INT_ENABLE);
+		mac_active = mac_status & mac_enable;
+		if (mac_active)
+			dev_warn_ratelimited(priv->dev,
+				"EN7528 dedicated xPON IRQ pending without service: irq=%d status=%#010x enable=%#010x active=%#010x\n",
+				priv->irq, mac_status, mac_enable, mac_active);
+	}
 
 	if (!link && priv->mode == AIROHA_XPON_MODE_GPON &&
 	    ploam_get_state(priv->ploam) == GPON_O5_OPERATION) {
@@ -2723,6 +2758,11 @@ static irqreturn_t gpon_isr(int irq, void *data)
 	raw = gpon_read(priv, GPON_INT_STATUS);
 	if (!raw)
 		return IRQ_NONE;
+
+	if (of_device_is_compatible(priv->dev->of_node, "airoha,en7528-xpon"))
+		dev_info_ratelimited(priv->dev,
+			"EN7528 dedicated xPON IRQ fired: irq=%d raw=%#010x\n",
+			irq, raw);
 
 	enabled = gpon_read(priv, GPON_INT_ENABLE);
 	active = raw & enabled;
@@ -3669,7 +3709,6 @@ static const struct airoha_xpon_match_data en7528_xpon_data = {
 	.wan_mode_mask = EN7528_SCU_WAN_MODE_MASK,
 	.gpon_fine_delay = 0x1c,
 	.gpon_rsp_time_activation = GPON_RSP_TIME_ACT_EN7528,
-	.gpon_reset_on_start = true,
 };
 
 static const struct airoha_xpon_match_data en751221_xpon_data = {
@@ -3800,8 +3839,7 @@ static int airoha_xpon_init_gpon(struct platform_device *pdev,
 	atomic_set(&priv->pending_irqs, 0);
 
 	/* Keep the Linux IRQ line enabled and quiesce the MAC at its source. */
-	// gpon_write(priv, GPON_INT_ENABLE, 0);
-	gpon_write(priv, GPON_INT_ENABLE, 1);
+	gpon_write(priv, GPON_INT_ENABLE, 0);
 	gpon_write(priv, GPON_INT_STATUS, ~0U);
 	ret = airoha_xpon_request_mac_irq(pdev, priv, gpon_isr);
 	if (ret)
