@@ -359,8 +359,9 @@ static int airoha_ppe_debugfs_foe_bind_show(struct seq_file *m, void *private)
 DEFINE_SHOW_ATTRIBUTE(airoha_ppe_debugfs_foe_bind);
 
 
-static u32 airoha_ppe_v1_debugfs_l2_get(const struct airoha_foe_entry *entry,
-				      unsigned int word, u32 mask)
+static __always_inline u32
+airoha_ppe_v1_debugfs_l2_get(const struct airoha_foe_entry *entry,
+			     unsigned int word, u32 mask)
 {
 	const u32 *l2 = &entry->words[airoha_foe_v1_l2_word(entry)];
 
