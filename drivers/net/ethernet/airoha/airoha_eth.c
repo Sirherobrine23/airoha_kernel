@@ -4246,8 +4246,9 @@ static int econet_register_xpon(struct net_device *netdev,
 	spin_unlock_irqrestore(&port->xpon_state_lock, flags);
 	netif_carrier_off(netdev);
 
-	/* EN751221 has no standalone xPON platform IRQ. The MAC interrupt is
-	 * aggregated into QDMA_WAN bits 16/17 and is enabled only after the
+	/*
+	 * EN751221 delivers the GPON/EPON MAC interrupt through QDMA_WAN
+	 * external interrupt bits 16/17. Enable the source only after the
 	 * provider callback is fully published.
 	 */
 	ret = airoha_qdma_mips_set_xpon_irq(port->qdma, mode, true);

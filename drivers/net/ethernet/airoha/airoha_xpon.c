@@ -2358,6 +2358,26 @@ static void gpon_ber_timer_fn(struct timer_list *t)
 			  msecs_to_jiffies(priv->ber_interval_ms));
 }
 
+static void gpon_handle_irq_status(struct xpon_priv *priv, u32 raw, u32 enabled)
+{
+	u32 active = raw & enabled;
+
+	if (!raw)
+		return;
+
+	/* G_INT_STATUS is W1C; acknowledge the complete hardware snapshot. */
+	gpon_write(priv, GPON_INT_STATUS, raw);
+
+	if (!active)
+		return;
+
+	if (active & INT_PLOAMD_RECV)
+		gpon_drain_ploam_fifo_irq(priv);
+
+	atomic_or(active, &priv->pending_irqs);
+	queue_work(priv->fsm_wq, &priv->irq_work);
+}
+
 static void airoha_xpon_phy_link_work_fn(struct work_struct *work)
 {
 	struct xpon_priv *priv =
@@ -2400,10 +2420,12 @@ static void airoha_xpon_phy_link_work_fn(struct work_struct *work)
 		mac_status = gpon_read(priv, GPON_INT_STATUS);
 		mac_enable = gpon_read(priv, GPON_INT_ENABLE);
 		mac_active = mac_status & mac_enable;
-		if (mac_active)
+		if (mac_active) {
 			dev_warn_ratelimited(priv->dev,
-				"EN7528 dedicated xPON IRQ pending without service: irq=%d status=%#010x enable=%#010x active=%#010x\n",
+				"EN7528 dedicated xPON IRQ missed; servicing from link poll: irq=%d status=%#010x enable=%#010x active=%#010x\n",
 				priv->irq, mac_status, mac_enable, mac_active);
+			gpon_handle_irq_status(priv, mac_status, mac_enable);
+		}
 	}
 
 	if (!link && priv->mode == AIROHA_XPON_MODE_GPON &&
@@ -2753,7 +2775,7 @@ static void gpon_irq_work_fn(struct work_struct *work)
 static irqreturn_t gpon_isr(int irq, void *data)
 {
 	struct xpon_priv *priv = data;
-	u32 active, enabled, raw;
+	u32 enabled, raw;
 
 	raw = gpon_read(priv, GPON_INT_STATUS);
 	if (!raw)
@@ -2765,18 +2787,7 @@ static irqreturn_t gpon_isr(int irq, void *data)
 			irq, raw);
 
 	enabled = gpon_read(priv, GPON_INT_ENABLE);
-	active = raw & enabled;
-
-	/* G_INT_STATUS is W1C; acknowledge the complete hardware snapshot. */
-	gpon_write(priv, GPON_INT_STATUS, raw);
-
-	if (active & INT_PLOAMD_RECV)
-		gpon_drain_ploam_fifo_irq(priv);
-
-	if (active) {
-		atomic_or(active, &priv->pending_irqs);
-		queue_work(priv->fsm_wq, &priv->irq_work);
-	}
+	gpon_handle_irq_status(priv, raw, enabled);
 
 	return IRQ_HANDLED;
 }
@@ -3690,36 +3701,6 @@ static const struct airoha_xpon_link_ops epon_link_ops = {
 	.mac_irq = epon_mac_irq,
 };
 
-/* -------------------------------------------------------------------------
- * Unified platform driver
- * ------------------------------------------------------------------------- */
-
-static const struct airoha_xpon_match_data en7523_xpon_data = {
-	.mode_from_dt = true,
-	.wan_mode_mask = EN7523_SCU_WAN_MODE_MASK,
-	.gpon_fine_delay = DBG_DLY_FINE_INT_DEFAULT,
-	.gpon_rsp_time_activation = GPON_RSP_TIME_ACT_EN7523,
-	.en7523_gpon_defaults = true,
-	.gpon_reset_on_start = true,
-};
-
-/* EN7528 routes XPON_MAC_INTR directly to MIPS GIC shared source 26. */
-static const struct airoha_xpon_match_data en7528_xpon_data = {
-	.mode_from_dt = true,
-	.wan_mode_mask = EN7528_SCU_WAN_MODE_MASK,
-	.gpon_fine_delay = 0x1c,
-	.gpon_rsp_time_activation = GPON_RSP_TIME_ACT_EN7528,
-};
-
-static const struct airoha_xpon_match_data en751221_xpon_data = {
-	.mode_from_dt = true,
-	.wan_mode_mask = EN751221_SCU_WAN_MODE_MASK,
-	.gpon_fine_delay = 0x1c,
-	.gpon_rsp_time_activation = GPON_RSP_TIME_ACT_EN751221,
-	.gpon_guard_bits_override = GPON_PHY_GUARD_BIT_NUM_EN751221,
-	.mac_irq_via_eth = true,
-};
-
 static bool airoha_xpon_is_gpon(struct xpon_priv *priv)
 {
 	return priv->mode == AIROHA_XPON_MODE_GPON;
@@ -4260,6 +4241,38 @@ static void airoha_xpon_remove(struct platform_device *pdev)
 	dev_put(priv->gdm_dev);
 	priv->gdm_dev = NULL;
 }
+
+
+static const struct airoha_xpon_match_data en7523_xpon_data = {
+	.mode_from_dt = true,
+	.wan_mode_mask = EN7523_SCU_WAN_MODE_MASK,
+	.gpon_fine_delay = DBG_DLY_FINE_INT_DEFAULT,
+	.gpon_rsp_time_activation = GPON_RSP_TIME_ACT_EN7523,
+	.en7523_gpon_defaults = true,
+	.gpon_reset_on_start = true,
+};
+
+static const struct airoha_xpon_match_data en751221_xpon_data = {
+	.mode_from_dt = true,
+	.wan_mode_mask = EN751221_SCU_WAN_MODE_MASK,
+	.gpon_fine_delay = 0x1c,
+	.gpon_rsp_time_activation = GPON_RSP_TIME_ACT_EN751221,
+	.gpon_guard_bits_override = GPON_PHY_GUARD_BIT_NUM_EN751221,
+	.mac_irq_via_eth = true,
+};
+
+/*
+ * EN7528 exposes a dedicated xPON MAC interrupt through the GIC.
+ * Keep mac_irq_via_eth clear so the MAC driver requests that IRQ
+ * instead of routing MAC events through QDMA_WAN.
+ */
+static const struct airoha_xpon_match_data en7528_xpon_data = {
+	.mode_from_dt = true,
+	.wan_mode_mask = EN7528_SCU_WAN_MODE_MASK,
+	.gpon_fine_delay = 0x1c,
+	.gpon_rsp_time_activation = GPON_RSP_TIME_ACT_EN7528,
+	.gpon_reset_on_start = true,
+};
 
 static const struct of_device_id airoha_xpon_of_match[] = {
 	{ .compatible = "airoha,en7523-xpon", .data = &en7523_xpon_data },
