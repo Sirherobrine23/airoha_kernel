@@ -108,6 +108,44 @@ static const struct mtd_ooblayout_ops f50l1g41lb_ooblayout = {
 	.free = f50l1g41lb_ooblayout_free,
 };
 
+#define F50L1G41A_OOB_SECTION_COUNT		4
+#define F50L1G41A_OOB_SECTION_SIZE		16
+#define F50L1G41A_OOB_ECC_OFFSET		1
+#define F50L1G41A_OOB_ECC_SIZE			7
+#define F50L1G41A_OOB_FREE_OFFSET		8
+#define F50L1G41A_OOB_FREE_SIZE			8
+
+static int f50l1g41a_ooblayout_ecc(struct mtd_info *mtd, int section,
+				   struct mtd_oob_region *region)
+{
+	if (section >= F50L1G41A_OOB_SECTION_COUNT)
+		return -ERANGE;
+
+	region->offset = section * F50L1G41A_OOB_SECTION_SIZE +
+			 F50L1G41A_OOB_ECC_OFFSET;
+	region->length = F50L1G41A_OOB_ECC_SIZE;
+
+	return 0;
+}
+
+static int f50l1g41a_ooblayout_free(struct mtd_info *mtd, int section,
+				    struct mtd_oob_region *region)
+{
+	if (section >= F50L1G41A_OOB_SECTION_COUNT)
+		return -ERANGE;
+
+	region->offset = section * F50L1G41A_OOB_SECTION_SIZE +
+			 F50L1G41A_OOB_FREE_OFFSET;
+	region->length = F50L1G41A_OOB_FREE_SIZE;
+
+	return 0;
+}
+
+static const struct mtd_ooblayout_ops f50l1g41a_ooblayout = {
+	.ecc = f50l1g41a_ooblayout_ecc,
+	.free = f50l1g41a_ooblayout_free,
+};
+
 static int f50l1g41lb_otp_info(struct spinand_device *spinand, size_t len,
 			       struct otp_info *buf, size_t *retlen, bool user)
 {
@@ -199,6 +237,17 @@ static const struct spinand_info esmt_8c_spinand_table[] = {
 };
 
 static const struct spinand_info esmt_c8_spinand_table[] = {
+	SPINAND_INFO("F50L1G41A",
+		     SPINAND_ID(SPINAND_READID_METHOD_OPCODE_ADDR, 0x21, 0x7f,
+				0x7f, 0x7f),
+		     NAND_MEMORG(1, 2048, 64, 64, 1024, 20, 1, 1, 1),
+		     NAND_ECCREQ(1, 512),
+		     SPINAND_INFO_OP_VARIANTS(&read_cache_variants,
+					      &write_cache_variants,
+					      &update_cache_variants),
+		     SPINAND_BBM_1_BYTE |
+		     SPINAND_BBM_SECOND_PAGE,
+		     SPINAND_ECCINFO(&f50l1g41a_ooblayout, NULL)),
 	SPINAND_INFO("F50L1G41LB",
 		     SPINAND_ID(SPINAND_READID_METHOD_OPCODE_ADDR, 0x01, 0x7f,
 				0x7f, 0x7f),
