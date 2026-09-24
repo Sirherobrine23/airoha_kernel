@@ -60,6 +60,21 @@ config NET_AIROHA_SOC_WED
 
 	  If unsure, say N.
 
+config NET_AIROHA_WHNAT
+	bool "EcoNet EN751221 WHNAT (PPE offload for WiFi without WED)"
+	depends on NET_AIROHA && (ECONET || COMPILE_TEST)
+	help
+	  Let the EN751221 PPE forward NAT flows from and to WiFi netdevs
+	  whose radios have no WED support (MT7603, MT76x2), like the vendor
+	  WHNAT driver: mt76 hands received frames to the PPE through the LAN
+	  QDMA, and the PPE returns frames of flows bound towards a WiFi
+	  interface to the CPU, which queues them straight to that interface.
+	  The mt76 side registers its interfaces through
+	  en75_whnat_register_vif(). Nothing changes until the whnat_enable
+	  module parameter is set.
+
+	  If unsure, say N.
+
 config AIROHA_XPON_V1
 	tristate "Airoha/EcoNet xPON MAC driver"
 	depends on ARCH_AIROHA || ECONET || COMPILE_TEST
