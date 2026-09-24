@@ -59,6 +59,7 @@
 #include "airoha_eth.h"
 #include "airoha_regs.h"
 #include "airoha_wed.h"
+#include "airoha_whnat.h"
 
 static void econet_prepare_qdma_cfg(struct airoha_qdma_mips_cfg *cfg,
 				    const struct airoha_eth_soc_data *soc,
@@ -407,6 +408,7 @@ struct econet_q_tx {
 	/* FIFO of free entries because they complete out of order. */
 	u16				freelist_head;
 	u16				freelist_tail;
+	u16				free_count;
 
 	/* Not modified after init */
 	struct airoha_qdma_mips		*qdma;
@@ -457,11 +459,22 @@ struct airoha_qdma_mips {
 	struct airoha_qdma_mips_cfg cfg;
 };
 
+/* WHNAT hands LAN frames to mt76, which pushes its TX descriptor in front. */
+static int econet_rx_headroom(struct airoha_qdma_mips *qdma)
+{
+	if (!IS_ENABLED(CONFIG_NET_AIROHA_WHNAT) || qdma->qdma->id ||
+	    !airoha_is(qdma->qdma->eth, econet_en751221))
+		return 0;
+
+	return AIROHA_WHNAT_RX_HEADROOM;
+}
+
 static void econet_fill_rx_queue(struct econet_q_rx *q, u32 end_i)
 {
 	u32 ndesc = q->ndesc;
 	u32 cpu_i = (q->cpu_i + 1) % ndesc;
 	int rx_offset = q->qdma->cfg.rx_2b_offset ? NET_IP_ALIGN : 0;
+	int headroom = econet_rx_headroom(q->qdma);
 
 	for (; cpu_i != end_i; cpu_i = (cpu_i + 1) % ndesc) {
 		struct econet_q_rx_ent *e = &q->entry[cpu_i];
@@ -479,8 +492,8 @@ static void econet_fill_rx_queue(struct econet_q_rx *q, u32 end_i)
 
 		WARN_ON_ONCE(e->dma_addr);
 		e->buf = page_address(page) + offset;
-		e->dma_addr = page_pool_get_dma_addr(page) + offset;
-		pkt_len = SKB_WITH_OVERHEAD(q->buf_size) - rx_offset;
+		e->dma_addr = page_pool_get_dma_addr(page) + offset + headroom;
+		pkt_len = SKB_WITH_OVERHEAD(q->buf_size) - rx_offset - headroom;
 		e->dma_len = pkt_len + rx_offset;
 
 		WRITE_ONCE(pdesc->info, ((struct desc_info) {
@@ -500,9 +513,11 @@ static void econet_fill_rx_queue(struct econet_q_rx *q, u32 end_i)
 }
 
 static void econet_qdma_rx_process_one(struct econet_q_rx *q, u32 cpu_i,
-				     enum dma_data_direction dir)
+				     enum dma_data_direction dir,
+				     struct airoha_whnat_batch *batch)
 {
 	struct econet_q_rx_ent *e = &q->entry[cpu_i];
+	int headroom = econet_rx_headroom(q->qdma);
 	struct sk_buff *skb;
 	struct page *page;
 	struct desc desc;
@@ -521,7 +536,7 @@ static void econet_qdma_rx_process_one(struct econet_q_rx *q, u32 cpu_i,
 	WRITE_ONCE(q->desc[cpu_i].pkt_addr, 0);
 
 	len = get_desc_info_pkt_len(&desc.info);
-	if (!len || len > SKB_WITH_OVERHEAD(q->buf_size) -
+	if (!len || len > SKB_WITH_OVERHEAD(q->buf_size) - headroom -
 				(q->qdma->cfg.rx_2b_offset ? NET_IP_ALIGN : 0))
 		goto return_page;
 
@@ -532,6 +547,7 @@ static void econet_qdma_rx_process_one(struct econet_q_rx *q, u32 cpu_i,
 	if (!skb)
 		goto return_page;
 
+	skb_reserve(skb, headroom);
 	if (q->qdma->cfg.rx_2b_offset)
 		skb_reserve(skb, NET_IP_ALIGN);
 	__skb_put(skb, len);
@@ -559,6 +575,10 @@ static void econet_qdma_rx_process_one(struct econet_q_rx *q, u32 cpu_i,
 	else
 		sport = get_erx_sport(&desc.msg.erx);
 
+	if (airoha_whnat_rx(skb, &q->napi, q->qdma->qdma->id, sport,
+			    get_erx_crsn(&desc.msg.erx), batch))
+		return;
+
 	if (econet_rx_before_recv(q->qdma->qdma->eth, skb, sport)) {
 		dev_kfree_skb(skb);
 	} else {
@@ -581,7 +601,8 @@ return_page:
 	page_pool_put_full_page(q->page_pool, page, false);
 }
 
-static int econet_qdma_rx_process(struct econet_q_rx *q, int budget)
+static int econet_qdma_rx_process(struct econet_q_rx *q, int budget,
+				  struct airoha_whnat_batch *batch)
 {
 	enum dma_data_direction dir = page_pool_get_dma_dir(q->page_pool);
 	u32 hardware_i = econet_rreg(&q->qchain_regs->rx_hwi);
@@ -601,7 +622,7 @@ static int econet_qdma_rx_process(struct econet_q_rx *q, int budget)
 	cpu_i = (q->cpu_i + 1) % ndesc;
 
 	for (done = 0; done < budget && cpu_i != hardware_i; done++) {
-		econet_qdma_rx_process_one(q, cpu_i, dir);
+		econet_qdma_rx_process_one(q, cpu_i, dir, batch);
 		cpu_i = (cpu_i + 1) % ndesc;
 	}
 
@@ -787,13 +808,22 @@ static int econet_qdma_set_xpon_irq_mips(struct airoha_qdma_mips *qdma,
 static int econet_qdma_rx_napi_poll(struct napi_struct *napi, int budget)
 {
 	struct econet_q_rx *q = container_of(napi, struct econet_q_rx, napi);
+	struct airoha_whnat_batch batch, *pending = NULL;
 	struct airoha_qdma_mips *qdma = q->qdma;
 	int cur, done = 0;
 
+	if (!qdma->qdma->id && airoha_whnat_active()) {
+		pending = &batch;
+		airoha_whnat_batch_init(pending);
+	}
+
 	do {
-		cur = econet_qdma_rx_process(q, budget - done);
+		cur = econet_qdma_rx_process(q, budget - done, pending);
 		done += cur;
 	} while (cur && done < budget);
+
+	if (pending)
+		airoha_whnat_batch_flush(pending);
 
 	if (done < budget && napi_complete(napi)) {
 		union econet_irq_purpose purpose;
@@ -958,6 +988,14 @@ static int econet_poll_tx_complete(struct napi_struct *napi, int budget)
 		e->freelist_next = 0xffff;
 		q->entry[q->freelist_tail].freelist_next = index;
 		q->freelist_tail = index;
+		q->free_count++;
+
+		/* Frames handed to the PPE by WHNAT have no netdev. */
+		if (!skb->dev) {
+			airoha_whnat_complete();
+			dev_kfree_skb_any(skb);
+			continue;
+		}
 
 		txq = netdev_get_tx_queue(skb->dev,
 					  skb_get_queue_mapping(skb));
@@ -1032,6 +1070,13 @@ static int econet_qdma_xmit_mips(struct airoha_qdma_mips *qdma, struct sk_buff *
 
 	guard(spinlock_bh)(&q->lock_bh);
 
+	/*
+	 * Only a completion of a netdev's own frame wakes its stopped queue,
+	 * so frames without a netdev (WHNAT) must leave it some descriptors.
+	 */
+	if (!skb->dev && q->free_count <= AIROHA_WHNAT_TX_RESERVE)
+		return -EAGAIN;
+
 	index = q->freelist_head;
 	if (index == 0xffff)
 		return -EBUSY;
@@ -1059,8 +1104,10 @@ static int econet_qdma_xmit_mips(struct airoha_qdma_mips *qdma, struct sk_buff *
 	e->dma_addr = addr;
 	e->dma_len = len;
 	q->freelist_head = next_index;
+	q->free_count--;
 
-	skb_tx_timestamp(skb);
+	if (skb->dev)
+		skb_tx_timestamp(skb);
 
 	/*
 	 * Match the vendor QDMA handoff: the descriptor must be globally visible
@@ -1260,6 +1307,7 @@ static int econet_init_tx_queue(struct econet_q_tx *q,
 	q->entry[q->ndesc - 1].freelist_next = 0xffff;
 	q->freelist_tail = q->ndesc - 1;
 	q->freelist_head = 0;
+	q->free_count = q->ndesc;
 
 	econet_wreg(lower_32_bits(dma_addr), &q->qchain_regs->txbase);
 
@@ -1895,6 +1943,7 @@ static int econet_qdma_destroy_locked(struct airoha_qdma_mips *qdma)
 static int econet_qdma_destroy(struct airoha_qdma_mips *qdma)
 {
 	guard(mutex)(&qdma->lock);
+	airoha_whnat_clear_qdma(qdma->qdma);
 
 	return econet_qdma_destroy_locked(qdma);
 }
@@ -1921,6 +1970,7 @@ static void econet_qdma_cleanup_tx(struct airoha_qdma_mips *qdma)
 			e->freelist_next = 0xffff;
 			q->entry[q->freelist_tail].freelist_next = j;
 			q->freelist_tail = j;
+			q->free_count++;
 		}
 	}
 }
@@ -1931,6 +1981,26 @@ static int airoha_qdma_mips_xmit(struct airoha_qdma *qdma,
 	return qdma->econet ? econet_qdma_xmit_mips(qdma->econet, skb, msg, qid) :
 			     -ENODEV;
 }
+
+#if IS_ENABLED(CONFIG_NET_AIROHA_WHNAT)
+/*
+ * Hand a WHNAT frame to the PPE the way the vendor driver does: LAN QDMA,
+ * channel 7, queue 0. A return value >= 0 means the frame was queued.
+ */
+int airoha_whnat_qdma_xmit(struct airoha_qdma *qdma, struct sk_buff *skb)
+{
+	union desc_msg msg = {};
+
+	if (qdma->id || !qdma->econet || !READ_ONCE(qdma->users))
+		return -EOPNOTSUPP;
+
+	set_etx_channel(&msg.etx, 7);
+	set_etx_queue(&msg.etx, 0);
+	set_etx_fport(&msg.etx, ETX_FPORT_PPE);
+
+	return econet_qdma_xmit_mips(qdma->econet, skb, &msg, 0);
+}
+#endif
 
 static int airoha_qdma_mips_set_xpon_irq(struct airoha_qdma *qdma,
 					 enum airoha_xpon_mode mode, bool enable)
@@ -3663,6 +3733,11 @@ void airoha_qdma_start(struct airoha_qdma *qdma)
 		set_qregs_qcfg_rx_dma_en(&qcfg, true);
 		set_qregs_qcfg_tx_dma_en(&qcfg, true);
 		econet_wreg(qcfg, &qdma->econet->regs->qdma_cfg);
+
+		/* WHNAT was validated with the vendor's LAN QDMA TX done mode. */
+		if (!qdma->id && airoha_is(qdma->eth, econet_en751221) &&
+		    is_qregs_qcfg_tx_immediate_done(&qcfg))
+			airoha_whnat_set_qdma(qdma);
 		return;
 	}
 
@@ -3687,6 +3762,7 @@ void airoha_qdma_stop(struct airoha_qdma *qdma)
 		if (--qdma->users > 0)
 			return;
 
+		airoha_whnat_clear_qdma(qdma);
 		qcfg = econet_rreg(&qdma->econet->regs->qdma_cfg);
 		set_qregs_qcfg_rx_dma_en(&qcfg, false);
 		set_qregs_qcfg_tx_dma_en(&qcfg, false);
