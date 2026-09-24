@@ -19,6 +19,7 @@
 
 #include "airoha_regs.h"
 #include "airoha_eth.h"
+#include "airoha_whnat.h"
 
 /* Serialize airoha_gdm_dev flags, QDMA pointer and PPE CPU port
  * configuration.
@@ -2879,6 +2880,31 @@ static void airoha_ppe_v1_release_flow_slot(struct airoha_ppe *ppe,
 	flow->hash = AIROHA_FOE_V1_INVALID_HASH;
 }
 
+#if IS_ENABLED(CONFIG_NET_AIROHA_WHNAT)
+/*
+ * A WiFi vif went away: stop its bound flows and keep them from being bound
+ * again. They stay in the cookie table until the flow table destroys them.
+ */
+void airoha_whnat_invalidate_vif(struct airoha_ppe *ppe, int idx)
+{
+	struct airoha_flow_table_entry *flow, *tmp;
+
+	spin_lock_bh(&ppe->v1.lock);
+	list_for_each_entry_safe(flow, tmp, &ppe->v1.flows, v1_list) {
+		u32 l2 = airoha_foe_v1_l2(&flow->data)[0];
+
+		if (FIELD_GET(AIROHA_FOE_L2_ETYPE, l2) != AIROHA_WHNAT_ETYPE ||
+		    FIELD_GET(AIROHA_FOE_L2_VLAN1, l2) != idx)
+			continue;
+
+		airoha_ppe_v1_release_flow_slot(ppe, flow, true);
+		list_del_init(&flow->v1_list);
+	}
+	airoha_ppe_v1_cache_clean(ppe);
+	spin_unlock_bh(&ppe->v1.lock);
+}
+#endif
+
 static u16 airoha_ppe_v1_find_bind_way(struct airoha_ppe *ppe,
 				    struct airoha_flow_table_entry *flow, u16 hash,
 				    struct airoha_foe_entry *lookup_raw,
@@ -3399,11 +3425,32 @@ static int airoha_ppe_v1_flow_set_output(struct airoha_foe_entry *entry,
 	struct airoha_gdm_common *gdm;
 	struct dsa_port *dp;
 	int dsa_port = -1;
+	int wifi_idx;
 	int err;
 
 	*xpon = false;
 	if (!odev)
 		return -EOPNOTSUPP;
+
+	wifi_idx = airoha_whnat_active() ? airoha_whnat_vif_index(odev) : -1;
+	if (wifi_idx >= 0) {
+		/*
+		 * Vendor WHNAT recipe: the CPU as PSE port, without QoS, and
+		 * the vif index in an 802.1Q tag. Only IPv4 has been tested.
+		 */
+		if (vlan_valid ||
+		    airoha_foe_v1_packet_type(entry) == PPE_PKT_TYPE_IPV6_ROUTE_5T)
+			return -EOPNOTSUPP;
+
+		airoha_foe_v1_entry_set_pse_port(entry, FE_PSE_PORT_CDM1);
+		airoha_foe_v1_l2(entry)[0] =
+			FIELD_PREP(AIROHA_FOE_L2_ETYPE, AIROHA_WHNAT_ETYPE) |
+			FIELD_PREP(AIROHA_FOE_L2_VLAN1, wifi_idx);
+		entry->ib1 &= ~AIROHA_FOE_V1_IB1_BIND_VLAN_LAYER;
+		entry->ib1 |= AIROHA_FOE_V1_IB1_BIND_VLAN_TAG |
+			      FIELD_PREP(AIROHA_FOE_V1_IB1_BIND_VLAN_LAYER, 1);
+		return 0;
+	}
 
 	if (dsa_user_dev_check(odev)) {
 		dp = dsa_port_from_netdev(odev);
@@ -3843,6 +3890,8 @@ static int airoha_ppe_v1_init(struct airoha_eth *eth)
 
 	dev_info(dev, "PPE FoE table at %pad, %u entries\n",
 		 &ppe->common.foe_dma, dram_entries);
+	if (airoha_is(eth, econet_en751221))
+		airoha_whnat_set_ppe(ppe);
 	return 0;
 
 error_disable:
@@ -3860,6 +3909,7 @@ static void airoha_ppe_v1_deinit(struct airoha_eth *eth)
 	if (!ppe)
 		return;
 
+	airoha_whnat_clear_ppe(ppe);
 	if (READ_ONCE(ppe->v1.armed))
 		airoha_ppe_v1_engine_disarm(ppe);
 	else
