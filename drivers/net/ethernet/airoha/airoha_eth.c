@@ -759,7 +759,7 @@ static int econet_qdma_set_xpon_irq_mips(struct airoha_qdma_mips *qdma,
 	union irq_bit bit;
 
 	if (!qdma || qdma->qdma->id != 1 ||
-	    !airoha_is(qdma->qdma->eth, econet_en751221))
+	    !airoha_is(qdma->qdma->eth, econet_en751221, econet_en7528))
 		return -EINVAL;
 
 	switch (mode) {
@@ -873,7 +873,7 @@ static irqreturn_t econet_irq_handler(int irq_num, void *dev_instance)
 		}
 	}
 
-	/* The EN751221 vendor stacks register GPON/EPON MAC
+	/* EN751221 and EN7528 vendor stacks register GPON/EPON MAC
 	 * handlers through QDMA_WAN. Invoke the MAC after acknowledging the
 	 * QDMA aggregator and after dropping irq->lock_irq; the MAC ISR
 	 * performs its own W1C and FIFO drain operations.
@@ -4716,7 +4716,7 @@ void econet_xpon_irq(struct airoha_eth *eth, u8 qdma_id,
 	struct airoha_gdm_dev *port;
 	void *xpon_priv;
 
-	if (!airoha_is(eth, econet_en751221) || qdma_id != 1)
+	if (!airoha_is(eth, econet_en751221, econet_en7528) || qdma_id != 1)
 		return;
 
 	port = airoha_eth_get_gdm_dev(eth, AIROHA_GDM2_IDX);
@@ -5143,6 +5143,21 @@ static int airoha_xpon_register_link(struct net_device *netdev,
 	spin_unlock_irqrestore(&dev->xpon_state_lock, flags);
 	netif_carrier_off(netdev);
 
+	/*
+	 * EN7528 uses the Airoha link/MAC backend, but the vendor xPON_1g
+	 * stack still delivers GPON/EPON MAC events through QDMA_WAN external
+	 * interrupt bits 16/17.
+	 */
+	if (airoha_is(dev->eth, econet_en7528)) {
+		ret = airoha_qdma_mips_set_xpon_irq(dev->qdma, mode, true);
+		if (ret) {
+			dev->flags &= ~AIROHA_PRIV_F_XPON_MANAGED;
+			dev->xpon_ops = NULL;
+			dev->xpon_priv = NULL;
+			goto out;
+		}
+	}
+
 out:
 	mutex_unlock(&dev->xpon_lock);
 	if (ret)
@@ -5163,7 +5178,10 @@ static void airoha_xpon_unregister_link(struct net_device *netdev,
 
 	if (airoha_validate_xpon_gdm2(netdev, &dev))
 		return;
-	
+
+	if (airoha_is(dev->eth, econet_en7528))
+		airoha_qdma_mips_set_xpon_irq(dev->qdma, dev->xpon_mode, false);
+
 	airoha_gdm_xpon_stop(dev);
 	mutex_lock(&dev->xpon_lock);
 	if (dev->xpon_ops == ops && dev->xpon_priv == priv) {
@@ -9478,11 +9496,12 @@ static const struct airoha_eth_xpon_ops airoha_xpon_ops = {
 };
 
 /*
- * EN7528 is a mixed generation: the xPON MAC/FE programming and
- * standalone MAC interrupt follow the newer Airoha path, while GDM2
- * still uses the EcoNet legacy-QDMA descriptor format. Keep link/MAC
- * control on the Airoha backend and use the EcoNet OAM/service helpers
- * for descriptor handling.
+ * EN7528 is a mixed generation: the xPON MAC/FE programming follows
+ * the newer Airoha path, while GDM2 still uses the EcoNet legacy-QDMA
+ * descriptor format and the xPON MAC interrupt is delivered through
+ * QDMA_WAN external interrupt bits 16/17. Keep link/MAC control on the
+ * Airoha backend and use the EcoNet OAM/service helpers for descriptor
+ * handling.
  */
 static const struct airoha_eth_xpon_ops en7528_xpon_ops = {
 	.set_mode = airoha_xpon_set_mode,

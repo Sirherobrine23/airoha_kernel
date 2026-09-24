@@ -37,7 +37,9 @@ struct airoha_xpon_match_data {
 	u16 gpon_rsp_time_activation;
 	u8 gpon_guard_bits_override;
 	bool en7523_gpon_defaults;
+	bool gpon_reset_dbg_dly;
 	bool mac_irq_via_eth;
+	bool gpon_adjust_rx_delay;
 	bool gpon_reset_on_start;
 };
 
@@ -109,6 +111,9 @@ struct airoha_xpon_match_data {
 #define GPON_DBG_GRP_0		0x228
 #define GPON_DBG_GRP_1		0x22C
 #define GPON_DBG_BWM_BFIFO_STS	0x250
+#define GPON_DBG_PROBE_CTRL	0x240
+#define GPON_DBG_PROBE_HIGH32	0x244
+#define GPON_DBG_PROBE_LOW32	0x248
 #define GPON_DBG_ERR_CTRL	0x260
 #define GPON_DBG_RX_GEM_CNT	0x300
 #define GPON_DBG_RX_CRC_ERR_CNT	0x304
@@ -256,9 +261,15 @@ struct airoha_xpon_match_data {
 #define MBI_TX_STOP		BIT(8)
 
 /* DBG_DLY */
+#define DBG_DLY_PHY_RX_DLY_SEL		BIT(31)
+#define DBG_DLY_FIX_PHY_RX_DLY_MASK	GENMASK(27, 16)
 #define DBG_DLY_FINE_INT_MASK	GENMASK(15, 8)
 #define DBG_DLY_FINE_INT_DEFAULT	0x0D
 #define DBG_DLY_RESET_DEFAULT	0x80800F00
+
+/* DBG_PROBE_CTRL/HIGH32 */
+#define DBG_PROBE_RX_DELAY_SEL		0x0000000f
+#define DBG_PROBE_RX_DELAY_MASK		GENMASK(23, 12)
 
 /* DBG_BWM_FILTER_CTRL */
 #define BWM_FILTER_LEN_VALID_CHECK_EN	BIT(17)

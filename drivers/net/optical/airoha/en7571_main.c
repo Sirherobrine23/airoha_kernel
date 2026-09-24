@@ -25,6 +25,8 @@
 
 #include "en7571.h"
 
+static void en7571_dump_tx_state(struct en7571_priv *priv, const char *reason);
+
 /* ------------------------------------------------------------------ */
 /* Detection and reset						      */
 /* ------------------------------------------------------------------ */
@@ -196,6 +198,7 @@ int en7571_init(struct en7571_priv *priv)
 	en7571_link_reg(priv, true);
 	en7571_dcl_start(priv);
 	en7571_config(priv);
+	en7571_dump_tx_state(priv, "post-init");
 
 	dev_info(priv->lddla.dev,
 		 "EN7571 initialised: %s, rev %d, KT%d, DDMI%d\n",
@@ -329,18 +332,60 @@ static u16 en7571_op_rx_power(struct airoha_lddla *lddla)
 	return en7571_rx_power_ddmi(container_of(lddla, struct en7571_priv, lddla));
 }
 
+static void en7571_dump_tx_state(struct en7571_priv *priv, const char *reason)
+{
+	struct airoha_lddla *lddla = &priv->lddla;
+	u32 pwr0 = 0, pwr8 = 0, pwr9 = 0, pwrc = 0, pwrd = 0;
+	u32 p0cs3 = 0, p1cs3 = 0, tgen = 0, dummy = 0;
+	u32 safe = 0, rogue = 0, ben = 0, pwradc = 0, pwradc2 = 0;
+
+	lddla_rd32(lddla, EN7571_PWR_CTRL_0, &pwr0);
+	lddla_rd32(lddla, EN7571_PWR_CTRL_8, &pwr8);
+	lddla_rd32(lddla, EN7571_PWR_CTRL_9, &pwr9);
+	lddla_rd32(lddla, EN7571_PWR_CTRL_C, &pwrc);
+	lddla_rd32(lddla, EN7571_PWR_CTRL_D, &pwrd);
+	lddla_rd32(lddla, EN7571_P0_PWR_CTRL_CS3, &p0cs3);
+	lddla_rd32(lddla, EN7571_P1_PWR_CTRL_CS3, &p1cs3);
+	lddla_rd32(lddla, EN7571_T1DELAY, &tgen);
+	lddla_rd32(lddla, EN7571_DUMMY, &dummy);
+	lddla_rd32(lddla, EN7571_SAFE_PROTECT, &safe);
+	lddla_rd32(lddla, EN7571_ROGUE_ONU_DET_CTRL, &rogue);
+	lddla_rd32(lddla, EN7571_RG_PWR_CTRL_BEN_0, &ben);
+	lddla_rd32(lddla, EN7571_RG_PWRADC_DATA, &pwradc);
+	lddla_rd32(lddla, EN7571_RG_PWRADC_DATA2, &pwradc2);
+
+	dev_info(lddla->dev,
+		 "EN7571 TX debug (%s): alarm=%#x pon=%d ddmi=%d pwr0=%#010x pwr8=%#010x pwr9=%#010x pwrc=%#010x pwrd=%#010x p0cs3=%#010x p1cs3=%#010x tgen=%#010x dummy=%#010x safe=%#010x rogue=%#010x ben=%#010x pwradc=%#010x pwradc2=%#010x ddmi_bias=%#06x ddmi_tx=%#06x ddmi_rx=%#06x apd_mv=%d cnt=%u\n",
+		 reason, lddla->alarm, lddla->pon_mode, priv->internal_ddmi,
+		 pwr0, pwr8, pwr9, pwrc, pwrd, p0cs3, p1cs3, tgen,
+		 dummy, safe, rogue, ben, pwradc, pwradc2,
+		 lddla->ddmi_current, lddla->ddmi_tx_power,
+		 lddla->ddmi_rx_power, priv->apd_voltage_mv, priv->cnt);
+}
+
 static int en7571_op_tx_rearm(struct airoha_lddla *lddla)
 {
+	struct en7571_priv *priv = container_of(lddla, struct en7571_priv, lddla);
 	int ret;
+
+	en7571_dump_tx_state(priv, "tx-rearm-before");
 
 	ret = lddla_update8(lddla, EN7571_PWR_CTRL_0 + 1,
 			    EN7571_DCL_RST_B_MASK, EN7571_DCL_RST_B);
-	if (ret)
+	if (ret) {
+		dev_warn(lddla->dev, "EN7571 TX rearm DCL failed: %d\n", ret);
 		return ret;
+	}
 
-	return lddla_update8(lddla, EN7571_SAFE_PROTECT + 1,
-			     EN7571_SAFE_CIRCUIT_MASK,
-			     EN7571_SAFE_CIRCUIT_RESET);
+	ret = lddla_update8(lddla, EN7571_SAFE_PROTECT + 1,
+			    EN7571_SAFE_CIRCUIT_MASK,
+			    EN7571_SAFE_CIRCUIT_RESET);
+	en7571_dump_tx_state(priv, "tx-rearm-after");
+	if (ret)
+		dev_warn(lddla->dev, "EN7571 TX rearm safe reset failed: %d\n",
+			 ret);
+
+	return ret;
 }
 
 /* Chip-specific debugfs lines (the shared core prints the common ones). */

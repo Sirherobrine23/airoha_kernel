@@ -61,6 +61,33 @@
 
 static const u8 airoha_default_vendor_id[4] = {'M', 'T', 'K', 'G'};
 
+static void airoha_xpon_frontend_dump(struct device *dev,
+				      struct optical_frontend *frontend,
+				      const char *reason)
+{
+	struct optical_frontend_telemetry telemetry = {};
+	struct optical_frontend_state state = {};
+	int telemetry_ret = -ENODEV;
+	int state_ret = -ENODEV;
+
+	if (!frontend) {
+		dev_info(dev, "optical frontend dump (%s): no frontend\n",
+			 reason);
+		return;
+	}
+
+	state_ret = optical_frontend_get_state(frontend, &state);
+	telemetry_ret = optical_frontend_get_telemetry(frontend, &telemetry);
+
+	dev_info(dev,
+		 "optical frontend dump (%s): state_ret=%d valid=%#x present=%u ready=%u rx_los=%u tx_fault=%u tx_enabled=%u telemetry_ret=%d valid=%#x temp_mc=%d voltage_uv=%u bias_ua=%u tx_power_nw=%u rx_power_nw=%u alarms=%#x\n",
+		 reason, state_ret, state.valid, state.present, state.ready,
+		 state.rx_los, state.tx_fault, state.tx_enabled,
+		 telemetry_ret, telemetry.valid, telemetry.temperature_mc,
+		 telemetry.voltage_uv, telemetry.bias_ua, telemetry.tx_power_nw,
+		 telemetry.rx_power_nw, telemetry.alarms);
+}
+
 static int airoha_xpon_tx_rearm(struct device *dev,
 				struct optical_frontend *frontend)
 {
@@ -69,7 +96,9 @@ static int airoha_xpon_tx_rearm(struct device *dev,
 	if (!frontend)
 		return 0;
 
+	airoha_xpon_frontend_dump(dev, frontend, "tx-rearm-before");
 	ret = optical_frontend_tx_rearm(frontend);
+	airoha_xpon_frontend_dump(dev, frontend, "tx-rearm-after");
 	if (ret == -EOPNOTSUPP)
 		return 0;
 	if (ret)
@@ -89,7 +118,17 @@ static int airoha_xpon_tx_enable(struct device *dev,
 	if (!frontend)
 		return 0;
 
+	if (enable)
+		airoha_xpon_frontend_dump(dev, frontend, "tx-enable-before");
+	else
+		airoha_xpon_frontend_dump(dev, frontend, "tx-disable-before");
+
 	ret = optical_frontend_tx_enable(frontend, enable);
+
+	if (enable)
+		airoha_xpon_frontend_dump(dev, frontend, "tx-enable-after");
+	else
+		airoha_xpon_frontend_dump(dev, frontend, "tx-disable-after");
 	if (ret == -EOPNOTSUPP)
 		return 0;
 	if (ret)
@@ -434,6 +473,7 @@ static void gpon_dump_activation_regs(struct xpon_priv *priv,
 		 READ_ONCE(priv->ploam_rx_drops),
 		 READ_ONCE(priv->assign_onu_fastpath),
 		 phy_tx_frames, phy_tx_bursts, phy_ret);
+	airoha_xpon_frontend_dump(priv->dev, priv->frontend, reason);
 }
 
 static inline void gpon_set_bits(struct xpon_priv *priv, u32 reg, u32 bits)
@@ -514,12 +554,11 @@ static int gpon_prepare_hardware(struct xpon_priv *priv)
 
 	/*
 	 * EN7523 resets the complete 0x4208 delay register and applies two
-	 * additional DBA/BWmap defaults.  The older EN7521/EN751221 path does
-	 * not execute those writes; only its 0x1c fine internal delay is common
-	 * to the configuration data.  Keep the generation-specific writes out
-	 * of the common MAC path.
+	 * additional DBA/BWmap defaults.  EN7528 also starts from the vendor
+	 * 0x4208 reset image, but does not use the EN7523 DBA/BWmap defaults.
 	 */
-	if (priv->match_data->en7523_gpon_defaults)
+	if (priv->match_data->en7523_gpon_defaults ||
+	    priv->match_data->gpon_reset_dbg_dly)
 		gpon_write(priv, GPON_DBG_DLY, DBG_DLY_RESET_DEFAULT);
 	gpon_rmw(priv, GPON_DBG_DLY, DBG_DLY_FINE_INT_MASK,
 		 FIELD_PREP(DBG_DLY_FINE_INT_MASK,
@@ -546,6 +585,35 @@ static int gpon_prepare_hardware(struct xpon_priv *priv)
 		 gpon_read(priv, GPON_DBG_IDLE_GEM_THLD),
 		 gpon_read(priv, GPON_DBG_BWM_FILTER_CTRL));
 	return 0;
+}
+
+static void gpon_adjust_mac_rx_delay(struct xpon_priv *priv)
+{
+	u32 dbg_dly, fixed, probe, rx_delay;
+
+	if (!priv->match_data->gpon_adjust_rx_delay)
+		return;
+
+	/*
+	 * Match the EN7528/EN7516 vendor activation path: select the GPON
+	 * debug probe, read the measured RX delay from bits 23:12 of the high
+	 * probe word, and force DBG_DLY to use half of that value before the
+	 * O3 Serial_Number_ONU burst is transmitted.
+	 */
+	gpon_write(priv, GPON_DBG_PROBE_CTRL, DBG_PROBE_RX_DELAY_SEL);
+	probe = gpon_read(priv, GPON_DBG_PROBE_HIGH32);
+	rx_delay = FIELD_GET(DBG_PROBE_RX_DELAY_MASK, probe);
+	fixed = rx_delay / 2;
+
+	gpon_rmw(priv, GPON_DBG_DLY,
+		 DBG_DLY_PHY_RX_DLY_SEL | DBG_DLY_FIX_PHY_RX_DLY_MASK,
+		 DBG_DLY_PHY_RX_DLY_SEL |
+		 FIELD_PREP(DBG_DLY_FIX_PHY_RX_DLY_MASK, fixed));
+
+	dbg_dly = gpon_read(priv, GPON_DBG_DLY);
+	dev_info(priv->dev,
+		 "GPON MAC RX delay adjusted: probe=%#010x rx=%u fixed=%u dbg_dly=%#010x\n",
+		 probe, rx_delay, fixed, dbg_dly);
 }
 
 static void gpon_reset_activation_context(struct xpon_priv *priv)
@@ -1351,6 +1419,8 @@ static void gpon_cb_set_overhead(void *hw_priv,
 	pre_dly = (delay_mode ? PRE_DLY_EN : 0) | (delay_time & PRE_DLY_MASK);
 	gpon_write(priv, GPON_PRE_ASSIGNED_DLY, pre_dly);
 
+	gpon_adjust_mac_rx_delay(priv);
+
 	/*
 	 * The vendor driver keeps TX disabled throughout O2.  Receiving
 	 * Upstream_Overhead is the point where it enables the external
@@ -1391,6 +1461,7 @@ static void gpon_cb_set_overhead(void *hw_priv,
 		 gpon_read(priv, GPON_PLOu_PRMBL_TYPE3),
 		 gpon_read(priv, GPON_PLOu_DELM_BIT),
 		 gpon_read(priv, GPON_PRE_ASSIGNED_DLY));
+	airoha_xpon_frontend_dump(priv->dev, priv->frontend, "gpon-o3-entry");
 }
 
 static void gpon_cb_set_t3_preamble(void *hw_priv, u8 o3_t3, u8 o5_t3)
@@ -4262,15 +4333,18 @@ static const struct airoha_xpon_match_data en751221_xpon_data = {
 };
 
 /*
- * EN7528 exposes a dedicated xPON MAC interrupt through the GIC.
- * Keep mac_irq_via_eth clear so the MAC driver requests that IRQ
- * instead of routing MAC events through QDMA_WAN.
+ * EN7528 exposes xPON MAC source numbers in the GIC map, but the vendor
+ * xPON_1g stack registers GPON/EPON MAC callbacks through QDMA_WAN.
  */
 static const struct airoha_xpon_match_data en7528_xpon_data = {
 	.mode_from_dt = true,
 	.wan_mode_mask = EN7528_SCU_WAN_MODE_MASK,
-	.gpon_fine_delay = 0x1c,
+	.gpon_fine_delay = 0x0f,
 	.gpon_rsp_time_activation = GPON_RSP_TIME_ACT_EN7528,
+	.gpon_guard_bits_override = GPON_PHY_GUARD_BIT_NUM,
+	.gpon_reset_dbg_dly = true,
+	.gpon_adjust_rx_delay = true,
+	.mac_irq_via_eth = true,
 	.gpon_reset_on_start = true,
 };
 
