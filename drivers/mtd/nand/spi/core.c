@@ -968,30 +968,53 @@ static int spinand_mtd_write(struct mtd_info *mtd, loff_t to,
 	return ret;
 }
 
+static unsigned int spinand_bbm_len(const struct spinand_device *spinand)
+{
+	return spinand->flags & SPINAND_BBM_1_BYTE ? 1 : 2;
+}
+
+static unsigned int spinand_bbm_npages(const struct spinand_device *spinand)
+{
+	return spinand->flags & SPINAND_BBM_SECOND_PAGE ? 2 : 1;
+}
+
 static bool spinand_isbad(struct nand_device *nand, const struct nand_pos *pos)
 {
 	struct spinand_device *spinand = nand_to_spinand(nand);
 	u8 marker[2] = { };
 	struct nand_page_io_req req = {
 		.pos = *pos,
-		.ooblen = sizeof(marker),
 		.ooboffs = 0,
 		.oobbuf.in = marker,
 		.mode = MTD_OPS_RAW,
 	};
-	int ret;
+	unsigned int marker_len = spinand_bbm_len(spinand);
+	unsigned int npages = spinand_bbm_npages(spinand);
+	int ret, i, j;
 
-	spinand_select_target(spinand, pos->target);
-
-	ret = spinand_read_page(spinand, &req);
-	if (ret == -EOPNOTSUPP) {
-		/* Retry with ECC in case raw access is not supported */
-		req.mode = MTD_OPS_PLACE_OOB;
-		spinand_read_page(spinand, &req);
-	}
-
-	if (marker[0] != 0xff || marker[1] != 0xff)
+	ret = spinand_select_target(spinand, pos->target);
+	if (ret)
 		return true;
+
+	for (i = 0; i < npages; i++) {
+		req.pos.page = i;
+		req.ooblen = marker_len;
+		req.mode = MTD_OPS_RAW;
+		memset(marker, 0, sizeof(marker));
+
+		ret = spinand_read_page(spinand, &req);
+		if (ret == -EOPNOTSUPP) {
+			/* Retry with ECC in case raw access is not supported */
+			req.mode = MTD_OPS_PLACE_OOB;
+			ret = spinand_read_page(spinand, &req);
+		}
+		if (ret < 0)
+			return true;
+
+		for (j = 0; j < marker_len; j++)
+			if (marker[j] != 0xff)
+				return true;
+	}
 
 	return false;
 }
@@ -1018,21 +1041,30 @@ static int spinand_markbad(struct nand_device *nand, const struct nand_pos *pos)
 	struct nand_page_io_req req = {
 		.pos = *pos,
 		.ooboffs = 0,
-		.ooblen = sizeof(marker),
 		.oobbuf.out = marker,
 		.mode = MTD_OPS_RAW,
 	};
-	int ret;
+	unsigned int marker_len = spinand_bbm_len(spinand);
+	unsigned int npages = spinand_bbm_npages(spinand);
+	int ret, res, i;
 
 	ret = spinand_select_target(spinand, pos->target);
 	if (ret)
 		return ret;
 
-	ret = spinand_write_page(spinand, &req);
-	if (ret == -EOPNOTSUPP) {
-		/* Retry with ECC in case raw access is not supported */
-		req.mode = MTD_OPS_PLACE_OOB;
-		ret = spinand_write_page(spinand, &req);
+	for (i = 0; i < npages; i++) {
+		req.pos.page = i;
+		req.ooblen = marker_len;
+		req.mode = MTD_OPS_RAW;
+
+		res = spinand_write_page(spinand, &req);
+		if (res == -EOPNOTSUPP) {
+			/* Retry with ECC in case raw access is not supported */
+			req.mode = MTD_OPS_PLACE_OOB;
+			res = spinand_write_page(spinand, &req);
+		}
+		if (!ret)
+			ret = res;
 	}
 
 	return ret;
