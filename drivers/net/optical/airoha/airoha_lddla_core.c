@@ -579,7 +579,13 @@ static int airoha_lddla_frontend_tx_rearm(struct optical_frontend *frontend)
 	if (ret)
 		return ret;
 
+	dev_info(lddla->dev,
+		 "XPON-TRACE LDDLA tx_rearm begin: chip=%s pon_mode=%u alarm=%#x\n",
+		 lddla->ops->name, lddla->pon_mode, lddla->alarm);
 	ret = lddla->ops->tx_rearm(lddla);
+	dev_info(lddla->dev,
+		 "XPON-TRACE LDDLA tx_rearm end: chip=%s ret=%d alarm=%#x\n",
+		 lddla->ops->name, ret, lddla->alarm);
 	mutex_unlock(&lddla->lock);
 
 	return ret;

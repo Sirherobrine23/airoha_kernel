@@ -362,6 +362,19 @@ int airoha_xpon_phy_set_gpon_overhead(struct phy *phy, u8 guard_bits,
 		 "GPON PHY overhead: guard=%u t1=%u t2=%u t3=%u preamble=%#010x delimiter=%#010x old=%#010x\n",
 		 guard_bits, t1_pbits, t2_pbits, t3_pattern,
 		 preamble, delimiter_guard, old_preamble);
+	dev_info(priv->dev,
+		 "XPON-TRACE PHY overhead readback: physet3=%#010x physet10=%#010x setting=%#010x preamble=%#010x delimiter=%#010x ext=%#010x trans=%#010x int=%#010x/%#010x txcnt=%#010x/%#010x\n",
+		 airoha_xpon_phy_read(priv, XPON_PHYSET3),
+		 airoha_xpon_phy_read(priv, XPON_PHYSET10),
+		 airoha_xpon_phy_read(priv, XPON_SETTING),
+		 airoha_xpon_phy_read(priv, XPON_GPON_PREAMBLE),
+		 airoha_xpon_phy_read(priv, XPON_GPON_DELIMITER_GUARD),
+		 airoha_xpon_phy_read(priv, XPON_GPON_EXT_PREAMBLE),
+		 airoha_xpon_phy_read(priv, XPON_TRANS_STATUS),
+		 airoha_xpon_phy_read(priv, XPON_INT_STATUS),
+		 airoha_xpon_phy_read(priv, XPON_INT_ENABLE),
+		 airoha_xpon_phy_read(priv, XPON_GPON_TX_FRAME_COUNTER),
+		 airoha_xpon_phy_read(priv, XPON_GPON_TX_BURST_COUNTER));
 	return 0;
 }
 EXPORT_SYMBOL_GPL(airoha_xpon_phy_set_gpon_overhead);
@@ -454,8 +467,14 @@ int airoha_xpon_phy_set_gpon_oper_state(
 
 	airoha_xpon_phy_rmw(priv, XPON_GPON_EXT_PREAMBLE, mask, val);
 	dev_info(priv->dev,
-		 "GPON PHY operational state=%u reg=%#010x\n",
-		 state, airoha_xpon_phy_read(priv, XPON_GPON_EXT_PREAMBLE));
+		 "XPON-TRACE PHY oper-state=%u ext=%#010x set3=%#010x set10=%#010x setting=%#010x trans=%#010x txcnt=%#010x/%#010x\n",
+		 state, airoha_xpon_phy_read(priv, XPON_GPON_EXT_PREAMBLE),
+		 airoha_xpon_phy_read(priv, XPON_PHYSET3),
+		 airoha_xpon_phy_read(priv, XPON_PHYSET10),
+		 airoha_xpon_phy_read(priv, XPON_SETTING),
+		 airoha_xpon_phy_read(priv, XPON_TRANS_STATUS),
+		 airoha_xpon_phy_read(priv, XPON_GPON_TX_FRAME_COUNTER),
+		 airoha_xpon_phy_read(priv, XPON_GPON_TX_BURST_COUNTER));
 	return 0;
 }
 EXPORT_SYMBOL_GPL(airoha_xpon_phy_set_gpon_oper_state);

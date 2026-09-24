@@ -878,6 +878,10 @@ static irqreturn_t econet_irq_handler(int irq_num, void *dev_instance)
 	 * QDMA aggregator and after dropping irq->lock_irq; the MAC ISR
 	 * performs its own W1C and FIFO drain operations.
 	 */
+	if (xpon_pending)
+		dev_info_ratelimited(qdma->qdma->eth->dev,
+			 "XPON-TRACE QDMA IRQ aggregator: qdma=%u pending=%#lx\n",
+			 qdma->qdma->id, xpon_pending);
 	if (xpon_pending & BIT(AIROHA_XPON_MODE_GPON))
 		econet_xpon_irq(qdma->qdma->eth, qdma->qdma->id,
 					 AIROHA_XPON_MODE_GPON);
@@ -4727,6 +4731,9 @@ void econet_xpon_irq(struct airoha_eth *eth, u8 qdma_id,
 
 	ops = READ_ONCE(port->xpon_ops);
 	xpon_priv = READ_ONCE(port->xpon_priv);
+	dev_info_ratelimited(eth->dev,
+		 "XPON-TRACE Ethernet->xPON IRQ dispatch: qdma=%u mode=%u ops=%ps priv=%px\n",
+		 qdma_id, mode, ops ? ops->mac_irq : NULL, xpon_priv);
 	if (ops && ops->mac_irq)
 		ops->mac_irq(xpon_priv);
 }

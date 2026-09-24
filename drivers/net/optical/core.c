@@ -529,6 +529,7 @@ EXPORT_SYMBOL_GPL(optical_frontend_get_mode);
 
 int optical_frontend_tx_enable(struct optical_frontend *frontend, bool enable)
 {
+	int gpio_before = -ENODATA, gpio_after = -ENODATA;
 	int ret = 0;
 
 	if (!frontend)
@@ -537,6 +538,12 @@ int optical_frontend_tx_enable(struct optical_frontend *frontend, bool enable)
 		return -EOPNOTSUPP;
 
 	mutex_lock(&frontend->op_lock);
+	if (frontend->tx_disable_gpio)
+		gpio_before = gpiod_get_value_cansleep(frontend->tx_disable_gpio);
+	dev_info(&frontend->dev,
+		 "XPON-TRACE frontend tx_enable begin: enable=%u provider=%s gpio_before=%d provider_op=%u\n",
+		 enable, frontend->provider ? dev_name(frontend->provider) : "none",
+		 gpio_before, !!frontend->ops->tx_enable);
 
 	/* Block the optical output before asking the provider to shut down. */
 	if (!enable && frontend->tx_disable_gpio)
@@ -553,6 +560,11 @@ int optical_frontend_tx_enable(struct optical_frontend *frontend, bool enable)
 		gpiod_set_value_cansleep(frontend->tx_disable_gpio, 0);
 
 out:
+	if (frontend->tx_disable_gpio)
+		gpio_after = gpiod_get_value_cansleep(frontend->tx_disable_gpio);
+	dev_info(&frontend->dev,
+		 "XPON-TRACE frontend tx_enable end: enable=%u ret=%d gpio_after=%d\n",
+		 enable, ret, gpio_after);
 	frontend->telemetry_cache_valid = false;
 	mutex_unlock(&frontend->op_lock);
 
@@ -570,7 +582,12 @@ int optical_frontend_tx_rearm(struct optical_frontend *frontend)
 		return -EOPNOTSUPP;
 
 	mutex_lock(&frontend->op_lock);
+	dev_info(&frontend->dev,
+		 "XPON-TRACE frontend tx_rearm begin: provider=%s\n",
+		 frontend->provider ? dev_name(frontend->provider) : "none");
 	ret = frontend->ops->tx_rearm(frontend);
+	dev_info(&frontend->dev,
+		 "XPON-TRACE frontend tx_rearm end: ret=%d\n", ret);
 	frontend->telemetry_cache_valid = false;
 	mutex_unlock(&frontend->op_lock);
 

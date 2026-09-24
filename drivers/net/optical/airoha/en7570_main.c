@@ -341,13 +341,28 @@ static u16 en7570_op_rx_power(struct airoha_lddla *lddla)
 
 static int en7570_op_tx_rearm(struct airoha_lddla *lddla)
 {
+	u32 safe_before = 0, safe_after = 0, rogue = 0;
+	int ret;
+
 	if (lddla->pon_mode != AIROHA_PON_GPON &&
 	    lddla->pon_mode != AIROHA_PON_EPON)
 		return -ENODATA;
 
-	return lddla_update8(lddla, EN7570_SAFE_PROTECT + 1,
-			     EN7570_SAFE_CIRCUIT_MASK,
-			     EN7570_SAFE_CIRCUIT_RESET);
+	lddla_rd32(lddla, EN7570_SAFE_PROTECT, &safe_before);
+	lddla_rd32(lddla, EN7570_ROGUE_ONU_DET_CTRL, &rogue);
+	dev_info(lddla->dev,
+		 "XPON-TRACE EN7570 rearm before: safe=%#010x rogue=%#010x alarm=%#x mode=%u\n",
+		 safe_before, rogue, lddla->alarm, lddla->pon_mode);
+
+	ret = lddla_update8(lddla, EN7570_SAFE_PROTECT + 1,
+			    EN7570_SAFE_CIRCUIT_MASK,
+			    EN7570_SAFE_CIRCUIT_RESET);
+	lddla_rd32(lddla, EN7570_SAFE_PROTECT, &safe_after);
+	dev_info(lddla->dev,
+		 "XPON-TRACE EN7570 rearm after: ret=%d safe=%#010x delta=%#010x\n",
+		 ret, safe_after, safe_before ^ safe_after);
+
+	return ret;
 }
 
 static void en7570_op_diag(struct airoha_lddla *lddla, struct seq_file *s)

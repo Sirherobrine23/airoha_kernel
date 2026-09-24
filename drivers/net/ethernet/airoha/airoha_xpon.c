@@ -589,31 +589,51 @@ static int gpon_prepare_hardware(struct xpon_priv *priv)
 
 static void gpon_adjust_mac_rx_delay(struct xpon_priv *priv)
 {
-	u32 dbg_dly, fixed, probe, rx_delay;
+	u32 dbg_dly_before, dbg_dly_after, fixed, probe, rsp_time, rx_delay;
 
-	if (!priv->match_data->gpon_adjust_rx_delay)
+	if (!priv->match_data->gpon_adjust_rx_delay) {
+		dev_info(priv->dev,
+			 "XPON-TRACE RXDLY skip: rsp=%#06x dbg_dly=%#010x\n",
+			 gpon_read(priv, GPON_RSP_TIME),
+			 gpon_read(priv, GPON_DBG_DLY));
 		return;
+	}
 
 	/*
-	 * Match the EN7528/EN7516 vendor activation path: select the GPON
-	 * debug probe, read the measured RX delay from bits 23:12 of the high
-	 * probe word, and force DBG_DLY to use half of that value before the
-	 * O3 Serial_Number_ONU burst is transmitted.
+	 * Match modify_mac_internal_delay() from the vendor xpon_1g stack.
+	 * EN7523 explicitly skips this path; EN751221/EN7521 and EN7528 use
+	 * the GPON debug probe to measure RX delay and force half of it into
+	 * DBG_DLY.  The vendor also compensates response times above 0x577:
+	 * four delay units for every extra response-time unit.
 	 */
 	gpon_write(priv, GPON_DBG_PROBE_CTRL, DBG_PROBE_RX_DELAY_SEL);
 	probe = gpon_read(priv, GPON_DBG_PROBE_HIGH32);
 	rx_delay = FIELD_GET(DBG_PROBE_RX_DELAY_MASK, probe);
+	rsp_time = gpon_read(priv, GPON_RSP_TIME) & 0xffff;
 	fixed = rx_delay / 2;
+	if (rsp_time > GPON_RSP_TIME_ACT_EN7523)
+		fixed += 4 * (rsp_time - GPON_RSP_TIME_ACT_EN7523);
+
+	/* The hardware field is only 12 bits; keep diagnostics deterministic. */
+	fixed &= FIELD_MAX(DBG_DLY_FIX_PHY_RX_DLY_MASK);
+	dbg_dly_before = gpon_read(priv, GPON_DBG_DLY);
+
+	dev_info(priv->dev,
+		 "XPON-TRACE RXDLY before: probe_ctrl=%#010x probe=%#010x rx=%u rsp=%#06x fixed=%u dbg_dly=%#010x\n",
+		 gpon_read(priv, GPON_DBG_PROBE_CTRL), probe, rx_delay,
+		 rsp_time, fixed, dbg_dly_before);
 
 	gpon_rmw(priv, GPON_DBG_DLY,
 		 DBG_DLY_PHY_RX_DLY_SEL | DBG_DLY_FIX_PHY_RX_DLY_MASK,
 		 DBG_DLY_PHY_RX_DLY_SEL |
 		 FIELD_PREP(DBG_DLY_FIX_PHY_RX_DLY_MASK, fixed));
 
-	dbg_dly = gpon_read(priv, GPON_DBG_DLY);
+	dbg_dly_after = gpon_read(priv, GPON_DBG_DLY);
 	dev_info(priv->dev,
-		 "GPON MAC RX delay adjusted: probe=%#010x rx=%u fixed=%u dbg_dly=%#010x\n",
-		 probe, rx_delay, fixed, dbg_dly);
+		 "XPON-TRACE RXDLY after: dbg_dly=%#010x phy_sel=%u fixed_field=%lu delta=%#010x\n",
+		 dbg_dly_after, !!(dbg_dly_after & DBG_DLY_PHY_RX_DLY_SEL),
+		 FIELD_GET(DBG_DLY_FIX_PHY_RX_DLY_MASK, dbg_dly_after),
+		 dbg_dly_before ^ dbg_dly_after);
 }
 
 static void gpon_reset_activation_context(struct xpon_priv *priv)
@@ -1400,6 +1420,7 @@ static void gpon_cb_set_overhead(void *hw_priv,
 		 guard_bits, effective_guard_bits, GPON_PHY_GUARD_BIT_NUM,
 		 t1_pbits, t2_pbits, t3_pbits, delay_mode, delay_time,
 		 delim[0], delim[1], delim[2]);
+	gpon_dump_activation_regs(priv, "XPON-TRACE overhead-entry");
 
 	ret = airoha_xpon_phy_set_gpon_overhead(priv->phy,
 					       effective_guard_bits,
@@ -1408,6 +1429,9 @@ static void gpon_cb_set_overhead(void *hw_priv,
 	if (ret)
 		dev_warn(priv->dev,
 			 "failed to program GPON PHY overhead: %d\n", ret);
+	else
+		dev_info(priv->dev,
+			 "XPON-TRACE PHY overhead programmed successfully\n");
 
 	gpon_write(priv, GPON_PLOu_GUARD_BIT, effective_guard_bits);
 
@@ -1419,7 +1443,15 @@ static void gpon_cb_set_overhead(void *hw_priv,
 	pre_dly = (delay_mode ? PRE_DLY_EN : 0) | (delay_time & PRE_DLY_MASK);
 	gpon_write(priv, GPON_PRE_ASSIGNED_DLY, pre_dly);
 
+	dev_info(priv->dev,
+		 "XPON-TRACE MAC overhead programmed: guard=%#010x type12=%#010x pre_delay=%#010x rsp=%#06x\n",
+		 gpon_read(priv, GPON_PLOu_GUARD_BIT),
+		 gpon_read(priv, GPON_PLOu_PRMBL_TYPE1_2),
+		 gpon_read(priv, GPON_PRE_ASSIGNED_DLY),
+		 gpon_read(priv, GPON_RSP_TIME));
+
 	gpon_adjust_mac_rx_delay(priv);
+	gpon_dump_activation_regs(priv, "XPON-TRACE after-rx-delay");
 
 	/*
 	 * The vendor driver keeps TX disabled throughout O2.  Receiving
@@ -1431,6 +1463,7 @@ static void gpon_cb_set_overhead(void *hw_priv,
 	 * TX_DISABLE is not equivalent: SAFE_PROTECT may latch again before
 	 * the first O3 burst reaches the fibre.
 	 */
+	dev_info(priv->dev, "XPON-TRACE TX path: enabling frontend\n");
 	ret = airoha_xpon_tx_enable(priv->dev, priv->frontend, true);
 	if (ret) {
 		dev_warn(priv->dev,
@@ -1439,6 +1472,7 @@ static void gpon_cb_set_overhead(void *hw_priv,
 		return;
 	}
 
+	dev_info(priv->dev, "XPON-TRACE TX path: rearming frontend\n");
 	ret = airoha_xpon_tx_rearm(priv->dev, priv->frontend);
 	if (ret) {
 		dev_warn(priv->dev,
@@ -1462,6 +1496,7 @@ static void gpon_cb_set_overhead(void *hw_priv,
 		 gpon_read(priv, GPON_PLOu_DELM_BIT),
 		 gpon_read(priv, GPON_PRE_ASSIGNED_DLY));
 	airoha_xpon_frontend_dump(priv->dev, priv->frontend, "gpon-o3-entry");
+	gpon_dump_activation_regs(priv, "XPON-TRACE overhead-exit");
 }
 
 static void gpon_cb_set_t3_preamble(void *hw_priv, u8 o3_t3, u8 o5_t3)
@@ -2021,6 +2056,7 @@ static void gpon_cb_state_changed(void *hw_priv, enum gpon_state state)
 	dev_info(priv->dev, "GPON state -> %s (%u), activation_reg=%#08x\n",
 		 gpon_state_name(state), state,
 		 gpon_read(priv, GPON_ACTIVATION_ST));
+	gpon_dump_activation_regs(priv, "XPON-TRACE state-transition");
 	airoha_gpon_omci_set_state(&priv->omci, state);
 	if (priv->xpon) {
 		enum xpon_registration_state registration;
@@ -2047,9 +2083,6 @@ static void gpon_cb_state_changed(void *hw_priv, enum gpon_state state)
 		}
 		xpon_device_report_registration(priv->xpon, registration);
 	}
-
-	if (state == GPON_O4_RANGING || state == GPON_O5_OPERATION)
-		gpon_dump_activation_regs(priv, "state transition");
 
 	mutex_lock(&priv->link_state_lock);
 	priv->gpon_o5 = state == GPON_O5_OPERATION;
@@ -2436,6 +2469,11 @@ static void gpon_handle_irq_status(struct xpon_priv *priv, u32 raw, u32 enabled)
 	if (!raw)
 		return;
 
+	dev_info_ratelimited(priv->dev,
+		 "XPON-TRACE IRQ: raw=%#010x enabled=%#010x active=%#010x state=%s fifo=%#010x\n",
+		 raw, enabled, active, gpon_state_name(ploam_get_state(priv->ploam)),
+		 gpon_read(priv, GPON_PLOAMd_FIFO_STS));
+
 	/* G_INT_STATUS is W1C; acknowledge the complete hardware snapshot. */
 	gpon_write(priv, GPON_INT_STATUS, raw);
 
@@ -2788,8 +2826,8 @@ static void gpon_irq_work_fn(struct work_struct *work)
 			sn_cfg = gpon_read(priv, GPON_SN_MSG_CFG);
 			phy_ret = airoha_xpon_phy_get_gpon_tx_counters(
 				priv->phy, &phy_tx_frames, &phy_tx_bursts);
-			dev_dbg(priv->dev,
-				"GPON SN event: irq=%#08x cfg=%#010x threshold=%lu tx_power=%lu random_delay=%lu rsp=%#06x act=%u serial=%#010x/%#010x guard=%#010x type12=%#010x type3=%#010x pre_delay=%#010x dbg_dly=%#010x tx_sync=%#010x phy_tx=%#010x/%#010x phy_ret=%d\n",
+			dev_info(priv->dev,
+				"XPON-TRACE GPON SN event: irq=%#08x cfg=%#010x threshold=%lu tx_power=%lu random_delay=%lu rsp=%#06x act=%u serial=%#010x/%#010x guard=%#010x type12=%#010x type3=%#010x pre_delay=%#010x dbg_dly=%#010x tx_sync=%#010x phy_tx=%#010x/%#010x phy_ret=%d\n",
 				 active, sn_cfg,
 				 FIELD_GET(SN_MSG_CFG_SN_REQ_THR_MASK, sn_cfg),
 				 FIELD_GET(SN_MSG_CFG_TX_POWER_MODE_MASK, sn_cfg),
@@ -4329,6 +4367,7 @@ static const struct airoha_xpon_match_data en751221_xpon_data = {
 	.gpon_fine_delay = 0x1c,
 	.gpon_rsp_time_activation = GPON_RSP_TIME_ACT_EN751221,
 	.gpon_guard_bits_override = GPON_PHY_GUARD_BIT_NUM_EN751221,
+	.gpon_adjust_rx_delay = true,
 	.mac_irq_via_eth = true,
 };
 
