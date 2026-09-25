@@ -33,6 +33,8 @@ struct xpon_device {
 	struct led_classdev *pon_led;
 	struct led_classdev *los_led;
 	struct led_classdev *fiber_led;
+	u8 pon_led_mode;
+	u8 los_led_mode;
 
 	void *omci;
 	void *oam;
