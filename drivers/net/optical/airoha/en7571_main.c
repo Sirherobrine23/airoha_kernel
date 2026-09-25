@@ -377,6 +377,12 @@ static int en7571_op_tx_rearm(struct airoha_lddla *lddla)
 		return ret;
 	}
 
+	/*
+	 * Match the vendor EN7571 re-arm ordering: clear a stale rogue-ONU
+	 * latch before resetting the transmitter safe circuit.
+	 */
+	en7571_rogue_clear(priv);
+
 	ret = lddla_update8(lddla, EN7571_SAFE_PROTECT + 1,
 			    EN7571_SAFE_CIRCUIT_MASK,
 			    EN7571_SAFE_CIRCUIT_RESET);
