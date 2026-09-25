@@ -68,28 +68,53 @@ void en7570_pattern_stop(struct en7570_priv *priv)
  * readbacks in bytes 2-3 of P{0,1}_PWR_CTRL_CS3; the MPD targets live in
  * register 0x0004 with MPDH in bytes 0-1 and MPDL in bytes 2-3.
  */
-u32 en7570_info(struct en7570_priv *priv, u8 sel)
+int en7570_info(struct en7570_priv *priv, u8 sel, u32 *value)
 {
-	u8 b[4] = { 0 };
+	u8 b[4];
+	u16 reg;
+	u32 *cache, decoded;
+	int ret;
 
+	if (!value)
+		return -EINVAL;
 	switch (sel) {
 	case EN7570_INFO_IMOD:
-		lddla_rd(&priv->lddla, EN7570_P1_PWR_CTRL_CS3, b, 4);
-		priv->mod_code = b[2] | ((b[3] & 0x0f) << 8);
-		return priv->mod_code;
-	case EN7570_INFO_P0:	/* MPDL: register 0x0004 bytes 2-3 */
-		lddla_rd(&priv->lddla, EN7570_MPDH, b, 4);
-		priv->mpdl = b[2] | ((b[3] & 0x03) << 8);
-		return priv->mpdl;
-	case EN7570_INFO_P1:	/* MPDH: register 0x0004 bytes 0-1 */
-		lddla_rd(&priv->lddla, EN7570_MPDH, b, 4);
-		priv->mpdh = b[0] | ((b[1] & 0x03) << 8);
-		return priv->mpdh;
-	default:		/* EN7570_INFO_IBIAS */
-		lddla_rd(&priv->lddla, EN7570_P0_PWR_CTRL_CS3, b, 4);
-		priv->bias_code = b[2] | ((b[3] & 0x0f) << 8);
-		return priv->bias_code;
+		reg = EN7570_P1_PWR_CTRL_CS3;
+		cache = &priv->mod_code;
+		break;
+	case EN7570_INFO_P0:
+		reg = EN7570_MPDH;
+		cache = &priv->mpdl;
+		break;
+	case EN7570_INFO_P1:
+		reg = EN7570_MPDH;
+		cache = &priv->mpdh;
+		break;
+	case EN7570_INFO_IBIAS:
+		reg = EN7570_P0_PWR_CTRL_CS3;
+		cache = &priv->bias_code;
+		break;
+	default:
+		return -EINVAL;
 	}
+	ret = lddla_rd(&priv->lddla, reg, b, sizeof(b));
+	if (ret)
+		return ret;
+
+	switch (sel) {
+	case EN7570_INFO_P0:	/* MPDL: register 0x0004 bytes 2-3 */
+		decoded = b[2] | ((b[3] & 0x03) << 8);
+		break;
+	case EN7570_INFO_P1:	/* MPDH: register 0x0004 bytes 0-1 */
+		decoded = b[0] | ((b[1] & 0x03) << 8);
+		break;
+	default:		/* Ibias / Imod are 12-bit readbacks. */
+		decoded = b[2] | ((b[3] & 0x0f) << 8);
+		break;
+	}
+	*cache = decoded;
+	*value = decoded;
+	return 0;
 }
 
 /* Program the initial Ibias / Imod from flash, or from the LUT if absent. */
@@ -275,11 +300,19 @@ void en7570_erc_restart(struct en7570_priv *priv)
 }
 
 /* Single-channel ERC restart for the bias rail (P0). */
-void en7570_erc_restart_p0(struct en7570_priv *priv)
+int en7570_erc_restart_p0(struct en7570_priv *priv)
 {
-	lddla_update8(&priv->lddla, EN7570_P0_PWR_CTRL_CS3, EN7570_ERC_START_MASK, 0);
-	lddla_update8(&priv->lddla, EN7570_P0_PWR_CTRL_CS3, EN7570_ERC_START_MASK,
-		       EN7570_ERC_START);
+	int ret, restore;
+
+	ret = lddla_update8(&priv->lddla, EN7570_P0_PWR_CTRL_CS3,
+			    EN7570_ERC_START_MASK, 0);
+	/* Even an unsuccessful I2C write may have reached the device. Make
+	 * one bounded attempt to restore START, then report either failure.
+	 * Caller latches the error; it must not repeat the restart next tick.
+	 */
+	restore = lddla_update8(&priv->lddla, EN7570_P0_PWR_CTRL_CS3,
+				EN7570_ERC_START_MASK, EN7570_ERC_START);
+	return ret ? ret : restore;
 }
 
 /**

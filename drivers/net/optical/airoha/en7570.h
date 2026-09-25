@@ -100,6 +100,11 @@ struct en7570_priv {
 	u32 cnt7570;
 	s32 mpd_cal_cnt;
 	int tec_cnt;
+	/* Cached bias is not a fresh measurement after an I2C failure. */
+	bool bias_valid;
+	int bias_read_error;
+	/* Uncertain control write: inhibit further TEC/bias writes until reboot. */
+	int optical_control_error;
 };
 
 /*
@@ -135,11 +140,11 @@ void en7570_tx_sd_level(struct en7570_priv *priv);
 int en7570_tx_sd_cal(struct en7570_priv *priv);
 void en7570_mpd_dark(struct en7570_priv *priv);
 s32 en7570_mpd_current(struct en7570_priv *priv);
-u32 en7570_info(struct en7570_priv *priv, u8 channel);
+int en7570_info(struct en7570_priv *priv, u8 channel, u32 *value);
 int en7570_tgen(struct en7570_priv *priv, int mode);
 void en7570_erc_filter(struct en7570_priv *priv);
 void en7570_erc_restart(struct en7570_priv *priv);
-void en7570_erc_restart_p0(struct en7570_priv *priv);
+int en7570_erc_restart_p0(struct en7570_priv *priv);
 void en7570_cdr(struct en7570_priv *priv, bool enable);
 int en7570_pattern_start(struct en7570_priv *priv, int mode);
 void en7570_pattern_stop(struct en7570_priv *priv);

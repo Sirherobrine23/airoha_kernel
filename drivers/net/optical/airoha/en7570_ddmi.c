@@ -42,10 +42,19 @@ u16 en7570_vcc_ddmi(struct en7570_priv *priv)
  */
 u16 en7570_bias_ddmi(struct en7570_priv *priv)
 {
-	u32 code = en7570_info(priv, EN7570_INFO_IBIAS);
-	s32 ibias_ua = (s32)code * EN7570_BIAS_UA_PER_CODE_X100 / 100;
-	u16 word = ibias_ua / EN7570_BIAS_8472_UA_PER_LSB;
-	s32 delta = (s32)word - (s32)priv->lddla.ddmi_current;
+	u32 code;
+	s32 ibias_ua, delta;
+	u16 word;
+	int ret;
+
+	ret = en7570_info(priv, EN7570_INFO_IBIAS, &code);
+	priv->bias_read_error = ret;
+	priv->bias_valid = !ret;
+	if (ret)
+		return priv->lddla.ddmi_current;
+	ibias_ua = (s32)code * EN7570_BIAS_UA_PER_CODE_X100 / 100;
+	word = ibias_ua / EN7570_BIAS_8472_UA_PER_LSB;
+	delta = (s32)word - (s32)priv->lddla.ddmi_current;
 
 	/*
 	 * A large positive jump in bias between ticks marks an optical
