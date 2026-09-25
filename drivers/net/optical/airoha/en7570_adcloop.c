@@ -176,19 +176,41 @@ void en7570_temp_update(struct en7570_priv *priv)
 /* ------------------------------------------------------------------ */
 
 /* Write a 10-bit current code to a P{0,1}_PWR_CTRL_CS2 register (2 bytes). */
-static void en7570_write_current(struct en7570_priv *priv, u16 reg, u32 code)
+static int en7570_write_current(struct en7570_priv *priv, u16 reg, u32 code)
 {
 	u8 b[2] = { code & 0xff, (code >> 8) & 0xff };
 
-	lddla_wr(&priv->lddla, reg, b, 2);
+	if (code > 0xfff)
+		return -ERANGE;
+	return lddla_wr(&priv->lddla, reg, b, 2);
 }
 
 /* Write a 10-bit MPD target: byteoff 0 -> MPDH (bytes 0-1), 2 -> MPDL (2-3). */
-static void en7570_write_mpd(struct en7570_priv *priv, u16 byteoff, u32 val)
+static int en7570_write_mpd(struct en7570_priv *priv, u16 byteoff, u32 val)
 {
 	u8 b[2] = { val & 0xff, (val >> 8) & 0xff };
+	int ret;
 
-	lddla_wr(&priv->lddla, EN7570_MPDH + byteoff, b, 2);
+	if (byteoff != 0 && byteoff != 2)
+		return -EINVAL;
+	if (val > 0x3ff)
+		return -ERANGE;
+	ret = lddla_wr(&priv->lddla, EN7570_MPDH + byteoff, b, 2);
+	if (!ret) {
+		if (byteoff == 2)
+			priv->mpdl = val;
+		else
+			priv->mpdh = val;
+	}
+	return ret;
+}
+
+static void en7570_control_fault(struct en7570_priv *priv, int error)
+{
+	/* Do not retry an uncertain optical write, including across LOS/READY. */
+	priv->optical_control_error = error;
+	dev_err(priv->lddla.dev,
+		"EN7570 TEC/bias controls inhibited after I2C error %d\n", error);
 }
 
 /*
@@ -369,21 +391,38 @@ void en7570_bias_track(struct en7570_priv *priv)
 {
 	int idx = en7570_temp_index(priv->env_temp_mc);
 	u32 target = priv->lut[idx][0];
-	u32 now = priv->bias_code;	/* last Ibias readback */
-	u8 mode = 0;
+	u32 now, mpdl = 0;
+	u8 mode;
+	int ret, step = 0;
 
-	if (target == 0xfff)
+	if (priv->optical_control_error || target >= 0xfff)
 		return;
-	en7570_write_current(priv, EN7570_P0_PWR_CTRL_CS2, target);
-
-	lddla_rd8(&priv->lddla, EN7570_P0_PWR_CTRL_CS3, &mode);
-	if ((mode & 0x0f) != 0x05)	/* only in the dual-closed-loop signature */
+	en7570_bias_ddmi(priv);
+	if (!priv->bias_valid)
+		return;
+	now = priv->bias_code;
+	ret = lddla_rd8(&priv->lddla, EN7570_P0_PWR_CTRL_CS3, &mode);
+	if (ret)
 		return;
 
-	if (target > now && target - now > 0x14)
-		en7570_write_mpd(priv, 0x02, en7570_info(priv, EN7570_INFO_P0) + 0x4);
-	else if (target < now && now - target > 0x14)
-		en7570_write_mpd(priv, 0x02, en7570_info(priv, EN7570_INFO_P0) - 0x4);
+	if ((mode & 0x0f) == 0x05) {	/* only in the dual-closed-loop signature */
+		if (target > now && target - now > 0x14)
+			step = 4;
+		else if (target < now && now - target > 0x14)
+			step = -4;
+	}
+	if (step) {
+		ret = en7570_info(priv, EN7570_INFO_P0, &mpdl);
+		if (ret || (step > 0 && mpdl > 0x3ff - 4) ||
+		    (step < 0 && mpdl < 4))
+			return;
+	}
+
+	ret = en7570_write_current(priv, EN7570_P0_PWR_CTRL_CS2, target);
+	if (!ret && step)
+		ret = en7570_write_mpd(priv, 0x02, (s32)mpdl + step);
+	if (ret)
+		en7570_control_fault(priv, ret);
 }
 
 /* --- ETC / temperature compensation --- */
@@ -473,20 +512,33 @@ void en7570_etc_sol(struct en7570_priv *priv)
 /* Tx eye correction: rescue the eye when bias falls below BOSA_lth. */
 void en7570_tec(struct en7570_priv *priv)
 {
-	u8 mode = 0;
+	u32 mpdl;
+	u8 mode;
+	int ret;
 
-	if (priv->tec_cnt > 7)			/* limited to 8 nudges */
+	if (priv->optical_control_error ||
+	    priv->tec_cnt >= 8)		/* bounded attempts, not successes */
+		return;
+	en7570_bias_ddmi(priv);
+	if (!priv->bias_valid)
 		return;
 
 	/* DDMI bias word is 2 uA/LSB; <<1 -> uA, compared to BOSA Ith (uA). */
 	if (((s32)priv->lddla.ddmi_current << 1) >= (s32)priv->bosa_lth_ua)
 		return;
 
-	lddla_rd8(&priv->lddla, EN7570_P0_PWR_CTRL_CS3, &mode);
-	if ((mode & 0x0f) != 0x05)		/* dual-closed-loop signature */
+	ret = lddla_rd8(&priv->lddla, EN7570_P0_PWR_CTRL_CS3, &mode);
+	if (ret || (mode & 0x0f) != 0x05)	/* dual-closed-loop signature */
 		return;
 
-	en7570_write_mpd(priv, 0x02, en7570_info(priv, EN7570_INFO_P0) + 0x4);
-	en7570_erc_restart_p0(priv);
+	ret = en7570_info(priv, EN7570_INFO_P0, &mpdl);
+	if (ret || mpdl > 0x3ff - 4)
+		return;
+	/* Count before the first write: failed/partial writes consume an attempt. */
 	priv->tec_cnt++;
+	ret = en7570_write_mpd(priv, 0x02, mpdl + 4);
+	if (!ret)
+		ret = en7570_erc_restart_p0(priv);
+	if (ret)
+		en7570_control_fault(priv, ret);
 }
