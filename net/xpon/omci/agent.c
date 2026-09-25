@@ -2888,7 +2888,17 @@ omci_agent_stage_service_rule_locked(struct omci_device *odev,
 	struct omci_service_config service = {};
 	u16 gem_ctp_entity;
 
-	iwtp = omci_mib_lookup(agent, OMCI_CLASS_GEM_IWTP, gem_iwtp_entity);
+	/*
+	 * A multicast GEM IWTP bridge port points at class 281, whose entity
+	 * IDs are independent of the unicast GEM IWTPs of class 266.  Looking
+	 * it up as class 266 picks whatever unicast IWTP shares the ID -- on a
+	 * Movistar (AR) OLT the internet GEM, flagged multicast -- and the
+	 * backend refusal of that bogus rule rolls back the whole service set.
+	 * Both classes start with the GEM port network CTP pointer.
+	 */
+	iwtp = omci_mib_lookup(agent, multicast ? OMCI_CLASS_MULTICAST_GEM_IWTP :
+					       OMCI_CLASS_GEM_IWTP,
+			       gem_iwtp_entity);
 	if (!iwtp)
 		return -ENOENT;
 	gem_ctp_entity = get_unaligned_be16(iwtp->data);
