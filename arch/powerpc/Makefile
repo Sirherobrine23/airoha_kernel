@@ -398,6 +398,7 @@ archheaders:
 
 ifdef CONFIG_STACKPROTECTOR
 prepare: stack_protector_prepare
+vdso_prepare: stack_protector_prepare
 
 PHONY += stack_protector_prepare
 stack_protector_prepare: prepare0
