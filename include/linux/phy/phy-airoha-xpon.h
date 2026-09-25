@@ -25,6 +25,8 @@ enum airoha_xpon_phy_gpon_oper_state {
 };
 
 int airoha_xpon_phy_get_link_state(struct phy *phy, bool *ready, bool *los);
+/* EN751221: latch, read and clear the BIP error counter; atomic-safe. */
+int airoha_xpon_phy_take_gpon_bip(struct phy *phy, u32 *count);
 int airoha_xpon_phy_get_gpon_tx_counters(struct phy *phy,
 					 u32 *frame_count,
 					 u32 *burst_count);
