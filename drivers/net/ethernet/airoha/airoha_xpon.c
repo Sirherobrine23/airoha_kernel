@@ -1981,6 +1981,14 @@ static void gpon_cb_state_changed(void *hw_priv, enum gpon_state state)
 			airoha_xpon_phy_trace_tx_state(priv->phy,
 						      state == GPON_O3_SERIAL_NUMBER ?
 						      "enter-o3" : "enter-o4");
+		if (!ret && priv->frontend) {
+			if (state == GPON_O3_SERIAL_NUMBER)
+				optical_frontend_tx_trace(priv->frontend, "enter-o3");
+			else if (state == GPON_O4_RANGING)
+				optical_frontend_tx_trace(priv->frontend, "enter-o4");
+			else if (state == GPON_O5_OPERATION)
+				optical_frontend_tx_trace(priv->frontend, "enter-o5");
+		}
 		if (ret)
 			dev_warn(priv->dev,
 				 "failed to update GPON PHY operational state: %d\n",
@@ -2523,6 +2531,8 @@ static void gpon_to1_work_fn(struct work_struct *work)
 		return;
 
 	airoha_xpon_phy_trace_tx_state(priv->phy, "TO1-expired");
+	if (priv->frontend)
+		optical_frontend_tx_trace(priv->frontend, "TO1-expired");
 	gpon_dump_activation_regs(priv, "TO1 expired");
 	priv->to1_failures++;
 
@@ -2791,6 +2801,8 @@ static void gpon_irq_work_fn(struct work_struct *work)
 				 gpon_read(priv, GPON_DBG_TX_SYNC_OFFSET),
 				 phy_tx_frames, phy_tx_bursts, phy_ret);
 			airoha_xpon_phy_trace_tx_state(priv->phy, "sn-event");
+			if (priv->frontend)
+				optical_frontend_tx_trace(priv->frontend, "sn-event");
 		}
 
 		if (active & INT_DYING_GASP) {

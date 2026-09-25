@@ -591,11 +591,30 @@ static int airoha_lddla_frontend_tx_rearm(struct optical_frontend *frontend)
 	return ret;
 }
 
+static int
+airoha_lddla_frontend_tx_trace(struct optical_frontend *frontend,
+			       const char *reason)
+{
+	struct airoha_lddla *lddla = optical_frontend_get_drvdata(frontend);
+
+	if (!lddla || !reason)
+		return -EINVAL;
+	if (!lddla->ops->tx_trace)
+		return -EOPNOTSUPP;
+
+	/*
+	 * This callback runs from activation paths. The chip callback must only
+	 * queue work; slow I2C diagnostics are deliberately not serialized here.
+	 */
+	return lddla->ops->tx_trace(lddla, reason);
+}
+
 static const struct optical_frontend_ops airoha_lddla_frontend_ops = {
 	.set_mode = airoha_lddla_frontend_set_mode,
 	.get_telemetry = airoha_lddla_frontend_get_telemetry,
 	.get_state = airoha_lddla_frontend_get_state,
 	.tx_rearm = airoha_lddla_frontend_tx_rearm,
+	.tx_trace = airoha_lddla_frontend_tx_trace,
 };
 
 static struct airoha_lddla *airoha_lddla_from_frontend_dev(struct device *dev)

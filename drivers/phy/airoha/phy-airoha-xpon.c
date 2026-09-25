@@ -999,6 +999,10 @@ int airoha_xpon_phy_trace_tx_state(struct phy *phy, const char *reason)
 	struct airoha_xpon_phy *priv;
 	u32 frames = 0, bursts = 0;
 	u32 setting, trans, status, enable, ext;
+	u32 sta1, set3, set5, set10, tdc2, tx_fec, tx_ctrl;
+	u32 preamble, delimiter;
+	u32 pma0 = 0, serdes0 = 0, ben_ctrl = 0, serdes18 = 0;
+	u32 serdes19 = 0, bit_delay = 0, pma_int = 0, pma_en = 0;
 	int tx_disable = -1;
 	int vcc_disable = -1;
 	int ret;
@@ -1007,11 +1011,31 @@ int airoha_xpon_phy_trace_tx_state(struct phy *phy, const char *reason)
 	if (ret)
 		return ret;
 
+	set3 = airoha_xpon_phy_read(priv, XPON_PHYSET3);
+	set5 = airoha_xpon_phy_read(priv, XPON_PHYSET5);
+	set10 = airoha_xpon_phy_read(priv, XPON_PHYSET10);
+	sta1 = airoha_xpon_phy_read(priv, XPON_PHYSTA1);
 	setting = airoha_xpon_phy_read(priv, XPON_SETTING);
+	tdc2 = airoha_xpon_phy_read(priv, XPON_TDCSET2);
+	preamble = airoha_xpon_phy_read(priv, XPON_GPON_PREAMBLE);
+	delimiter = airoha_xpon_phy_read(priv, XPON_GPON_DELIMITER_GUARD);
+	ext = airoha_xpon_phy_read(priv, XPON_GPON_EXT_PREAMBLE);
+	tx_fec = airoha_xpon_phy_read(priv, XPON_TX_FEC_STATUS);
+	tx_ctrl = airoha_xpon_phy_read(priv, XPON_GPON_TX_COUNTER_CTRL);
 	trans = airoha_xpon_phy_read(priv, XPON_TRANS_STATUS);
 	status = airoha_xpon_phy_read(priv, XPON_INT_STATUS);
 	enable = airoha_xpon_phy_read(priv, XPON_INT_ENABLE);
-	ext = airoha_xpon_phy_read(priv, XPON_GPON_EXT_PREAMBLE);
+
+	if (priv->soc->has_integrated_pma) {
+		pma0 = airoha_xpon_phy_read(priv, XPON_PMA_CTRL0);
+		serdes0 = airoha_xpon_phy_read(priv, XPON_SERDES_CTRL0);
+		ben_ctrl = airoha_xpon_phy_read(priv, XPON_SERDES_BEN_CTRL);
+		serdes18 = airoha_xpon_phy_read(priv, XPON_SERDES_CTRL18);
+		serdes19 = airoha_xpon_phy_read(priv, XPON_SERDES_CTRL19);
+		bit_delay = airoha_xpon_phy_read(priv, XPON_GPON_TX_BIT_DELAY);
+		pma_int = airoha_xpon_phy_read(priv, XPON_PMA_INT_STATUS);
+		pma_en = airoha_xpon_phy_read(priv, XPON_PMA_INT_ENABLE);
+	}
 
 	if (priv->tx_disable_gpio)
 		tx_disable =
@@ -1023,22 +1047,40 @@ int airoha_xpon_phy_trace_tx_state(struct phy *phy, const char *reason)
 
 	airoha_xpon_phy_get_gpon_tx_counters(phy, &frames, &bursts);
 
+	/*
+	 * Interrupt bit names below come directly from the EN7528 vendor
+	 * phy_isr(): 0x1 TRSNS_LOS, 0x2 LOF, 0x4 TF, 0x8 transceiver,
+	 * 0x10 TX_SD fail, 0x20 PHY ready and 0x80 I2C master.
+	 */
 	dev_info(priv->dev,
-		 "XPON-TRACE PHY TX (%s): "
-		 "setting=%#010x "
-		 "tx_sd_inv=%u tx_fault_inv=%u rx_sd_inv=%u ben_inv=%u "
-		 "trans=%#010x int=%#010x/%#010x ext=%#010x "
-		 "txcnt=%#010x/%#010x "
-		 "tx_disable=%d vcc_disable=%d\n",
-		 reason,
-		 setting,
+		 "XPON-TRACE PHY TX (%s) pins: setting=%#010x tx_sd_inv=%u tx_fault_inv=%u rx_sd_inv=%u ben_inv=%u trans=%#010x los=%u tx_disable=%d vcc_disable=%d\n",
+		 reason, setting,
 		 !!(setting & XPON_SETTING_TX_SD_INV),
 		 !!(setting & XPON_SETTING_TX_FAULT_INV),
 		 !!(setting & XPON_SETTING_RX_SD_INV),
 		 !!(setting & XPON_SETTING_BURST_EN_INV),
-		 trans, status, enable, ext,
-		 frames, bursts,
+		 trans, !!(trans & XPON_TRANS_STATUS_LOS),
 		 tx_disable, vcc_disable);
+
+	dev_info(priv->dev,
+		 "XPON-TRACE PHY TX (%s) irq: status=%#010x enable=%#010x tr_los=%u lof=%u tf=%u transceiver=%u tx_sd_fail=%u ready=%u i2c=%u unknown=%#lx pma=%#010x/%#010x\n",
+		 reason, status, enable, !!(status & BIT(0)),
+		 !!(status & BIT(1)), !!(status & BIT(2)),
+		 !!(status & BIT(3)), !!(status & BIT(4)),
+		 !!(status & BIT(5)), !!(status & BIT(7)),
+		 status & ~GENMASK(7, 0), pma_int, pma_en);
+
+	dev_info(priv->dev,
+		 "XPON-TRACE PHY TX (%s) gpon: sta1=%#010x state=%lu set3=%#010x set5=%#010x set10=%#010x tdc2=%#010x preamble=%#010x delimiter=%#010x ext=%#010x tx_fec=%#010x tx_ctrl=%#010x txcnt=%#010x/%#010x\n",
+		 reason, sta1, FIELD_GET(XPON_PHYSTA1_STATE_MASK, sta1),
+		 set3, set5, set10, tdc2, preamble, delimiter, ext,
+		 tx_fec, tx_ctrl, frames, bursts);
+
+	if (priv->soc->has_integrated_pma)
+		dev_info(priv->dev,
+			 "XPON-TRACE PHY TX (%s) pma: ctrl0=%#010x serdes0=%#010x ben_ctrl=%#010x serdes18=%#010x serdes19=%#010x bit_delay=%#010x\n",
+			 reason, pma0, serdes0, ben_ctrl, serdes18,
+			 serdes19, bit_delay);
 
 	return 0;
 }

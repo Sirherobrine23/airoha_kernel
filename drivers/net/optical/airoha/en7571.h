@@ -18,6 +18,7 @@
 #ifndef _EN7571_H
 #define _EN7571_H
 
+#include <linux/spinlock.h>
 #include <linux/types.h>
 #include <linux/workqueue.h>
 
@@ -37,6 +38,14 @@ struct en7571_priv {
 
 	/* 1 Hz periodic state machine. */
 	struct delayed_work tick_work;
+
+	/*
+	 * Time-critical xPON events only queue this work. The I2C snapshot itself
+	 * runs asynchronously so tracing cannot hold up GPON activation IRQ work.
+	 */
+	struct work_struct tx_trace_work;
+	spinlock_t tx_trace_lock; /* protects tx_trace_reason */
+	char tx_trace_reason[32];
 
 	/* --- Mode flags --- */
 	int internal_ddmi;	/* 0=off, 1=on, 2=fast */

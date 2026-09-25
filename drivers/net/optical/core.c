@@ -555,6 +555,28 @@ int optical_frontend_tx_rearm(struct optical_frontend *frontend)
 }
 EXPORT_SYMBOL_GPL(optical_frontend_tx_rearm);
 
+int optical_frontend_tx_trace(struct optical_frontend *frontend,
+			      const char *reason)
+{
+	int ret;
+
+	if (!frontend || !reason)
+		return -EINVAL;
+	if (!frontend->ops->tx_trace)
+		return -EOPNOTSUPP;
+
+	/*
+	 * Keep the core side cheap. Providers which need slow bus reads should
+	 * queue them and return from this callback immediately.
+	 */
+	mutex_lock(&frontend->op_lock);
+	ret = frontend->ops->tx_trace(frontend, reason);
+	mutex_unlock(&frontend->op_lock);
+
+	return ret;
+}
+EXPORT_SYMBOL_GPL(optical_frontend_tx_trace);
+
 int optical_frontend_get_state(struct optical_frontend *frontend,
 			       struct optical_frontend_state *state)
 {

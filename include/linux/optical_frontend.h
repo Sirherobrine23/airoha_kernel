@@ -185,6 +185,7 @@ struct optical_frontend_desc {
  * @set_mode: configure protocol/rates; optional
  * @tx_enable: enable or disable transmitter state internal to the provider; optional
  * @tx_rearm: rearm a transmitter safety/fault latch; optional
+ * @tx_trace: schedule a provider-specific transmitter diagnostic snapshot; optional
  * @get_state: retrieve normalized frontend state; optional
  * @get_telemetry: retrieve normalized live measurements; optional
  *
@@ -196,6 +197,7 @@ struct optical_frontend_ops {
 			const struct optical_frontend_mode *mode);
 	int (*tx_enable)(struct optical_frontend *frontend, bool enable);
 	int (*tx_rearm)(struct optical_frontend *frontend);
+	int (*tx_trace)(struct optical_frontend *frontend, const char *reason);
 	int (*get_state)(struct optical_frontend *frontend,
 			 struct optical_frontend_state *state);
 	int (*get_telemetry)(struct optical_frontend *frontend,
@@ -228,6 +230,8 @@ int optical_frontend_get_mode(struct optical_frontend *frontend,
 			      struct optical_frontend_mode *mode);
 int optical_frontend_tx_enable(struct optical_frontend *frontend, bool enable);
 int optical_frontend_tx_rearm(struct optical_frontend *frontend);
+int optical_frontend_tx_trace(struct optical_frontend *frontend,
+			      const char *reason);
 int optical_frontend_get_state(struct optical_frontend *frontend,
 			       struct optical_frontend_state *state);
 int optical_frontend_get_telemetry(struct optical_frontend *frontend,
@@ -306,6 +310,12 @@ optical_frontend_tx_enable(struct optical_frontend *frontend, bool enable)
 }
 
 static inline int optical_frontend_tx_rearm(struct optical_frontend *frontend)
+{
+	return -EOPNOTSUPP;
+}
+
+static inline int
+optical_frontend_tx_trace(struct optical_frontend *frontend, const char *reason)
 {
 	return -EOPNOTSUPP;
 }

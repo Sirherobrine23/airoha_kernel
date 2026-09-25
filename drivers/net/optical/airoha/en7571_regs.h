@@ -247,6 +247,21 @@
 #define EN7571_ROGUE_ONU_MASK		0xfe
 #define EN7571_ROGUE_ONU_CLEAR		0x01
 
+/*
+ * Status bits verified against the vendor en7571_BoB_info() and
+ * en7571_RogueONU_status() helpers. Both live in byte 1 of their 32-bit
+ * register words.
+ */
+#define EN7571_ROGUE_ONU_STATUS_MASK	0x00000400
+#define EN7571_TX_SD_STATUS_MASK	0x00000800
+#define EN7571_TX_FAULT_STATUS_MASK	0x00008000
+#define EN7571_TIASD_VALUE_MASK		0x000001ff
+#define EN7571_TIA_MUX_SELECT_MASK	0x0000000e
+#define EN7571_PWRADC_DATA_MASK		0x000003ff
+#define EN7571_PWRADC_VALID_WORD_MASK	0x00100000
+#define EN7571_PWRADC_TRIGGER_WORD_MASK	0x80000000
+#define EN7571_BURST_CTRL_OFF_WORD_MASK	0x00000400
+
 /* --- APD (APD_DAC_CODE) --- */
 #define EN7571_APD_SOFTSTART_ENABLE	0x20	/* byte 2 bit 5 */
 #define EN7571_APD_CONTROL_ENABLE	0x01	/* byte 1 bit 0 */

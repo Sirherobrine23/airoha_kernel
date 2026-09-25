@@ -22,6 +22,7 @@
 #include <linux/property.h>
 #include <linux/seq_file.h>
 #include <linux/slab.h>
+#include <linux/string.h>
 
 #include "en7571.h"
 
@@ -335,32 +336,123 @@ static u16 en7571_op_rx_power(struct airoha_lddla *lddla)
 static void en7571_dump_tx_state(struct en7571_priv *priv, const char *reason)
 {
 	struct airoha_lddla *lddla = &priv->lddla;
-	u32 pwr0 = 0, pwr8 = 0, pwr9 = 0, pwrc = 0, pwrd = 0;
-	u32 p0cs3 = 0, p1cs3 = 0, tgen = 0, dummy = 0;
-	u32 safe = 0, rogue = 0, ben = 0, pwradc = 0, pwradc2 = 0;
+	u32 ctrl[15] = {};
+	u32 tiamux = 0, mpdh = 0, tgen = 0, tiasd = 0, t0c = 0;
+	u32 pi_tgen = 0, ana = 0, safe = 0, p0cs1 = 0, p0cs2 = 0;
+	u32 p0cs3 = 0, p1cs1 = 0, p1cs2 = 0, p1cs3 = 0;
+	u32 dummy = 0, rogue = 0, erc = 0, adlch_ben = 0;
+	u32 pwradc = 0, pwradc2 = 0, ro0 = 0, ro3 = 0, ben = 0;
+	u32 link_adj = 0;
+	int i;
 
-	lddla_rd32(lddla, EN7571_PWR_CTRL_0, &pwr0);
-	lddla_rd32(lddla, EN7571_PWR_CTRL_8, &pwr8);
-	lddla_rd32(lddla, EN7571_PWR_CTRL_9, &pwr9);
-	lddla_rd32(lddla, EN7571_PWR_CTRL_C, &pwrc);
-	lddla_rd32(lddla, EN7571_PWR_CTRL_D, &pwrd);
-	lddla_rd32(lddla, EN7571_P0_PWR_CTRL_CS3, &p0cs3);
-	lddla_rd32(lddla, EN7571_P1_PWR_CTRL_CS3, &p1cs3);
+	/*
+	 * Mirror the registers used by the vendor EN7571 bring-up and BoB-info
+	 * paths: TxSD/TIASD, TGEN, safe/rogue state, BEN/PWRADC and the DCL
+	 * control words. These are read-only snapshots; no ADC conversion is
+	 * triggered here.
+	 */
+	lddla_rd32(lddla, EN7571_TIAMUX, &tiamux);
+	lddla_rd32(lddla, EN7571_MPDH, &mpdh);
 	lddla_rd32(lddla, EN7571_T1DELAY, &tgen);
-	lddla_rd32(lddla, EN7571_DUMMY, &dummy);
+	lddla_rd32(lddla, EN7571_TIASD, &tiasd);
+	lddla_rd32(lddla, EN7571_T0C, &t0c);
+	lddla_rd32(lddla, EN7571_PI_TGEN, &pi_tgen);
+	lddla_rd32(lddla, EN7571_RG_ANA_CTRL1, &ana);
 	lddla_rd32(lddla, EN7571_SAFE_PROTECT, &safe);
+	lddla_rd32(lddla, EN7571_P0_PWR_CTRL_CS1, &p0cs1);
+	lddla_rd32(lddla, EN7571_P0_PWR_CTRL_CS2, &p0cs2);
+	lddla_rd32(lddla, EN7571_P0_PWR_CTRL_CS3, &p0cs3);
+	lddla_rd32(lddla, EN7571_P1_PWR_CTRL_CS1, &p1cs1);
+	lddla_rd32(lddla, EN7571_P1_PWR_CTRL_CS2, &p1cs2);
+	lddla_rd32(lddla, EN7571_P1_PWR_CTRL_CS3, &p1cs3);
+	lddla_rd32(lddla, EN7571_DUMMY, &dummy);
 	lddla_rd32(lddla, EN7571_ROGUE_ONU_DET_CTRL, &rogue);
-	lddla_rd32(lddla, EN7571_RG_PWR_CTRL_BEN_0, &ben);
+	lddla_rd32(lddla, EN7571_ERC_FILTER_CTRL, &erc);
+	lddla_rd32(lddla, EN7571_RG_ADLCH_BEN_CTRL, &adlch_ben);
 	lddla_rd32(lddla, EN7571_RG_PWRADC_DATA, &pwradc);
 	lddla_rd32(lddla, EN7571_RG_PWRADC_DATA2, &pwradc2);
+	for (i = 0; i < ARRAY_SIZE(ctrl); i++)
+		lddla_rd32(lddla, EN7571_PWR_CTRL_0 + i * 4, &ctrl[i]);
+	lddla_rd32(lddla, EN7571_LINK_ADJ_0, &link_adj);
+	lddla_rd32(lddla, EN7571_RO_PWR_CTRL_0, &ro0);
+	lddla_rd32(lddla, EN7571_RO_PWR_CTRL_3, &ro3);
+	lddla_rd32(lddla, EN7571_RG_PWR_CTRL_BEN_0, &ben);
 
 	dev_info(lddla->dev,
-		 "EN7571 TX debug (%s): alarm=%#x pon=%d ddmi=%d pwr0=%#010x pwr8=%#010x pwr9=%#010x pwrc=%#010x pwrd=%#010x p0cs3=%#010x p1cs3=%#010x tgen=%#010x dummy=%#010x safe=%#010x rogue=%#010x ben=%#010x pwradc=%#010x pwradc2=%#010x ddmi_bias=%#06x ddmi_tx=%#06x ddmi_rx=%#06x apd_mv=%d cnt=%u\n",
-		 reason, lddla->alarm, lddla->pon_mode, priv->internal_ddmi,
-		 pwr0, pwr8, pwr9, pwrc, pwrd, p0cs3, p1cs3, tgen,
-		 dummy, safe, rogue, ben, pwradc, pwradc2,
-		 lddla->ddmi_current, lddla->ddmi_tx_power,
-		 lddla->ddmi_rx_power, priv->apd_voltage_mv, priv->cnt);
+		 "XPON-TRACE EN7571 TX (%s) status: tx_sd=%u tx_fault=%u rogue=%u alarm=%#x pon=%d ddmi=%d tiamux=%#010x sel=%#x tiasd=%#05x pwradc=%#05x pwradc_raw=%#010x pwradc2=%#010x valid=%u trig=%u\n",
+		 reason,
+		 !!(rogue & EN7571_TX_SD_STATUS_MASK),
+		 !!(safe & EN7571_TX_FAULT_STATUS_MASK),
+		 !!(rogue & EN7571_ROGUE_ONU_STATUS_MASK),
+		 lddla->alarm, lddla->pon_mode, priv->internal_ddmi,
+		 tiamux, tiamux & EN7571_TIA_MUX_SELECT_MASK,
+		 tiasd & EN7571_TIASD_VALUE_MASK,
+		 pwradc & EN7571_PWRADC_DATA_MASK, pwradc, pwradc2,
+		 !!(pwradc2 & EN7571_PWRADC_VALID_WORD_MASK),
+		 !!(pwradc2 & EN7571_PWRADC_TRIGGER_WORD_MASK));
+
+	dev_info(lddla->dev,
+		 "XPON-TRACE EN7571 TX (%s) burst: tgen=%#010x delay=%#04x t1c=%#04x t0c=%#04x ctrl=%#04x t0c_ro=%#010x pi_tgen=%#010x dummy=%#010x burst_off=%u rogue_raw=%#010x safe=%#010x erc=%#010x adlch_ben=%#010x ben_ctrl=%#010x ben_block=%#x\n",
+		 reason, tgen, tgen & 0xff, (tgen >> 8) & 0xff,
+		 (tgen >> 16) & 0xff, (tgen >> 24) & 0xff, t0c,
+		 pi_tgen, dummy,
+		 !!(dummy & EN7571_BURST_CTRL_OFF_WORD_MASK),
+		 rogue, safe, erc, adlch_ben, ben, ben & 0x3);
+
+	dev_info(lddla->dev,
+		 "XPON-TRACE EN7571 TX (%s) phase: mpdh=%#010x p0=%#010x/%#010x/%#010x ibias_now=%#05x p1=%#010x/%#010x/%#010x imod_now=%#05x ro0=%#010x ro3=%#010x ana=%#010x link_adj=%#010x\n",
+		 reason, mpdh, p0cs1, p0cs2, p0cs3,
+		 (p0cs3 >> 16) & 0xfff, p1cs1, p1cs2, p1cs3,
+		 (p1cs3 >> 16) & 0xfff, ro0, ro3, ana, link_adj);
+
+	dev_info(lddla->dev,
+		 "XPON-TRACE EN7571 TX (%s) dcl0-7: %08x %08x %08x %08x %08x %08x %08x %08x\n",
+		 reason, ctrl[0], ctrl[1], ctrl[2], ctrl[3],
+		 ctrl[4], ctrl[5], ctrl[6], ctrl[7]);
+	dev_info(lddla->dev,
+		 "XPON-TRACE EN7571 TX (%s) dcl8-e: %08x %08x %08x %08x %08x %08x %08x dcl_en=%u rst_b=%u ddmi_bias=%#06x ddmi_tx=%#06x ddmi_rx=%#06x apd_mv=%d cnt=%u\n",
+		 reason, ctrl[8], ctrl[9], ctrl[10], ctrl[11], ctrl[12],
+		 ctrl[13], ctrl[14], !!(ctrl[0] & 0x1),
+		 !!(ctrl[0] & 0x100), lddla->ddmi_current,
+		 lddla->ddmi_tx_power, lddla->ddmi_rx_power,
+		 priv->apd_voltage_mv, priv->cnt);
+}
+
+static void en7571_tx_trace_work(struct work_struct *work)
+{
+	struct en7571_priv *priv =
+		container_of(work, struct en7571_priv, tx_trace_work);
+	char reason[sizeof(priv->tx_trace_reason)];
+	unsigned long flags;
+	int ret;
+
+	spin_lock_irqsave(&priv->tx_trace_lock, flags);
+	strscpy(reason, priv->tx_trace_reason, sizeof(reason));
+	spin_unlock_irqrestore(&priv->tx_trace_lock, flags);
+
+	ret = lddla_lock(&priv->lddla);
+	if (ret)
+		return;
+
+	en7571_dump_tx_state(priv, reason);
+	mutex_unlock(&priv->lddla.lock);
+}
+
+static int en7571_op_tx_trace(struct airoha_lddla *lddla, const char *reason)
+{
+	struct en7571_priv *priv = container_of(lddla, struct en7571_priv, lddla);
+	unsigned long flags;
+
+	/*
+	 * Never touch I2C here: this callback is reached from GPON activation
+	 * work. Only copy the label and queue a provider-local snapshot.
+	 */
+	spin_lock_irqsave(&priv->tx_trace_lock, flags);
+	strscpy(priv->tx_trace_reason, reason, sizeof(priv->tx_trace_reason));
+	spin_unlock_irqrestore(&priv->tx_trace_lock, flags);
+	schedule_work(&priv->tx_trace_work);
+
+	return 0;
 }
 
 static int en7571_op_tx_rearm(struct airoha_lddla *lddla)
@@ -466,6 +558,7 @@ static const struct airoha_lddla_ops en7571_ops = {
 	.rx_power_refresh = en7571_op_rx_power,
 	.diag_show = en7571_op_diag,
 	.tx_rearm = en7571_op_tx_rearm,
+	.tx_trace = en7571_op_tx_trace,
 };
 
 /* ------------------------------------------------------------------ */
@@ -510,6 +603,8 @@ static int en7571_probe(struct i2c_client *client)
 	priv->lddla.ops = &en7571_ops;
 	mutex_init(&priv->lddla.lock);
 	INIT_DELAYED_WORK(&priv->tick_work, en7571_tick_work);
+	INIT_WORK(&priv->tx_trace_work, en7571_tx_trace_work);
+	spin_lock_init(&priv->tx_trace_lock);
 	i2c_set_clientdata(client, priv);
 	en7571_set_defaults(priv);
 
@@ -549,6 +644,7 @@ static void en7571_remove(struct i2c_client *client)
 	struct en7571_priv *priv = i2c_get_clientdata(client);
 
 	cancel_delayed_work_sync(&priv->tick_work);
+	cancel_work_sync(&priv->tx_trace_work);
 	lddla_debugfs_remove(&priv->lddla);
 	mutex_destroy(&priv->lddla.lock);
 }
