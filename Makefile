@@ -1106,6 +1106,11 @@ endif
 export CFLAGS_GCOV
 
 # change __FILE__ to the relative path to the source directory
+ifdef KBUILD_EXTMOD
+# External modules include the kernel headers by their absolute path. Map
+# them first, so that the map of the module directory below takes precedence.
+KBUILD_CPPFLAGS += $(call cc-option,-fmacro-prefix-map=$(abs_srctree)/=)
+endif
 ifdef building_out_of_srctree
 KBUILD_CPPFLAGS += $(call cc-option,-fmacro-prefix-map=$(srcroot)/=)
 endif
