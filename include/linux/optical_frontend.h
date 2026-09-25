@@ -183,7 +183,7 @@ struct optical_frontend_desc {
 /**
  * struct optical_frontend_ops - provider operations
  * @set_mode: configure protocol/rates; optional
- * @tx_enable: prepare/enable or disable the optical transmitter; optional
+ * @tx_enable: enable or disable transmitter state internal to the provider; optional
  * @tx_rearm: rearm a transmitter safety/fault latch; optional
  * @get_state: retrieve normalized frontend state; optional
  * @get_telemetry: retrieve normalized live measurements; optional

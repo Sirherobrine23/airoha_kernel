@@ -24,15 +24,6 @@ properties:
     description:
       The device exposes one optical frontend provider.
 
-  tx-disable-gpios:
-    $ref: /schemas/types.yaml#/definitions/phandle-array
-    maxItems: 1
-    description: |
-      GPIO connected to the optical transmitter disable input. Its polarity
-      must describe the asserted (transmitter disabled) level. The optical
-      frontend core asserts this GPIO while registering the provider and only
-      deasserts it after the provider is ready to transmit.
-
 required:
   - '#optical-frontend-cells'
 

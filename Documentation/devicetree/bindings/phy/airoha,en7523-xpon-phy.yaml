@@ -42,10 +42,18 @@ properties:
     description:
       Phandle to the SoC system-controller syscon used by the xPON PHY.
 
-  airoha,chip-scu:
-    $ref: /schemas/types.yaml#/definitions/phandle
-    description:
-      Phandle to the EN751221 CHIP-SCU syscon used for the PON I/O mux.
+  tx-disable-gpios:
+    maxItems: 1
+    description: |
+      GPIO connected to the optical transmitter TX_DISABLE input. The GPIO
+      polarity describes the asserted (transmitter disabled) level. The xPON
+      PHY owns this signal and keeps it asserted while changing PHY mode.
+
+  vcc-disable-gpios:
+    maxItems: 1
+    description: |
+      Optional GPIO controlling the transmitter/BOSA power-disable input. The
+      GPIO polarity describes the asserted (power disabled) level.
 
   airoha,tx-sd-inverted:
     type: boolean
@@ -84,18 +92,6 @@ required:
   - airoha,scu
   - '#phy-cells'
 
-allOf:
-  - if:
-      properties:
-        compatible:
-          const: econet,en751221-xpon-phy
-    then:
-      required:
-        - airoha,chip-scu
-    else:
-      properties:
-        airoha,chip-scu: false
-
 additionalProperties: false
 
 examples:
@@ -120,7 +116,6 @@ examples:
         resets = <&scuclk EN751221_XPON_PHY_RST>;
         reset-names = "phy";
         airoha,scu = <&scuclk>;
-        airoha,chip-scu = <&chip_scu>;
         #phy-cells = <0>;
     };
 ...

@@ -203,7 +203,12 @@ static const struct pinctrl_pin_desc pinctrl_pins[] = {
 	PINCTRL_PIN(44, "pcie_reset1"),
 };
 
-static const int pon_pins[] = { 29, 30, 31, 32, 33 };
+/*
+ * GPIO16 is LED_PHY_TX_POWER_DISABLE/TX_DISABLE in the vendor SDK and remains
+ * software-controlled while PON_MODE is enabled.  Only GPIO17..20 are PON
+ * hardware signals (TX_FAULT, TX_SD, RX_SD and BURST_EN).
+ */
+static const int pon_pins[] = { 30, 31, 32, 33 };
 static const int pon_i2c_pins[] = { 2, 3 };
 static const int dmt_i2c_pins[] = { 27, 28 };
 static const int pon_tod_1pps_pins[] = { 35 };
@@ -606,7 +611,6 @@ static const struct airoha_pinctrl_gpio_mux pinctrl_gpio_muxes[] = {
 	ECONET_GPIO_MUX(13, REG_IOMUX_CONTROL1, PCM1_MODE_MASK),
 	ECONET_GPIO_MUX(14, REG_IOMUX_CONTROL1, GPIO14_15_MUX_MASK),
 	ECONET_GPIO_MUX(15, REG_IOMUX_CONTROL1, GPIO14_15_MUX_MASK),
-	ECONET_GPIO_MUX(16, REG_IOMUX_CONTROL1, PON_MODE_MASK),
 	ECONET_GPIO_MUX(17, REG_IOMUX_CONTROL1, PON_MODE_MASK),
 	ECONET_GPIO_MUX(18, REG_IOMUX_CONTROL1, PON_MODE_MASK),
 	ECONET_GPIO_MUX(19, REG_IOMUX_CONTROL1, PON_MODE_MASK),

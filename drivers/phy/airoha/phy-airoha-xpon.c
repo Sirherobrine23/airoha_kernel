@@ -10,6 +10,7 @@
 
 #include <linux/bitfield.h>
 #include <linux/delay.h>
+#include <linux/gpio/consumer.h>
 #include <linux/mfd/syscon.h>
 #include <linux/module.h>
 #include <linux/of.h>
@@ -24,8 +25,6 @@
 #define ECONET_XPON_PHY_MIN_SIZE		0x0600
 #define EN7523_XPON_PHY_MIN_SIZE		0x480c
 
-#define EN751221_CHIP_SCU_IOMUX_CTRL	0x104
-#define EN751221_CHIP_SCU_IOMUX_PON_EN	BIT(15)
 #define ECONET_SCU_PHY_CTRL0		0x860
 #define ECONET_SCU_PHY_CTRL0_DIS	BIT(10)
 #define ECONET_SCU_PHY_CTRL1		0x92c
@@ -150,7 +149,6 @@ struct airoha_xpon_phy_soc_data {
 	u32 gpon_bit_delay_mask;
 	u32 gpon_bit_delay_enable;
 	bool has_integrated_pma;
-	bool needs_chip_scu;
 	bool manages_fw_ready;
 	int (*configure)(struct airoha_xpon_phy *priv);
 };
@@ -160,7 +158,8 @@ struct airoha_xpon_phy {
 	const struct airoha_xpon_phy_soc_data *soc;
 	void __iomem *base;
 	struct regmap *scu;
-	struct regmap *chip_scu;
+	struct gpio_desc *tx_disable_gpio;
+	struct gpio_desc *vcc_disable_gpio;
 	struct reset_control *reset;
 	u32 trans_invert;
 	enum airoha_xpon_phy_submode submode;
@@ -521,6 +520,26 @@ static void airoha_xpon_phy_dump(struct airoha_xpon_phy *priv,
 			 airoha_xpon_phy_read(priv, XPON_PMA_INT_ENABLE));
 }
 
+static void
+airoha_xpon_phy_set_tx_enabled(struct airoha_xpon_phy *priv, bool enable)
+{
+	if (!priv->tx_disable_gpio)
+		return;
+
+	/* TX_DISABLE is described using its asserted (disable) polarity. */
+	gpiod_set_value_cansleep(priv->tx_disable_gpio, !enable);
+}
+
+static void
+airoha_xpon_phy_set_vcc_enabled(struct airoha_xpon_phy *priv, bool enable)
+{
+	if (!priv->vcc_disable_gpio)
+		return;
+
+	/* VCC_DISABLE follows the same logical-disable convention. */
+	gpiod_set_value_cansleep(priv->vcc_disable_gpio, !enable);
+}
+
 static int airoha_xpon_phy_reset(struct phy *phy)
 {
 	struct airoha_xpon_phy *priv = phy_get_drvdata(phy);
@@ -824,21 +843,11 @@ static int econet_en751221_xpon_phy_configure(struct airoha_xpon_phy *priv)
 	int ret;
 
 	/*
-	 * EN751221 phy_dev_init(): route the PON pins to the xPON block and
-	 * release the legacy PHY disables in CHIP-SCU/NP-SCU.  These controls
-	 * are outside the common 0x1faf0000 digital PHY register window.
-	 */
-	ret = regmap_update_bits(priv->chip_scu,
-				 EN751221_CHIP_SCU_IOMUX_CTRL,
-				 EN751221_CHIP_SCU_IOMUX_PON_EN,
-				 EN751221_CHIP_SCU_IOMUX_PON_EN);
-	if (ret)
-		return dev_err_probe(priv->dev, ret,
-				     "failed to enable EN751221 PON I/O mux\n");
-
-	/*
-	 * PON I2C is a separate pinctrl function (IOMUX bit 0).  Do not claim
-	 * it from the xPON PHY: the I2C controller owns that mux.
+	 * PON pad routing belongs to pinctrl.  In particular GPIO16 is the
+	 * board-level TX_DISABLE line on the EN751221 reference design while
+	 * GPIO17..20 remain owned by the PON hardware.  Writing the global
+	 * PON_MODE bit here races the GPIO consumer and cannot describe that
+	 * split ownership.
 	 *
 	 * Clear FW_READY before reconfiguring, matching xpon_phy_stop().
 	 */
@@ -994,13 +1003,24 @@ static int airoha_xpon_phy_power_on(struct phy *phy)
 	if (!priv->initialized)
 		return -EINVAL;
 
+	/*
+	 * Vendor phy_mode_config() asserts TX_DISABLE while switching GPON/
+	 * EPON mode, then releases it after the PHY reset/configuration has
+	 * completed.  LED_PHY_VCC_DISABLE, when present, is deasserted before
+	 * the transmitter is configured.
+	 */
+	airoha_xpon_phy_set_vcc_enabled(priv, true);
+	airoha_xpon_phy_set_tx_enabled(priv, false);
+
 	dev_info(priv->dev, "configuring %s xPON PHY\n",
 		 priv->submode == AIROHA_XPON_PHY_SUBMODE_GPON ?
 		 "GPON" : "EPON");
 
 	ret = airoha_xpon_phy_configure(priv);
 	if (ret)
-		return ret;
+		goto err_power;
+
+	airoha_xpon_phy_set_tx_enabled(priv, true);
 
 	WRITE_ONCE(priv->powered, true);
 	priv->ready_reported = false;
@@ -1026,6 +1046,11 @@ static int airoha_xpon_phy_power_on(struct phy *phy)
 	mod_delayed_work(system_wq, &priv->ready_work,
 			 msecs_to_jiffies(XPON_READY_RECOVERY_MS));
 	return 0;
+
+err_power:
+	airoha_xpon_phy_set_tx_enabled(priv, false);
+	airoha_xpon_phy_set_vcc_enabled(priv, false);
+	return ret;
 }
 
 static int airoha_xpon_phy_power_off(struct phy *phy)
@@ -1039,6 +1064,9 @@ static int airoha_xpon_phy_power_off(struct phy *phy)
 	cancel_delayed_work_sync(&priv->ready_work);
 	priv->ready_reported = false;
 
+	/* Block optical TX before quiescing the digital PHY. */
+	airoha_xpon_phy_set_tx_enabled(priv, false);
+
 	if (priv->soc->manages_fw_ready)
 		airoha_xpon_phy_rmw(priv, XPON_PHYFWREADY,
 				    XPON_PHYFWREADY_READY, 0);
@@ -1046,6 +1074,8 @@ static int airoha_xpon_phy_power_off(struct phy *phy)
 	airoha_xpon_phy_write(priv, XPON_INT_ENABLE, 0);
 	if (priv->soc->has_integrated_pma)
 		airoha_xpon_phy_write(priv, XPON_PMA_INT_ENABLE, 0);
+
+	airoha_xpon_phy_set_vcc_enabled(priv, false);
 	dev_info(priv->dev, "xPON PHY powered off\n");
 	return 0;
 }
@@ -1108,6 +1138,23 @@ static int airoha_xpon_phy_probe(struct platform_device *pdev)
 	priv->trans_invert = airoha_xpon_phy_trans_invert(dev);
 	INIT_DELAYED_WORK(&priv->ready_work, airoha_xpon_phy_ready_work);
 
+	/*
+	 * These signals are part of the xPON PHY electrical interface, not of
+	 * the LDD/LA device.  Request them fail-safe with both disable signals
+	 * asserted until phy_power_on() has configured the digital PHY.
+	 */
+	priv->tx_disable_gpio =
+		devm_gpiod_get(dev, "tx-disable", GPIOD_OUT_HIGH);
+	if (IS_ERR(priv->tx_disable_gpio))
+		return dev_err_probe(dev, PTR_ERR(priv->tx_disable_gpio),
+				     "failed to get TX disable GPIO\n");
+
+	priv->vcc_disable_gpio =
+		devm_gpiod_get_optional(dev, "vcc-disable", GPIOD_OUT_HIGH);
+	if (IS_ERR(priv->vcc_disable_gpio))
+		return dev_err_probe(dev, PTR_ERR(priv->vcc_disable_gpio),
+				     "failed to get VCC disable GPIO\n");
+
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	if (!res)
 		return dev_err_probe(dev, -EINVAL,
@@ -1126,14 +1173,6 @@ static int airoha_xpon_phy_probe(struct platform_device *pdev)
 	if (IS_ERR(priv->scu))
 		return dev_err_probe(dev, PTR_ERR(priv->scu),
 				     "failed to get SCU regmap\n");
-
-	if (soc->needs_chip_scu) {
-		priv->chip_scu =
-			syscon_regmap_lookup_by_phandle(dev->of_node, "airoha,chip-scu");
-		if (IS_ERR(priv->chip_scu))
-			return dev_err_probe(dev, PTR_ERR(priv->chip_scu),
-					     "failed to get CHIP-SCU regmap\n");
-	}
 
 	priv->reset = devm_reset_control_get_exclusive(dev, "phy");
 	if (IS_ERR(priv->reset))
@@ -1163,7 +1202,6 @@ static const struct airoha_xpon_phy_soc_data econet_en751221_xpon_phy_data = {
 	.gpon_bit_delay_reg = XPON_PHYSET5,
 	.gpon_bit_delay_mask = XPON_PHYSET5_BIT_DELAY_MASK,
 	.gpon_bit_delay_enable = XPON_PHYSET5_BIT_DELAY_EN,
-	.needs_chip_scu = true,
 	.manages_fw_ready = true,
 	.configure = econet_en751221_xpon_phy_configure,
 };

@@ -78,17 +78,14 @@ retains the selected mode for shared consumers.
 Transmitter control
 ===================
 
-Providers may describe a board-level transmitter interlock with the standard
-``tx-disable-gpios`` property.  The core requests it using the ``tx-disable``
-GPIO consumer ID and ``GPIOD_OUT_HIGH`` during provider registration, so the optical
-transmitter remains disabled until its operational consumer explicitly calls
-``optical_frontend_tx_enable()``.
+``optical_frontend_tx_enable()`` controls only transmitter state implemented
+inside the frontend provider itself.  Board-level PHY signals such as
+TX_DISABLE, burst enable, TX fault and signal detect belong to the digital PHY
+consumer and are intentionally outside the optical frontend core.
 
-Transmitter transitions are ordered fail-safe.  Disable asserts the GPIO
-before invoking the optional provider ``->tx_enable(false)`` callback.  Enable
-invokes ``->tx_enable(true)`` first and deasserts the GPIO only after that
-callback succeeds.  A provider which needs no additional register sequence
-may omit the callback and rely entirely on the GPIO.
+A provider which needs a register-level transmitter enable sequence implements
+``->tx_enable()``.  Safety/fault latch recovery remains a separate
+``->tx_rearm()`` operation because it is specific to the laser driver.
 
 Sysfs and hwmon
 ===============

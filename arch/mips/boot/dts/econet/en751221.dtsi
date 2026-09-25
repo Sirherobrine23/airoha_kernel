@@ -326,8 +326,6 @@
 		reset-names = "phy";
 
 		airoha,scu = <&scuclk>;
-		airoha,chip-scu = <&chip_scu>;
-
 		#phy-cells = <0>;
 
 		status = "disabled";
