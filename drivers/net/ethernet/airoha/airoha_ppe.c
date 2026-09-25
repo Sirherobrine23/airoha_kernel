@@ -45,7 +45,8 @@ static int airoha_ppe_v1_flow_offload_replace(struct net_device *dev,
 					       struct flow_cls_offload *f);
 static int airoha_ppe_v1_flow_offload_destroy(struct net_device *dev,
 					       struct flow_cls_offload *f);
-static int airoha_ppe_v1_flow_offload_stats(struct flow_cls_offload *f);
+static int airoha_ppe_v1_flow_offload_stats(struct net_device *dev,
+					    struct flow_cls_offload *f);
 static void airoha_ppe_v1_hw_init(struct airoha_ppe *ppe);
 
 static int airoha_ppe_get_num_stats_entries(struct airoha_ppe *ppe)
@@ -2113,7 +2114,7 @@ static int airoha_ppe_flow_offload_cmd(struct airoha_eth *eth,
 		return v1 ? airoha_ppe_v1_flow_offload_destroy(dev, f) :
 			    airoha_ppe_flow_offload_destroy(eth, f);
 	case FLOW_CLS_STATS:
-		return v1 ? airoha_ppe_v1_flow_offload_stats(f) :
+		return v1 ? airoha_ppe_v1_flow_offload_stats(dev, f) :
 			    airoha_ppe_flow_offload_stats(eth, f);
 	default:
 		return -EOPNOTSUPP;
@@ -3114,6 +3115,18 @@ static void airoha_ppe_v1_rx_check(struct airoha_ppe *ppe, struct sk_buff *skb,
 	    reason != AIROHA_PPE_CPU_REASON_HIT_UNBIND &&
 	    reason != AIROHA_PPE_CPU_REASON_HIT_UNBIND_RATE_REACHED)
 		return;
+	/*
+	 * The v1 backend only installs unicast rewrites, so a received
+	 * multicast frame (IPTV on a GPON line) never matches a flow.  Do not
+	 * walk the whole flow list under the lock for each of them; the skb
+	 * is still delivered through the normal receive path.
+	 */
+	if (skb_headlen(skb) >= ETH_HLEN &&
+	    is_multicast_ether_addr(skb->data)) {
+		WRITE_ONCE(ppe->v1.rx_multicast_skip,
+			   READ_ONCE(ppe->v1.rx_multicast_skip) + 1);
+		return;
+	}
 	if (!airoha_foe_v1_parse_tuple(skb, &tuple))
 		return;
 
@@ -3122,6 +3135,7 @@ static void airoha_ppe_v1_rx_check(struct airoha_ppe *ppe, struct sk_buff *skb,
 		if (!airoha_foe_v1_flow_matches_tuple(flow, &tuple))
 			continue;
 
+		flow->v1_lastused = jiffies;
 		bind_hash = airoha_ppe_v1_find_bind_way(ppe, flow, hash,
 						     &lookup_raw, &lookup_valid);
 		if (bind_hash == AIROHA_FOE_V1_INVALID_HASH)
@@ -3714,6 +3728,7 @@ static int airoha_ppe_v1_flow_offload_replace(struct net_device *dev,
 	flow->src_port = ntohs(src_port);
 	flow->dest_port = ntohs(dest_port);
 	flow->hash = AIROHA_FOE_V1_INVALID_HASH;
+	flow->v1_lastused = jiffies;
 	INIT_LIST_HEAD(&flow->v1_list);
 
 	err = rhashtable_insert_fast(&ppe->common.eth->flow_table, &flow->node,
@@ -3756,9 +3771,66 @@ static int airoha_ppe_v1_flow_offload_destroy(struct net_device *dev,
 	return 0;
 }
 
-static int airoha_ppe_v1_flow_offload_stats(struct flow_cls_offload *cls)
+/*
+ * Last real activity of a v1 flow: the later of its last software RX match
+ * and, while it owns a BIND/FIN hardware entry, that entry's timestamp.
+ * UNBIND entries carry an unrelated stamp and are never used.
+ */
+static unsigned long airoha_ppe_v1_flow_lastused(struct airoha_ppe *ppe,
+						 struct airoha_flow_table_entry *flow)
 {
-	flow_stats_update(&cls->stats, 0, 0, 0, jiffies,
+	u32 ib1, state, now, idle;
+	unsigned long lastused;
+	u16 hash = flow->hash;
+
+	lockdep_assert_held(&ppe->v1.lock);
+	if (!READ_ONCE(ppe->v1.armed) || hash == AIROHA_FOE_V1_INVALID_HASH ||
+	    hash >= ppe->common.eth->soc->ppe_dram_entries ||
+	    ppe->v1.foe_owner[hash] != flow)
+		return flow->v1_lastused;
+
+	/* Read the entry before the clock so it cannot look newer than now. */
+	dma_rmb();
+	ib1 = READ_ONCE(airoha_ppe_v1_slot(ppe, hash)[0]);
+	state = FIELD_GET(AIROHA_FOE_IB1_BIND_STATE, ib1);
+	if (state != AIROHA_FOE_STATE_BIND && state != AIROHA_FOE_STATE_FIN)
+		return flow->v1_lastused;
+
+	/* The FE clock counts seconds and wraps at the timestamp width. */
+	now = airoha_fe_rr(ppe->common.eth, REG_FE_FOE_TS);
+	idle = (now - FIELD_GET(AIROHA_FOE_IB1_BIND_TIMESTAMP, ib1)) &
+	       AIROHA_FOE_IB1_BIND_TIMESTAMP;
+	lastused = jiffies - idle * HZ;
+	if (time_after(lastused, flow->v1_lastused))
+		flow->v1_lastused = lastused;
+
+	return flow->v1_lastused;
+}
+
+static int airoha_ppe_v1_flow_offload_stats(struct net_device *dev,
+					    struct flow_cls_offload *cls)
+{
+	struct airoha_ppe *ppe = airoha_ppe_from_netdev(dev);
+	struct airoha_flow_table_entry *flow;
+	unsigned long lastused;
+
+	if (!ppe)
+		return -EOPNOTSUPP;
+
+	flow = rhashtable_lookup_fast(&ppe->common.eth->flow_table,
+				      &cls->cookie, airoha_flow_table_params);
+	if (!flow)
+		return -ENOENT;
+
+	spin_lock_bh(&ppe->v1.lock);
+	lastused = airoha_ppe_v1_flow_lastused(ppe, flow);
+	spin_unlock_bh(&ppe->v1.lock);
+
+	/*
+	 * A statistics query is not traffic: reporting jiffies here renewed
+	 * every flow forever, so the flowtable never expired any of them.
+	 */
+	flow_stats_update(&cls->stats, 0, 0, 0, lastused,
 			  FLOW_ACTION_HW_STATS_DELAYED);
 	return 0;
 }

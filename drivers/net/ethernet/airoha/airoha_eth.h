@@ -788,6 +788,8 @@ struct airoha_flow_table_entry {
 	 * list and tuple are only used by the v1 bind-on-RX backend.
 	 */
 	struct list_head v1_list;
+	/* v1: last real activity (RX bind or hardware BIND timestamp). */
+	unsigned long v1_lastused;
 	u16 addr_type;
 	u16 src_port;
 	u16 dest_port;
@@ -1106,6 +1108,7 @@ struct airoha_ppe_v1 {
 	struct list_head flows;
 	struct airoha_flow_table_entry **foe_owner;
 	bool armed;
+	u32 rx_multicast_skip;
 };
 
 struct airoha_ppe {
