@@ -680,53 +680,50 @@ static u16 en7571_pwradc_data10(struct en7571_priv *priv)
 	return v & 0x3ff;
 }
 
-/* Average eight 10-bit PWRADC samples (round to nearest). */
-static s32 en7571_pwradc_avg8(struct en7571_priv *priv)
-{
-	u32 sum = 0;
-	int i;
-
-	for (i = 0; i < 8; i++)
-		sum += en7571_pwradc_data10(priv);
-	return ((sum >> 2) + 1) >> 1;
-}
-
 /**
  * en7571_txsd_level() - program the TIA signal-detect threshold.
  * @priv: device
  *
- * Measures the TIA flat-band (A) and signal-detect (B) PWRADC levels and
- * combines them with the flashed Pav (D, dark-offset corrected) as
- *   tia_sd = c*D + (2.8/1.8)*(A - B) + 6
- * carried in Q20.  The D coefficient depends on the high TIA gain bit.
+ * Reproduce the XC220-G3v vendor EN7571 TxSD calibration sequence: take one
+ * triggered PWRADC sample on the TIA flat-band path (A), switch to the TxSD
+ * path, clear the previous 9-bit threshold, take one more sample (B), and
+ * combine them with the flashed Pav value (D, dark-offset corrected):
+ *
+ *   tia_sd = (7 / 45) * D + (14 / 9) * (A - B) + 6
+ *
+ * The vendor driver uses these fixed coefficients irrespective of the TIA
+ * gain bits.  Keep the arithmetic in Q20 to avoid floating point in-kernel.
  */
 void en7571_txsd_level(struct en7571_priv *priv)
 {
 	u32 pav_p1 = lddla_flash_read(&priv->lddla, EN7571_FL_PAV_P1);
 	s32 txsd_offset = priv->pwradc_offset >> 6;
-	s32 a, b, d, tia_sd, coeff_d;
-	u8 tiamux0, tiamux1;
-
-	/* Zero the TIASD threshold (bits 0-8). */
-	lddla_wr8(&priv->lddla, EN7571_TIASD, 0);
-	lddla_update8(&priv->lddla, EN7571_TIASD + 1, EN7571_TIASD_UPPER_MASK, 0);
+	s32 a, b, d, tia_sd;
+	u8 tiamux0;
 
 	/* Save the TIA mux field and select the flat-band path. */
 	lddla_rd8(&priv->lddla, EN7571_TIAMUX, &tiamux0);
 	lddla_update8(&priv->lddla, EN7571_TIAMUX, EN7571_TIA_MUX_MASK, EN7571_TIA_MUX_TIAFLT);
-	mdelay(5);
-	a = en7571_pwradc_avg8(priv);
+	a = en7571_pwradc_data10(priv);
 
 	/* Select the signal-detect path. */
 	lddla_update8(&priv->lddla, EN7571_TIAMUX, EN7571_TIA_MUX_MASK, EN7571_TIA_MUX_TIASD);
-	b = en7571_pwradc_avg8(priv);
+
+	/*
+	 * The vendor sequence clears the old threshold only after switching to
+	 * the TxSD mux path.  TIASD is nine bits wide (0x00c[8:0]).
+	 */
+	lddla_wr8(&priv->lddla, EN7571_TIASD, 0);
+	lddla_update8(&priv->lddla, EN7571_TIASD + 1,
+			 EN7571_TIASD_UPPER_MASK, 0);
+	b = en7571_pwradc_data10(priv);
 
 	/* D: flashed Pav minus the dark offset. */
 	d = (s32)((pav_p1 & EN7571_FL_PAV_MASK) >> 18) - txsd_offset;
 
-	lddla_rd8(&priv->lddla, EN7571_TIAMUX + 1, &tiamux1);
-	coeff_d = (tiamux1 & 0x80) ? 108741 : 163112;	/* 0.1*(2.8/1.8), /1.5 if gain[1] */
-	tia_sd = (s32)(((s64)coeff_d * d + 1631118LL * (a - b) + (6LL << 20)) >> 20);
+	/* Q20: 7/45 ~= 0.1555556, 14/9 ~= 1.5555556. */
+	tia_sd = (s32)(((s64)163112 * d +
+			 1631118LL * (a - b) + (6LL << 20)) >> 20);
 	if (tia_sd < 0)
 		tia_sd = 0;
 
@@ -734,8 +731,12 @@ void en7571_txsd_level(struct en7571_priv *priv)
 	lddla_update8(&priv->lddla, EN7571_TIASD + 1, EN7571_TIASD_UPPER_MASK,
 		       (tia_sd >> 8) & 0x01);
 
-	/* Restore the saved TIA mux field. */
-	lddla_update8(&priv->lddla, EN7571_TIAMUX, EN7571_TIA_MUX_MASK, tiamux0 & ~EN7571_TIA_MUX_MASK);
+	/* The stock driver restores the complete saved TIAMUX byte. */
+	lddla_wr8(&priv->lddla, EN7571_TIAMUX, tiamux0);
+
+	dev_info(priv->lddla.dev,
+		 "EN7571 TxSD calibrated: offset=%d tiaflt=%d tiasd=%d pav_d=%d threshold=0x%03x\n",
+		 txsd_offset, a, b, d, tia_sd & 0x1ff);
 }
 
 /* Compare the cached Rx-power DDMI word against the alarm thresholds. */
