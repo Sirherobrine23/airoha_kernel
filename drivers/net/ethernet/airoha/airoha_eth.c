@@ -9112,6 +9112,24 @@ static int airoha_register_gdm_devices(struct airoha_eth *eth)
 			err = register_netdev(netdev_from_priv(dev));
 			if (err)
 				return err;
+
+#ifdef CONFIG_BQL
+			/*
+			 * EN751221 QDMA completion timing makes DQL learn a
+			 * byte limit below two Ethernet frames, and locally
+			 * terminated LAN TX collapses to ~35 Mbit/s.  256 KiB
+			 * is the tested knee; DQL still adapts above it.
+			 */
+			if (airoha_is(eth, econet_en751221) &&
+			    airoha_is_lan_gdm_dev(dev)) {
+				struct net_device *ndev = netdev_from_priv(dev);
+				unsigned int q;
+
+				for (q = 0; q < ndev->real_num_tx_queues; q++)
+					netdev_get_tx_queue(ndev, q)->dql.min_limit =
+						SZ_256K;
+			}
+#endif
 		}
 	}
 
