@@ -33,6 +33,8 @@
 #define EN7523_SCU_WAN_CONF		0x070
 #define EN7523_SCU_WAN_MODE_MASK	GENMASK(7, 0)
 #define EN7528_SCU_WAN_MODE_MASK	GENMASK(2, 0)
+#define EN7528_SCU_REG_284		0x284
+#define EN7528_SCU_REG_284_KEEP_REG580	BIT(9)
 #define EN7523_SCU_WAN_MODE_GPON	0x00
 #define EN7523_SCU_WAN_MODE_EPON	0x01
 #define EN7523_SCU_IOMUX_CTRL_3		0x218
@@ -62,6 +64,7 @@
 #define XPON_INT_ENABLE			0x05f0
 #define XPON_INT_STATUS_CLR		0x05f4
 #define XPON_INT_STATUS			0x05f8
+#define EN7528_XPON_REG_580		0x0580
 
 #define XPON_RX_CTRL0			0x3028
 #define XPON_PMA_CTRL0			0x4100
@@ -149,6 +152,7 @@ struct airoha_xpon_phy_soc_data {
 	u32 gpon_bit_delay_mask;
 	u32 gpon_bit_delay_enable;
 	bool has_integrated_pma;
+	bool has_reg580;
 	bool manages_fw_ready;
 	int (*configure)(struct airoha_xpon_phy *priv);
 };
@@ -498,6 +502,11 @@ static void airoha_xpon_phy_dump(struct airoha_xpon_phy *priv,
 		 airoha_xpon_phy_read(priv, XPON_INT_STATUS),
 		 airoha_xpon_phy_read(priv, XPON_INT_ENABLE));
 
+	if (priv->soc->has_reg580)
+		dev_info(priv->dev,
+			 "EN7528 vendor state: reg580=%#010x\n",
+			 airoha_xpon_phy_read(priv, EN7528_XPON_REG_580));
+
 	if (priv->soc->manages_fw_ready)
 		dev_info(priv->dev,
 			 "EN751221 status: fw_ready=%u rx_sync=%#x rx_synced=%u counters=%#010x/%#010x/%#010x/%#010x\n",
@@ -797,6 +806,25 @@ static int airoha_en7528_xpon_phy_configure(struct airoha_xpon_phy *priv)
 	airoha_xpon_phy_write(priv, XPON_TDCSET2, EN7528_XPON_TDCSET2);
 
 	/*
+	 * The XC220 vendor phy_dev_init() checks NP-SCU + 0x284 bit 9 and,
+	 * when it is clear, writes zero to the otherwise-undocumented xPON
+	 * register at 0x580.  The tested XC220-G3v reads 0x01038500 from
+	 * SCU + 0x284, so it takes this branch in the stock firmware.
+	 */
+	ret = regmap_read(priv->scu, EN7528_SCU_REG_284, &val);
+	if (ret)
+		return dev_err_probe(priv->dev, ret,
+				     "failed to read EN7528 SCU register 0x284\n");
+
+	if (!(val & EN7528_SCU_REG_284_KEEP_REG580)) {
+		airoha_xpon_phy_write(priv, EN7528_XPON_REG_580, 0);
+		dev_info(priv->dev,
+			 "EN7528 vendor reg580 init: scu284=%#010x reg580=%#010x\n",
+			 val,
+			 airoha_xpon_phy_read(priv, EN7528_XPON_REG_580));
+	}
+
+	/*
 	 * The XC220 uses an EN7571.  Its vendor transceiver model programs
 	 * XPON_SETTING to 0x10f.  Preserve board-described polarity bits on
 	 * top of that value so another EN7528 board can override them in DT.
@@ -1082,6 +1110,12 @@ int airoha_xpon_phy_trace_tx_state(struct phy *phy, const char *reason)
 			 reason, pma0, serdes0, ben_ctrl, serdes18,
 			 serdes19, bit_delay);
 
+	if (priv->soc->has_reg580)
+		dev_info(priv->dev,
+			 "XPON-TRACE PHY TX (%s) en7528: reg580=%#010x\n",
+			 reason,
+			 airoha_xpon_phy_read(priv, EN7528_XPON_REG_580));
+
 	return 0;
 }
 EXPORT_SYMBOL_GPL(airoha_xpon_phy_trace_tx_state);
@@ -1313,6 +1347,7 @@ static const struct airoha_xpon_phy_soc_data airoha_en7528_xpon_phy_data = {
 	.gpon_bit_delay_reg = XPON_PHYSET5,
 	.gpon_bit_delay_mask = XPON_PHYSET5_BIT_DELAY_MASK,
 	.gpon_bit_delay_enable = XPON_PHYSET5_BIT_DELAY_EN,
+	.has_reg580 = true,
 	.manages_fw_ready = true,
 	.configure = airoha_en7528_xpon_phy_configure,
 };

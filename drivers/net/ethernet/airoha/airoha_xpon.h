@@ -334,6 +334,7 @@ struct airoha_xpon_match_data {
  */
 #define GPON_PHY_GUARD_BIT_NUM	20
 #define GPON_PHY_GUARD_BIT_NUM_EN751221	24
+#define GPON_PHY_GUARD_BIT_NUM_EN7528	24
 
 
 #define EPON_MAX_LLID		8

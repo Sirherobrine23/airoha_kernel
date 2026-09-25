@@ -4339,6 +4339,7 @@ static const struct airoha_xpon_match_data en7528_xpon_data = {
 	.gpon_fine_delay = 0x1c,
 	.gpon_rsp_time_activation = GPON_RSP_TIME_ACT_EN7528,
 	.gpon_idle_gem_threshold = GPON_IDLE_GEM_THLD_DEFAULT,
+	.gpon_guard_bits_override = GPON_PHY_GUARD_BIT_NUM_EN7528,
 	.gpon_reset_dbg_dly = true,
 	.gpon_adjust_rx_delay = true,
 	.mac_irq_via_eth = true,
