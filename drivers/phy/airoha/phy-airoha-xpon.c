@@ -53,6 +53,9 @@
 #define XPON_RX_FEC_STATUS		0x021c
 #define XPON_RX_COUNTER_ENABLE		0x0230
 #define XPON_RX_COUNTER_CTRL		0x0234
+#define XPON_RX_BIP_COUNTER		0x024c
+#define XPON_RX_BIP_LATCH		BIT(2)
+#define XPON_RX_BIP_CLEAR		BIT(3)
 #define XPON_RX_COUNTER_CTRL2		0x0298
 #define XPON_GPON_PREAMBLE		0x0400
 #define XPON_GPON_DELIMITER_GUARD	0x0404
@@ -158,6 +161,7 @@ struct airoha_xpon_phy_soc_data {
 	u32 gpon_bit_delay_enable;
 	bool has_integrated_pma;
 	bool manages_fw_ready;
+	bool has_gpon_bip;
 	int (*configure)(struct airoha_xpon_phy *priv);
 };
 
@@ -175,6 +179,8 @@ struct airoha_xpon_phy {
 	bool initialized;
 	bool powered;
 	bool ready_reported;
+	/* Serializes the RX counter command register (latch/clear). */
+	spinlock_t counter_lock;
 };
 
 static u32 airoha_xpon_phy_read(struct airoha_xpon_phy *priv, u32 reg)
@@ -272,6 +278,40 @@ static int airoha_xpon_phy_get_active_gpon(
 	*privp = priv;
 	return 0;
 }
+
+/*
+ * Latch, read and clear the GPON BIP error counter, as the vendor
+ * phy_bip_counter() does.  The command register takes one command at a
+ * time and is never read-modify-written.  Safe in atomic context.
+ */
+int airoha_xpon_phy_take_gpon_bip(struct phy *phy, u32 *count)
+{
+	struct airoha_xpon_phy *priv;
+	unsigned long flags;
+	int ret;
+
+	if (!count)
+		return -EINVAL;
+
+	ret = airoha_xpon_phy_get_active_gpon(phy, &priv);
+	if (ret)
+		return ret;
+	if (!priv->soc->has_gpon_bip)
+		return -EOPNOTSUPP;
+
+	spin_lock_irqsave(&priv->counter_lock, flags);
+	airoha_xpon_phy_write(priv, XPON_RX_COUNTER_CTRL, XPON_RX_BIP_LATCH);
+	/* The vendor reads the latched value twice. */
+	airoha_xpon_phy_read(priv, XPON_RX_BIP_COUNTER);
+	*count = airoha_xpon_phy_read(priv, XPON_RX_BIP_COUNTER);
+	airoha_xpon_phy_write(priv, XPON_RX_COUNTER_CTRL, XPON_RX_BIP_CLEAR);
+	/* Flush the posted clear before the lock is released. */
+	airoha_xpon_phy_read(priv, XPON_RX_COUNTER_CTRL);
+	spin_unlock_irqrestore(&priv->counter_lock, flags);
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(airoha_xpon_phy_take_gpon_bip);
 
 int airoha_xpon_phy_get_gpon_tx_counters(struct phy *phy,
 					 u32 *frame_count,
@@ -756,6 +796,9 @@ static int airoha_en7523_xpon_phy_configure(struct airoha_xpon_phy *priv)
 static void
 econet_xpon_phy_counter_clear(struct airoha_xpon_phy *priv, u32 mask)
 {
+	unsigned long flags;
+
+	spin_lock_irqsave(&priv->counter_lock, flags);
 	/*
 	 * EcoNet 1G phy_counter_clear().  The RX counter clear register is a
 	 * command register: the vendor writes one command at a time rather than
@@ -772,6 +815,7 @@ econet_xpon_phy_counter_clear(struct airoha_xpon_phy *priv, u32 mask)
 				    BIT(2));
 	if (mask & ECONET_XPON_COUNTER_CLEAR_RX3)
 		airoha_xpon_phy_write(priv, XPON_RX_COUNTER_CTRL2, BIT(4));
+	spin_unlock_irqrestore(&priv->counter_lock, flags);
 }
 
 static void
@@ -1202,6 +1246,7 @@ static int airoha_xpon_phy_probe(struct platform_device *pdev)
 	priv->soc = soc;
 	priv->submode = AIROHA_XPON_PHY_SUBMODE_GPON;
 	priv->trans_invert = airoha_xpon_phy_trans_invert(dev);
+	spin_lock_init(&priv->counter_lock);
 	INIT_DELAYED_WORK(&priv->ready_work, airoha_xpon_phy_ready_work);
 
 	/*
@@ -1264,6 +1309,7 @@ static int airoha_xpon_phy_probe(struct platform_device *pdev)
 
 static const struct airoha_xpon_phy_soc_data econet_en751221_xpon_phy_data = {
 	.name = "EN751221",
+	.has_gpon_bip = true,
 	.min_size = ECONET_XPON_PHY_MIN_SIZE,
 	.gpon_bit_delay_reg = XPON_PHYSET5,
 	.gpon_bit_delay_mask = XPON_PHYSET5_BIT_DELAY_MASK,
