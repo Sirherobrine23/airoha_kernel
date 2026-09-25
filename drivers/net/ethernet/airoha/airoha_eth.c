@@ -1990,6 +1990,7 @@ static int airoha_qdma_mips_xmit(struct airoha_qdma *qdma,
 int airoha_whnat_qdma_xmit(struct airoha_qdma *qdma, struct sk_buff *skb)
 {
 	union desc_msg msg = {};
+	int ret;
 
 	if (qdma->id || !qdma->econet || !READ_ONCE(qdma->users))
 		return -EOPNOTSUPP;
@@ -1998,7 +1999,9 @@ int airoha_whnat_qdma_xmit(struct airoha_qdma *qdma, struct sk_buff *skb)
 	set_etx_queue(&msg.etx, 0);
 	set_etx_fport(&msg.etx, ETX_FPORT_PPE);
 
-	return econet_qdma_xmit_mips(qdma->econet, skb, &msg, 0);
+	ret = econet_qdma_xmit_mips(qdma->econet, skb, &msg, 0);
+	/* Only zero and EBUSY denote an skb consumed by the descriptor ring. */
+	return ret == 0 || ret == EBUSY ? ret : ret < 0 ? ret : -EIO;
 }
 #endif
 
