@@ -2677,6 +2677,18 @@ static void gpon_to2_work_fn(struct work_struct *work)
 		dev_warn(priv->dev,
 			 "GPON TO2 expired in O6 with the optical link still down, waiting for the fibre\n");
 		gpon_disable(priv);
+		/*
+		 * With an SFP, gpon_sfp_link_up() restarts the session when
+		 * the fibre is back.  An optical frontend has no such
+		 * notification, and gpon_disable() powered the PHY off, so
+		 * nothing would ever notice the light returning.  Restart once:
+		 * the MAC then waits in O2 with the PHY powered and resumes
+		 * when the fibre comes back.
+		 */
+		if (!priv->sfp_bus && READ_ONCE(priv->started) &&
+		    READ_ONCE(priv->optical_active))
+			mod_delayed_work(priv->fsm_wq, &priv->restart_work,
+					 msecs_to_jiffies(GPON_DEACTIVATE_RESTART_MS));
 		return;
 	}
 
