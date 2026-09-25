@@ -1570,9 +1570,112 @@ static void gpon_cb_request_new_key(void *hw_priv)
 	ploam_set_aes_key(priv->ploam, priv->aes_key);
 }
 
+/*
+ * BIP accounting.  The PHY counter is read-and-clear, so only these helpers
+ * consume it: the link poll samples it about once a second in O5 and the BER
+ * timer samples it again before reporting REI.  Call with bip_lock held.
+ */
+static int gpon_bip_sample_locked(struct xpon_priv *priv)
+{
+	u32 count;
+	int ret;
+
+	if (!priv->bip_active)
+		return -EHOSTDOWN;
+
+	ret = airoha_xpon_phy_take_gpon_bip(priv->phy, &count);
+	priv->bip_next = jiffies + HZ;
+	if (ret)
+		return ret;
+
+	/* The first read only clears what was counted while acquiring. */
+	if (!priv->bip_valid) {
+		priv->bip_valid = true;
+		return 0;
+	}
+
+	priv->bip_last = count;
+	priv->bip_total += count;
+	priv->bip_session_total += count;
+	priv->bip_pending += count;
+	return 0;
+}
+
+static void gpon_bip_set_active(struct xpon_priv *priv, bool o5)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&priv->bip_lock, flags);
+	if (o5 && !priv->bip_active) {
+		priv->bip_active = true;
+		priv->bip_valid = false;
+		priv->bip_session++;
+		priv->bip_session_total = 0;
+		priv->bip_pending = 0;
+		priv->bip_last = 0;
+		gpon_bip_sample_locked(priv);
+	} else if (!o5) {
+		priv->bip_active = false;
+		priv->bip_valid = false;
+	}
+	spin_unlock_irqrestore(&priv->bip_lock, flags);
+}
+
+static void gpon_bip_poll(struct xpon_priv *priv)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&priv->bip_lock, flags);
+	if (priv->bip_active && time_after_eq(jiffies, priv->bip_next))
+		gpon_bip_sample_locked(priv);
+	spin_unlock_irqrestore(&priv->bip_lock, flags);
+}
+
+static ssize_t gpon_bip_show(struct device *dev, struct device_attribute *attr,
+			     char *buf)
+{
+	struct xpon_priv *priv = dev_get_drvdata(dev);
+	unsigned long flags;
+	u64 total, session_total, pending;
+	u32 session, last;
+	bool active;
+
+	if (!priv)
+		return -ENODEV;
+
+	spin_lock_irqsave(&priv->bip_lock, flags);
+	active = priv->bip_active && priv->bip_valid;
+	session = priv->bip_session;
+	last = priv->bip_last;
+	total = priv->bip_total;
+	session_total = priv->bip_session_total;
+	pending = priv->bip_pending;
+	spin_unlock_irqrestore(&priv->bip_lock, flags);
+
+	return sysfs_emit(buf,
+			  "active=%u session=%u total=%llu session_total=%llu last=%u pending_rei=%llu\n",
+			  active, session, total, session_total, last, pending);
+}
+static DEVICE_ATTR_RO(gpon_bip);
+
+static struct attribute *gpon_bip_attrs[] = {
+	&dev_attr_gpon_bip.attr,
+	NULL
+};
+
+static const struct attribute_group gpon_bip_group = {
+	.attrs = gpon_bip_attrs,
+};
+
 static void gpon_cb_set_ber_interval(void *hw_priv, u32 interval_ms)
 {
 	struct xpon_priv *priv = hw_priv;
+	unsigned long flags;
+
+	/* A new BER interval starts a new reporting window. */
+	spin_lock_irqsave(&priv->bip_lock, flags);
+	priv->bip_pending = 0;
+	spin_unlock_irqrestore(&priv->bip_lock, flags);
 
 	dev_info(priv->dev, "GPON BER reporting interval=%u ms\n",
 		 interval_ms);
@@ -2075,6 +2178,7 @@ static void gpon_cb_state_changed(void *hw_priv, enum gpon_state state)
 
 	/* Keep the hardware activation state in sync with the PLOAM FSM. */
 	gpon_write(priv, GPON_ACTIVATION_ST, state & 0x7);
+	gpon_bip_set_active(priv, state == GPON_O5_OPERATION);
 	dev_info(priv->dev, "GPON state -> %s (%u), activation_reg=%#08x\n",
 		 gpon_state_name(state), state,
 		 gpon_read(priv, GPON_ACTIVATION_ST));
@@ -2412,6 +2516,7 @@ static void gpon_disable(struct xpon_priv *priv)
 	 * remains enabled so no activation edge is lost across a restart.
 	 */
 	WRITE_ONCE(priv->mac_enabled, false);
+	gpon_bip_set_active(priv, false);
 	if (mac_enabled) {
 		gpon_write(priv, GPON_INT_ENABLE, 0);
 		gpon_write(priv, GPON_INT_STATUS, ~0U);
@@ -2507,7 +2612,9 @@ reset_session:
 static void gpon_ber_timer_fn(struct timer_list *t)
 {
 	struct xpon_priv *priv = timer_container_of(priv, t, ber_timer);
+	unsigned long flags;
 	bool ready, los;
+	u32 count = 0;
 	int ret;
 
 	if (!READ_ONCE(priv->mac_enabled) || !priv->ber_interval_ms ||
@@ -2520,7 +2627,19 @@ static void gpon_ber_timer_fn(struct timer_list *t)
 		return;
 	}
 
-	ploam_notify_ber(priv->ploam, 0);
+	spin_lock_irqsave(&priv->bip_lock, flags);
+	ret = gpon_bip_sample_locked(priv);
+	if (!ret) {
+		count = min_t(u64, priv->bip_pending, U32_MAX);
+		priv->bip_pending -= count;
+	}
+	spin_unlock_irqrestore(&priv->bip_lock, flags);
+	/*
+	 * Without a BIP counter keep reporting zero; a failed read is missing
+	 * data, not zero errors, so that report is skipped.
+	 */
+	if (!ret || ret == -EOPNOTSUPP)
+		ploam_notify_ber(priv->ploam, count);
 	if (READ_ONCE(priv->mac_enabled) && priv->ber_interval_ms &&
 	    ploam_get_state(priv->ploam) == GPON_O5_OPERATION)
 		mod_timer(&priv->ber_timer,
@@ -2593,6 +2712,10 @@ static void airoha_xpon_phy_link_work_fn(struct work_struct *work)
 		if (mac_active)
 			gpon_handle_irq_status(priv, mac_status, mac_enable);
 	}
+
+	if (link && priv->mode == AIROHA_XPON_MODE_GPON &&
+	    ploam_get_state(priv->ploam) == GPON_O5_OPERATION)
+		gpon_bip_poll(priv);
 
 	if (!link && priv->mode == AIROHA_XPON_MODE_GPON &&
 	    ploam_get_state(priv->ploam) == GPON_O5_OPERATION) {
@@ -3990,6 +4113,7 @@ static int airoha_xpon_init_gpon(struct platform_device *pdev,
 		goto err_destroy_fsm_wq;
 
 	priv->ber_interval_ms = 1000;
+	spin_lock_init(&priv->bip_lock);
 	timer_setup(&priv->ber_timer, gpon_ber_timer_fn, 0);
 
 	priv->ploam = ploam_alloc(&gpon_ploam_ops, priv, priv->hw_sn,
@@ -4307,6 +4431,12 @@ static int airoha_xpon_probe(struct platform_device *pdev)
 	}
 
 	platform_set_drvdata(pdev, priv);
+	if (airoha_xpon_is_gpon(priv)) {
+		ret = devm_device_add_group(dev, &gpon_bip_group);
+		if (ret)
+			dev_warn(dev, "failed to add the BIP sysfs group: %d\n",
+				 ret);
+	}
 	if (airoha_xpon_is_gpon(priv))
 		dev_info(dev,
 			 "GPON probe complete: datapath=%s omci-genl=%u irq=%d dying-gasp-irq=%d mac-reset=%u default_state=%s\n",

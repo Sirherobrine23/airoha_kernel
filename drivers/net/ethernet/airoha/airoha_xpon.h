@@ -432,6 +432,16 @@ struct xpon_priv {
 	/* BER measurement timer */
 	struct timer_list	ber_timer;
 	u32			ber_interval_ms;
+	/* BIP errors, from the PHY read-and-clear counter, for REI and sysfs */
+	spinlock_t		bip_lock;
+	bool			bip_active;
+	bool			bip_valid;
+	u32			bip_session;
+	u32			bip_last;
+	u64			bip_total;
+	u64			bip_session_total;
+	u64			bip_pending;
+	unsigned long		bip_next;
 
 	/* Protects the hardware T-CONT table and its software allocation maps. */
 	struct mutex		tcont_lock;
