@@ -379,6 +379,9 @@ static void en7570_op_diag(struct airoha_lddla *lddla, struct seq_file *s)
 	seq_printf(s, "loop:        %s\n",
 		   priv->scl ? "single-closed" : priv->dol ? "dual-open" : "dual-closed");
 	seq_printf(s, "etc_mode:    %d\n", priv->etc_mode);
+	seq_printf(s, "bias_valid:  %u last_error: %d control_error: %d tec_attempts: %d\n",
+		   priv->bias_valid, priv->bias_read_error,
+		   priv->optical_control_error, priv->tec_cnt);
 	seq_printf(s, "ic_temp:     %d.%03d degC\n",
 		   priv->ic_temp_mc / 1000, abs(priv->ic_temp_mc % 1000));
 	seq_printf(s, "bosa_temp:   %d.%03d degC\n",
