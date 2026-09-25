@@ -994,6 +994,56 @@ static void airoha_xpon_phy_ready_work(struct work_struct *work)
 				 msecs_to_jiffies(XPON_READY_RECOVERY_MS));
 }
 
+int airoha_xpon_phy_trace_tx_state(struct phy *phy, const char *reason)
+{
+	struct airoha_xpon_phy *priv;
+	u32 frames = 0, bursts = 0;
+	u32 setting, trans, status, enable, ext;
+	int tx_disable = -1;
+	int vcc_disable = -1;
+	int ret;
+
+	ret = airoha_xpon_phy_get_active_gpon(phy, &priv);
+	if (ret)
+		return ret;
+
+	setting = airoha_xpon_phy_read(priv, XPON_SETTING);
+	trans = airoha_xpon_phy_read(priv, XPON_TRANS_STATUS);
+	status = airoha_xpon_phy_read(priv, XPON_INT_STATUS);
+	enable = airoha_xpon_phy_read(priv, XPON_INT_ENABLE);
+	ext = airoha_xpon_phy_read(priv, XPON_GPON_EXT_PREAMBLE);
+
+	if (priv->tx_disable_gpio)
+		tx_disable =
+			gpiod_get_value_cansleep(priv->tx_disable_gpio);
+
+	if (priv->vcc_disable_gpio)
+		vcc_disable =
+			gpiod_get_value_cansleep(priv->vcc_disable_gpio);
+
+	airoha_xpon_phy_get_gpon_tx_counters(phy, &frames, &bursts);
+
+	dev_info(priv->dev,
+		 "XPON-TRACE PHY TX (%s): "
+		 "setting=%#010x "
+		 "tx_sd_inv=%u tx_fault_inv=%u rx_sd_inv=%u ben_inv=%u "
+		 "trans=%#010x int=%#010x/%#010x ext=%#010x "
+		 "txcnt=%#010x/%#010x "
+		 "tx_disable=%d vcc_disable=%d\n",
+		 reason,
+		 setting,
+		 !!(setting & XPON_SETTING_TX_SD_INV),
+		 !!(setting & XPON_SETTING_TX_FAULT_INV),
+		 !!(setting & XPON_SETTING_RX_SD_INV),
+		 !!(setting & XPON_SETTING_BURST_EN_INV),
+		 trans, status, enable, ext,
+		 frames, bursts,
+		 tx_disable, vcc_disable);
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(airoha_xpon_phy_trace_tx_state);
+
 static int airoha_xpon_phy_power_on(struct phy *phy)
 {
 	struct airoha_xpon_phy *priv = phy_get_drvdata(phy);

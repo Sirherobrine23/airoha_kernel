@@ -61,33 +61,6 @@
 
 static const u8 airoha_default_vendor_id[4] = {'M', 'T', 'K', 'G'};
 
-static void airoha_xpon_frontend_dump(struct device *dev,
-				      struct optical_frontend *frontend,
-				      const char *reason)
-{
-	struct optical_frontend_telemetry telemetry = {};
-	struct optical_frontend_state state = {};
-	int telemetry_ret = -ENODEV;
-	int state_ret = -ENODEV;
-
-	if (!frontend) {
-		dev_info(dev, "optical frontend dump (%s): no frontend\n",
-			 reason);
-		return;
-	}
-
-	state_ret = optical_frontend_get_state(frontend, &state);
-	telemetry_ret = optical_frontend_get_telemetry(frontend, &telemetry);
-
-	dev_info(dev,
-		 "optical frontend dump (%s): state_ret=%d valid=%#x present=%u ready=%u rx_los=%u tx_fault=%u tx_enabled=%u telemetry_ret=%d valid=%#x temp_mc=%d voltage_uv=%u bias_ua=%u tx_power_nw=%u rx_power_nw=%u alarms=%#x\n",
-		 reason, state_ret, state.valid, state.present, state.ready,
-		 state.rx_los, state.tx_fault, state.tx_enabled,
-		 telemetry_ret, telemetry.valid, telemetry.temperature_mc,
-		 telemetry.voltage_uv, telemetry.bias_ua, telemetry.tx_power_nw,
-		 telemetry.rx_power_nw, telemetry.alarms);
-}
-
 static int airoha_xpon_tx_rearm(struct device *dev,
 				struct optical_frontend *frontend)
 {
@@ -96,9 +69,7 @@ static int airoha_xpon_tx_rearm(struct device *dev,
 	if (!frontend)
 		return 0;
 
-	airoha_xpon_frontend_dump(dev, frontend, "tx-rearm-before");
 	ret = optical_frontend_tx_rearm(frontend);
-	airoha_xpon_frontend_dump(dev, frontend, "tx-rearm-after");
 	if (ret == -EOPNOTSUPP)
 		return 0;
 	if (ret)
@@ -118,17 +89,7 @@ static int airoha_xpon_tx_enable(struct device *dev,
 	if (!frontend)
 		return 0;
 
-	if (enable)
-		airoha_xpon_frontend_dump(dev, frontend, "tx-enable-before");
-	else
-		airoha_xpon_frontend_dump(dev, frontend, "tx-disable-before");
-
 	ret = optical_frontend_tx_enable(frontend, enable);
-
-	if (enable)
-		airoha_xpon_frontend_dump(dev, frontend, "tx-enable-after");
-	else
-		airoha_xpon_frontend_dump(dev, frontend, "tx-disable-after");
 	if (ret == -EOPNOTSUPP)
 		return 0;
 	if (ret)
@@ -473,7 +434,6 @@ static void gpon_dump_activation_regs(struct xpon_priv *priv,
 		 READ_ONCE(priv->ploam_rx_drops),
 		 READ_ONCE(priv->assign_onu_fastpath),
 		 phy_tx_frames, phy_tx_bursts, phy_ret);
-	airoha_xpon_frontend_dump(priv->dev, priv->frontend, reason);
 }
 
 static inline void gpon_set_bits(struct xpon_priv *priv, u32 reg, u32 bits)
@@ -564,7 +524,7 @@ static int gpon_prepare_hardware(struct xpon_priv *priv)
 		 FIELD_PREP(DBG_DLY_FINE_INT_MASK,
 			    priv->match_data->gpon_fine_delay));
 	gpon_rmw(priv, GPON_DBG_IDLE_GEM_THLD, GENMASK(15, 0),
-		 GPON_IDLE_GEM_THLD_DEFAULT);
+		 priv->match_data->gpon_idle_gem_threshold);
 
 	if (priv->match_data->en7523_gpon_defaults) {
 		gpon_rmw(priv, GPON_GBL_CFG, GBL_CFG_SR_BLK_SIZE_MASK,
@@ -1452,35 +1412,7 @@ static void gpon_cb_set_overhead(void *hw_priv,
 
 	gpon_adjust_mac_rx_delay(priv);
 	gpon_dump_activation_regs(priv, "XPON-TRACE after-rx-delay");
-
-	/*
-	 * The vendor driver keeps TX disabled throughout O2.  Receiving
-	 * Upstream_Overhead is the point where it enables the external
-	 * transmitter and then rearms the EN757x safe circuit, immediately
-	 * before entering O3 and answering the serial-number grants.
-	 *
-	 * Keep the same ordering here.  Rearming the LDDLA before releasing
-	 * TX_DISABLE is not equivalent: SAFE_PROTECT may latch again before
-	 * the first O3 burst reaches the fibre.
-	 */
-	dev_info(priv->dev, "XPON-TRACE TX path: enabling frontend\n");
-	ret = airoha_xpon_tx_enable(priv->dev, priv->frontend, true);
-	if (ret) {
-		dev_warn(priv->dev,
-			 "failed to enable optical transmitter for GPON O3: %d\n",
-			 ret);
-		return;
-	}
-
-	dev_info(priv->dev, "XPON-TRACE TX path: rearming frontend\n");
-	ret = airoha_xpon_tx_rearm(priv->dev, priv->frontend);
-	if (ret) {
-		dev_warn(priv->dev,
-			 "failed to rearm optical transmitter for GPON O3: %d\n",
-			 ret);
-		airoha_xpon_tx_enable(priv->dev, priv->frontend, false);
-		return;
-	}
+	airoha_xpon_phy_trace_tx_state(priv->phy, "before-o3");
 
 	/*
 	 * G_PLOu_OVERHEAD and G_PLOu_DELM_BIT are currently undocumented in
@@ -1495,7 +1427,6 @@ static void gpon_cb_set_overhead(void *hw_priv,
 		 gpon_read(priv, GPON_PLOu_PRMBL_TYPE3),
 		 gpon_read(priv, GPON_PLOu_DELM_BIT),
 		 gpon_read(priv, GPON_PRE_ASSIGNED_DLY));
-	airoha_xpon_frontend_dump(priv->dev, priv->frontend, "gpon-o3-entry");
 	gpon_dump_activation_regs(priv, "XPON-TRACE overhead-exit");
 }
 
@@ -2045,6 +1976,11 @@ static void gpon_cb_state_changed(void *hw_priv, enum gpon_state state)
 
 	if (update_phy_state) {
 		ret = airoha_xpon_phy_set_gpon_oper_state(priv->phy, phy_state);
+		if (!ret && (state == GPON_O3_SERIAL_NUMBER ||
+			     state == GPON_O4_RANGING))
+			airoha_xpon_phy_trace_tx_state(priv->phy,
+						      state == GPON_O3_SERIAL_NUMBER ?
+						      "enter-o3" : "enter-o4");
 		if (ret)
 			dev_warn(priv->dev,
 				 "failed to update GPON PHY operational state: %d\n",
@@ -2242,6 +2178,27 @@ static int gpon_enable(struct xpon_priv *priv)
 	if (ret)
 		goto err_disable_frontend;
 
+	/*
+	 * TX_DISABLE belongs to the xPON PHY.  airoha_xpon_phy_start()
+	 * powers/configures the PHY and its power_on() callback releases the
+	 * external transmitter interlock.  Only after that is it safe to
+	 * enable the frontend-internal TX path and rearm the laser safety
+	 * circuit.
+	 *
+	 * BEN remains under control of the digital xPON PHY and gates each
+	 * individual GPON burst.
+	 */
+	dev_info(priv->dev,
+		 "XPON-TRACE TX path: enabling frontend after PHY power-on\n");
+	ret = airoha_xpon_tx_enable(priv->dev, priv->frontend, true);
+	if (ret)
+		goto err_stop_phy;
+	dev_info(priv->dev,
+		 "XPON-TRACE TX path: rearming frontend after PHY power-on\n");
+	ret = airoha_xpon_tx_rearm(priv->dev, priv->frontend);
+	if (ret)
+		goto err_stop_phy;
+
 	ret = gpon_prepare_hardware(priv);
 	if (ret) {
 		dev_err(priv->dev, "failed to prepare GPON hardware: %d\n", ret);
@@ -2289,10 +2246,9 @@ static int gpon_enable(struct xpon_priv *priv)
 	WRITE_ONCE(priv->mac_enabled, true);
 
 	/*
-	 * Enter O2 with the transmitter interlock still asserted.  The vendor
-	 * sequence releases it only after receiving Upstream_Overhead, in
-	 * gpon_cb_set_overhead(), immediately before the O3 serial-number
-	 * exchange.
+	 * The external TX interlock has already been released by the PHY
+	 * power-on path.  GPON stays optically quiet in O2 because BEN is
+	 * generated by the xPON hardware only for valid upstream grants.
 	 */
 	ploam_start(priv->ploam);
 	WRITE_ONCE(priv->phy_link_known, false);
@@ -2566,6 +2522,7 @@ static void gpon_to1_work_fn(struct work_struct *work)
 	if (st != GPON_O3_SERIAL_NUMBER && st != GPON_O4_RANGING)
 		return;
 
+	airoha_xpon_phy_trace_tx_state(priv->phy, "TO1-expired");
 	gpon_dump_activation_regs(priv, "TO1 expired");
 	priv->to1_failures++;
 
@@ -2706,21 +2663,14 @@ static void gpon_restart_work_fn(struct work_struct *work)
 			return;
 	}
 
-	ret = airoha_xpon_tx_rearm(priv->dev, priv->frontend);
+	ret = gpon_enable(priv);
 	if (ret) {
-		dev_warn(priv->dev,
-			 "retrying optical transmitter rearm in %u ms\n",
-			 GPON_REARM_RETRY_MS);
+		dev_err(priv->dev, "failed to restart GPON: %d\n", ret);
 		if (READ_ONCE(priv->started) &&
 		    READ_ONCE(priv->optical_active))
 			mod_delayed_work(priv->fsm_wq, &priv->restart_work,
 					 msecs_to_jiffies(GPON_REARM_RETRY_MS));
-		return;
 	}
-
-	ret = gpon_enable(priv);
-	if (ret)
-		dev_err(priv->dev, "failed to restart GPON: %d\n", ret);
 }
 
 int airoha_gpon_omci_hw_start(void *hw_priv)
@@ -2737,11 +2687,8 @@ int airoha_gpon_omci_hw_start(void *hw_priv)
 		if (!READ_ONCE(priv->optical_active))
 			sfp_upstream_start(priv->sfp_bus);
 	} else {
-		ret = airoha_xpon_tx_rearm(priv->dev, priv->frontend);
-		if (!ret) {
-			WRITE_ONCE(priv->optical_active, true);
-			ret = gpon_enable(priv);
-		}
+		WRITE_ONCE(priv->optical_active, true);
+		ret = gpon_enable(priv);
 		if (ret)
 			WRITE_ONCE(priv->optical_active, false);
 	}
@@ -2843,6 +2790,7 @@ static void gpon_irq_work_fn(struct work_struct *work)
 				 gpon_read(priv, GPON_DBG_DLY),
 				 gpon_read(priv, GPON_DBG_TX_SYNC_OFFSET),
 				 phy_tx_frames, phy_tx_bursts, phy_ret);
+			airoha_xpon_phy_trace_tx_state(priv->phy, "sn-event");
 		}
 
 		if (active & INT_DYING_GASP) {
@@ -2964,10 +2912,6 @@ static int gpon_sfp_module_start(void *upstream)
 
 	/* PHY ready: if we were in emergency stop, stay there. */
 	if (state == GPON_O1_INITIAL) {
-		ret = airoha_xpon_tx_rearm(priv->dev, priv->frontend);
-		if (ret)
-			goto err_inactive;
-
 		ret = gpon_enable(priv);
 	}
 
@@ -4357,6 +4301,7 @@ static const struct airoha_xpon_match_data en7523_xpon_data = {
 	.wan_mode_mask = EN7523_SCU_WAN_MODE_MASK,
 	.gpon_fine_delay = DBG_DLY_FINE_INT_DEFAULT,
 	.gpon_rsp_time_activation = GPON_RSP_TIME_ACT_EN7523,
+	.gpon_idle_gem_threshold = GPON_IDLE_GEM_THLD_EN7523,
 	.en7523_gpon_defaults = true,
 	.gpon_reset_on_start = true,
 };
@@ -4366,6 +4311,7 @@ static const struct airoha_xpon_match_data en751221_xpon_data = {
 	.wan_mode_mask = EN751221_SCU_WAN_MODE_MASK,
 	.gpon_fine_delay = 0x1c,
 	.gpon_rsp_time_activation = GPON_RSP_TIME_ACT_EN751221,
+	.gpon_idle_gem_threshold = GPON_IDLE_GEM_THLD_DEFAULT,
 	.gpon_guard_bits_override = GPON_PHY_GUARD_BIT_NUM_EN751221,
 	.gpon_adjust_rx_delay = true,
 	.mac_irq_via_eth = true,
@@ -4380,7 +4326,7 @@ static const struct airoha_xpon_match_data en7528_xpon_data = {
 	.wan_mode_mask = EN7528_SCU_WAN_MODE_MASK,
 	.gpon_fine_delay = 0x0f,
 	.gpon_rsp_time_activation = GPON_RSP_TIME_ACT_EN7528,
-	.gpon_guard_bits_override = GPON_PHY_GUARD_BIT_NUM,
+	.gpon_idle_gem_threshold = GPON_IDLE_GEM_THLD_DEFAULT,
 	.gpon_reset_dbg_dly = true,
 	.gpon_adjust_rx_delay = true,
 	.mac_irq_via_eth = true,

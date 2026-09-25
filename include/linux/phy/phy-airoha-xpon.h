@@ -41,4 +41,6 @@ int airoha_xpon_phy_set_gpon_oper_state(
 	struct phy *phy, enum airoha_xpon_phy_gpon_oper_state state);
 int airoha_xpon_phy_set_gpon_bit_delay(struct phy *phy, u8 delay);
 
+int airoha_xpon_phy_trace_tx_state(struct phy *phy, const char *reason);
+
 #endif /* __LINUX_PHY_AIROHA_XPON_H */

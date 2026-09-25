@@ -35,6 +35,7 @@ struct airoha_xpon_match_data {
 	u32 wan_mode_mask;
 	u8 gpon_fine_delay;
 	u16 gpon_rsp_time_activation;
+	u16 gpon_idle_gem_threshold;
 	u8 gpon_guard_bits_override;
 	bool en7523_gpon_defaults;
 	bool gpon_reset_dbg_dly;
@@ -292,7 +293,8 @@ struct airoha_xpon_match_data {
 #define GPON_RSP_TIME_ACT_EN7523	0x0577
 #define GPON_RSP_TIME_ACT_EN7528	0x0577
 #define GPON_RSP_TIME_ACT_EN751221	0x058b
-#define GPON_IDLE_GEM_THLD_DEFAULT	0x001A
+#define GPON_IDLE_GEM_THLD_DEFAULT	0x00A0
+#define GPON_IDLE_GEM_THLD_EN7523	0x001A
 
 /* TO1 timer: 10 seconds in O3/O4 without Ranging_Time → return to O2 */
 #define GPON_TO1_MS		10000
