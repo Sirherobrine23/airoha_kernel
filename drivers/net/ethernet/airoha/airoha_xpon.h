@@ -44,6 +44,7 @@ struct airoha_xpon_match_data {
 	bool gpon_adjust_rx_delay;
 	bool gpon_reset_on_start;
 	bool gpon_rearm_tx_on_overhead;
+	bool gpon_runtime_tgen;
 	bool gpon_has_mpi;
 };
 

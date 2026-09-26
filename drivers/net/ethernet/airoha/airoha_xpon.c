@@ -2367,18 +2367,23 @@ static int gpon_enable(struct xpon_priv *priv)
 		if (ret)
 			goto err_stop_phy;
 
-		/*
-		 * EN751221/EN7528 vendor code runs TGEN only after the digital
-		 * PHY is in GPON mode, with TX CDR locked to reference and
-		 * PRBS23 active. Keep TX_DISABLE asserted so the calibration
-		 * pattern never reaches the optical line.
-		 */
-		ret = airoha_xpon_tx_timing_calibrate(priv);
-		if (ret)
-			goto err_stop_phy;
+		if (priv->match_data->gpon_runtime_tgen) {
+			/*
+			 * Run TGEN only on SoCs which explicitly need the late
+			 * calibration. Keep TX_DISABLE asserted so PRBS never
+			 * reaches the optical line.
+			 */
+			ret = airoha_xpon_tx_timing_calibrate(priv);
+			if (ret)
+				goto err_stop_phy;
 
-		airoha_xpon_phy_trace_tx_state(priv->phy,
-					       "post-tgen-calibration");
+			airoha_xpon_phy_trace_tx_state(priv->phy,
+						       "post-tgen-calibration");
+		} else {
+			dev_info(priv->dev,
+				 "preserving frontend-provisioned GPON TX timing\n");
+			airoha_xpon_phy_trace_tx_state(priv->phy, "pre-o2");
+		}
 	} else {
 		dev_info(priv->dev,
 			 "XPON-TRACE TX path: enabling frontend after PHY power-on\n");
@@ -4518,6 +4523,7 @@ static const struct airoha_xpon_match_data en751221_xpon_data = {
 	.gpon_adjust_rx_delay = true,
 	.mac_irq_via_eth = true,
 	.gpon_rearm_tx_on_overhead = true,
+	.gpon_runtime_tgen = true,
 };
 
 /*
