@@ -138,6 +138,7 @@ void en7571_lut_tracking(struct en7571_priv *priv);
 void en7571_cdr(struct en7571_priv *priv, bool enable);
 void en7571_load_tx_cal_data(struct en7571_priv *priv);
 void en7571_tgen_recall(struct en7571_priv *priv);
+int en7571_tgen_calibrate(struct en7571_priv *priv);
 void en7571_set_t0t1_delay(struct en7571_priv *priv, u8 delay);
 void en7571_apd_init(struct en7571_priv *priv);
 void en7571_apd_control(struct en7571_priv *priv);

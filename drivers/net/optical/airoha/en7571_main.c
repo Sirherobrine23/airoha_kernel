@@ -455,6 +455,14 @@ static int en7571_op_tx_trace(struct airoha_lddla *lddla, const char *reason)
 	return 0;
 }
 
+static int en7571_op_tx_timing_calibrate(struct airoha_lddla *lddla)
+{
+	struct en7571_priv *priv =
+		container_of(lddla, struct en7571_priv, lddla);
+
+	return en7571_tgen_calibrate(priv);
+}
+
 static int en7571_op_tx_rearm(struct airoha_lddla *lddla)
 {
 	struct en7571_priv *priv = container_of(lddla, struct en7571_priv, lddla);
@@ -558,6 +566,7 @@ static const struct airoha_lddla_ops en7571_ops = {
 	.rx_power_refresh = en7571_op_rx_power,
 	.diag_show = en7571_op_diag,
 	.tx_rearm = en7571_op_tx_rearm,
+	.tx_timing_calibrate = en7571_op_tx_timing_calibrate,
 	.tx_trace = en7571_op_tx_trace,
 };
 

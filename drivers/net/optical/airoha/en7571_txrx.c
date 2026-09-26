@@ -389,6 +389,150 @@ void en7571_tgen_recall(struct en7571_priv *priv)
 		       EN7571_ERC_ENABLE);
 }
 
+/**
+ * en7571_tgen_calibrate() - run the vendor T0/T1 burst-timing sweep
+ * @priv: EN7571 device
+ *
+ * The caller must put the digital xPON PHY in lock-to-reference mode and
+ * enable PRBS23 before entering this function. This mirrors en7571_TGEN()
+ * without crossing the LDD/LA and digital-PHY driver boundary.
+ */
+int en7571_tgen_calibrate(struct en7571_priv *priv)
+{
+	u32 t0ct1c = lddla_flash_read(&priv->lddla, EN7571_FL_T0CT1C);
+	u8 swept_t0c, swept_t1c;
+	u8 count[2], t0c = 0, t1c = 0;
+	u8 delay;
+	int i, ret;
+
+	if (priv->lddla.pon_mode == EN7571_PON_GPON)
+		delay = EN7571_T1_T0_DELAY_GPON;
+	else if (priv->lddla.pon_mode == EN7571_PON_EPON)
+		delay = EN7571_T1_T0_DELAY_EPON;
+	else
+		return -ENODATA;
+
+	/*
+	 * The digital PHY has already selected PRBS23 and TX lock-to-reference
+	 * at this point. Match the 32-sample method-2 search in en7571_TGEN().
+	 */
+	mdelay(10);
+
+	for (i = 0; i < 32; i++) {
+		ret = lddla_update8(&priv->lddla, EN7571_T1DELAY + 3,
+				    EN7571_ERC_ENABLE_MASK, 0);
+		if (ret)
+			goto restore_erc;
+		udelay(2);
+
+		ret = lddla_wr8(&priv->lddla, EN7571_T1DELAY,
+				 EN7571_T1_T0_DELAY_SETTING1);
+		if (ret)
+			goto restore_erc;
+		udelay(2);
+
+		ret = lddla_wr8(&priv->lddla, EN7571_T1DELAY + 1,
+				 EN7571_TIMER_RESET_VALUE);
+		if (ret)
+			goto restore_erc;
+
+		ret = lddla_wr8(&priv->lddla, EN7571_T1DELAY + 2,
+				 EN7571_TIMER_RESET_VALUE);
+		if (ret)
+			goto restore_erc;
+		udelay(2);
+
+		ret = lddla_update8(&priv->lddla, EN7571_T1DELAY + 3,
+				    EN7571_TGEN_RESET_MASK,
+				    EN7571_TGEN_RESET_T1T0);
+		if (ret)
+			goto restore_erc;
+		udelay(2);
+
+		ret = lddla_update8(&priv->lddla, EN7571_T1DELAY + 3,
+				    EN7571_TGEN_RESET_MASK, 0);
+		if (ret)
+			goto restore_erc;
+		udelay(2);
+
+		ret = lddla_update8(&priv->lddla, EN7571_T1DELAY + 3,
+				    EN7571_TGEN_METHOD2_MASK,
+				    EN7571_TGEN_METHOD2_ENABLE);
+		if (ret)
+			goto restore_erc;
+		udelay(2);
+
+		ret = lddla_update8(&priv->lddla, EN7571_T1DELAY + 3,
+				    EN7571_TGEN_METHOD2_MASK, 0);
+		if (ret)
+			goto restore_erc;
+
+		ret = lddla_rd(&priv->lddla, EN7571_T0C, count,
+			       sizeof(count));
+		if (ret)
+			goto restore_erc;
+
+		t0c = max(t0c, count[0]);
+		t1c = max(t1c, count[1]);
+	}
+
+	mdelay(10);
+	swept_t0c = t0c;
+	swept_t1c = t1c;
+
+	ret = lddla_wr8(&priv->lddla, EN7571_T1DELAY, delay);
+	if (ret)
+		goto restore_erc;
+
+	/*
+	 * The production calibration takes precedence over the runtime sweep,
+	 * matching the vendor driver.
+	 */
+	if (t0ct1c != EN7571_FLASH_ERASED) {
+		t0c = (t0ct1c >> 16) & 0xff;
+		t1c = (t0ct1c >> 24) & 0xff;
+	}
+
+	ret = lddla_wr8(&priv->lddla, EN7571_T1DELAY + 1, t1c);
+	if (ret)
+		goto restore_erc;
+
+	ret = lddla_wr8(&priv->lddla, EN7571_T1DELAY + 2, t0c);
+	if (ret)
+		goto restore_erc;
+	mdelay(10);
+
+	ret = lddla_update8(&priv->lddla, EN7571_T1DELAY + 3,
+			    EN7571_TGEN_RESET_MASK,
+			    EN7571_TGEN_RESET_T1T0);
+	if (ret)
+		goto restore_erc;
+	mdelay(10);
+
+	ret = lddla_update8(&priv->lddla, EN7571_T1DELAY + 3,
+			    EN7571_TGEN_RESET_MASK, 0);
+	if (ret)
+		goto restore_erc;
+	mdelay(10);
+
+	ret = lddla_update8(&priv->lddla, EN7571_T1DELAY + 3,
+			    EN7571_ERC_ENABLE_MASK,
+			    EN7571_ERC_ENABLE);
+	if (ret)
+		return ret;
+
+	dev_info(priv->lddla.dev,
+		 "EN7571 TGEN calibrated: swept t0c=%#04x t1c=%#04x final t0c=%#04x t1c=%#04x delay=%#04x\n",
+		 swept_t0c, swept_t1c, t0c, t1c, delay);
+
+	return 0;
+
+restore_erc:
+	lddla_update8(&priv->lddla, EN7571_T1DELAY + 3,
+		      EN7571_ERC_ENABLE_MASK, EN7571_ERC_ENABLE);
+	return ret;
+}
+
 /* --- APD reverse-bias control --- */
 
 void en7571_apd_init(struct en7571_priv *priv)

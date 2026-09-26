@@ -555,6 +555,30 @@ int optical_frontend_tx_rearm(struct optical_frontend *frontend)
 }
 EXPORT_SYMBOL_GPL(optical_frontend_tx_rearm);
 
+int optical_frontend_tx_timing_calibrate(struct optical_frontend *frontend)
+{
+	int ret;
+
+	if (!frontend)
+		return -EINVAL;
+	if (!frontend->ops->tx_timing_calibrate)
+		return -EOPNOTSUPP;
+
+	mutex_lock(&frontend->op_lock);
+	dev_info(&frontend->dev,
+		 "XPON-TRACE frontend TX timing calibration begin: provider=%s\n",
+		 frontend->provider ? dev_name(frontend->provider) : "none");
+	ret = frontend->ops->tx_timing_calibrate(frontend);
+	dev_info(&frontend->dev,
+		 "XPON-TRACE frontend TX timing calibration end: ret=%d\n",
+		 ret);
+	frontend->telemetry_cache_valid = false;
+	mutex_unlock(&frontend->op_lock);
+
+	return ret;
+}
+EXPORT_SYMBOL_GPL(optical_frontend_tx_timing_calibrate);
+
 int optical_frontend_tx_trace(struct optical_frontend *frontend,
 			      const char *reason)
 {

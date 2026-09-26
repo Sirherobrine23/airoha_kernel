@@ -339,6 +339,18 @@ static u16 en7570_op_rx_power(struct airoha_lddla *lddla)
 	return en7570_rx_power_ddmi(container_of(lddla, struct en7570_priv, lddla));
 }
 
+static int en7570_op_tx_timing_calibrate(struct airoha_lddla *lddla)
+{
+	struct en7570_priv *priv =
+		container_of(lddla, struct en7570_priv, lddla);
+
+	if (lddla->pon_mode != AIROHA_PON_GPON &&
+	    lddla->pon_mode != AIROHA_PON_EPON)
+		return -ENODATA;
+
+	return en7570_tgen(priv, lddla->pon_mode);
+}
+
 static int en7570_op_tx_rearm(struct airoha_lddla *lddla)
 {
 	u32 safe_before = 0, safe_after = 0, rogue = 0;
@@ -404,6 +416,7 @@ static const struct airoha_lddla_ops en7570_ops = {
 	.rx_power_refresh = en7570_op_rx_power,
 	.diag_show = en7570_op_diag,
 	.tx_rearm = en7570_op_tx_rearm,
+	.tx_timing_calibrate = en7570_op_tx_timing_calibrate,
 };
 
 static int en7570_lut_show(struct seq_file *s, void *unused)

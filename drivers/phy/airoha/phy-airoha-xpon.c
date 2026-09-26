@@ -42,6 +42,7 @@
 #define ECONET_XPON_TDCSET2		0x2d
 #define ECONET_XPON_SETTING_EN757X	0x10f
 
+#define XPON_PHYSET1			0x0100
 #define XPON_PHYFWREADY			0x0104
 #define XPON_PHYSET3			0x0108
 #define XPON_PHYSET5			0x0110
@@ -60,6 +61,8 @@
 #define XPON_GPON_TX_COUNTER_CTRL	0x0424
 #define XPON_GPON_TX_FRAME_COUNTER	0x0434
 #define XPON_GPON_TX_BURST_COUNTER	0x0438
+#define XPON_BISTCTL_LOOPBACK_SEL	0x04a0
+#define XPON_BISTCTL_PRBS_TX_EN		0x04a4
 #define XPON_TRANS_STATUS		0x05e0
 #define XPON_INT_ENABLE			0x05f0
 #define XPON_INT_STATUS_CLR		0x05f4
@@ -85,6 +88,7 @@
 #define XPON_PMA_INT_ENABLE		0x4804
 #define XPON_PMA_INT_STATUS_CLR		0x4808
 
+#define XPON_PHYSET1_TX_LOCK_REF	BIT(24)
 #define XPON_PHYFWREADY_READY		BIT(0)
 #define XPON_PHYSET3_PLL_RST		BIT(31)
 #define XPON_PHYSET3_COUNTER_RST	BIT(27)
@@ -113,6 +117,7 @@
 
 #define XPON_GPON_TX_ENABLE_PATTERN	0xaa
 #define XPON_GPON_TX_COUNTER_ENABLE	BIT(3)
+#define XPON_BIST_PRBS23		0x06
 
 #define ECONET_XPON_COUNTER_ENABLE_MASK	GENMASK(2, 0)
 #define ECONET_XPON_COUNTER_CLEAR_RX0	BIT(0)
@@ -301,6 +306,45 @@ int airoha_xpon_phy_get_gpon_tx_counters(struct phy *phy,
 	return 0;
 }
 EXPORT_SYMBOL_GPL(airoha_xpon_phy_get_gpon_tx_counters);
+
+int airoha_xpon_phy_set_tx_calibration_mode(struct phy *phy, bool enable)
+{
+	struct airoha_xpon_phy *priv;
+	int ret;
+
+	ret = airoha_xpon_phy_get_active_gpon(phy, &priv);
+	if (ret)
+		return ret;
+
+	/*
+	 * Match the vendor 1G TGEN sequence used by EN7570/EN7571.
+	 * Calibration locks the TX CDR to the reference clock and feeds
+	 * PRBS23 into the burst timing detector. Normal operation restores
+	 * idle data and lock-to-data.
+	 */
+	if (enable) {
+		airoha_xpon_phy_rmw(priv, XPON_PHYSET1,
+				     XPON_PHYSET1_TX_LOCK_REF,
+				     XPON_PHYSET1_TX_LOCK_REF);
+		airoha_xpon_phy_write(priv, XPON_BISTCTL_LOOPBACK_SEL,
+				      XPON_BIST_PRBS23);
+		airoha_xpon_phy_write(priv, XPON_BISTCTL_PRBS_TX_EN, 1);
+	} else {
+		airoha_xpon_phy_write(priv, XPON_BISTCTL_PRBS_TX_EN, 0);
+		airoha_xpon_phy_write(priv, XPON_BISTCTL_LOOPBACK_SEL, 0);
+		airoha_xpon_phy_rmw(priv, XPON_PHYSET1,
+				     XPON_PHYSET1_TX_LOCK_REF, 0);
+	}
+
+	dev_info(priv->dev,
+		 "XPON-TRACE TX calibration mode: enable=%u physet1=%#010x loopback=%#010x prbs=%#010x\n",
+		 enable, airoha_xpon_phy_read(priv, XPON_PHYSET1),
+		 airoha_xpon_phy_read(priv, XPON_BISTCTL_LOOPBACK_SEL),
+		 airoha_xpon_phy_read(priv, XPON_BISTCTL_PRBS_TX_EN));
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(airoha_xpon_phy_set_tx_calibration_mode);
 
 int airoha_xpon_phy_get_gpon_fec_status(struct phy *phy,
 					bool *downstream, bool *upstream)

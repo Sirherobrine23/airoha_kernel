@@ -592,6 +592,31 @@ static int airoha_lddla_frontend_tx_rearm(struct optical_frontend *frontend)
 }
 
 static int
+airoha_lddla_frontend_tx_timing_calibrate(struct optical_frontend *frontend)
+{
+	struct airoha_lddla *lddla = optical_frontend_get_drvdata(frontend);
+	int ret;
+
+	if (!lddla || !lddla->ops->tx_timing_calibrate)
+		return -EOPNOTSUPP;
+
+	ret = lddla_lock(lddla);
+	if (ret)
+		return ret;
+
+	dev_info(lddla->dev,
+		 "XPON-TRACE LDDLA TX timing calibration begin: chip=%s pon_mode=%u\n",
+		 lddla->ops->name, lddla->pon_mode);
+	ret = lddla->ops->tx_timing_calibrate(lddla);
+	dev_info(lddla->dev,
+		 "XPON-TRACE LDDLA TX timing calibration end: chip=%s ret=%d\n",
+		 lddla->ops->name, ret);
+	mutex_unlock(&lddla->lock);
+
+	return ret;
+}
+
+static int
 airoha_lddla_frontend_tx_trace(struct optical_frontend *frontend,
 			       const char *reason)
 {
@@ -614,6 +639,7 @@ static const struct optical_frontend_ops airoha_lddla_frontend_ops = {
 	.get_telemetry = airoha_lddla_frontend_get_telemetry,
 	.get_state = airoha_lddla_frontend_get_state,
 	.tx_rearm = airoha_lddla_frontend_tx_rearm,
+	.tx_timing_calibrate = airoha_lddla_frontend_tx_timing_calibrate,
 	.tx_trace = airoha_lddla_frontend_tx_trace,
 };
 

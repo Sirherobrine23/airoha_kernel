@@ -63,6 +63,36 @@ static const u8 airoha_default_vendor_id[4] = {'M', 'T', 'K', 'G'};
 
 static inline u32 gpon_read(struct xpon_priv *priv, u32 reg);
 
+static int airoha_xpon_tx_timing_calibrate(struct xpon_priv *priv)
+{
+	int restore_ret, ret;
+
+	if (!priv->frontend)
+		return 0;
+
+	ret = airoha_xpon_phy_set_tx_calibration_mode(priv->phy, true);
+	if (ret)
+		return ret;
+
+	ret = optical_frontend_tx_timing_calibrate(priv->frontend);
+	if (ret == -EOPNOTSUPP)
+		ret = 0;
+
+	restore_ret =
+		airoha_xpon_phy_set_tx_calibration_mode(priv->phy, false);
+	if (!ret && restore_ret)
+		ret = restore_ret;
+
+	if (ret)
+		dev_err(priv->dev,
+			"xPON TX timing calibration failed: %d\n", ret);
+	else
+		dev_info(priv->dev,
+			 "xPON TX timing calibration completed\n");
+
+	return ret;
+}
+
 static int airoha_xpon_tx_rearm(struct device *dev,
 				struct optical_frontend *frontend)
 {
@@ -2336,6 +2366,19 @@ static int gpon_enable(struct xpon_priv *priv)
 		ret = airoha_xpon_tx_enable(priv, false);
 		if (ret)
 			goto err_stop_phy;
+
+		/*
+		 * EN751221/EN7528 vendor code runs TGEN only after the digital
+		 * PHY is in GPON mode, with TX CDR locked to reference and
+		 * PRBS23 active. Keep TX_DISABLE asserted so the calibration
+		 * pattern never reaches the optical line.
+		 */
+		ret = airoha_xpon_tx_timing_calibrate(priv);
+		if (ret)
+			goto err_stop_phy;
+
+		airoha_xpon_phy_trace_tx_state(priv->phy,
+					       "post-tgen-calibration");
 	} else {
 		dev_info(priv->dev,
 			 "XPON-TRACE TX path: enabling frontend after PHY power-on\n");
