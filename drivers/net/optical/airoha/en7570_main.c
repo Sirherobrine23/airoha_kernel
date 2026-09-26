@@ -341,6 +341,7 @@ static u16 en7570_op_rx_power(struct airoha_lddla *lddla)
 
 static int en7570_op_tx_rearm(struct airoha_lddla *lddla)
 {
+	struct en7570_priv *priv = container_of(lddla, struct en7570_priv, lddla);
 	u32 safe_before = 0, safe_after = 0, rogue = 0;
 	int ret;
 
@@ -348,11 +349,35 @@ static int en7570_op_tx_rearm(struct airoha_lddla *lddla)
 	    lddla->pon_mode != AIROHA_PON_EPON)
 		return -ENODATA;
 
+	/*
+	 * As with EN7571, the vendor sequence performs TGEN and TxSD setup only
+	 * after the companion digital PHY is in its PON mode.  The split Linux
+	 * drivers probe in the opposite order, so repeat that mode-sensitive
+	 * calibration once on the first O2 -> O3 rearm.  The production T0C/T1C
+	 * values loaded by en7570_tgen() remain authoritative when present.
+	 */
+	if (!priv->tx_runtime_calibrated) {
+		dev_info(lddla->dev,
+			 "EN7570 runtime TX calibration after digital PHY start\n");
+		ret = en7570_tgen(priv, lddla->pon_mode);
+		if (ret) {
+			dev_warn(lddla->dev,
+				 "EN7570 runtime TGEN calibration failed: %d\n",
+				 ret);
+			return ret;
+		}
+		en7570_tx_sd_level(priv);
+		priv->tx_runtime_calibrated = true;
+	}
+
 	lddla_rd32(lddla, EN7570_SAFE_PROTECT, &safe_before);
 	lddla_rd32(lddla, EN7570_ROGUE_ONU_DET_CTRL, &rogue);
 	dev_info(lddla->dev,
 		 "XPON-TRACE EN7570 rearm before: safe=%#010x rogue=%#010x alarm=%#x mode=%u\n",
 		 safe_before, rogue, lddla->alarm, lddla->pon_mode);
+
+	/* Clear a stale rogue-ONU latch before rearming the safe circuit. */
+	en7570_rogue_clear(priv);
 
 	ret = lddla_update8(lddla, EN7570_SAFE_PROTECT + 1,
 			    EN7570_SAFE_CIRCUIT_MASK,
