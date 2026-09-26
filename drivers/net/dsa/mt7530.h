@@ -37,6 +37,10 @@ enum mt753x_id {
 #define SYSC_REG_RSTCTRL		0x34
 #define  RESET_MCM			BIT(2)
 
+/* Register for EN751221 hardware PHY polling */
+#define EN751221_PHY_POLL_CTRL		0x7018
+#define  EN751221_PHY_AP_EN		GENMASK(30, 24)
+
 /* Register for ARL global control */
 #define MT753X_AGC			0xc
 #define  LOCAL_EN			BIT(7)

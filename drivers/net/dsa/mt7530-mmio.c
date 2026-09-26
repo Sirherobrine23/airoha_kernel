@@ -11,6 +11,24 @@
 
 #include "mt7530.h"
 
+static int en751221_quiesce_hw_poll(struct mt7530_priv *priv)
+{
+	unsigned int value;
+	int ret;
+
+	ret = regmap_clear_bits(priv->regmap, EN751221_PHY_POLL_CTRL,
+				EN751221_PHY_AP_EN);
+	if (ret)
+		return ret;
+	/* Let an already-issued polling transaction finish before MDIO scan. */
+	usleep_range(1000, 2000);
+	ret = regmap_read(priv->regmap, EN751221_PHY_POLL_CTRL, &value);
+	if (ret)
+		return ret;
+
+	return value & EN751221_PHY_AP_EN ? -EIO : 0;
+}
+
 static const struct of_device_id mt7988_of_match[] = {
 	{ .compatible = "airoha,en7523-switch", .data = &mt753x_table[ID_EN7523], },
 	{ .compatible = "airoha,an7583-switch", .data = &mt753x_table[ID_AN7583], },
@@ -79,6 +97,13 @@ mt7988_probe(struct platform_device *pdev)
 			return ret;
 
 		usleep_range(20, 50);
+
+		/* Stop the independent MDIO master before the companion can probe.
+		 * A software bus mutex cannot serialize hardware PHY polling.
+		 */
+		ret = en751221_quiesce_hw_poll(priv);
+		if (ret)
+			return dev_err_probe(priv->dev, ret, "cannot stop hardware MDIO polling\n");
 
 		ret = mt7530_setup_mdio(priv);
 		if (ret)
