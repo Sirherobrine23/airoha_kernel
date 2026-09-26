@@ -1576,8 +1576,8 @@ static void econet_init_en751221_qdma(struct airoha_qdma_mips *qdma)
 		val |= FIELD_PREP(EN751221_PSE_BUF_CH_THR_MASK, 16) |
 		       FIELD_PREP(EN751221_PSE_BUF_TOTAL_THR_MASK, 128);
 	} else {
-		val |= FIELD_PREP(EN751221_PSE_BUF_CH_THR_MASK, 20) |
-		       FIELD_PREP(EN751221_PSE_BUF_TOTAL_THR_MASK, 192);
+		val |= FIELD_PREP(EN751221_PSE_BUF_CH_THR_MASK, 32) |
+		       FIELD_PREP(EN751221_PSE_BUF_TOTAL_THR_MASK, 128);
 	}
 	econet_wreg(val, &qdma->regs->buf_usage_cfg);
 
@@ -1628,8 +1628,9 @@ static void econet_init_en751221_qdma(struct airoha_qdma_mips *qdma)
 		queue_max = 204;
 	} else if (qdma->fwd_buf_size == 2048 && qdma->qdma->id == 1 &&
 		   qdma->num_fwd_descs == 4096) {
-		total_min = 2048;
+		total_min = 819;
 		total_max = 15360;
+		channel_min = 160;
 		channel_max = 15360;
 		queue_max = 819;
 	}
