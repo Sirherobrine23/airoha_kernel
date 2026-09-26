@@ -530,7 +530,7 @@ static void airoha_xpon_phy_dump(struct airoha_xpon_phy *priv,
 }
 
 static void
-airoha_xpon_phy_set_tx_enabled(struct airoha_xpon_phy *priv, bool enable)
+airoha_xpon_phy_set_tx_gpio(struct airoha_xpon_phy *priv, bool enable)
 {
 	if (!priv->tx_disable_gpio)
 		return;
@@ -538,6 +538,22 @@ airoha_xpon_phy_set_tx_enabled(struct airoha_xpon_phy *priv, bool enable)
 	/* TX_DISABLE is described using its asserted (disable) polarity. */
 	gpiod_set_value_cansleep(priv->tx_disable_gpio, !enable);
 }
+
+int airoha_xpon_phy_set_tx_enable(struct phy *phy, bool enable)
+{
+	struct airoha_xpon_phy *priv;
+
+	if (!phy)
+		return -EINVAL;
+
+	priv = phy_get_drvdata(phy);
+	if (!priv)
+		return -ENODEV;
+
+	airoha_xpon_phy_set_tx_gpio(priv, enable);
+	return 0;
+}
+EXPORT_SYMBOL_GPL(airoha_xpon_phy_set_tx_enable);
 
 static void
 airoha_xpon_phy_set_vcc_enabled(struct airoha_xpon_phy *priv, bool enable)
@@ -1145,7 +1161,7 @@ static int airoha_xpon_phy_power_on(struct phy *phy)
 	 * the transmitter is configured.
 	 */
 	airoha_xpon_phy_set_vcc_enabled(priv, true);
-	airoha_xpon_phy_set_tx_enabled(priv, false);
+	airoha_xpon_phy_set_tx_gpio(priv, false);
 
 	dev_info(priv->dev, "configuring %s xPON PHY\n",
 		 priv->submode == AIROHA_XPON_PHY_SUBMODE_GPON ?
@@ -1155,7 +1171,7 @@ static int airoha_xpon_phy_power_on(struct phy *phy)
 	if (ret)
 		goto err_power;
 
-	airoha_xpon_phy_set_tx_enabled(priv, true);
+	airoha_xpon_phy_set_tx_gpio(priv, true);
 
 	WRITE_ONCE(priv->powered, true);
 	priv->ready_reported = false;
@@ -1183,7 +1199,7 @@ static int airoha_xpon_phy_power_on(struct phy *phy)
 	return 0;
 
 err_power:
-	airoha_xpon_phy_set_tx_enabled(priv, false);
+	airoha_xpon_phy_set_tx_gpio(priv, false);
 	airoha_xpon_phy_set_vcc_enabled(priv, false);
 	return ret;
 }
@@ -1200,7 +1216,7 @@ static int airoha_xpon_phy_power_off(struct phy *phy)
 	priv->ready_reported = false;
 
 	/* Block optical TX before quiescing the digital PHY. */
-	airoha_xpon_phy_set_tx_enabled(priv, false);
+	airoha_xpon_phy_set_tx_gpio(priv, false);
 
 	if (priv->soc->manages_fw_ready)
 		airoha_xpon_phy_rmw(priv, XPON_PHYFWREADY,

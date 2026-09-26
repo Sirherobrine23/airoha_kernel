@@ -82,23 +82,50 @@ static int airoha_xpon_tx_rearm(struct device *dev,
 	return ret;
 }
 
-static int airoha_xpon_tx_enable(struct device *dev,
-				 struct optical_frontend *frontend,
-				 bool enable)
+static int airoha_xpon_tx_enable(struct xpon_priv *priv, bool enable)
 {
 	int ret;
 
-	if (!frontend)
-		return 0;
+	/*
+	 * The vendor phy_trans_power_switch() controls the board TX_DISABLE
+	 * signal independently of the LDD/LA safety circuit. TX_DISABLE belongs
+	 * to the digital xPON PHY in DT, so always gate it here even when the
+	 * optical frontend has no provider-specific ->tx_enable() callback.
+	 *
+	 * Disable the physical transmitter first. On enable, program any
+	 * provider-local gate first and release TX_DISABLE last.
+	 */
+	if (!enable) {
+		ret = airoha_xpon_phy_set_tx_enable(priv->phy, false);
+		if (ret) {
+			dev_err(priv->dev,
+				"failed to assert xPON TX_DISABLE: %d\n", ret);
+			return ret;
+		}
+	}
 
-	ret = optical_frontend_tx_enable(frontend, enable);
-	if (ret == -EOPNOTSUPP)
-		return 0;
-	if (ret)
-		dev_err(dev, "failed to %s optical transmitter: %d\n",
-			enable ? "enable" : "disable", ret);
+	if (priv->frontend) {
+		ret = optical_frontend_tx_enable(priv->frontend, enable);
+		if (ret != -EOPNOTSUPP && ret) {
+			dev_err(priv->dev,
+				"failed to %s optical frontend transmitter: %d\n",
+				enable ? "enable" : "disable", ret);
+			return ret;
+		}
+	}
 
-	return ret;
+	if (enable) {
+		ret = airoha_xpon_phy_set_tx_enable(priv->phy, true);
+		if (ret) {
+			if (priv->frontend)
+				optical_frontend_tx_enable(priv->frontend, false);
+			dev_err(priv->dev,
+				"failed to deassert xPON TX_DISABLE: %d\n", ret);
+			return ret;
+		}
+	}
+
+	return 0;
 }
 
 static const char *airoha_xpon_mode_name(enum airoha_xpon_mode mode)
@@ -610,7 +637,8 @@ static int gpon_prepare_hardware(struct xpon_priv *priv)
 
 static void gpon_adjust_mac_rx_delay(struct xpon_priv *priv)
 {
-	u32 dbg_dly_before, dbg_dly_after, fixed, probe, rsp_time, rx_delay;
+	u32 dbg_dly_before, dbg_dly_after, fixed, probe, rsp_base, rsp_time;
+	u32 rx_delay;
 
 	if (!priv->match_data->gpon_adjust_rx_delay) {
 		dev_info(priv->dev,
@@ -624,16 +652,18 @@ static void gpon_adjust_mac_rx_delay(struct xpon_priv *priv)
 	 * Match modify_mac_internal_delay() from the vendor xpon_1g stack.
 	 * EN7523 explicitly skips this path; EN751221/EN7521 and EN7528 use
 	 * the GPON debug probe to measure RX delay and force half of it into
-	 * DBG_DLY.  The vendor also compensates response times above 0x577:
-	 * four delay units for every extra response-time unit.
+	 * DBG_DLY. The vendor also compensates response times above the
+	 * generation-specific activation response time: four delay units for
+	 * every extra response-time unit.
 	 */
 	gpon_write(priv, GPON_DBG_PROBE_CTRL, DBG_PROBE_RX_DELAY_SEL);
 	probe = gpon_read(priv, GPON_DBG_PROBE_HIGH32);
 	rx_delay = FIELD_GET(DBG_PROBE_RX_DELAY_MASK, probe);
 	rsp_time = gpon_read(priv, GPON_RSP_TIME) & 0xffff;
+	rsp_base = priv->match_data->gpon_rsp_time_activation;
 	fixed = rx_delay / 2;
-	if (rsp_time > GPON_RSP_TIME_ACT_EN7523)
-		fixed += 4 * (rsp_time - GPON_RSP_TIME_ACT_EN7523);
+	if (rsp_time > rsp_base)
+		fixed += 4 * (rsp_time - rsp_base);
 
 	/* The hardware field is only 12 bits; keep diagnostics deterministic. */
 	fixed &= FIELD_MAX(DBG_DLY_FIX_PHY_RX_DLY_MASK);
@@ -1488,7 +1518,7 @@ static void gpon_cb_set_overhead(void *hw_priv,
 	if (priv->match_data->gpon_rearm_tx_on_overhead) {
 		dev_info(priv->dev,
 			 "XPON-TRACE TX path: enabling frontend for GPON O3\n");
-		ret = airoha_xpon_tx_enable(priv->dev, priv->frontend, true);
+		ret = airoha_xpon_tx_enable(priv, true);
 		if (ret) {
 			dev_warn(priv->dev,
 				 "failed to enable optical transmitter for GPON O3: %d\n",
@@ -1503,7 +1533,7 @@ static void gpon_cb_set_overhead(void *hw_priv,
 			dev_warn(priv->dev,
 				 "failed to rearm optical transmitter for GPON O3: %d\n",
 				 ret);
-			airoha_xpon_tx_enable(priv->dev, priv->frontend, false);
+			airoha_xpon_tx_enable(priv, false);
 			return;
 		}
 	}
@@ -2136,6 +2166,13 @@ static void gpon_cb_state_changed(void *hw_priv, enum gpon_state state)
 
 	switch (state) {
 	case GPON_O2_STANDBY:
+		if (priv->match_data->gpon_rearm_tx_on_overhead) {
+			ret = airoha_xpon_tx_enable(priv, false);
+			if (ret)
+				dev_warn(priv->dev,
+					 "failed to disable optical transmitter in GPON O2: %d\n",
+					 ret);
+		}
 		/*
 		 * Match the stock SDK for this generation: 0x058b is the
 		 * reset/O1 value, and activation starts from O2 with the
@@ -2293,10 +2330,16 @@ static int gpon_enable(struct xpon_priv *priv)
 	 * BEN remains under control of the digital xPON PHY and gates each
 	 * individual GPON burst.
 	 */
-	if (!priv->match_data->gpon_rearm_tx_on_overhead) {
+	if (priv->match_data->gpon_rearm_tx_on_overhead) {
+		dev_info(priv->dev,
+			 "XPON-TRACE TX path: holding transmitter disabled during GPON O2\n");
+		ret = airoha_xpon_tx_enable(priv, false);
+		if (ret)
+			goto err_stop_phy;
+	} else {
 		dev_info(priv->dev,
 			 "XPON-TRACE TX path: enabling frontend after PHY power-on\n");
-		ret = airoha_xpon_tx_enable(priv->dev, priv->frontend, true);
+		ret = airoha_xpon_tx_enable(priv, true);
 		if (ret)
 			goto err_stop_phy;
 		dev_info(priv->dev,
@@ -2379,14 +2422,14 @@ static int gpon_enable(struct xpon_priv *priv)
 	return 0;
 
 err_stop_phy:
-	airoha_xpon_tx_enable(priv->dev, priv->frontend, false);
+	airoha_xpon_tx_enable(priv, false);
 	airoha_xpon_phy_stop(priv->dev, priv->phy,
 			     AIROHA_XPON_MODE_GPON,
 			     &priv->phy_initialized,
 			     &priv->phy_powered);
 	return ret;
 err_disable_frontend:
-	airoha_xpon_tx_enable(priv->dev, priv->frontend, false);
+	airoha_xpon_tx_enable(priv, false);
 	return ret;
 }
 
@@ -2397,7 +2440,7 @@ static void gpon_disable(struct xpon_priv *priv)
 	bool omci_reset = false;
 	int ret;
 
-	airoha_xpon_tx_enable(priv->dev, priv->frontend, false);
+	airoha_xpon_tx_enable(priv, false);
 
 	if (!mac_enabled && !phy_active)
 		goto reset_session;
@@ -3648,7 +3691,7 @@ static int epon_enable(struct xpon_priv *priv)
 		goto err_stop_phy;
 	}
 
-	ret = airoha_xpon_tx_enable(priv->dev, priv->frontend, true);
+	ret = airoha_xpon_tx_enable(priv, true);
 	if (ret)
 		goto err_disable_datapath;
 
@@ -3672,12 +3715,12 @@ static int epon_enable(struct xpon_priv *priv)
 	return 0;
 
 err_disable_datapath:
-	airoha_xpon_tx_enable(priv->dev, priv->frontend, false);
+	airoha_xpon_tx_enable(priv, false);
 	airoha_xpon_set_fe_datapath(priv->dev, priv->gdm_dev,
 				    AIROHA_XPON_MODE_EPON, false);
 	goto err_stop_phy_only;
 err_stop_phy:
-	airoha_xpon_tx_enable(priv->dev, priv->frontend, false);
+	airoha_xpon_tx_enable(priv, false);
 err_stop_phy_only:
 	airoha_xpon_phy_stop(priv->dev, priv->phy,
 			     AIROHA_XPON_MODE_EPON,
@@ -3685,7 +3728,7 @@ err_stop_phy_only:
 			     &priv->phy_powered);
 	return ret;
 err_disable_frontend:
-	airoha_xpon_tx_enable(priv->dev, priv->frontend, false);
+	airoha_xpon_tx_enable(priv, false);
 	return ret;
 }
 
@@ -3693,7 +3736,7 @@ static void epon_disable(struct xpon_priv *priv)
 {
 	int idx, ret;
 
-	airoha_xpon_tx_enable(priv->dev, priv->frontend, false);
+	airoha_xpon_tx_enable(priv, false);
 
 	if (!READ_ONCE(priv->mac_enabled))
 		return;
@@ -4389,7 +4432,7 @@ static void airoha_xpon_remove(struct platform_device *pdev)
 		/* Defensive fallback for a provider that failed to stop cleanly. */
 		gpon_disable(priv);
 	} else if (airoha_xpon_is_gpon(priv)) {
-		airoha_xpon_tx_enable(priv->dev, priv->frontend, false);
+		airoha_xpon_tx_enable(priv, false);
 		cancel_work_sync(&priv->irq_work);
 		cancel_delayed_work_sync(&priv->to1_work);
 		cancel_delayed_work_sync(&priv->to2_work);
