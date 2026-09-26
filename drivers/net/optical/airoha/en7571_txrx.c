@@ -103,21 +103,17 @@ void en7571_burst_ctrl(struct en7571_priv *priv)
 }
 
 /*
- * Link-register setup.  On rev-2 silicon, enabling the link disables the MPDH
- * step (and vice-versa), asserts burst-control and sets the HW KT select;
- * earlier silicon only toggles the HW KT select.
+ * Link-register setup.  The generic vendor EN7571 driver only controls the
+ * MPDH step here on revision 2.  Leave TGEN and burst control untouched.
  */
 void en7571_link_reg(struct en7571_priv *priv, bool enable)
 {
 	if (priv->ver == 2) {
 		/*
-		 * Match xpon_en757x/v1: rev-2 controls MPDH, TGEN and the
-		 * burst gate here, but leaves the HW-KT select cleared.
-		 * Temperature compensation is handled by the software KT loop.
+		 * Do not modify T1DELAY here.  GPON TGEN already programmed
+		 * the production delay and the vendor rev-2 path preserves it.
 		 */
 		en7571_mpdh_stepsize(priv, !enable);
-		en7571_t1delay_setting(priv, !enable);
-		en7571_burst_ctrl(priv);
 	} else {
 		en7571_hwkt(priv, enable);
 		en7571_t1delay_setting(priv, !enable);
