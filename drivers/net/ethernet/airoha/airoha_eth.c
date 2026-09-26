@@ -1502,8 +1502,12 @@ static int econet_qdma_init_hfwd(struct airoha_qdma_mips *qdma)
 		 * qdma1-buf region exists, otherwise use a conservative fallback.
 		 */
 		if (airoha_is(qdma->qdma->eth, econet_en751221) && qdma->qdma->id == 1 &&
-		    num_desc > 256)
+		    num_desc > 256) {
+			dev_warn(qdma->qdma->eth->dev,
+				 "no %s memory-region, using %d instead of %d hw forwarding descriptors; bursty upstream traffic may be dropped\n",
+				 name, 256, num_desc);
 			num_desc = 256;
+		}
 
 		size = buf_size * num_desc;
 		if (!dmam_alloc_coherent(qdma->qdma->eth->dev, size, &dma_addr,
