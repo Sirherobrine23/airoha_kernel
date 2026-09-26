@@ -42,6 +42,8 @@ struct airoha_xpon_match_data {
 	bool mac_irq_via_eth;
 	bool gpon_adjust_rx_delay;
 	bool gpon_reset_on_start;
+	bool gpon_rearm_tx_on_overhead;
+	bool gpon_has_mpi;
 };
 
 
@@ -260,6 +262,10 @@ struct airoha_xpon_match_data {
 /* G_MBI_MPI_STOP */
 #define MBI_RX_STOP		BIT(0)
 #define MBI_TX_STOP		BIT(8)
+#define MPI_RX_STOP		BIT(16)
+#define MPI_TX_STOP		BIT(24)
+#define MPI_RX_STOP_DONE	BIT(30)
+#define MPI_TX_STOP_DONE	BIT(31)
 
 /* DBG_DLY */
 #define DBG_DLY_PHY_RX_DLY_SEL		BIT(31)

@@ -39,8 +39,8 @@
 #define EN7523_SCU_WAN_MODE_EPON	0x01
 #define EN7523_SCU_IOMUX_CTRL_3		0x218
 #define EN7523_SCU_IOMUX_PON_EN		BIT(0)
-#define EN7528_XPON_TDCSET2		0x2d
-#define EN7528_XPON_SETTING_EN7571	0x10f
+#define ECONET_XPON_TDCSET2		0x2d
+#define ECONET_XPON_SETTING_EN757X	0x10f
 
 #define XPON_PHYFWREADY			0x0104
 #define XPON_PHYSET3			0x0108
@@ -803,7 +803,7 @@ static int airoha_en7528_xpon_phy_configure(struct airoha_xpon_phy *priv)
 	airoha_xpon_phy_write(priv, XPON_GPON_DELIMITER_GUARD,
 			      XPON_GPON_DELIMITER_DEFAULT);
 	econet_xpon_phy_counter_clear(priv, ECONET_XPON_COUNTER_CLEAR_ALL);
-	airoha_xpon_phy_write(priv, XPON_TDCSET2, EN7528_XPON_TDCSET2);
+	airoha_xpon_phy_write(priv, XPON_TDCSET2, ECONET_XPON_TDCSET2);
 
 	/*
 	 * The XC220 vendor phy_dev_init() checks NP-SCU + 0x284 bit 9 and,
@@ -829,27 +829,27 @@ static int airoha_en7528_xpon_phy_configure(struct airoha_xpon_phy *priv)
 	 * XPON_SETTING to 0x10f.  Preserve board-described polarity bits on
 	 * top of that value so another EN7528 board can override them in DT.
 	 */
-	val = EN7528_XPON_SETTING_EN7571;
+	val = ECONET_XPON_SETTING_EN757X;
 	val &= ~XPON_SETTING_INV_MASK;
 	val |= priv->trans_invert;
 	airoha_xpon_phy_write(priv, XPON_SETTING, val);
 
-	/* phy_mode_config(): quiesce EPON, pulse PLL/counter reset, then switch. */
+	/*
+	 * phy_mode_config(): quiesce EPON, select GPON/EPON first, then pulse
+	 * the PLL/counter reset.  The XC220 stock PHY uses this exact ordering;
+	 * selecting PHYSET10 while reset is already asserted is not equivalent.
+	 */
 	airoha_xpon_phy_rmw(priv, XPON_PHYSET3, BIT(5), 0);
+	airoha_xpon_phy_rmw(priv, XPON_PHYSET10, XPON_PHYSET10_GPON,
+			    priv->submode == AIROHA_XPON_PHY_SUBMODE_GPON ?
+			     XPON_PHYSET10_GPON : 0);
+
 	val = airoha_xpon_phy_read(priv, XPON_PHYSET3);
 	airoha_xpon_phy_write(priv, XPON_PHYSET3,
 			      val | XPON_PHYSET3_PLL_RST |
 			       XPON_PHYSET3_COUNTER_RST);
 	mdelay(1);
-
-	airoha_xpon_phy_rmw(priv, XPON_PHYSET10, XPON_PHYSET10_GPON,
-			    priv->submode == AIROHA_XPON_PHY_SUBMODE_GPON ?
-			     XPON_PHYSET10_GPON : 0);
-	mdelay(1);
-
-	airoha_xpon_phy_write(priv, XPON_PHYSET3,
-			      val & ~(XPON_PHYSET3_PLL_RST |
-				      XPON_PHYSET3_COUNTER_RST));
+	airoha_xpon_phy_write(priv, XPON_PHYSET3, val);
 	mdelay(1);
 
 	if (priv->submode == AIROHA_XPON_PHY_SUBMODE_EPON)
@@ -907,6 +907,13 @@ static int econet_en751221_xpon_phy_configure(struct airoha_xpon_phy *priv)
 				      ECONET_XPON_COUNTER_CLEAR_ALL);
 
 	/*
+	 * TCSUPPORT_CPU_EN7521 overrides the vendor TDC default with 0x2d.
+	 * This is part of the upstream burst timing path and must be applied
+	 * before the mode reset is released.
+	 */
+	airoha_xpon_phy_write(priv, XPON_TDCSET2, ECONET_XPON_TDCSET2);
+
+	/*
 	 * EN751221 phy_mode_config(): bit 5 is cleared while switching mode,
 	 * PHYSET10[31] selects GPON, and the PLL/counter reset is pulsed after
 	 * the mode change.  EPON sets PHYSET3[5] again after the reset pulse.
@@ -917,13 +924,15 @@ static int econet_en751221_xpon_phy_configure(struct airoha_xpon_phy *priv)
 			     XPON_PHYSET10_GPON : 0);
 
 	/*
-	 * Apply the transceiver pin conventions before the PLL and counter
-	 * reset, so they are in place when the reset is released.  The reset
-	 * default inverts receive signal detect, which reports a permanent LOS
-	 * on a board whose optics drive it in the default sense.
+	 * EN7570 and EN7571 both program XPON_SETTING to 0x10f in the vendor
+	 * transceiver-model setup.  Program the complete base value instead of
+	 * relying on bootloader/reset residue, then overlay the board-specific
+	 * polarity bits from DT.
 	 */
-	airoha_xpon_phy_rmw(priv, XPON_SETTING, XPON_SETTING_INV_MASK,
-			    priv->trans_invert);
+	val = ECONET_XPON_SETTING_EN757X;
+	val &= ~XPON_SETTING_INV_MASK;
+	val |= priv->trans_invert;
+	airoha_xpon_phy_write(priv, XPON_SETTING, val);
 
 	val = airoha_xpon_phy_read(priv, XPON_PHYSET3);
 	airoha_xpon_phy_write(priv, XPON_PHYSET3,

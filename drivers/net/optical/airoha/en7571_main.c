@@ -164,24 +164,24 @@ int en7571_init(struct en7571_priv *priv)
 	case AIROHA_LDDLA_BOB_MAGIC(AIROHA_LDDLA_BOB_PROFILE_GPON,
 				    EN7571_BOB_VARIANT):
 		priv->lddla.pon_mode = EN7571_PON_GPON;
-		en7571_tgen_recall(priv);
 		en7571_set_t0t1_delay(priv, EN7571_T1_T0_DELAY_GPON);
+		en7571_tgen_recall(priv);
 		en7571_apd_init(priv);
 		en7571_apd_control(priv);
 		break;
 	case AIROHA_LDDLA_BOB_MAGIC(AIROHA_LDDLA_BOB_PROFILE_EPON,
 				    EN7571_BOB_VARIANT):
 		priv->lddla.pon_mode = EN7571_PON_EPON;
-		en7571_tgen_recall(priv);
 		en7571_set_t0t1_delay(priv, EN7571_T1_T0_DELAY_EPON);
+		en7571_tgen_recall(priv);
 		/* EPON does not run APD control. */
 		break;
 	case AIROHA_LDDLA_BOB_MAGIC(AIROHA_LDDLA_BOB_PROFILE_XPON,
 				    EN7571_BOB_VARIANT):
 		/* Adapter mode: run as GPON but with the EPON burst delay. */
 		priv->lddla.pon_mode = EN7571_PON_GPON;
-		en7571_tgen_recall(priv);
 		en7571_set_t0t1_delay(priv, EN7571_T1_T0_DELAY_EPON);
+		en7571_tgen_recall(priv);
 		en7571_apd_init(priv);
 		en7571_apd_control(priv);
 		break;
