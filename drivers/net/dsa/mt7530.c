@@ -18,6 +18,8 @@
 #include <linux/regmap.h>
 #include <linux/regulator/consumer.h>
 #include <linux/reset.h>
+#include <linux/slab.h>
+#include <linux/workqueue.h>
 #include <linux/gpio/consumer.h>
 #include <linux/gpio/driver.h>
 #include <net/dsa.h>
@@ -813,10 +815,59 @@ static void en751221_trgmii_dump(struct mt7530_priv *ext,
 	}
 }
 
+/*
+ * Rare boots come up with no SoC -> companion lane trainable, and neither
+ * redoing the link setup nor a SW_RST of either switch brings it back.  A
+ * full re-probe of the on-die switch does (hardware GSW reset, companion
+ * SYS_CTRL reset and setup, training), so schedule one, at most twice per
+ * boot.  The probe path holds the device lock, hence the work item.  The
+ * count cannot live in struct mt7530_priv: the re-probe frees and
+ * reallocates it, which would reset the limit on every attempt.
+ */
+static unsigned int en751221_trgmii_reprobes;
+
+static void en751221_trgmii_reprobe_fn(struct work_struct *work)
+{
+	struct en751221_trgmii_reprobe *r =
+		container_of(work, struct en751221_trgmii_reprobe, work);
+	int ret;
+
+	ret = device_reprobe(r->dev);
+	if (ret)
+		dev_err(r->dev, "EN751221 TRGMII: switch re-probe failed: %d\n",
+			ret);
+	put_device(r->dev);
+	kfree(r);
+}
+
+static void en751221_trgmii_schedule_reprobe(struct mt7530_priv *ondie)
+{
+	struct en751221_trgmii_reprobe *r;
+
+	if (en751221_trgmii_reprobes >= 2) {
+		dev_err(ondie->dev,
+			"EN751221 TRGMII: no SoC->MCM window after %u re-probes, giving up\n",
+			en751221_trgmii_reprobes);
+		return;
+	}
+
+	r = kzalloc(sizeof(*r), GFP_KERNEL);
+	if (!r)
+		return;
+
+	en751221_trgmii_reprobes++;
+	INIT_WORK(&r->work, en751221_trgmii_reprobe_fn);
+	r->dev = get_device(ondie->dev);
+	dev_warn(ondie->dev,
+		 "EN751221 TRGMII: no SoC->MCM window, re-probing the switch (%u)\n",
+		 en751221_trgmii_reprobes);
+	schedule_work(&r->work);
+}
+
 static void en751221_trgmii_pair_setup(struct mt7530_priv *ext,
 				       struct mt7530_priv *ondie)
 {
-	int trained;
+	int trained, retried = 0;
 
 	if (ondie->en751221_trgmii_ready)
 		return;
@@ -883,12 +934,18 @@ static void en751221_trgmii_pair_setup(struct mt7530_priv *ext,
 			 "EN751221 TRGMII: redoing the link setup and training once\n");
 		en751221_trgmii_link_setup(ext, ondie);
 		trained = en751221_trgmii_calibrate(ext, ondie);
+		retried = 1;
 		if (!trained)
 			en751221_trgmii_dump(ext, ondie,
 					     "still no SoC->MCM window after the retry");
 	}
 
 	ondie->en751221_trgmii_ready = true;
+	dev_dbg(ondie->dev,
+		"EN751221 TRGMII result: retry=%d trained=%d reprobes=%u\n",
+		retried, trained, en751221_trgmii_reprobes);
+	if (!trained)
+		en751221_trgmii_schedule_reprobe(ondie);
 }
 
 static void

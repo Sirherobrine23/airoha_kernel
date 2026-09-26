@@ -884,6 +884,12 @@ struct mt753x_info {
 				phy_interface_t interface);
 };
 
+/* Deferred re-probe of the EN751221 on-die switch, see mt7530.c */
+struct en751221_trgmii_reprobe {
+	struct work_struct work;
+	struct device *dev;
+};
+
 /* struct mt7530_priv -	This is the main data structure for holding the state
  *			of the driver
  * @dev:		The device pointer
