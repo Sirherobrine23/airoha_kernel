@@ -3517,6 +3517,35 @@ mt753x_phylink_mac_config(struct phylink_config *config, unsigned int mode,
 		mt7530_set(priv, MT753X_PMCR_P(port), PMCR_EXT_PHY);
 }
 
+static int mt753x_phylink_mac_finish(struct phylink_config *config,
+				     unsigned int mode,
+				     phy_interface_t interface)
+{
+	struct dsa_port *dp = dsa_phylink_to_port(config);
+	struct mt7530_priv *priv = dp->ds->priv;
+	struct mt7530_priv *ondie;
+
+	if (dp->index != 6 || interface != PHY_INTERFACE_MODE_TRGMII ||
+	    priv->id != ID_MT7621 || !priv->mdiodev ||
+	    !of_device_is_compatible(priv->dev->of_node,
+				     "econet,en751221-switch"))
+		return 0;
+
+	ondie = en751221_trgmii_find_ondie_peer(dp->ds);
+	if (!ondie)
+		return -ENODEV;
+
+	/*
+	 * DSA starts shared ports before setting up user and unused ports.
+	 * Finish training in the synchronous initial MAC configuration,
+	 * before those ports can change PHY/core settings or MCM straps.
+	 * mac_link_up runs asynchronously and cannot provide that ordering.
+	 */
+	en751221_trgmii_pair_setup(priv, ondie);
+
+	return 0;
+}
+
 static void mt753x_phylink_mac_link_down(struct phylink_config *config,
 					 unsigned int mode,
 					 phy_interface_t interface)
@@ -3560,16 +3589,6 @@ static void mt753x_phylink_mac_link_up(struct phylink_config *config,
 
 	mt7530_set(priv, MT753X_PMCR_P(dp->index), mcr);
 
-	if (dp->index == 6 && interface == PHY_INTERFACE_MODE_TRGMII &&
-	    priv->id == ID_MT7621 && priv->mdiodev &&
-	    of_device_is_compatible(priv->dev->of_node,
-				    "econet,en751221-switch")) {
-		struct mt7530_priv *ondie;
-
-		ondie = en751221_trgmii_find_ondie_peer(dp->ds);
-		if (ondie)
-			en751221_trgmii_pair_setup(priv, ondie);
-	}
 }
 
 static void mt753x_phylink_mac_disable_tx_lpi(struct phylink_config *config)
@@ -3909,6 +3928,7 @@ EXPORT_SYMBOL_GPL(mt7530_switch_ops);
 static const struct phylink_mac_ops mt753x_phylink_mac_ops = {
 	.mac_select_pcs	= mt753x_phylink_mac_select_pcs,
 	.mac_config	= mt753x_phylink_mac_config,
+	.mac_finish	= mt753x_phylink_mac_finish,
 	.mac_link_down	= mt753x_phylink_mac_link_down,
 	.mac_link_up	= mt753x_phylink_mac_link_up,
 	.mac_disable_tx_lpi = mt753x_phylink_mac_disable_tx_lpi,
