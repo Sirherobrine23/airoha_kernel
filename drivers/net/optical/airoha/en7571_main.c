@@ -462,29 +462,6 @@ static int en7571_op_tx_rearm(struct airoha_lddla *lddla)
 
 	en7571_dump_tx_state(priv, "tx-rearm-before");
 
-	/*
-	 * The vendor stack calibrates TGEN and TxSD only after the companion
-	 * digital xPON PHY has already been put in GPON/EPON mode.  Probe order
-	 * is reversed in the upstream split driver: the EN7571 is initialized
-	 * before the digital PHY.  Re-run the mode-sensitive part exactly once
-	 * on the first rearm, which is issued from Upstream_Overhead after the
-	 * digital PHY is powered and configured.
-	 *
-	 * Keep the delay byte selected during probe and only reload T0C/T1C and
-	 * pulse the TGEN timer reset.  This also preserves the XPON BOB profile,
-	 * which intentionally uses GPON protocol with the EPON burst delay.
-	 */
-	if (!priv->tx_runtime_calibrated) {
-		dev_info(lddla->dev,
-			 "EN7571 runtime TX calibration after digital PHY start\n");
-		en7571_dcl_stop(priv);
-		en7571_tgen_recall(priv);
-		en7571_txsd_level(priv);
-		en7571_dcl_start(priv);
-		priv->tx_runtime_calibrated = true;
-		en7571_dump_tx_state(priv, "runtime-tx-calibrated");
-	}
-
 	ret = lddla_update8(lddla, EN7571_PWR_CTRL_0 + 1,
 			    EN7571_DCL_RST_B_MASK, EN7571_DCL_RST_B);
 	if (ret) {

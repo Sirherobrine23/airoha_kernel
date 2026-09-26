@@ -57,7 +57,6 @@ struct en7571_priv {
 	int cross;		/* use the rev-2 MBI cross-Imod fast path */
 	u32 mbi_delay;		/* cross-Imod MBI settle delay (us), flash 0x060 */
 	int pattern_enabled;	/* calibration pattern is being transmitted */
-	bool tx_runtime_calibrated; /* TGEN/TxSD redone after digital PHY start */
 
 	/* --- Calibration / measurement (fixed-point) --- */
 	s64 adc_slope_nv;	/* nV per ADC code */

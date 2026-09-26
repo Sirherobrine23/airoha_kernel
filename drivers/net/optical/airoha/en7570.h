@@ -59,7 +59,6 @@ struct en7570_priv {
 	int variant;		/* silicon variant byte (vEN7570) */
 	int fiber_plug;		/* set on fiber hot-plug detection */
 	int pattern_enabled;	/* calibration pattern is being transmitted */
-	bool tx_runtime_calibrated; /* TGEN/TxSD redone after digital PHY start */
 	bool scl;		/* single-closed-loop selected */
 	bool dol;		/* dual-open-loop selected */
 	bool bias_track_sw;	/* runtime bias-tracking override */

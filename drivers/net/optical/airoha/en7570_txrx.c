@@ -207,10 +207,6 @@ void en7570_tx_sd_level(struct en7570_priv *priv)
 
 	lddla_wr8(&priv->lddla, EN7570_TIASD, thr & 0xff);
 	lddla_update8(&priv->lddla, EN7570_TIASD + 1, 0xfe, (thr >> 8) & 0x01);
-
-	dev_info(priv->lddla.dev,
-		 "EN7570 TxSD calibrated: delta=%d mpdh=%u mpdl=%u threshold=0x%03x\n",
-		 delta, mpdh, mpdl, thr & 0x1ff);
 }
 
 /* Capture the MPD dark current (laser off) as the calibration baseline. */
@@ -375,10 +371,6 @@ int en7570_tgen(struct en7570_priv *priv, int mode)
 
 	lddla_update8(&priv->lddla, EN7570_T1DELAY + 3,
 		       EN7570_ERC_ENABLE_MASK, EN7570_ERC_ENABLE);
-
-	dev_info(priv->lddla.dev,
-		 "EN7570 TGEN calibrated: mode=%d delay=0x%02x t1c=0x%02x t0c=0x%02x factory=%u\n",
-		 mode, delay, t1c, t0c, t0ct1c != EN7570_FLASH_ERASED);
 
 	en7570_cdr(priv, true);			/* back to lock-to-data */
 	en7570_pattern_stop(priv);

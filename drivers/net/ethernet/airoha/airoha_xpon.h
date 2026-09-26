@@ -37,6 +37,7 @@ struct airoha_xpon_match_data {
 	u16 gpon_rsp_time_activation;
 	u16 gpon_idle_gem_threshold;
 	u8 gpon_guard_bits_override;
+	u8 gpon_sn_tx_power_mode;
 	bool en7523_gpon_defaults;
 	bool gpon_reset_dbg_dly;
 	bool mac_irq_via_eth;
@@ -154,6 +155,7 @@ struct airoha_xpon_match_data {
 /* G_SN_MSG_CFG */
 #define SN_MSG_CFG_SN_REQ_THR_MASK	GENMASK(31, 24)
 #define SN_MSG_CFG_TX_POWER_MODE_MASK	GENMASK(17, 16)
+#define GPON_SN_TX_POWER_MODE_LEGACY	2
 #define SN_MSG_CFG_RANDOM_DELAY_MASK	GENMASK(11, 0)
 
 /* G_INT_STATUS / G_INT_ENABLE */

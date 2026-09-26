@@ -669,15 +669,22 @@ static void gpon_reset_activation_context(struct xpon_priv *priv)
 	gpon_write(priv, GPON_RSP_TIME, GPON_RSP_TIME_RESET);
 
 	/*
-	 * Preserve the transmitter power mode while restoring the vendor
-	 * serial-request threshold and clearing only the random delay. A zero
-	 * threshold makes INT_SN_REQ_CRS continuously retrigger.
+	 * Restore the serial-request threshold and clear the per-request random
+	 * delay.  EN751221/EN7528 additionally follow the vendor xpon_econet and
+	 * xpon_bsp stacks, which force G_SN_MSG_CFG.tx_power_mode to 2 before O2.
+	 * Keep EN7523 unchanged because its known-working path does not require
+	 * the legacy setting.
 	 */
 	sn_cfg = gpon_read(priv, GPON_SN_MSG_CFG);
 	sn_cfg &= ~(SN_MSG_CFG_SN_REQ_THR_MASK |
 		    SN_MSG_CFG_RANDOM_DELAY_MASK);
 	sn_cfg |= FIELD_PREP(SN_MSG_CFG_SN_REQ_THR_MASK,
 			     GPON_SN_REQ_THRESHOLD);
+	if (priv->match_data->gpon_sn_tx_power_mode) {
+		sn_cfg &= ~SN_MSG_CFG_TX_POWER_MODE_MASK;
+		sn_cfg |= FIELD_PREP(SN_MSG_CFG_TX_POWER_MODE_MASK,
+				     priv->match_data->gpon_sn_tx_power_mode);
+	}
 	gpon_write(priv, GPON_SN_MSG_CFG, sn_cfg);
 	priv->byte_delay = 0;
 	priv->bit_delay = 0;
@@ -4421,6 +4428,7 @@ static const struct airoha_xpon_match_data en751221_xpon_data = {
 	.gpon_rsp_time_activation = GPON_RSP_TIME_ACT_EN751221,
 	.gpon_idle_gem_threshold = GPON_IDLE_GEM_THLD_DEFAULT,
 	.gpon_guard_bits_override = GPON_PHY_GUARD_BIT_NUM_EN751221,
+	.gpon_sn_tx_power_mode = GPON_SN_TX_POWER_MODE_LEGACY,
 	.gpon_adjust_rx_delay = true,
 	.mac_irq_via_eth = true,
 	.gpon_rearm_tx_on_overhead = true,
@@ -4437,6 +4445,7 @@ static const struct airoha_xpon_match_data en7528_xpon_data = {
 	.gpon_rsp_time_activation = GPON_RSP_TIME_ACT_EN7528,
 	.gpon_idle_gem_threshold = GPON_IDLE_GEM_THLD_DEFAULT,
 	.gpon_guard_bits_override = GPON_PHY_GUARD_BIT_NUM_EN7528,
+	.gpon_sn_tx_power_mode = GPON_SN_TX_POWER_MODE_LEGACY,
 	.gpon_reset_dbg_dly = true,
 	.gpon_adjust_rx_delay = true,
 	.mac_irq_via_eth = true,
