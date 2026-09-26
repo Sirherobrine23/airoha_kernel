@@ -402,7 +402,9 @@ static const char *const phy4_led_groups[] = {
 			 GSW_TOD_1PPS_MODE_MASK)
 
 static const struct airoha_pinctrl_func_group pon_func_group[] = {
-	ECONET_MUX_GROUP("pon", REG_IOMUX_CONTROL1, PON_MODE_MASK, PON_MODE_MASK),
+	ECONET_MUX_GROUP("pon", REG_IOMUX_CONTROL1,
+			 PON_MODE_MASK | PON_I2C_MODE_MASK,
+			 PON_MODE_MASK | PON_I2C_MODE_MASK),
 };
 
 static const struct airoha_pinctrl_func_group tod_1pps_func_group[] = {
