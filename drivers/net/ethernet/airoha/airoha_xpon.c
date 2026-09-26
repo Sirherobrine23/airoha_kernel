@@ -61,6 +61,8 @@
 
 static const u8 airoha_default_vendor_id[4] = {'M', 'T', 'K', 'G'};
 
+static inline u32 gpon_read(struct xpon_priv *priv, u32 reg);
+
 static int airoha_xpon_tx_rearm(struct device *dev,
 				struct optical_frontend *frontend)
 {
@@ -362,8 +364,9 @@ static int airoha_xpon_reset_mac(struct xpon_priv *priv)
 			      MBI_RX_STOP | MBI_TX_STOP);
 		ret = gpon_set_mpi_stop(priv, true);
 		if (ret)
-			return dev_err_probe(priv->dev, ret,
-					     "failed to stop GPON MPI before reset\n");
+			dev_warn(priv->dev,
+				 "GPON MPI stop timeout before reset: %#08x\n",
+				 gpon_read(priv, GPON_MBI_MPI_STOP));
 	}
 
 	dev_info(priv->dev, "resetting %s MAC before session start\n",
@@ -386,8 +389,9 @@ static int airoha_xpon_reset_mac(struct xpon_priv *priv)
 			      MBI_RX_STOP | MBI_TX_STOP);
 		ret = gpon_set_mpi_stop(priv, true);
 		if (ret)
-			return dev_err_probe(priv->dev, ret,
-					     "failed to stop GPON MPI after reset\n");
+			dev_warn(priv->dev,
+				 "GPON MPI stop timeout after reset: %#08x\n",
+				 gpon_read(priv, GPON_MBI_MPI_STOP));
 	}
 
 	return 0;
