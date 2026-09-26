@@ -57,6 +57,42 @@ mt7530_mutex_unlock(struct mt7530_priv *priv)
 		mutex_unlock(&priv->bus->mdio_lock);
 }
 
+static int
+en751221_core_access(struct mt7530_priv *priv, u32 reg, u32 val, bool write)
+{
+	struct mii_bus *bus = priv->internal_mdio_bus;
+	int ret;
+
+	if (!bus)
+		return -ENODEV;
+
+	/*
+	 * The on-die core at PHY address 12 shares PHY_IAC with the external
+	 * switch. MMIO regmap locking only protects individual register
+	 * accesses, not an MDIO transaction. Use the hosted bus lock for the
+	 * entire C22 MMD sequence, just like the companion's core access.
+	 */
+	mutex_lock_nested(&bus->mdio_lock, MDIO_MUTEX_NESTED);
+	ret = __mdiobus_write(bus, 12, MII_MMD_CTRL, MDIO_MMD_VEND2);
+	if (ret < 0)
+		goto out;
+	ret = __mdiobus_write(bus, 12, MII_MMD_DATA, reg);
+	if (ret < 0)
+		goto out;
+	ret = __mdiobus_write(bus, 12, MII_MMD_CTRL,
+			      MDIO_MMD_VEND2 | MII_MMD_CTRL_NOINCR);
+	if (ret < 0)
+		goto out;
+	if (write)
+		ret = __mdiobus_write(bus, 12, MII_MMD_DATA, val);
+	else
+		ret = __mdiobus_read(bus, 12, MII_MMD_DATA);
+out:
+	mutex_unlock(&bus->mdio_lock);
+
+	return ret;
+}
+
 static void
 core_write(struct mt7530_priv *priv, u32 reg, u32 val)
 {
@@ -69,29 +105,11 @@ core_write(struct mt7530_priv *priv, u32 reg, u32 val)
 	 * normal pseudo-PHY derived from the MDIO switch address.
 	 */
 	if (priv->id == ID_EN751221) {
-		ret = priv->info->phy_write_c22(priv, 12, MII_MMD_CTRL,
-					       MDIO_MMD_VEND2);
+		ret = en751221_core_access(priv, reg, val, true);
 		if (ret < 0)
-			goto err_internal;
-
-		ret = priv->info->phy_write_c22(priv, 12, MII_MMD_DATA, reg);
-		if (ret < 0)
-			goto err_internal;
-
-		ret = priv->info->phy_write_c22(priv, 12, MII_MMD_CTRL,
-					       MDIO_MMD_VEND2 | MII_MMD_CTRL_NOINCR);
-		if (ret < 0)
-			goto err_internal;
-
-		ret = priv->info->phy_write_c22(priv, 12, MII_MMD_DATA, val);
-		if (ret < 0)
-			goto err_internal;
-
-		return;
-
-err_internal:
-		dev_err(priv->dev, "failed to write EN751221 core MMD register 0x%x\n",
-			reg);
+			dev_err(priv->dev,
+				"failed to write EN751221 core MMD register 0x%x: %d\n",
+				reg, ret);
 		return;
 	}
 
@@ -132,19 +150,8 @@ core_read(struct mt7530_priv *priv, u32 reg)
 	int ret;
 
 	/* Same access paths as core_write(). */
-	if (priv->id == ID_EN751221) {
-		ret = priv->info->phy_write_c22(priv, 12, MII_MMD_CTRL,
-					       MDIO_MMD_VEND2);
-		if (!ret)
-			ret = priv->info->phy_write_c22(priv, 12, MII_MMD_DATA,
-						       reg);
-		if (!ret)
-			ret = priv->info->phy_write_c22(priv, 12, MII_MMD_CTRL,
-						       MDIO_MMD_VEND2 |
-						       MII_MMD_CTRL_NOINCR);
-		return ret ? ret : priv->info->phy_read_c22(priv, 12,
-							     MII_MMD_DATA);
-	}
+	if (priv->id == ID_EN751221)
+		return en751221_core_access(priv, reg, 0, false);
 
 	mt7530_mutex_lock(priv);
 	ret = bus->write(bus, MT753X_CTRL_PHY_ADDR(priv->mdiodev->addr),
@@ -2799,6 +2806,9 @@ int mt7530_setup_mdio(struct mt7530_priv *priv)
 	if (!mnp)
 		ds->user_mii_bus = bus;
 
+	/* Keep this even with an explicit MDIO node (no user_mii_bus). */
+	priv->internal_mdio_bus = bus;
+
 	bus->priv = priv;
 	bus->name = KBUILD_MODNAME "-mii";
 	snprintf(bus->id, MII_BUS_ID_SIZE, KBUILD_MODNAME "-%d", idx++);
@@ -2814,6 +2824,7 @@ int mt7530_setup_mdio(struct mt7530_priv *priv)
 
 	ret = devm_of_mdiobus_register(dev, bus, mnp);
 	if (ret) {
+		priv->internal_mdio_bus = NULL;
 		dev_err(dev, "failed to register MDIO bus: %d\n", ret);
 		if (priv->irq_domain && !mnp)
 			mt7530_free_mdio_irq(priv);
