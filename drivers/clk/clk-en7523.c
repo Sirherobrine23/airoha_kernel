@@ -122,6 +122,8 @@
 #define   EN7528_XPON_TOD_CLK_EN	BIT(8)
 #define EN7528_REG_TOD_DIVIDER_ENABLE	0x0ec
 #define   EN7528_XPON_TOD_DIV_EN	BIT(1)
+#define EN7528_REG_SHARED_UNZIPMENT_SEL	0x954
+#define EN7528_SHARED_UNZIPMENT_FE	0x3
 #define EN7528_MAX_CLKS		5
 
 enum en_hir {
@@ -205,6 +207,8 @@ struct econet_clk_soc_data {
 	u32 xpon_tod_clk_mask;
 	u16 xpon_tod_div_reg;
 	u32 xpon_tod_div_mask;
+	u16 shared_unzip_reg;
+	u32 shared_unzip_val;
 };
 
 struct en_clk_soc_data {
@@ -1867,6 +1871,14 @@ static int econet_clk_hw_init(struct platform_device *pdev,
 	if (err)
 		return err;
 
+	if (data->shared_unzip_reg) {
+		err = regmap_write(clk_map, data->shared_unzip_reg,
+				   data->shared_unzip_val);
+		if (err)
+			return dev_err_probe(dev, err,
+					     "failed to configure shared SRAM\n");
+	}
+
 	if (data->xpon_tod_clk_mask) {
 		err = regmap_set_bits(map, data->xpon_tod_clk_reg,
 				      data->xpon_tod_clk_mask);
@@ -1994,6 +2006,8 @@ static const struct econet_clk_soc_data en7528_econet_data = {
 	.xpon_tod_clk_mask = EN7528_XPON_TOD_CLK_EN,
 	.xpon_tod_div_reg = EN7528_REG_TOD_DIVIDER_ENABLE,
 	.xpon_tod_div_mask = EN7528_XPON_TOD_DIV_EN,
+	.shared_unzip_reg = EN7528_REG_SHARED_UNZIPMENT_SEL,
+	.shared_unzip_val = EN7528_SHARED_UNZIPMENT_FE,
 };
 
 static const struct en_clk_soc_data en751221_data = {

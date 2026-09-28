@@ -67,6 +67,7 @@
 #define GPIO_LAN0_LED0_MODE_MASK		BIT(4)
 #define PON_TOD_1PPS_MODE_MASK		BIT(2)
 #define GSW_TOD_1PPS_MODE_MASK		BIT(1)
+#define PON_I2C_MODE_MASK		BIT(0)
 
 #define REG_FORCE_GPIO22_EN		0x0224
 #define GPIO_PCM_SPI_CS7_MODE_MASK	BIT(15)	/* RG ..._CS9 */
@@ -428,8 +429,8 @@ static const struct airoha_pinctrl_func_group pon_func_group[] = {
 		.regmap[0] = {
 			AIROHA_FUNC_MUX,
 			REG_PON_I2C_MODE,
-			GPIO_PON_MODE_MASK,
-			GPIO_PON_MODE_MASK
+			GPIO_PON_MODE_MASK | PON_I2C_MODE_MASK,
+			GPIO_PON_MODE_MASK | PON_I2C_MODE_MASK
 		},
 		.regmap_size = 1,
 	},

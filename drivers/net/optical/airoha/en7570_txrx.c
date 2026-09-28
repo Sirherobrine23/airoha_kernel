@@ -14,6 +14,7 @@
  */
 #include <linux/kernel.h>
 #include <linux/math64.h>
+#include <linux/delay.h>
 
 #include "en7570.h"
 
@@ -292,41 +293,84 @@ void en7570_erc_restart_p0(struct en7570_priv *priv)
 int en7570_tgen(struct en7570_priv *priv, int mode)
 {
 	u32 t0t1 = lddla_flash_read(&priv->lddla, EN7570_FL_T0T1_DELAY);
-	u8 ptr[4];
-	u16 t0c;
+	u32 t0ct1c = lddla_flash_read(&priv->lddla, EN7570_FL_T0CT1C);
+	u8 count[2];
+	u8 t0c = 0, t1c = 0;
+	u8 delay;
 	int i;
 
 	en7570_cdr(priv, false);			/* lock to reference clock */
-	en7570_pattern_start(priv, 5);		/* internal PRBS23 */
-
-	for (i = 0; i < 32; i++) {
-		lddla_rd(&priv->lddla, EN7570_T1DELAY, ptr, 4);
-		ptr[3] &= EN7570_ERC_ENABLE_MASK;	/* clear ERC enable */
-		ptr[0] = EN7570_T1_T0_SETTING1;		/* try delay code */
-		ptr[1] = EN7570_TIMER_RESET_VALUE;	/* T1 timer reset */
-		ptr[2] = EN7570_TIMER_RESET_VALUE;	/* T0 timer reset */
-		lddla_wr(&priv->lddla, EN7570_T1DELAY, ptr, 4);
-
-		/* TGEN method-2 reset: pulse the T1/T0 reset, set method2. */
-		ptr[3] = (ptr[3] & EN7570_TGEN_RESET_MASK) | EN7570_TGEN_RESET_T1T0;
-		ptr[3] = (ptr[3] & EN7570_TGEN_METHOD2_MASK) | EN7570_TGEN_METHOD2_ENABLE;
-		lddla_wr(&priv->lddla, EN7570_T1DELAY, ptr, 4);
-
-		lddla_rd16(&priv->lddla, EN7570_T0C, &t0c);	/* sample T0C/T1C */
-	}
+	en7570_pattern_start(priv, 5);		/* PHY-layer PRBS23 */
+	mdelay(10);
 
 	/*
-	 * Load the final delay value.  The empty-flash defaults are 0x9a (GPON)
-	 * / 0x47 (EPON).
+	 * Match mt7570_TGEN(): each control transition is a distinct write.
+	 * Combining RESET and METHOD2 in one transaction does not generate the
+	 * edges used by the TGEN state machine to latch T0C/T1C.
 	 */
-	lddla_rd(&priv->lddla, EN7570_T1DELAY, ptr, 4);
+	for (i = 0; i < 32; i++) {
+		lddla_update8(&priv->lddla, EN7570_T1DELAY + 3,
+			       EN7570_ERC_ENABLE_MASK, 0);
+		udelay(2);
+
+		lddla_wr8(&priv->lddla, EN7570_T1DELAY,
+			  EN7570_T1_T0_SETTING1);
+		udelay(2);
+
+		lddla_wr8(&priv->lddla, EN7570_T1DELAY + 1,
+			  EN7570_TIMER_RESET_VALUE);
+		lddla_wr8(&priv->lddla, EN7570_T1DELAY + 2,
+			  EN7570_TIMER_RESET_VALUE);
+		udelay(2);
+
+		lddla_update8(&priv->lddla, EN7570_T1DELAY + 3,
+			       EN7570_TGEN_RESET_MASK,
+			       EN7570_TGEN_RESET_T1T0);
+		udelay(2);
+		lddla_update8(&priv->lddla, EN7570_T1DELAY + 3,
+			       EN7570_TGEN_RESET_MASK, 0);
+		udelay(2);
+
+		lddla_update8(&priv->lddla, EN7570_T1DELAY + 3,
+			       EN7570_TGEN_METHOD2_MASK,
+			       EN7570_TGEN_METHOD2_ENABLE);
+		udelay(2);
+		lddla_update8(&priv->lddla, EN7570_T1DELAY + 3,
+			       EN7570_TGEN_METHOD2_MASK, 0);
+
+		lddla_rd(&priv->lddla, EN7570_T0C, count, sizeof(count));
+		t0c = max(t0c, count[0]);
+		t1c = max(t1c, count[1]);
+	}
+	mdelay(10);
+
 	if (t0t1 != EN7570_FLASH_ERASED)
-		ptr[0] = t0t1 & 0xff;
+		delay = t0t1 & 0xff;
 	else
-		ptr[0] = (mode == EN7570_PON_GPON) ? EN7570_T1_T0_DELAY_GPON
-						   : EN7570_T1_T0_DELAY_EPON;
-	ptr[3] |= EN7570_ERC_ENABLE;		/* re-enable ERC */
-	lddla_wr(&priv->lddla, EN7570_T1DELAY, ptr, 4);
+		delay = mode == EN7570_PON_GPON ? EN7570_T1_T0_DELAY_GPON :
+						 EN7570_T1_T0_DELAY_EPON;
+	lddla_wr8(&priv->lddla, EN7570_T1DELAY, delay);
+	mdelay(10);
+
+	/* Production calibration overrides the runtime sweep, as in the SDK. */
+	if (t0ct1c != EN7570_FLASH_ERASED) {
+		t0c = t0ct1c & 0xff;
+		t1c = (t0ct1c >> 16) & 0xff;
+	}
+
+	lddla_wr8(&priv->lddla, EN7570_T1DELAY + 1, t1c);
+	lddla_wr8(&priv->lddla, EN7570_T1DELAY + 2, t0c);
+	mdelay(10);
+
+	lddla_update8(&priv->lddla, EN7570_T1DELAY + 3,
+		       EN7570_TGEN_RESET_MASK, EN7570_TGEN_RESET_T1T0);
+	mdelay(10);
+	lddla_update8(&priv->lddla, EN7570_T1DELAY + 3,
+		       EN7570_TGEN_RESET_MASK, 0);
+	mdelay(10);
+
+	lddla_update8(&priv->lddla, EN7570_T1DELAY + 3,
+		       EN7570_ERC_ENABLE_MASK, EN7570_ERC_ENABLE);
 
 	en7570_cdr(priv, true);			/* back to lock-to-data */
 	en7570_pattern_stop(priv);
