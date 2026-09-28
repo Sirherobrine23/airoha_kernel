@@ -950,8 +950,16 @@ static int gpon_tcont_entity_to_index(struct xpon_priv *priv, u16 entity_id,
 	    entity_id < 0x8000 + GPON_MAX_TCONT - 1) {
 		unsigned int fallback = (entity_id - 0x8000) + 1;
 
+		/*
+		 * The fallback only holds while channels follow the entity
+		 * order, as on a first provisioning.  After a restart the
+		 * T-CONTs are rebuilt in whatever order the services come
+		 * back, so never hand out a channel another entity owns.
+		 */
 		if (fallback < GPON_MAX_TCONT &&
-		    priv->tcont_alloc_id[fallback] != GPON_TCONT_UNASSIGNED)
+		    priv->tcont_alloc_id[fallback] != GPON_TCONT_UNASSIGNED &&
+		    priv->tcont_entity_id[fallback] ==
+		    GPON_TCONT_ENTITY_UNASSIGNED)
 			found = fallback;
 	}
 	if (found >= 0)
