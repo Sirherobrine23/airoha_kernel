@@ -3313,8 +3313,18 @@ static int airoha_ppe_v1_engine_arm(struct airoha_ppe *ppe)
 
 	if (!ppe)
 		return -ENODEV;
-	if (READ_ONCE(ppe->v1.armed))
+	if (READ_ONCE(ppe->v1.armed)) {
+		/*
+		 * Netdev initialization may rewrite GDM forwarding after the
+		 * persistent EN7528 datapath has armed the PPE. Reassert both
+		 * ingress paths whenever a flow block binds.
+		 */
+		airoha_ppe_v1_set_gdm_ingress(ppe, 1,
+					      ppe->common.eth->soc->ppe_fport);
+		airoha_ppe_v1_set_gdm_ingress(ppe, 2,
+					      ppe->common.eth->soc->ppe_fport);
 		return 0;
+	}
 
 	airoha_fe_wr(ppe->common.eth, REG_PPE_TB_CFG(0),
 		     FIELD_PREP(PPE_TB_CFG_HASH_MODE_MASK, 3) |
@@ -3742,7 +3752,8 @@ static int airoha_ppe_setup_tc_block(struct net_device *dev,
 			return err;
 		block_cb = flow_block_cb_alloc(cb, dev, dev, NULL);
 		if (IS_ERR(block_cb)) {
-			if (list_empty(&ppe->block_cb_list))
+			if (list_empty(&ppe->block_cb_list) &&
+			    !ppe->common.eth->soc->ppe_datapath)
 				airoha_ppe_v1_engine_disarm(ppe);
 			return PTR_ERR(block_cb);
 		}
@@ -3758,7 +3769,8 @@ static int airoha_ppe_setup_tc_block(struct net_device *dev,
 			flow_block_cb_remove(block_cb, offload);
 			list_del(&block_cb->driver_list);
 		}
-		if (list_empty(&ppe->block_cb_list))
+		if (list_empty(&ppe->block_cb_list) &&
+		    !ppe->common.eth->soc->ppe_datapath)
 			airoha_ppe_v1_engine_disarm(ppe);
 		return 0;
 	default:
@@ -3823,9 +3835,22 @@ static int airoha_ppe_v1_init(struct airoha_eth *eth)
 	eth->ppe = ppe;
 	airoha_ppe_common_enable(&ppe->common);
 
+	if (eth->soc->ppe_datapath) {
+		err = airoha_ppe_v1_engine_arm(ppe);
+		if (err)
+			goto error_disable;
+	}
+
 	dev_info(dev, "PPE FoE table at %pad, %u entries\n",
 		 &ppe->common.foe_dma, dram_entries);
 	return 0;
+
+error_disable:
+	airoha_ppe_common_disable(&ppe->common);
+	eth->ppe = NULL;
+	rhashtable_destroy(&eth->flow_table);
+
+	return err;
 }
 
 static void airoha_ppe_v1_deinit(struct airoha_eth *eth)

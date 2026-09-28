@@ -10,6 +10,7 @@
 
 #include <linux/bitfield.h>
 #include <linux/delay.h>
+#include <linux/gpio/consumer.h>
 #include <linux/mfd/syscon.h>
 #include <linux/module.h>
 #include <linux/of.h>
@@ -24,8 +25,6 @@
 #define ECONET_XPON_PHY_MIN_SIZE		0x0600
 #define EN7523_XPON_PHY_MIN_SIZE		0x480c
 
-#define EN751221_CHIP_SCU_IOMUX_CTRL	0x104
-#define EN751221_CHIP_SCU_IOMUX_PON_EN	BIT(15)
 #define ECONET_SCU_PHY_CTRL0		0x860
 #define ECONET_SCU_PHY_CTRL0_DIS	BIT(10)
 #define ECONET_SCU_PHY_CTRL1		0x92c
@@ -34,13 +33,16 @@
 #define EN7523_SCU_WAN_CONF		0x070
 #define EN7523_SCU_WAN_MODE_MASK	GENMASK(7, 0)
 #define EN7528_SCU_WAN_MODE_MASK	GENMASK(2, 0)
+#define EN7528_SCU_REG_284		0x284
+#define EN7528_SCU_REG_284_KEEP_REG580	BIT(9)
 #define EN7523_SCU_WAN_MODE_GPON	0x00
 #define EN7523_SCU_WAN_MODE_EPON	0x01
 #define EN7523_SCU_IOMUX_CTRL_3		0x218
 #define EN7523_SCU_IOMUX_PON_EN		BIT(0)
-#define EN7528_XPON_TDCSET2		0x2d
-#define EN7528_XPON_SETTING_EN7571	0x10f
+#define ECONET_XPON_TDCSET2		0x2d
+#define ECONET_XPON_SETTING_EN757X	0x10f
 
+#define XPON_PHYSET1			0x0100
 #define XPON_PHYFWREADY			0x0104
 #define XPON_PHYSET3			0x0108
 #define XPON_PHYSET5			0x0110
@@ -59,10 +61,13 @@
 #define XPON_GPON_TX_COUNTER_CTRL	0x0424
 #define XPON_GPON_TX_FRAME_COUNTER	0x0434
 #define XPON_GPON_TX_BURST_COUNTER	0x0438
+#define XPON_BISTCTL_LOOPBACK_SEL	0x04a0
+#define XPON_BISTCTL_PRBS_TX_EN		0x04a4
 #define XPON_TRANS_STATUS		0x05e0
 #define XPON_INT_ENABLE			0x05f0
 #define XPON_INT_STATUS_CLR		0x05f4
 #define XPON_INT_STATUS			0x05f8
+#define EN7528_XPON_REG_580		0x0580
 
 #define XPON_RX_CTRL0			0x3028
 #define XPON_PMA_CTRL0			0x4100
@@ -83,6 +88,7 @@
 #define XPON_PMA_INT_ENABLE		0x4804
 #define XPON_PMA_INT_STATUS_CLR		0x4808
 
+#define XPON_PHYSET1_TX_LOCK_REF	BIT(24)
 #define XPON_PHYFWREADY_READY		BIT(0)
 #define XPON_PHYSET3_PLL_RST		BIT(31)
 #define XPON_PHYSET3_COUNTER_RST	BIT(27)
@@ -111,6 +117,7 @@
 
 #define XPON_GPON_TX_ENABLE_PATTERN	0xaa
 #define XPON_GPON_TX_COUNTER_ENABLE	BIT(3)
+#define XPON_BIST_PRBS23		0x06
 
 #define ECONET_XPON_COUNTER_ENABLE_MASK	GENMASK(2, 0)
 #define ECONET_XPON_COUNTER_CLEAR_RX0	BIT(0)
@@ -150,7 +157,6 @@ struct airoha_xpon_phy_soc_data {
 	u32 gpon_bit_delay_mask;
 	u32 gpon_bit_delay_enable;
 	bool has_integrated_pma;
-	bool needs_chip_scu;
 	bool manages_fw_ready;
 	int (*configure)(struct airoha_xpon_phy *priv);
 };
@@ -160,7 +166,8 @@ struct airoha_xpon_phy {
 	const struct airoha_xpon_phy_soc_data *soc;
 	void __iomem *base;
 	struct regmap *scu;
-	struct regmap *chip_scu;
+	struct gpio_desc *tx_disable_gpio;
+	struct gpio_desc *vcc_disable_gpio;
 	struct reset_control *reset;
 	u32 trans_invert;
 	enum airoha_xpon_phy_submode submode;
@@ -298,6 +305,39 @@ int airoha_xpon_phy_get_gpon_tx_counters(struct phy *phy,
 	return 0;
 }
 EXPORT_SYMBOL_GPL(airoha_xpon_phy_get_gpon_tx_counters);
+
+int airoha_xpon_phy_set_tx_calibration_mode(struct phy *phy, bool enable)
+{
+	struct airoha_xpon_phy *priv;
+	int ret;
+
+	ret = airoha_xpon_phy_get_active_gpon(phy, &priv);
+	if (ret)
+		return ret;
+
+	/*
+	 * Match the vendor 1G TGEN sequence used by EN7570/EN7571.
+	 * Calibration locks the TX CDR to the reference clock and feeds
+	 * PRBS23 into the burst timing detector. Normal operation restores
+	 * idle data and lock-to-data.
+	 */
+	if (enable) {
+		airoha_xpon_phy_rmw(priv, XPON_PHYSET1,
+				     XPON_PHYSET1_TX_LOCK_REF,
+				     XPON_PHYSET1_TX_LOCK_REF);
+		airoha_xpon_phy_write(priv, XPON_BISTCTL_LOOPBACK_SEL,
+				      XPON_BIST_PRBS23);
+		airoha_xpon_phy_write(priv, XPON_BISTCTL_PRBS_TX_EN, 1);
+	} else {
+		airoha_xpon_phy_write(priv, XPON_BISTCTL_PRBS_TX_EN, 0);
+		airoha_xpon_phy_write(priv, XPON_BISTCTL_LOOPBACK_SEL, 0);
+		airoha_xpon_phy_rmw(priv, XPON_PHYSET1,
+				     XPON_PHYSET1_TX_LOCK_REF, 0);
+	}
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(airoha_xpon_phy_set_tx_calibration_mode);
 
 int airoha_xpon_phy_get_gpon_fec_status(struct phy *phy,
 					bool *downstream, bool *upstream)
@@ -500,6 +540,42 @@ static void airoha_xpon_phy_dump(struct airoha_xpon_phy *priv,
 			 airoha_xpon_phy_read(priv, XPON_SERDES_BEN_CTRL),
 			 airoha_xpon_phy_read(priv, XPON_PMA_INT_STATUS),
 			 airoha_xpon_phy_read(priv, XPON_PMA_INT_ENABLE));
+}
+
+static void
+airoha_xpon_phy_set_tx_gpio(struct airoha_xpon_phy *priv, bool enable)
+{
+	if (!priv->tx_disable_gpio)
+		return;
+
+	/* TX_DISABLE is described using its asserted (disable) polarity. */
+	gpiod_set_value_cansleep(priv->tx_disable_gpio, !enable);
+}
+
+int airoha_xpon_phy_set_tx_enable(struct phy *phy, bool enable)
+{
+	struct airoha_xpon_phy *priv;
+
+	if (!phy)
+		return -EINVAL;
+
+	priv = phy_get_drvdata(phy);
+	if (!priv)
+		return -ENODEV;
+
+	airoha_xpon_phy_set_tx_gpio(priv, enable);
+	return 0;
+}
+EXPORT_SYMBOL_GPL(airoha_xpon_phy_set_tx_enable);
+
+static void
+airoha_xpon_phy_set_vcc_enabled(struct airoha_xpon_phy *priv, bool enable)
+{
+	if (!priv->vcc_disable_gpio)
+		return;
+
+	/* VCC_DISABLE follows the same logical-disable convention. */
+	gpiod_set_value_cansleep(priv->vcc_disable_gpio, !enable);
 }
 
 static int airoha_xpon_phy_reset(struct phy *phy)
@@ -756,34 +832,53 @@ static int airoha_en7528_xpon_phy_configure(struct airoha_xpon_phy *priv)
 	airoha_xpon_phy_write(priv, XPON_GPON_DELIMITER_GUARD,
 			      XPON_GPON_DELIMITER_DEFAULT);
 	econet_xpon_phy_counter_clear(priv, ECONET_XPON_COUNTER_CLEAR_ALL);
-	airoha_xpon_phy_write(priv, XPON_TDCSET2, EN7528_XPON_TDCSET2);
+	airoha_xpon_phy_write(priv, XPON_TDCSET2, ECONET_XPON_TDCSET2);
+
+	/*
+	 * The XC220 vendor phy_dev_init() checks NP-SCU + 0x284 bit 9 and,
+	 * when it is clear, writes zero to the otherwise-undocumented xPON
+	 * register at 0x580.  The tested XC220-G3v reads 0x01038500 from
+	 * SCU + 0x284, so it takes this branch in the stock firmware.
+	 */
+	ret = regmap_read(priv->scu, EN7528_SCU_REG_284, &val);
+	if (ret)
+		return dev_err_probe(priv->dev, ret,
+				     "failed to read EN7528 SCU register 0x284\n");
+
+	if (!(val & EN7528_SCU_REG_284_KEEP_REG580)) {
+		airoha_xpon_phy_write(priv, EN7528_XPON_REG_580, 0);
+		dev_info(priv->dev,
+			 "EN7528 vendor reg580 init: scu284=%#010x reg580=%#010x\n",
+			 val,
+			 airoha_xpon_phy_read(priv, EN7528_XPON_REG_580));
+	}
 
 	/*
 	 * The XC220 uses an EN7571.  Its vendor transceiver model programs
 	 * XPON_SETTING to 0x10f.  Preserve board-described polarity bits on
 	 * top of that value so another EN7528 board can override them in DT.
 	 */
-	val = EN7528_XPON_SETTING_EN7571;
+	val = ECONET_XPON_SETTING_EN757X;
 	val &= ~XPON_SETTING_INV_MASK;
 	val |= priv->trans_invert;
 	airoha_xpon_phy_write(priv, XPON_SETTING, val);
 
-	/* phy_mode_config(): quiesce EPON, pulse PLL/counter reset, then switch. */
+	/*
+	 * phy_mode_config(): quiesce EPON, select GPON/EPON first, then pulse
+	 * the PLL/counter reset.  The XC220 stock PHY uses this exact ordering;
+	 * selecting PHYSET10 while reset is already asserted is not equivalent.
+	 */
 	airoha_xpon_phy_rmw(priv, XPON_PHYSET3, BIT(5), 0);
+	airoha_xpon_phy_rmw(priv, XPON_PHYSET10, XPON_PHYSET10_GPON,
+			    priv->submode == AIROHA_XPON_PHY_SUBMODE_GPON ?
+			     XPON_PHYSET10_GPON : 0);
+
 	val = airoha_xpon_phy_read(priv, XPON_PHYSET3);
 	airoha_xpon_phy_write(priv, XPON_PHYSET3,
 			      val | XPON_PHYSET3_PLL_RST |
 			       XPON_PHYSET3_COUNTER_RST);
 	mdelay(1);
-
-	airoha_xpon_phy_rmw(priv, XPON_PHYSET10, XPON_PHYSET10_GPON,
-			    priv->submode == AIROHA_XPON_PHY_SUBMODE_GPON ?
-			     XPON_PHYSET10_GPON : 0);
-	mdelay(1);
-
-	airoha_xpon_phy_write(priv, XPON_PHYSET3,
-			      val & ~(XPON_PHYSET3_PLL_RST |
-				      XPON_PHYSET3_COUNTER_RST));
+	airoha_xpon_phy_write(priv, XPON_PHYSET3, val);
 	mdelay(1);
 
 	if (priv->submode == AIROHA_XPON_PHY_SUBMODE_EPON)
@@ -805,21 +900,11 @@ static int econet_en751221_xpon_phy_configure(struct airoha_xpon_phy *priv)
 	int ret;
 
 	/*
-	 * EN751221 phy_dev_init(): route the PON pins to the xPON block and
-	 * release the legacy PHY disables in CHIP-SCU/NP-SCU.  These controls
-	 * are outside the common 0x1faf0000 digital PHY register window.
-	 */
-	ret = regmap_update_bits(priv->chip_scu,
-				 EN751221_CHIP_SCU_IOMUX_CTRL,
-				 EN751221_CHIP_SCU_IOMUX_PON_EN,
-				 EN751221_CHIP_SCU_IOMUX_PON_EN);
-	if (ret)
-		return dev_err_probe(priv->dev, ret,
-				     "failed to enable EN751221 PON I/O mux\n");
-
-	/*
-	 * PON I2C is a separate pinctrl function (IOMUX bit 0).  Do not claim
-	 * it from the xPON PHY: the I2C controller owns that mux.
+	 * PON pad routing belongs to pinctrl.  In particular GPIO16 is the
+	 * board-level TX_DISABLE line on the EN751221 reference design while
+	 * GPIO17..20 remain owned by the PON hardware.  Writing the global
+	 * PON_MODE bit here races the GPIO consumer and cannot describe that
+	 * split ownership.
 	 *
 	 * Clear FW_READY before reconfiguring, matching xpon_phy_stop().
 	 */
@@ -851,6 +936,13 @@ static int econet_en751221_xpon_phy_configure(struct airoha_xpon_phy *priv)
 				      ECONET_XPON_COUNTER_CLEAR_ALL);
 
 	/*
+	 * TCSUPPORT_CPU_EN7521 overrides the vendor TDC default with 0x2d.
+	 * This is part of the upstream burst timing path and must be applied
+	 * before the mode reset is released.
+	 */
+	airoha_xpon_phy_write(priv, XPON_TDCSET2, ECONET_XPON_TDCSET2);
+
+	/*
 	 * EN751221 phy_mode_config(): bit 5 is cleared while switching mode,
 	 * PHYSET10[31] selects GPON, and the PLL/counter reset is pulsed after
 	 * the mode change.  EPON sets PHYSET3[5] again after the reset pulse.
@@ -861,13 +953,15 @@ static int econet_en751221_xpon_phy_configure(struct airoha_xpon_phy *priv)
 			     XPON_PHYSET10_GPON : 0);
 
 	/*
-	 * Apply the transceiver pin conventions before the PLL and counter
-	 * reset, so they are in place when the reset is released.  The reset
-	 * default inverts receive signal detect, which reports a permanent LOS
-	 * on a board whose optics drive it in the default sense.
+	 * EN7570 and EN7571 both program XPON_SETTING to 0x10f in the vendor
+	 * transceiver-model setup.  Program the complete base value instead of
+	 * relying on bootloader/reset residue, then overlay the board-specific
+	 * polarity bits from DT.
 	 */
-	airoha_xpon_phy_rmw(priv, XPON_SETTING, XPON_SETTING_INV_MASK,
-			    priv->trans_invert);
+	val = ECONET_XPON_SETTING_EN757X;
+	val &= ~XPON_SETTING_INV_MASK;
+	val |= priv->trans_invert;
+	airoha_xpon_phy_write(priv, XPON_SETTING, val);
 
 	val = airoha_xpon_phy_read(priv, XPON_PHYSET3);
 	airoha_xpon_phy_write(priv, XPON_PHYSET3,
@@ -975,13 +1069,24 @@ static int airoha_xpon_phy_power_on(struct phy *phy)
 	if (!priv->initialized)
 		return -EINVAL;
 
+	/*
+	 * Vendor phy_mode_config() asserts TX_DISABLE while switching GPON/
+	 * EPON mode, then releases it after the PHY reset/configuration has
+	 * completed.  LED_PHY_VCC_DISABLE, when present, is deasserted before
+	 * the transmitter is configured.
+	 */
+	airoha_xpon_phy_set_vcc_enabled(priv, true);
+	airoha_xpon_phy_set_tx_gpio(priv, false);
+
 	dev_info(priv->dev, "configuring %s xPON PHY\n",
 		 priv->submode == AIROHA_XPON_PHY_SUBMODE_GPON ?
 		 "GPON" : "EPON");
 
 	ret = airoha_xpon_phy_configure(priv);
 	if (ret)
-		return ret;
+		goto err_power;
+
+	airoha_xpon_phy_set_tx_gpio(priv, true);
 
 	WRITE_ONCE(priv->powered, true);
 	priv->ready_reported = false;
@@ -1007,6 +1112,11 @@ static int airoha_xpon_phy_power_on(struct phy *phy)
 	mod_delayed_work(system_wq, &priv->ready_work,
 			 msecs_to_jiffies(XPON_READY_RECOVERY_MS));
 	return 0;
+
+err_power:
+	airoha_xpon_phy_set_tx_gpio(priv, false);
+	airoha_xpon_phy_set_vcc_enabled(priv, false);
+	return ret;
 }
 
 static int airoha_xpon_phy_power_off(struct phy *phy)
@@ -1020,6 +1130,9 @@ static int airoha_xpon_phy_power_off(struct phy *phy)
 	cancel_delayed_work_sync(&priv->ready_work);
 	priv->ready_reported = false;
 
+	/* Block optical TX before quiescing the digital PHY. */
+	airoha_xpon_phy_set_tx_gpio(priv, false);
+
 	if (priv->soc->manages_fw_ready)
 		airoha_xpon_phy_rmw(priv, XPON_PHYFWREADY,
 				    XPON_PHYFWREADY_READY, 0);
@@ -1027,6 +1140,8 @@ static int airoha_xpon_phy_power_off(struct phy *phy)
 	airoha_xpon_phy_write(priv, XPON_INT_ENABLE, 0);
 	if (priv->soc->has_integrated_pma)
 		airoha_xpon_phy_write(priv, XPON_PMA_INT_ENABLE, 0);
+
+	airoha_xpon_phy_set_vcc_enabled(priv, false);
 	dev_info(priv->dev, "xPON PHY powered off\n");
 	return 0;
 }
@@ -1089,6 +1204,23 @@ static int airoha_xpon_phy_probe(struct platform_device *pdev)
 	priv->trans_invert = airoha_xpon_phy_trans_invert(dev);
 	INIT_DELAYED_WORK(&priv->ready_work, airoha_xpon_phy_ready_work);
 
+	/*
+	 * These signals are part of the xPON PHY electrical interface, not of
+	 * the LDD/LA device.  Request them fail-safe with both disable signals
+	 * asserted until phy_power_on() has configured the digital PHY.
+	 */
+	priv->tx_disable_gpio =
+		devm_gpiod_get(dev, "tx-disable", GPIOD_OUT_HIGH);
+	if (IS_ERR(priv->tx_disable_gpio))
+		return dev_err_probe(dev, PTR_ERR(priv->tx_disable_gpio),
+				     "failed to get TX disable GPIO\n");
+
+	priv->vcc_disable_gpio =
+		devm_gpiod_get_optional(dev, "vcc-disable", GPIOD_OUT_HIGH);
+	if (IS_ERR(priv->vcc_disable_gpio))
+		return dev_err_probe(dev, PTR_ERR(priv->vcc_disable_gpio),
+				     "failed to get VCC disable GPIO\n");
+
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	if (!res)
 		return dev_err_probe(dev, -EINVAL,
@@ -1107,14 +1239,6 @@ static int airoha_xpon_phy_probe(struct platform_device *pdev)
 	if (IS_ERR(priv->scu))
 		return dev_err_probe(dev, PTR_ERR(priv->scu),
 				     "failed to get SCU regmap\n");
-
-	if (soc->needs_chip_scu) {
-		priv->chip_scu =
-			syscon_regmap_lookup_by_phandle(dev->of_node, "airoha,chip-scu");
-		if (IS_ERR(priv->chip_scu))
-			return dev_err_probe(dev, PTR_ERR(priv->chip_scu),
-					     "failed to get CHIP-SCU regmap\n");
-	}
 
 	priv->reset = devm_reset_control_get_exclusive(dev, "phy");
 	if (IS_ERR(priv->reset))
@@ -1144,7 +1268,6 @@ static const struct airoha_xpon_phy_soc_data econet_en751221_xpon_phy_data = {
 	.gpon_bit_delay_reg = XPON_PHYSET5,
 	.gpon_bit_delay_mask = XPON_PHYSET5_BIT_DELAY_MASK,
 	.gpon_bit_delay_enable = XPON_PHYSET5_BIT_DELAY_EN,
-	.needs_chip_scu = true,
 	.manages_fw_ready = true,
 	.configure = econet_en751221_xpon_phy_configure,
 };

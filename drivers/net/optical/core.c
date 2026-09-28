@@ -13,7 +13,6 @@
 #include <linux/device/class.h>
 #include <linux/device/devres.h>
 #include <linux/err.h>
-#include <linux/gpio/consumer.h>
 #include <linux/idr.h>
 #include <linux/jiffies.h>
 #include <linux/module.h>
@@ -31,7 +30,6 @@ struct optical_frontend {
 	const struct optical_frontend_desc *desc;
 	const struct optical_frontend_ops *ops;
 	void *drvdata;
-	struct gpio_desc *tx_disable_gpio;
 
 	struct mutex op_lock; /* serializes provider callbacks and shared state */
 	struct optical_frontend_mode mode;
@@ -104,12 +102,7 @@ static ssize_t capabilities_show(struct device *dev,
 {
 	struct optical_frontend *frontend =
 		container_of(dev, struct optical_frontend, dev);
-	u32 capabilities = frontend->desc->capabilities;
-
-	if (frontend->tx_disable_gpio)
-		capabilities |= OPTICAL_FRONTEND_CAP_TX_DISABLE;
-
-	return sysfs_emit(buf, "0x%08x\n", capabilities);
+	return sysfs_emit(buf, "0x%08x\n", frontend->desc->capabilities);
 }
 static DEVICE_ATTR_RO(capabilities);
 
@@ -235,7 +228,7 @@ static umode_t optical_frontend_attr_is_visible(struct kobject *kobj,
 		return frontend->desc->capabilities & OPTICAL_FRONTEND_CAP_TX_FAULT ?
 			0444 : 0;
 	if (attr == &dev_attr_tx_enabled.attr)
-		return frontend->tx_disable_gpio || frontend->ops->tx_enable ||
+		return frontend->ops->tx_enable ||
 		       (frontend->desc->capabilities & OPTICAL_FRONTEND_CAP_TX_DISABLE) ?
 			0444 : 0;
 	if (attr == &dev_attr_alarms.attr)
@@ -274,8 +267,6 @@ static void optical_frontend_unregister(void *data)
 {
 	struct optical_frontend *frontend = data;
 
-	if (frontend->tx_disable_gpio)
-		gpiod_set_value_cansleep(frontend->tx_disable_gpio, 1);
 	device_unregister(&frontend->dev);
 }
 
@@ -293,19 +284,10 @@ devm_optical_frontend_register(struct device *dev,
 			       void *drvdata)
 {
 	struct optical_frontend *frontend;
-	struct gpio_desc *tx_disable_gpio;
 	int ret;
 
 	if (!dev || !desc || !desc->name || !ops)
 		return ERR_PTR(-EINVAL);
-
-	tx_disable_gpio = devm_gpiod_get_optional(dev, "tx-disable",
-						  GPIOD_OUT_HIGH);
-	if (IS_ERR(tx_disable_gpio)) {
-		ret = dev_err_probe(dev, PTR_ERR(tx_disable_gpio),
-				    "failed to get TX disable GPIO\n");
-		return ERR_PTR(ret);
-	}
 
 	frontend = kzalloc(sizeof(*frontend), GFP_KERNEL);
 	if (!frontend)
@@ -322,7 +304,6 @@ devm_optical_frontend_register(struct device *dev,
 	frontend->desc = desc;
 	frontend->ops = ops;
 	frontend->drvdata = drvdata;
-	frontend->tx_disable_gpio = tx_disable_gpio;
 	mutex_init(&frontend->op_lock);
 
 	device_initialize(&frontend->dev);
@@ -529,30 +510,15 @@ EXPORT_SYMBOL_GPL(optical_frontend_get_mode);
 
 int optical_frontend_tx_enable(struct optical_frontend *frontend, bool enable)
 {
-	int ret = 0;
+	int ret;
 
 	if (!frontend)
 		return -EINVAL;
-	if (!frontend->tx_disable_gpio && !frontend->ops->tx_enable)
+	if (!frontend->ops->tx_enable)
 		return -EOPNOTSUPP;
 
 	mutex_lock(&frontend->op_lock);
-
-	/* Block the optical output before asking the provider to shut down. */
-	if (!enable && frontend->tx_disable_gpio)
-		gpiod_set_value_cansleep(frontend->tx_disable_gpio, 1);
-
-	if (frontend->ops->tx_enable) {
-		ret = frontend->ops->tx_enable(frontend, enable);
-		if (ret)
-			goto out;
-	}
-
-	/* Release the external interlock only after the provider is ready. */
-	if (enable && frontend->tx_disable_gpio)
-		gpiod_set_value_cansleep(frontend->tx_disable_gpio, 0);
-
-out:
+	ret = frontend->ops->tx_enable(frontend, enable);
 	frontend->telemetry_cache_valid = false;
 	mutex_unlock(&frontend->op_lock);
 
@@ -578,10 +544,27 @@ int optical_frontend_tx_rearm(struct optical_frontend *frontend)
 }
 EXPORT_SYMBOL_GPL(optical_frontend_tx_rearm);
 
+int optical_frontend_tx_timing_calibrate(struct optical_frontend *frontend)
+{
+	int ret;
+
+	if (!frontend)
+		return -EINVAL;
+	if (!frontend->ops->tx_timing_calibrate)
+		return -EOPNOTSUPP;
+
+	mutex_lock(&frontend->op_lock);
+	ret = frontend->ops->tx_timing_calibrate(frontend);
+	frontend->telemetry_cache_valid = false;
+	mutex_unlock(&frontend->op_lock);
+
+	return ret;
+}
+EXPORT_SYMBOL_GPL(optical_frontend_tx_timing_calibrate);
+
 int optical_frontend_get_state(struct optical_frontend *frontend,
 			       struct optical_frontend_state *state)
 {
-	int gpio_value;
 	int ret = 0;
 
 	if (!frontend || !state)
@@ -593,20 +576,6 @@ int optical_frontend_get_state(struct optical_frontend *frontend,
 		ret = frontend->ops->get_state(frontend, state);
 		if (ret)
 			goto out;
-	}
-
-	/* TX_DISABLE is a core-owned interlock, so report it even when the
-	 * provider has no matching status register. GPIO values are logical:
-	 * one means disabled regardless of the electrical active level.
-	 */
-	if (frontend->tx_disable_gpio) {
-		gpio_value = gpiod_get_value_cansleep(frontend->tx_disable_gpio);
-		if (gpio_value < 0) {
-			ret = gpio_value;
-			goto out;
-		}
-		state->tx_enabled = !gpio_value;
-		state->valid |= OPTICAL_FRONTEND_STATE_F_TX_ENABLED;
 	}
 
 	if (!state->valid)

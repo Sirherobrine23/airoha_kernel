@@ -103,21 +103,17 @@ void en7571_burst_ctrl(struct en7571_priv *priv)
 }
 
 /*
- * Link-register setup.  On rev-2 silicon, enabling the link disables the MPDH
- * step (and vice-versa), asserts burst-control and sets the HW KT select;
- * earlier silicon only toggles the HW KT select.
+ * Link-register setup.  The generic vendor EN7571 driver only controls the
+ * MPDH step here on revision 2.  Leave TGEN and burst control untouched.
  */
 void en7571_link_reg(struct en7571_priv *priv, bool enable)
 {
 	if (priv->ver == 2) {
 		/*
-		 * Match xpon_en757x/v1: rev-2 controls MPDH, TGEN and the
-		 * burst gate here, but leaves the HW-KT select cleared.
-		 * Temperature compensation is handled by the software KT loop.
+		 * Do not modify T1DELAY here.  GPON TGEN already programmed
+		 * the production delay and the vendor rev-2 path preserves it.
 		 */
 		en7571_mpdh_stepsize(priv, !enable);
-		en7571_t1delay_setting(priv, !enable);
-		en7571_burst_ctrl(priv);
 	} else {
 		en7571_hwkt(priv, enable);
 		en7571_t1delay_setting(priv, !enable);
@@ -391,6 +387,162 @@ void en7571_tgen_recall(struct en7571_priv *priv)
 	/* Enable ERC. */
 	lddla_update8(&priv->lddla, EN7571_T1DELAY + 3, EN7571_ERC_ENABLE_MASK,
 		       EN7571_ERC_ENABLE);
+}
+
+/**
+ * en7571_tgen_calibrate() - run the vendor T0/T1 burst-timing sweep
+ * @priv: EN7571 device
+ *
+ * The caller must put the digital xPON PHY in lock-to-reference mode and
+ * enable PRBS23 before entering this function. This mirrors en7571_TGEN()
+ * without crossing the LDD/LA and digital-PHY driver boundary.
+ */
+int en7571_tgen_calibrate(struct en7571_priv *priv)
+{
+	u32 t0ct1c = lddla_flash_read(&priv->lddla, EN7571_FL_T0CT1C);
+	u8 swept_t0c, swept_t1c;
+	u8 fixed_t0c, fixed_t1c;
+	u8 count[2], t0c = 0, t1c = 0;
+	u8 delay;
+	int i, ret;
+
+	if (priv->lddla.pon_mode == EN7571_PON_GPON)
+		delay = EN7571_T1_T0_DELAY_GPON;
+	else if (priv->lddla.pon_mode == EN7571_PON_EPON)
+		delay = EN7571_T1_T0_DELAY_EPON;
+	else
+		return -ENODATA;
+
+	/*
+	 * The digital PHY has already selected PRBS23 and TX lock-to-reference
+	 * at this point. Match the 32-sample method-2 search in en7571_TGEN().
+	 */
+	mdelay(10);
+
+	for (i = 0; i < 32; i++) {
+		ret = lddla_update8(&priv->lddla, EN7571_T1DELAY + 3,
+				    EN7571_ERC_ENABLE_MASK, 0);
+		if (ret)
+			goto restore_erc;
+		udelay(2);
+
+		ret = lddla_wr8(&priv->lddla, EN7571_T1DELAY,
+				 EN7571_T1_T0_DELAY_SETTING1);
+		if (ret)
+			goto restore_erc;
+		udelay(2);
+
+		ret = lddla_wr8(&priv->lddla, EN7571_T1DELAY + 1,
+				 EN7571_TIMER_RESET_VALUE);
+		if (ret)
+			goto restore_erc;
+
+		ret = lddla_wr8(&priv->lddla, EN7571_T1DELAY + 2,
+				 EN7571_TIMER_RESET_VALUE);
+		if (ret)
+			goto restore_erc;
+		udelay(2);
+
+		ret = lddla_update8(&priv->lddla, EN7571_T1DELAY + 3,
+				    EN7571_TGEN_RESET_MASK,
+				    EN7571_TGEN_RESET_T1T0);
+		if (ret)
+			goto restore_erc;
+		udelay(2);
+
+		ret = lddla_update8(&priv->lddla, EN7571_T1DELAY + 3,
+				    EN7571_TGEN_RESET_MASK, 0);
+		if (ret)
+			goto restore_erc;
+		udelay(2);
+
+		ret = lddla_update8(&priv->lddla, EN7571_T1DELAY + 3,
+				    EN7571_TGEN_METHOD2_MASK,
+				    EN7571_TGEN_METHOD2_ENABLE);
+		if (ret)
+			goto restore_erc;
+		udelay(2);
+
+		ret = lddla_update8(&priv->lddla, EN7571_T1DELAY + 3,
+				    EN7571_TGEN_METHOD2_MASK, 0);
+		if (ret)
+			goto restore_erc;
+
+		ret = lddla_rd(&priv->lddla, EN7571_T0C, count,
+			       sizeof(count));
+		if (ret)
+			goto restore_erc;
+
+		t0c = max(t0c, count[0]);
+		t1c = max(t1c, count[1]);
+	}
+
+	mdelay(10);
+	swept_t0c = t0c;
+	swept_t1c = t1c;
+
+	ret = lddla_wr8(&priv->lddla, EN7571_T1DELAY, delay);
+	if (ret)
+		goto restore_erc;
+
+	/*
+	 * Prefer a complete production calibration, matching the vendor
+	 * driver. A non-erased word with either timer left at zero is not a
+	 * usable T0C/T1C pair, so keep the value measured by this runtime
+	 * sweep instead.
+	 */
+	if (t0ct1c != EN7571_FLASH_ERASED) {
+		fixed_t0c = (t0ct1c >> 16) & 0xff;
+		fixed_t1c = (t0ct1c >> 24) & 0xff;
+
+		if (fixed_t0c && fixed_t1c) {
+			t0c = fixed_t0c;
+			t1c = fixed_t1c;
+		} else {
+			dev_warn(priv->lddla.dev,
+				 "ignoring incomplete fixed TGEN timing: t0c=%#04x t1c=%#04x\n",
+				 fixed_t0c, fixed_t1c);
+		}
+	}
+
+	ret = lddla_wr8(&priv->lddla, EN7571_T1DELAY + 1, t1c);
+	if (ret)
+		goto restore_erc;
+
+	ret = lddla_wr8(&priv->lddla, EN7571_T1DELAY + 2, t0c);
+	if (ret)
+		goto restore_erc;
+	mdelay(10);
+
+	ret = lddla_update8(&priv->lddla, EN7571_T1DELAY + 3,
+			    EN7571_TGEN_RESET_MASK,
+			    EN7571_TGEN_RESET_T1T0);
+	if (ret)
+		goto restore_erc;
+	mdelay(10);
+
+	ret = lddla_update8(&priv->lddla, EN7571_T1DELAY + 3,
+			    EN7571_TGEN_RESET_MASK, 0);
+	if (ret)
+		goto restore_erc;
+	mdelay(10);
+
+	ret = lddla_update8(&priv->lddla, EN7571_T1DELAY + 3,
+			    EN7571_ERC_ENABLE_MASK,
+			    EN7571_ERC_ENABLE);
+	if (ret)
+		return ret;
+
+	dev_info(priv->lddla.dev,
+		 "EN7571 TGEN calibrated: swept t0c=%#04x t1c=%#04x final t0c=%#04x t1c=%#04x delay=%#04x\n",
+		 swept_t0c, swept_t1c, t0c, t1c, delay);
+
+	return 0;
+
+restore_erc:
+	lddla_update8(&priv->lddla, EN7571_T1DELAY + 3,
+		      EN7571_ERC_ENABLE_MASK, EN7571_ERC_ENABLE);
+	return ret;
 }
 
 /* --- APD reverse-bias control --- */
@@ -680,53 +832,50 @@ static u16 en7571_pwradc_data10(struct en7571_priv *priv)
 	return v & 0x3ff;
 }
 
-/* Average eight 10-bit PWRADC samples (round to nearest). */
-static s32 en7571_pwradc_avg8(struct en7571_priv *priv)
-{
-	u32 sum = 0;
-	int i;
-
-	for (i = 0; i < 8; i++)
-		sum += en7571_pwradc_data10(priv);
-	return ((sum >> 2) + 1) >> 1;
-}
-
 /**
  * en7571_txsd_level() - program the TIA signal-detect threshold.
  * @priv: device
  *
- * Measures the TIA flat-band (A) and signal-detect (B) PWRADC levels and
- * combines them with the flashed Pav (D, dark-offset corrected) as
- *   tia_sd = c*D + (2.8/1.8)*(A - B) + 6
- * carried in Q20.  The D coefficient depends on the high TIA gain bit.
+ * Reproduce the XC220-G3v vendor EN7571 TxSD calibration sequence: take one
+ * triggered PWRADC sample on the TIA flat-band path (A), switch to the TxSD
+ * path, clear the previous 9-bit threshold, take one more sample (B), and
+ * combine them with the flashed Pav value (D, dark-offset corrected):
+ *
+ *   tia_sd = (7 / 45) * D + (14 / 9) * (A - B) + 6
+ *
+ * The vendor driver uses these fixed coefficients irrespective of the TIA
+ * gain bits.  Keep the arithmetic in Q20 to avoid floating point in-kernel.
  */
 void en7571_txsd_level(struct en7571_priv *priv)
 {
 	u32 pav_p1 = lddla_flash_read(&priv->lddla, EN7571_FL_PAV_P1);
 	s32 txsd_offset = priv->pwradc_offset >> 6;
-	s32 a, b, d, tia_sd, coeff_d;
-	u8 tiamux0, tiamux1;
-
-	/* Zero the TIASD threshold (bits 0-8). */
-	lddla_wr8(&priv->lddla, EN7571_TIASD, 0);
-	lddla_update8(&priv->lddla, EN7571_TIASD + 1, EN7571_TIASD_UPPER_MASK, 0);
+	s32 a, b, d, tia_sd;
+	u8 tiamux0;
 
 	/* Save the TIA mux field and select the flat-band path. */
 	lddla_rd8(&priv->lddla, EN7571_TIAMUX, &tiamux0);
 	lddla_update8(&priv->lddla, EN7571_TIAMUX, EN7571_TIA_MUX_MASK, EN7571_TIA_MUX_TIAFLT);
-	mdelay(5);
-	a = en7571_pwradc_avg8(priv);
+	a = en7571_pwradc_data10(priv);
 
 	/* Select the signal-detect path. */
 	lddla_update8(&priv->lddla, EN7571_TIAMUX, EN7571_TIA_MUX_MASK, EN7571_TIA_MUX_TIASD);
-	b = en7571_pwradc_avg8(priv);
+
+	/*
+	 * The vendor sequence clears the old threshold only after switching to
+	 * the TxSD mux path.  TIASD is nine bits wide (0x00c[8:0]).
+	 */
+	lddla_wr8(&priv->lddla, EN7571_TIASD, 0);
+	lddla_update8(&priv->lddla, EN7571_TIASD + 1,
+			 EN7571_TIASD_UPPER_MASK, 0);
+	b = en7571_pwradc_data10(priv);
 
 	/* D: flashed Pav minus the dark offset. */
 	d = (s32)((pav_p1 & EN7571_FL_PAV_MASK) >> 18) - txsd_offset;
 
-	lddla_rd8(&priv->lddla, EN7571_TIAMUX + 1, &tiamux1);
-	coeff_d = (tiamux1 & 0x80) ? 108741 : 163112;	/* 0.1*(2.8/1.8), /1.5 if gain[1] */
-	tia_sd = (s32)(((s64)coeff_d * d + 1631118LL * (a - b) + (6LL << 20)) >> 20);
+	/* Q20: 7/45 ~= 0.1555556, 14/9 ~= 1.5555556. */
+	tia_sd = (s32)(((s64)163112 * d +
+			 1631118LL * (a - b) + (6LL << 20)) >> 20);
 	if (tia_sd < 0)
 		tia_sd = 0;
 
@@ -734,8 +883,12 @@ void en7571_txsd_level(struct en7571_priv *priv)
 	lddla_update8(&priv->lddla, EN7571_TIASD + 1, EN7571_TIASD_UPPER_MASK,
 		       (tia_sd >> 8) & 0x01);
 
-	/* Restore the saved TIA mux field. */
-	lddla_update8(&priv->lddla, EN7571_TIAMUX, EN7571_TIA_MUX_MASK, tiamux0 & ~EN7571_TIA_MUX_MASK);
+	/* The stock driver restores the complete saved TIAMUX byte. */
+	lddla_wr8(&priv->lddla, EN7571_TIAMUX, tiamux0);
+
+	dev_info(priv->lddla.dev,
+		 "EN7571 TxSD calibrated: offset=%d tiaflt=%d tiasd=%d pav_d=%d threshold=0x%03x\n",
+		 txsd_offset, a, b, d, tia_sd & 0x1ff);
 }
 
 /* Compare the cached Rx-power DDMI word against the alarm thresholds. */
