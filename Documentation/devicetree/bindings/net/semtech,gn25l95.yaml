@@ -32,12 +32,6 @@ properties:
     description:
       The device exposes one optical frontend provider.
 
-  tx-disable-gpios:
-    $ref: /schemas/types.yaml#/definitions/phandle-array
-    maxItems: 1
-    description:
-      GPIO connected to the optical transmitter disable input.
-
   firmware-name:
     $ref: /schemas/types.yaml#/definitions/string
     description: |

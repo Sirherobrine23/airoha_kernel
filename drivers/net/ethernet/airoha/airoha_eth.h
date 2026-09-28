@@ -1194,6 +1194,7 @@ struct airoha_eth_soc_data {
 	int irq_banks;
 	int max_gdm_ports;
 	bool legacy_qdma;
+	bool ppe_datapath;
 	u32 pse_fq_cfg;
 	u32 ppe_stats_entries;
 	u32 ppe_sram_entries;

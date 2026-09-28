@@ -22,6 +22,7 @@
 #include <linux/property.h>
 #include <linux/seq_file.h>
 #include <linux/slab.h>
+#include <linux/string.h>
 
 #include "en7571.h"
 
@@ -161,24 +162,24 @@ int en7571_init(struct en7571_priv *priv)
 	case AIROHA_LDDLA_BOB_MAGIC(AIROHA_LDDLA_BOB_PROFILE_GPON,
 				    EN7571_BOB_VARIANT):
 		priv->lddla.pon_mode = EN7571_PON_GPON;
-		en7571_tgen_recall(priv);
 		en7571_set_t0t1_delay(priv, EN7571_T1_T0_DELAY_GPON);
+		en7571_tgen_recall(priv);
 		en7571_apd_init(priv);
 		en7571_apd_control(priv);
 		break;
 	case AIROHA_LDDLA_BOB_MAGIC(AIROHA_LDDLA_BOB_PROFILE_EPON,
 				    EN7571_BOB_VARIANT):
 		priv->lddla.pon_mode = EN7571_PON_EPON;
-		en7571_tgen_recall(priv);
 		en7571_set_t0t1_delay(priv, EN7571_T1_T0_DELAY_EPON);
+		en7571_tgen_recall(priv);
 		/* EPON does not run APD control. */
 		break;
 	case AIROHA_LDDLA_BOB_MAGIC(AIROHA_LDDLA_BOB_PROFILE_XPON,
 				    EN7571_BOB_VARIANT):
 		/* Adapter mode: run as GPON but with the EPON burst delay. */
 		priv->lddla.pon_mode = EN7571_PON_GPON;
-		en7571_tgen_recall(priv);
 		en7571_set_t0t1_delay(priv, EN7571_T1_T0_DELAY_EPON);
+		en7571_tgen_recall(priv);
 		en7571_apd_init(priv);
 		en7571_apd_control(priv);
 		break;
@@ -329,18 +330,59 @@ static u16 en7571_op_rx_power(struct airoha_lddla *lddla)
 	return en7571_rx_power_ddmi(container_of(lddla, struct en7571_priv, lddla));
 }
 
+static void en7571_tx_trace_work(struct work_struct *work)
+{
+	struct en7571_priv *priv =
+		container_of(work, struct en7571_priv, tx_trace_work);
+	char reason[sizeof(priv->tx_trace_reason)];
+	unsigned long flags;
+	int ret;
+
+	spin_lock_irqsave(&priv->tx_trace_lock, flags);
+	strscpy(reason, priv->tx_trace_reason, sizeof(reason));
+	spin_unlock_irqrestore(&priv->tx_trace_lock, flags);
+
+	ret = lddla_lock(&priv->lddla);
+	if (ret)
+		return;
+
+	mutex_unlock(&priv->lddla.lock);
+}
+
+static int en7571_op_tx_timing_calibrate(struct airoha_lddla *lddla)
+{
+	struct en7571_priv *priv =
+		container_of(lddla, struct en7571_priv, lddla);
+
+	return en7571_tgen_calibrate(priv);
+}
+
 static int en7571_op_tx_rearm(struct airoha_lddla *lddla)
 {
+	struct en7571_priv *priv = container_of(lddla, struct en7571_priv, lddla);
 	int ret;
 
 	ret = lddla_update8(lddla, EN7571_PWR_CTRL_0 + 1,
 			    EN7571_DCL_RST_B_MASK, EN7571_DCL_RST_B);
-	if (ret)
+	if (ret) {
+		dev_warn(lddla->dev, "EN7571 TX rearm DCL failed: %d\n", ret);
 		return ret;
+	}
 
-	return lddla_update8(lddla, EN7571_SAFE_PROTECT + 1,
-			     EN7571_SAFE_CIRCUIT_MASK,
-			     EN7571_SAFE_CIRCUIT_RESET);
+	/*
+	 * Match the vendor EN7571 re-arm ordering: clear a stale rogue-ONU
+	 * latch before resetting the transmitter safe circuit.
+	 */
+	en7571_rogue_clear(priv);
+
+	ret = lddla_update8(lddla, EN7571_SAFE_PROTECT + 1,
+			    EN7571_SAFE_CIRCUIT_MASK,
+			    EN7571_SAFE_CIRCUIT_RESET);
+	if (ret)
+		dev_warn(lddla->dev, "EN7571 TX rearm safe reset failed: %d\n",
+			 ret);
+
+	return ret;
 }
 
 /* Chip-specific debugfs lines (the shared core prints the common ones). */
@@ -415,6 +457,7 @@ static const struct airoha_lddla_ops en7571_ops = {
 	.rx_power_refresh = en7571_op_rx_power,
 	.diag_show = en7571_op_diag,
 	.tx_rearm = en7571_op_tx_rearm,
+	.tx_timing_calibrate = en7571_op_tx_timing_calibrate,
 };
 
 /* ------------------------------------------------------------------ */
@@ -459,6 +502,8 @@ static int en7571_probe(struct i2c_client *client)
 	priv->lddla.ops = &en7571_ops;
 	mutex_init(&priv->lddla.lock);
 	INIT_DELAYED_WORK(&priv->tick_work, en7571_tick_work);
+	INIT_WORK(&priv->tx_trace_work, en7571_tx_trace_work);
+	spin_lock_init(&priv->tx_trace_lock);
 	i2c_set_clientdata(client, priv);
 	en7571_set_defaults(priv);
 
@@ -498,6 +543,7 @@ static void en7571_remove(struct i2c_client *client)
 	struct en7571_priv *priv = i2c_get_clientdata(client);
 
 	cancel_delayed_work_sync(&priv->tick_work);
+	cancel_work_sync(&priv->tx_trace_work);
 	lddla_debugfs_remove(&priv->lddla);
 	mutex_destroy(&priv->lddla.lock);
 }

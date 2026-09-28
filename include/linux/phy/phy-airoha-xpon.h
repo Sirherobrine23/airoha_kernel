@@ -40,5 +40,7 @@ int airoha_xpon_phy_set_gpon_extended_preamble(struct phy *phy,
 int airoha_xpon_phy_set_gpon_oper_state(
 	struct phy *phy, enum airoha_xpon_phy_gpon_oper_state state);
 int airoha_xpon_phy_set_gpon_bit_delay(struct phy *phy, u8 delay);
+int airoha_xpon_phy_set_tx_enable(struct phy *phy, bool enable);
+int airoha_xpon_phy_set_tx_calibration_mode(struct phy *phy, bool enable);
 
 #endif /* __LINUX_PHY_AIROHA_XPON_H */

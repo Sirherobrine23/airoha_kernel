@@ -31,14 +31,22 @@
 #define XPON_SCU_WAN_MODE_EPON		0x01
 
 struct airoha_xpon_match_data {
+	enum airoha_ids version;
 	bool mode_from_dt;
 	u32 wan_mode_mask;
 	u8 gpon_fine_delay;
 	u16 gpon_rsp_time_activation;
+	u16 gpon_idle_gem_threshold;
 	u8 gpon_guard_bits_override;
+	u8 gpon_sn_tx_power_mode;
 	bool en7523_gpon_defaults;
+	bool gpon_reset_dbg_dly;
 	bool mac_irq_via_eth;
+	bool gpon_adjust_rx_delay;
 	bool gpon_reset_on_start;
+	bool gpon_rearm_tx_on_overhead;
+	bool gpon_runtime_tgen;
+	bool gpon_has_mpi;
 };
 
 
@@ -109,6 +117,9 @@ struct airoha_xpon_match_data {
 #define GPON_DBG_GRP_0		0x228
 #define GPON_DBG_GRP_1		0x22C
 #define GPON_DBG_BWM_BFIFO_STS	0x250
+#define GPON_DBG_PROBE_CTRL	0x240
+#define GPON_DBG_PROBE_HIGH32	0x244
+#define GPON_DBG_PROBE_LOW32	0x248
 #define GPON_DBG_ERR_CTRL	0x260
 #define GPON_DBG_RX_GEM_CNT	0x300
 #define GPON_DBG_RX_CRC_ERR_CNT	0x304
@@ -146,6 +157,7 @@ struct airoha_xpon_match_data {
 /* G_SN_MSG_CFG */
 #define SN_MSG_CFG_SN_REQ_THR_MASK	GENMASK(31, 24)
 #define SN_MSG_CFG_TX_POWER_MODE_MASK	GENMASK(17, 16)
+#define GPON_SN_TX_POWER_MODE_LEGACY	2
 #define SN_MSG_CFG_RANDOM_DELAY_MASK	GENMASK(11, 0)
 
 /* G_INT_STATUS / G_INT_ENABLE */
@@ -254,11 +266,21 @@ struct airoha_xpon_match_data {
 /* G_MBI_MPI_STOP */
 #define MBI_RX_STOP		BIT(0)
 #define MBI_TX_STOP		BIT(8)
+#define MPI_RX_STOP		BIT(16)
+#define MPI_TX_STOP		BIT(24)
+#define MPI_RX_STOP_DONE	BIT(30)
+#define MPI_TX_STOP_DONE	BIT(31)
 
 /* DBG_DLY */
+#define DBG_DLY_PHY_RX_DLY_SEL		BIT(31)
+#define DBG_DLY_FIX_PHY_RX_DLY_MASK	GENMASK(27, 16)
 #define DBG_DLY_FINE_INT_MASK	GENMASK(15, 8)
 #define DBG_DLY_FINE_INT_DEFAULT	0x0D
 #define DBG_DLY_RESET_DEFAULT	0x80800F00
+
+/* DBG_PROBE_CTRL/HIGH32 */
+#define DBG_PROBE_RX_DELAY_SEL		0x0000000f
+#define DBG_PROBE_RX_DELAY_MASK		GENMASK(23, 12)
 
 /* DBG_BWM_FILTER_CTRL */
 #define BWM_FILTER_LEN_VALID_CHECK_EN	BIT(17)
@@ -281,7 +303,8 @@ struct airoha_xpon_match_data {
 #define GPON_RSP_TIME_ACT_EN7523	0x0577
 #define GPON_RSP_TIME_ACT_EN7528	0x0577
 #define GPON_RSP_TIME_ACT_EN751221	0x058b
-#define GPON_IDLE_GEM_THLD_DEFAULT	0x001A
+#define GPON_IDLE_GEM_THLD_DEFAULT	0x00A0
+#define GPON_IDLE_GEM_THLD_EN7523	0x001A
 
 /* TO1 timer: 10 seconds in O3/O4 without Ranging_Time → return to O2 */
 #define GPON_TO1_MS		10000

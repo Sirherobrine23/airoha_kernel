@@ -585,11 +585,31 @@ static int airoha_lddla_frontend_tx_rearm(struct optical_frontend *frontend)
 	return ret;
 }
 
+static int
+airoha_lddla_frontend_tx_timing_calibrate(struct optical_frontend *frontend)
+{
+	struct airoha_lddla *lddla = optical_frontend_get_drvdata(frontend);
+	int ret;
+
+	if (!lddla || !lddla->ops->tx_timing_calibrate)
+		return -EOPNOTSUPP;
+
+	ret = lddla_lock(lddla);
+	if (ret)
+		return ret;
+
+	ret = lddla->ops->tx_timing_calibrate(lddla);
+	mutex_unlock(&lddla->lock);
+
+	return ret;
+}
+
 static const struct optical_frontend_ops airoha_lddla_frontend_ops = {
 	.set_mode = airoha_lddla_frontend_set_mode,
 	.get_telemetry = airoha_lddla_frontend_get_telemetry,
 	.get_state = airoha_lddla_frontend_get_state,
 	.tx_rearm = airoha_lddla_frontend_tx_rearm,
+	.tx_timing_calibrate = airoha_lddla_frontend_tx_timing_calibrate,
 };
 
 static struct airoha_lddla *airoha_lddla_from_frontend_dev(struct device *dev)
