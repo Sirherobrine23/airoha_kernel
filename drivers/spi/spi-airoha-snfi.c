@@ -13,6 +13,7 @@
 #include <linux/dma-mapping.h>
 #include <linux/errno.h>
 #include <linux/gpio/consumer.h>
+#include <linux/iopoll.h>
 #include <linux/limits.h>
 #include <linux/math.h>
 #include <linux/minmax.h>
@@ -260,6 +261,7 @@ struct airoha_spi_soc_data {
 
 struct airoha_spi_ctrl {
 	struct device *dev;
+	void __iomem *ctrl_base;
 	struct regmap *regmap_ctrl;
 	struct regmap *regmap_nfi;
 	struct regmap *scuclk;
@@ -407,10 +409,54 @@ static int airoha_spi_write_data_to_fifo(struct airoha_spi_ctrl *as_ctrl,
 	return 0;
 }
 
+/*
+ * Every SPI-NAND page read on EN751221 goes through the manual FIFO one byte
+ * at a time: three register accesses per byte. Through regmap each of them
+ * takes the regmap lock, and the poll adds a ktime_get(), which costs about
+ * five times the time the 12.5 MHz dual-wire bus needs per byte.
+ */
+static bool fast_fifo_read = true;
+module_param(fast_fifo_read, bool, 0644);
+MODULE_PARM_DESC(fast_fifo_read,
+		 "Read the manual FIFO with plain MMIO accesses instead of regmap");
+
+static int airoha_spi_read_fifo_mmio(struct airoha_spi_ctrl *as_ctrl,
+				     u8 *ptr, int len)
+{
+	void __iomem *base = as_ctrl->ctrl_base;
+	int i;
+
+	/*
+	 * The same little-endian 32-bit accesses regmap-mmio does for this
+	 * map, minus its lock: the controller is only driven with the SPI
+	 * core's bus lock held.
+	 */
+	for (i = 0; i < len; i++) {
+		int err;
+		u32 val;
+
+		err = readl_poll_timeout_atomic(base + REG_SPI_CTRL_DFIFO_EMPTY,
+						val,
+						!(val & SPI_CTRL_DFIFO_EMPTY),
+						0, 250 * USEC_PER_MSEC);
+		if (err)
+			return err;
+
+		val = readl(base + REG_SPI_CTRL_DFIFO_RDATA);
+		ptr[i] = FIELD_GET(SPI_CTRL_DFIFO_RDATA, val);
+		writel(SPI_CTRL_DFIFO_RD, base + REG_SPI_CTRL_DFIFO_RD);
+	}
+
+	return 0;
+}
+
 static int airoha_spi_read_data_from_fifo(struct airoha_spi_ctrl *as_ctrl,
 					    u8 *ptr, int len)
 {
 	int i;
+
+	if (READ_ONCE(fast_fifo_read))
+		return airoha_spi_read_fifo_mmio(as_ctrl, ptr, len);
 
 	for (i = 0; i < len; i++) {
 		int err;
@@ -990,6 +1036,7 @@ static int airoha_spi_probe(struct platform_device *pdev)
 	if (IS_ERR(base))
 		return PTR_ERR(base);
 
+	as_ctrl->ctrl_base = base;
 	as_ctrl->regmap_ctrl = devm_regmap_init_mmio(dev, base,
 					     &spi_ctrl_regmap_config);
 	if (IS_ERR(as_ctrl->regmap_ctrl))
