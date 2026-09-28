@@ -16,8 +16,9 @@
  *   CRSN_22, and they are queued straight to the vif.
  *
  * mt76 registers the vif netdevs with en75_whnat_register_vif(), which gives
- * each one of the AIROHA_WHNAT_VIFS slots. Nothing is handed to the PPE until
- * the whnat_enable module parameter is set.
+ * each one of the AIROHA_WHNAT_VIFS slots. The offload is on whenever it is
+ * built and a PPE is active; clearing the whnat_enable module parameter hands
+ * nothing more to the PPE.
  */
 
 #include <linux/etherdevice.h>
@@ -35,7 +36,7 @@ static struct airoha_ppe __rcu *active_ppe;
 static struct airoha_qdma __rcu *active_qdma;
 static DEFINE_MUTEX(vif_lock);
 
-static bool whnat_enable;
+static bool whnat_enable = true;
 module_param(whnat_enable, bool, 0644);
 MODULE_PARM_DESC(whnat_enable, "Hand WiFi frames to the EN751221 PPE");
 
