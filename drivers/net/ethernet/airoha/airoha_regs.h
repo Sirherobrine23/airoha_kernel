@@ -161,6 +161,10 @@
 #define PSE_IQ_RES2_P5_MASK		GENMASK(15, 8)
 #define PSE_IQ_RES2_P4_MASK		GENMASK(7, 0)
 
+/* PSE flow-control status: input-queue page counts per port. */
+#define REG_PSE_FQFC_STA1		(PSE_BASE + 0x10)
+#define REG_PSE_FQFC_STA2		(PSE_BASE + 0x14)
+
 #define REG_FE_VIP_EN(_n)		(0x0300 + ((_n) << 3))
 #define PATN_FCPU_EN_MASK		BIT(7)
 #define PATN_SWP_EN_MASK		BIT(6)
@@ -253,6 +257,8 @@
 #define REG_GDM_TXCHN_EN(_n)		(GDM_BASE(_n) + 0x24)
 #define REG_GDM_RXCHN_EN(_n)		(GDM_BASE(_n) + 0x28)
 #define REG_CDM_HWF_CHN_EN(_n)		(CDM_BASE(_n) + 0x0c)
+/* One bit per TX channel that still holds a queued frame. */
+#define REG_GDM_TX_CHN_VLD(_n)		(GDM_BASE(_n) + 0x70)
 
 /* GPON downstream traffic uses GDM2 receive channels 0 and 1. */
 #define EN7523_GDM2_GPON_RX_CHN_MASK	GENMASK(1, 0)
