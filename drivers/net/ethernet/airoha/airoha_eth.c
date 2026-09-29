@@ -3945,6 +3945,9 @@ static netdev_tx_t econet_qdma_xmit(struct sk_buff *skb, struct net_device *dev)
 	u8 channel;
 
 	if ((READ_ONCE(port->flags) & AIROHA_PRIV_F_XPON_MANAGED)) {
+		if (READ_ONCE(port->xpon_tx_stopped))
+			goto drop;
+
 		switch (READ_ONCE(port->xpon_mode)) {
 		case AIROHA_XPON_MODE_GPON:
 			if (econet_xpon_classify(port, skb, &xpon_info))
@@ -4513,6 +4516,8 @@ static int econet_xmit_xpon_oam(struct net_device *netdev, struct sk_buff *skb,
 	if (!skb || gem_port_id > FIELD_MAX(ETX_XPON_GEM_MASK) ||
 	    !READ_ONCE(port->xpon_control_started))
 		return -EINVAL;
+	if (READ_ONCE(port->xpon_tx_stopped))
+		return -ENETDOWN;
 	if (skb_linearize(skb))
 		return -ENOMEM;
 
@@ -4725,6 +4730,119 @@ static void econet_xpon_flush_services(struct net_device *netdev)
 	memset(port->xpon_service_cookies, 0, sizeof(port->xpon_service_cookies));
 	memset(port->xpon_service_ncookies, 0, sizeof(port->xpon_service_ncookies));
 	spin_unlock_bh(&port->xpon_service_lock);
+}
+
+/*
+ * fe_api_pse_iq_abnormal() in the vendor FE driver: on EN751221 a channel
+ * retire must not run while the PSE input queues hold more than 0xa0 pages,
+ * or it trips an FE hardware bug.
+ */
+static bool airoha_pse_iq_abnormal(struct airoha_eth *eth)
+{
+	u32 sta1 = airoha_fe_rr(eth, REG_PSE_FQFC_STA1);
+	u32 sta2 = airoha_fe_rr(eth, REG_PSE_FQFC_STA2);
+	u32 pages;
+
+	pages = FIELD_GET(GENMASK(7, 0), sta1) + FIELD_GET(GENMASK(15, 8), sta1) +
+		FIELD_GET(GENMASK(23, 16), sta1) + FIELD_GET(GENMASK(15, 8), sta2);
+
+	return pages > 0xa0;
+}
+
+/*
+ * fe_api_set_channel_retire_all() in the vendor FE driver, in its default
+ * channel-drop mode, run when the WAN link goes down: frames still queued for
+ * the GDM2 T-CONT channels would otherwise stay held against the channels of
+ * the lost session and wedge them once the next session reuses them. Loop
+ * GDM2 back into a drop forward with every T-CONT channel enabled, let the
+ * WAN QDMA push the queued frames through, then restore the channel map.
+ *
+ * The EN751221/EN7528 FE forwards to drop on port 7 and also needs the QDMA
+ * UMAC loopback; the EN7523 FE drops on port 0xf and its QDMA has no such
+ * bit (the vendor code writes it at the EN7512 WAN QDMA address, which on
+ * EN7523 lies inside the LAN QDMA, so it is not reproduced here).
+ */
+static void airoha_retire_all(struct net_device *netdev)
+{
+	struct airoha_gdm_common *common = airoha_gdm_common_from_netdev(netdev);
+	u32 txchn, rxchn, hwf, lpbk, fwd, glb = 0, vld;
+	struct airoha_gdm_dev *dev;
+	struct airoha_qdma *qdma;
+	struct airoha_eth *eth;
+	bool en7512;
+	u8 drop;
+	int ret;
+
+	if (!common || common->id != AIROHA_GDM2_IDX)
+		return;
+
+	dev = container_of(common, struct airoha_gdm_dev, common);
+	eth = common->eth;
+	qdma = &eth->qdma[1];
+	en7512 = airoha_is(eth, econet_en751221, econet_en7528);
+	drop = en7512 ? ETX_FPORT_DROP : FE_PSE_PORT_DROP;
+
+	if (airoha_is(eth, econet_en751221) && airoha_pse_iq_abnormal(eth)) {
+		netdev_info(netdev,
+			    "PSE input queues abnormal, GDM2 channels not retired\n");
+		return;
+	}
+
+	/*
+	 * qdma_stop_flag: the vendor WAN QDMA refuses new frames while the
+	 * channels are retired, so nothing refills them behind the drain.
+	 */
+	WRITE_ONCE(dev->xpon_tx_stopped, true);
+	synchronize_net();
+
+	txchn = airoha_fe_rr(eth, REG_GDM_TXCHN_EN(AIROHA_GDM2_IDX));
+	rxchn = airoha_fe_rr(eth, REG_GDM_RXCHN_EN(AIROHA_GDM2_IDX));
+	hwf = airoha_fe_rr(eth, REG_CDM_HWF_CHN_EN(2));
+	lpbk = airoha_fe_rr(eth, REG_GDM_LPBK_CFG(AIROHA_GDM2_IDX));
+	fwd = airoha_fe_rr(eth, REG_GDM_FWD_CFG(AIROHA_GDM2_IDX));
+
+	airoha_fe_wr(eth, REG_GDM_TXCHN_EN(AIROHA_GDM2_IDX),
+		     GDM2_RETIRE_TX_CHN_MASK);
+	airoha_fe_wr(eth, REG_GDM_RXCHN_EN(AIROHA_GDM2_IDX), 0);
+	airoha_fe_wr(eth, REG_CDM_HWF_CHN_EN(2), 0);
+
+	airoha_fe_wr(eth, REG_GDM_LPBK_CFG(AIROHA_GDM2_IDX),
+		     FIELD_PREP(LPBK_GAP_MASK, 0x40) |
+		     FIELD_PREP(LPBK_LEN_MASK, 500) |
+		     LBK_CHAN_MODE_MASK | LPBK_EN_MASK);
+	airoha_fe_wr(eth, REG_GDM_FWD_CFG(AIROHA_GDM2_IDX),
+		     GDM_DROP_OVERSIZE_MASK | GDM_DROP_RUNT_MASK |
+		     GDM_DROP_CRC_ERR_MASK | GDM_IP4_CKSUM_MASK |
+		     GDM_TCP_CKSUM_MASK | GDM_UDP_CKSUM_MASK |
+		     GDM_STRIP_CRC_MASK |
+		     FIELD_PREP(GDM_UCFQ_MASK, drop) |
+		     FIELD_PREP(GDM_BCFQ_MASK, drop) |
+		     FIELD_PREP(GDM_MCFQ_MASK, drop) |
+		     FIELD_PREP(GDM_OCFQ_MASK, drop));
+	if (en7512) {
+		glb = airoha_qdma_rr(qdma, REG_QDMA_GLOBAL_CFG);
+		airoha_qdma_wr(qdma, REG_QDMA_GLOBAL_CFG,
+			       glb | ECONET_GLOBAL_CFG_UMAC_LOOPBACK);
+	}
+
+	ret = read_poll_timeout(airoha_fe_rr, vld, !vld, USEC_PER_MSEC,
+				300 * USEC_PER_MSEC, false, eth,
+				REG_GDM_TX_CHN_VLD(AIROHA_GDM2_IDX));
+	if (ret)
+		netdev_warn(netdev,
+			    "GDM2 upstream still holds frames on channels %#x\n",
+			    vld);
+
+	airoha_fe_wr(eth, REG_GDM_LPBK_CFG(AIROHA_GDM2_IDX), lpbk);
+	airoha_fe_wr(eth, REG_GDM_FWD_CFG(AIROHA_GDM2_IDX), fwd);
+	if (en7512)
+		airoha_qdma_wr(qdma, REG_QDMA_GLOBAL_CFG, glb);
+
+	airoha_fe_wr(eth, REG_GDM_TXCHN_EN(AIROHA_GDM2_IDX), txchn);
+	airoha_fe_wr(eth, REG_GDM_RXCHN_EN(AIROHA_GDM2_IDX), rxchn);
+	airoha_fe_wr(eth, REG_CDM_HWF_CHN_EN(2), hwf);
+
+	WRITE_ONCE(dev->xpon_tx_stopped, false);
 }
 
 bool econet_rx_xpon_oam(struct airoha_eth *eth, u8 qdma_id,
@@ -7468,6 +7586,14 @@ static netdev_tx_t __airoha_dev_xmit(struct sk_buff *skb,
 	u16 index;
 	u8 fport;
 
+	if (unlikely(READ_ONCE(dev->xpon_tx_stopped))) {
+		if (xpon_oam)
+			return NETDEV_TX_BUSY;
+		dev_kfree_skb_any(skb);
+		netdev->stats.tx_dropped++;
+		return NETDEV_TX_OK;
+	}
+
 	rcu_read_lock();
 	qdma = rcu_dereference(dev->qdma);
 	if (!xpon && (dev->flags & AIROHA_PRIV_F_XPON_MANAGED) &&
@@ -9722,6 +9848,7 @@ static const struct airoha_eth_xpon_ops econet_xpon_ops = {
 	.del_service = econet_xpon_del_service,
 	.has_gem_service = econet_xpon_has_gem_service,
 	.flush_services = econet_xpon_flush_services,
+	.retire_all = airoha_retire_all,
 };
 
 static const struct airoha_eth_xpon_ops airoha_xpon_ops = {
@@ -9742,6 +9869,7 @@ static const struct airoha_eth_xpon_ops airoha_xpon_ops = {
 	.del_service = airoha_xpon_del_service,
 	.has_gem_service = airoha_xpon_has_gem_service,
 	.flush_services = airoha_xpon_flush_services,
+	.retire_all = airoha_retire_all,
 };
 
 /*
@@ -9770,6 +9898,7 @@ static const struct airoha_eth_xpon_ops en7528_xpon_ops = {
 	.del_service = econet_xpon_del_service,
 	.has_gem_service = econet_xpon_has_gem_service,
 	.flush_services = econet_xpon_flush_services,
+	.retire_all = airoha_retire_all,
 };
 
 const struct airoha_eth_soc_data econet_en751221_soc_data = {
@@ -10298,6 +10427,15 @@ void airoha_eth_xpon_flush_services(struct net_device *netdev)
 		ops->flush_services(netdev);
 }
 EXPORT_SYMBOL_GPL(airoha_eth_xpon_flush_services);
+
+void airoha_eth_xpon_retire_all(struct net_device *netdev)
+{
+	const struct airoha_eth_xpon_ops *ops = airoha_eth_get_xpon_ops(netdev, NULL);
+
+	if (ops && ops->retire_all)
+		ops->retire_all(netdev);
+}
+EXPORT_SYMBOL_GPL(airoha_eth_xpon_retire_all);
 
 static const struct of_device_id airoha_eth_of_match[] = {
 	{ .compatible = "econet,en751221-eth", .data = &econet_en751221_soc_data },
