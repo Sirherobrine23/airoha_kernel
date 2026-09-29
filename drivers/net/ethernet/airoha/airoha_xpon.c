@@ -2607,6 +2607,8 @@ static void gpon_disable(struct xpon_priv *priv)
 				 "failed to stop GPON MPI: %d\n", ret);
 		dev_dbg(priv->dev, "GPON MBI/MPI stopped: %#08x\n",
 			gpon_read(priv, GPON_MBI_MPI_STOP));
+
+		airoha_eth_xpon_retire_all(priv->gdm_dev);
 	}
 
 	if (phy_active)
