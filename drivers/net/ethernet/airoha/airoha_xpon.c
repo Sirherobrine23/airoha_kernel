@@ -3398,12 +3398,31 @@ static void epon_report_registration(struct xpon_priv *priv)
 		XPON_REGISTRATION_REGISTERING);
 }
 
+/*
+ * FE_API_SET_CHANNEL_RETIRE_ONE(GDMA2, llid) from the vendor LLID
+ * deregistration: retire the GDM2 channel of every LLID that lost its
+ * registration. The GDM2 channel number is the LLID index.
+ */
+static void epon_retire_work_fn(struct work_struct *work)
+{
+	struct xpon_priv *priv = container_of(work, struct xpon_priv,
+					      epon_retire_work);
+	int idx;
+
+	for (idx = 0; idx < EPON_MAX_LLID; idx++)
+		if (test_and_clear_bit(idx, &priv->epon_retire_llids))
+			airoha_eth_xpon_retire_channel(priv->gdm_dev, idx);
+}
+
 static void epon_llid_drop(struct xpon_priv *priv, int idx)
 {
 	if (priv->llid[idx].valid) {
 		priv->llid[idx].valid = false;
 		if (priv->registered_llids > 0)
 			priv->registered_llids--;
+		/* epon_isr() cannot sleep for the channel release */
+		set_bit(idx, &priv->epon_retire_llids);
+		schedule_work(&priv->epon_retire_work);
 	}
 	if (priv->oam)
 		xpon_oam_llid_unregistered(priv->oam, idx);
@@ -3864,6 +3883,15 @@ static void epon_disable(struct xpon_priv *priv)
 	if (ret)
 		dev_warn(priv->dev, "failed to disable EPON datapath: %d\n", ret);
 
+	/*
+	 * The vendor EPON stop retires every GDM2 channel once the receive
+	 * channels and hardware forwards are off. That covers any LLID still
+	 * waiting for its own retire.
+	 */
+	cancel_work_sync(&priv->epon_retire_work);
+	priv->epon_retire_llids = 0;
+	airoha_eth_xpon_retire_all(priv->gdm_dev);
+
 	airoha_xpon_phy_stop(priv->dev, priv->phy,
 			      AIROHA_XPON_MODE_EPON,
 			      &priv->phy_initialized,
@@ -4196,6 +4224,7 @@ static int airoha_xpon_init_epon(struct platform_device *pdev,
 	/* Keep the Linux IRQ line enabled and quiesce the MAC at its source. */
 	epon_write(priv, EPON_INT_EN, 0);
 	epon_write(priv, EPON_INT_STATUS, ~0U);
+	INIT_WORK(&priv->epon_retire_work, epon_retire_work_fn);
 	ret = airoha_xpon_request_mac_irq(pdev, priv, epon_isr);
 	if (ret) {
 		destroy_workqueue(priv->fsm_wq);
@@ -4209,6 +4238,7 @@ static void airoha_xpon_cleanup_epon(struct xpon_priv *priv)
 {
 	if (!priv->fsm_wq)
 		return;
+	cancel_work_sync(&priv->epon_retire_work);
 	destroy_workqueue(priv->fsm_wq);
 	priv->fsm_wq = NULL;
 }
