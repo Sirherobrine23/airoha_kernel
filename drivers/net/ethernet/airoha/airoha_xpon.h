@@ -401,6 +401,9 @@ struct xpon_priv {
 
 	struct ploam_priv	*ploam;
 	int			registered_llids;
+	/* LLIDs whose GDM2 channel epon_isr() left to be retired */
+	unsigned long		epon_retire_llids;
+	struct work_struct	epon_retire_work;
 
 	u8			hw_sn[8];
 	u8			hw_passwd[10];
