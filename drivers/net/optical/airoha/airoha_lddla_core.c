@@ -182,17 +182,9 @@ int lddla_rd32(struct airoha_lddla *lddla, u16 addr, u32 *val)
 	return 0;
 }
 
-/**
- * lddla_lock() - bounded acquire of the I2C/ADC lock.
- * @lddla: device
- *
- * The control loops and diagnostic paths must not block forever on contention,
- * so cap the wait at ~100 ms.  Return: 0 once held, -ETIMEDOUT on timeout, or
- * -ERESTARTSYS if a signal arrives in a user-context caller.
- */
-int lddla_lock(struct airoha_lddla *lddla)
+static int lddla_lock_ms(struct airoha_lddla *lddla, unsigned int ms)
 {
-	unsigned long deadline = jiffies + msecs_to_jiffies(100);
+	unsigned long deadline = jiffies + msecs_to_jiffies(ms);
 
 	while (!mutex_trylock(&lddla->lock)) {
 		if (signal_pending(current))
@@ -203,6 +195,27 @@ int lddla_lock(struct airoha_lddla *lddla)
 	}
 	return 0;
 }
+
+/**
+ * lddla_lock() - bounded acquire of the I2C/ADC lock.
+ * @lddla: device
+ *
+ * The control loops and diagnostic paths must not block forever on contention,
+ * so cap the wait at ~100 ms.  Return: 0 once held, -ETIMEDOUT on timeout, or
+ * -ERESTARTSYS if a signal arrives in a user-context caller.
+ */
+int lddla_lock(struct airoha_lddla *lddla)
+{
+	return lddla_lock_ms(lddla, 100);
+}
+
+/*
+ * TX re-arm and TX timing calibration run once per PON bring-up, and the MAC
+ * restarts the whole bring-up when either fails.  Other holders (the 1 Hz
+ * control loop, telemetry and diagnostics) can keep the lock for longer than
+ * the 100 ms that suits them, so give these two a longer, still bounded, wait.
+ */
+#define LDDLA_BRINGUP_LOCK_MS	2000
 
 /* ------------------------------------------------------------------ */
 /* Shared BOB / calibration store                                     */
@@ -575,7 +588,7 @@ static int airoha_lddla_frontend_tx_rearm(struct optical_frontend *frontend)
 	if (!lddla || !lddla->ops->tx_rearm)
 		return -EOPNOTSUPP;
 
-	ret = lddla_lock(lddla);
+	ret = lddla_lock_ms(lddla, LDDLA_BRINGUP_LOCK_MS);
 	if (ret)
 		return ret;
 
@@ -594,7 +607,7 @@ airoha_lddla_frontend_tx_timing_calibrate(struct optical_frontend *frontend)
 	if (!lddla || !lddla->ops->tx_timing_calibrate)
 		return -EOPNOTSUPP;
 
-	ret = lddla_lock(lddla);
+	ret = lddla_lock_ms(lddla, LDDLA_BRINGUP_LOCK_MS);
 	if (ret)
 		return ret;
 
