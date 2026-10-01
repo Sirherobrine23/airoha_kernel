@@ -2523,8 +2523,23 @@ restore:
 
 static int en7512_phy_probe(struct phy_device *phydev)
 {
+	struct mtk_socphy_priv *priv;
+	int ret;
+
+	priv = devm_kzalloc(&phydev->mdio.dev, sizeof(*priv), GFP_KERNEL);
+	if (!priv)
+		return -ENOMEM;
+
+	phydev->priv = priv;
+
 	/* EN7512 has one standalone GPHY at MDIO address 12. */
-	return en7512_phy_calib(phydev);
+	ret = en7512_phy_calib(phydev);
+	if (ret)
+		return ret;
+
+	mtk_phy_leds_state_init(phydev);
+
+	return 0;
 }
 
 static int en7512_phy_config_init(struct phy_device *phydev)
@@ -2546,7 +2561,13 @@ static int en7512_phy_config_init(struct phy_device *phydev)
 		return ret;
 	__phy_write(phydev, 0x14, 0x3a14);
 
-	return phy_restore_page(phydev, ret, 0);
+	ret = phy_restore_page(phydev, ret, 0);
+	if (ret)
+		return ret;
+
+	mtk_phy_leds_state_init(phydev);
+
+	return 0;
 }
 
 static void en7523_phy_apply_rx_setting(struct phy_device *phydev)
