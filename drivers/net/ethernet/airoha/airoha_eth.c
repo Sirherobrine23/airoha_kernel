@@ -2253,6 +2253,7 @@ static struct sk_buff *airoha_qdma_lro_rx_skb(struct airoha_queue *q,
 
 	switch (q->qdma->eth->soc->version) {
 	case econet_en751221:
+	case econet_en751627:
 	case econet_en7528:
 	case econet_en7580:
 		return NULL;
@@ -5885,6 +5886,7 @@ static void airoha_fe_lro_rxq_enable(struct airoha_eth *eth, int qdma_id,
 
 	switch (eth->soc->version) {
 	case econet_en751221:
+	case econet_en751627:
 	case econet_en7528:
 	case econet_en7580:
 		break;
@@ -5912,6 +5914,7 @@ static void airoha_fe_lro_disable(struct airoha_eth *eth, int qdma_id)
 
 	switch (eth->soc->version) {
 	case econet_en751221:
+	case econet_en751627:
 	case econet_en7528:
 	case econet_en7580:
 		break;
