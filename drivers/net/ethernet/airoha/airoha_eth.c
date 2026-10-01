@@ -45,6 +45,7 @@
 #include <linux/tcp.h>
 #include <linux/types.h>
 #include <linux/u64_stats_sync.h>
+#include <linux/jiffies.h>
 #include <linux/udp.h>
 #include <linux/unaligned.h>
 #include <net/dsa.h>
@@ -4081,7 +4082,7 @@ static void econet_update_hw_stats(struct airoha_gdm_dev *port)
 	struct clear_counters cc = {0};
 	u32 i = 0;
 
-	guard(spinlock)(&port->port->lock);
+	guard(spinlock_bh)(&port->port->lock);
 	u64_stats_update_begin(&port->stats.syncp);
 
 	port->stats.tx_ok_pkts += econet_rreg(&c->tx.tx_pkts);
@@ -6448,7 +6449,7 @@ static void airoha_update_hw_stats(struct airoha_gdm_dev *dev)
 	struct airoha_gdm_port *port = dev->port;
 	int i;
 
-	spin_lock(&port->lock);
+	spin_lock_bh(&port->lock);
 
 	for (i = 0; i < ARRAY_SIZE(port->devs); i++) {
 		if (port->devs[i])
@@ -6459,15 +6460,39 @@ static void airoha_update_hw_stats(struct airoha_gdm_dev *dev)
 	airoha_fe_set(dev->eth, REG_FE_GDM_MIB_CLEAR(port->id),
 		      FE_GDM_MIB_RX_CLEAR_MASK | FE_GDM_MIB_TX_CLEAR_MASK);
 
-	spin_unlock(&port->lock);
+	spin_unlock_bh(&port->lock);
 }
 
 static void airoha_gdm_update_hw_stats(struct airoha_gdm_dev *dev)
 {
-	if (dev->common.family == AIROHA_ETH_FAMILY_ECONET)
+	if (airoha_is(dev->eth, econet_en751221, econet_en751627,
+		      econet_en7528, econet_en7580))
 		econet_update_hw_stats(dev);
 	else
 		airoha_update_hw_stats(dev);
+}
+
+/* Sample 32-bit byte counters before they wrap, independent of readers. */
+static void airoha_gdm_stats_work(struct work_struct *work)
+{
+	struct airoha_gdm_port *port;
+	int i;
+
+	port = container_of(to_delayed_work(work), struct airoha_gdm_port,
+			    stats_work);
+
+	/* The modern path reads all NBQs and clears the shared MIB once.
+	 * EcoNet has one logical device per GDM.
+	 */
+	for (i = 0; i < ARRAY_SIZE(port->devs); i++) {
+		if (!port->devs[i])
+			continue;
+
+		airoha_gdm_update_hw_stats(port->devs[i]);
+		break;
+	}
+
+	schedule_delayed_work(&port->stats_work, HZ);
 }
 
 static bool airoha_gdm_has_extended_stats(struct airoha_gdm_dev *dev)
@@ -6719,6 +6744,10 @@ static int airoha_dev_open(struct net_device *netdev)
 		airoha_update_netdev_features(dev);
 	}
 
+	/* Open/stop are serialized by RTNL; the worker only takes port->lock. */
+	if (!port->stats_users++)
+		schedule_delayed_work(&port->stats_work, HZ);
+
 	err = airoha_gdm_xpon_start(dev);
 	if (err) {
 		netdev_err(netdev, "failed to start xPON provider: %d\n", err);
@@ -6736,9 +6765,13 @@ static int airoha_dev_stop(struct net_device *netdev)
 	bool econet = dev->common.family == AIROHA_ETH_FAMILY_ECONET;
 	struct airoha_qdma *qdma;
 
+	if (!--port->stats_users)
+		cancel_delayed_work_sync(&port->stats_work);
+
 	airoha_gdm_xpon_stop(dev);
 	netif_tx_disable(netdev);
 	qdma = airoha_qdma_deref(dev);
+	airoha_gdm_update_hw_stats(dev);
 
 	if (econet) {
 		scoped_guard(spinlock, &dev->reg_lock) {
@@ -9035,6 +9068,7 @@ static int airoha_alloc_gdm_port(struct airoha_eth *eth,
 		return -ENOMEM;
 
 	port->id = id;
+	INIT_DELAYED_WORK(&port->stats_work, airoha_gdm_stats_work);
 	spin_lock_init(&port->lock);
 	eth->ports[p] = port;
 
@@ -9226,6 +9260,8 @@ static void airoha_eth_cleanup(struct airoha_eth *eth)
 
 			if (!port)
 				continue;
+
+			cancel_delayed_work_sync(&port->stats_work);
 
 			for (j = 0; j < ARRAY_SIZE(port->devs); j++) {
 				struct airoha_gdm_dev *dev = port->devs[j];

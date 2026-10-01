@@ -21,6 +21,7 @@
 #include <linux/reset.h>
 #include <linux/skbuff.h>
 #include <linux/types.h>
+#include <linux/workqueue.h>
 #include <linux/soc/airoha/airoha_offload.h>
 #include <net/dsa.h>
 
@@ -1059,6 +1060,10 @@ struct airoha_gdm_port {
 	int id;
 	int users;
 
+	/* Poll shared GDM counters while at least one netdev is open. */
+	struct delayed_work stats_work;
+	unsigned int stats_users;
+
 	/* protect concurrent hw_stats and frag register accesses */
 	spinlock_t lock;
 
@@ -1139,6 +1144,7 @@ struct airoha_ppe {
 
 enum airoha_ids {
 	econet_en751221 = 0x751221,
+	econet_en751627 = 0x751627,
 	econet_en7528 = 0x7528,
 	econet_en7580 = 0x7580,
 	airoha_en7523 = 0x7523,
