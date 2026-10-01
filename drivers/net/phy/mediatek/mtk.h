@@ -18,6 +18,9 @@
 #define MTK_PHY_PAGE_EXTENDED_52B5		0x52b5
 
 /* Registers on MDIO_MMD_VEND2 */
+#define MTK_PHY_LED_BCR				0x21
+#define   MTK_PHY_LED_BCR_DEFAULT		0x800a
+
 #define MTK_PHY_LED0_ON_CTRL			0x24
 #define MTK_PHY_LED1_ON_CTRL			0x26
 #define   MTK_GPHY_LED_ON_MASK			GENMASK(6, 0)

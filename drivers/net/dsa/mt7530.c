@@ -459,6 +459,7 @@ mt7530_setup_port6(struct dsa_switch *ds, phy_interface_t interface)
 #define EN751221_TRGMII_ONDIE_TCK_ODT	0x77
 #define EN751221_TRGMII_MCM_TD_ODT	0xbb
 #define EN751221_TRGMII_MCM_TCK_ODT	0xff
+#define EN751221_TRGMII_SOC_TO_MCM_RX_TAP	4
 #define EN751221_TRGMII_MCM_TO_SOC_RX_TAP	4
 #define EN751221_TRGMII_RX_VALUE_MASK	GENMASK(23, 16)
 #define EN751221_TRGMII_RX_ERR_MASK	GENMASK(11, 8)
@@ -555,34 +556,20 @@ static bool en751221_trgmii_sample_good(struct mt7530_priv *rx, u32 reg)
 }
 
 /*
- * RX tap policy (EN751221 <-> companion MT7530 TRGMII).
+ * Keep the low RX taps used by this driver: the 0x55 training window can
+ * overestimate the usable eye under packet traffic. The EN7512 SDK provides
+ * two-direction midpoint calibration, but its initialization call is
+ * commented out. Its on-die RX tap 4 sequence is also inside a disabled
+ * block, so it does not establish an active SDK default.
  *
- * The 0x55 training window overestimates the real eye. Measured on a TP-Link
- * Archer XR500v (2026-09-18, iperf3 through the cascade, MIB CRC on the
- * receiving port): the SoC->MCM window was [1..45] on every lane but frames
- * survive only up to tap 24 (126 CRC at 28, dead from 32); the MCM->SoC window
- * was [1..18] but frames survive only up to tap 10 (246 CRC at 12). The window
- * midpoints (23 and 9) therefore sit 2-4 taps from the real edge, and PVT
- * drift between boots pushes them out: that is the "LAN dead after boot"
- * lottery (the companion never received a frame). Both eyes extend below tap
- * 1, so their low end is the safe side. The vendor firmware never trains at
- * boot: it programs fixed low taps (1 in the EN7512 SDK, 4 at runtime on the
- * on-die side of production units). Do the same, keep the sweep as a
- * diagnostic, and only when the fixed tap is outside the window fall back to
- * its low quarter. Overridable per direction for boards that differ.
+ * Preserve tap 4 in both directions. For SoC -> MCM, retain the sweep and
+ * use the low quarter of the window if the preferred tap is outside it.
  */
-static int trgmii_tap_soc2mcm = 4;
-module_param(trgmii_tap_soc2mcm, int, 0444);
-MODULE_PARM_DESC(trgmii_tap_soc2mcm, "EN751221 TRGMII SoC->MCM RX tap (companion side, 0-127)");
-static int trgmii_tap_mcm2soc = EN751221_TRGMII_MCM_TO_SOC_RX_TAP;
-module_param(trgmii_tap_mcm2soc, int, 0444);
-MODULE_PARM_DESC(trgmii_tap_mcm2soc, "EN751221 TRGMII MCM->SoC RX tap (on-die side, 0-127)");
-
 static int en751221_trgmii_pick_tap(int first, int last, int fixed)
 {
 	fixed = clamp(fixed, 0, 127);
 	if (first < 0 || last < first)
-		return fixed;			/* no window: the vendor value is the best prior */
+		return fixed;			/* No window: retain the preferred tap. */
 	if (fixed >= first && fixed <= last)
 		return fixed;
 	return first + (last - first) / 4;	/* low quarter: away from the far (real) edge */
@@ -593,7 +580,6 @@ en751221_trgmii_calibrate_direction(struct mt7530_priv *tx,
 				    struct mt7530_priv *rx,
 				    const char *name)
 {
-	int dir = rx->id == ID_EN751221 ? 1 : 0;
 	int channel;
 
 	mt7530_set(tx, MT7530_TRGMII_TXCTRL, TRAIN_TXEN);
@@ -621,7 +607,7 @@ en751221_trgmii_calibrate_direction(struct mt7530_priv *tx,
 		}
 
 		tap = en751221_trgmii_pick_tap(first, last,
-					       dir ? trgmii_tap_mcm2soc : trgmii_tap_soc2mcm);
+					       EN751221_TRGMII_SOC_TO_MCM_RX_TAP);
 		if (first >= 0 && last > first && (tap < first || tap > last))
 			dev_warn(rx->dev,
 				 "EN751221 TRGMII %s lane %d: fixed tap outside window %d..%d, using %d\n",
@@ -629,11 +615,7 @@ en751221_trgmii_calibrate_direction(struct mt7530_priv *tx,
 
 		mt7530_rmw(rx, rx_reg, RD_TAP_MASK, RD_TAP(tap));
 
-		if (first >= 0 && last > first)
-			dev_info(rx->dev,
-				 "EN751221 TRGMII %s lane %d window %d..%d, tap %d\n",
-				 name, channel, first, last, tap);
-		else
+		if (!(first >= 0 && last > first))
 			dev_warn(rx->dev,
 				 "EN751221 TRGMII %s lane %d: no training window (was tap %u), using fixed tap %d\n",
 				 name, channel, old_tap, tap);
@@ -648,22 +630,16 @@ static void en751221_trgmii_calibrate(struct mt7530_priv *ext,
 	int channel;
 
 	/*
-	 * Keep automatic training for the SoC -> companion direction.  The
-	 * production EN7512 firmware does not leave the reverse direction at
-	 * the midpoint found by P6 training: its final runtime state programs
-	 * RX tap 4 on all five on-die lanes.  Match that profile exactly; the
-	 * midpoint chosen here previously produced CRC errors on internal P5
+	 * Preserve the existing asymmetric policy: sweep the companion RX
+	 * lanes and program tap 4 directly on all five on-die RX lanes.
+	 * Midpoint training previously caused CRC errors on internal P5
 	 * under sustained MCM -> SoC traffic.
 	 */
 	en751221_trgmii_calibrate_direction(ondie, ext, "SoC->MCM");
 
 	for (channel = 0; channel < NUM_TRGMII_CTRL; channel++)
 		mt7530_rmw(ondie, MT7530_TRGMII_RD(channel), RD_TAP_MASK,
-			   RD_TAP(clamp(trgmii_tap_mcm2soc, 0, 127)));
-
-	dev_info(ondie->dev,
-		 "EN751221 TRGMII MCM->SoC using fixed RX tap %d on all lanes\n",
-		 clamp(trgmii_tap_mcm2soc, 0, 127));
+			   RD_TAP(EN751221_TRGMII_MCM_TO_SOC_RX_TAP));
 }
 
 static void en751221_trgmii_set_drive_strength(struct mt7530_priv *priv)
@@ -792,7 +768,6 @@ static void en751221_trgmii_pair_setup(struct mt7530_priv *ext,
 	en751221_trgmii_calibrate(ext, ondie);
 
 	ondie->en751221_trgmii_ready = true;
-	dev_info(ondie->dev, "EN751221 TRGMII companion link initialized\n");
 }
 
 static void
