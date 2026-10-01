@@ -4595,6 +4595,7 @@ __omci_agent_config_set_source(struct omci_device *odev, u16 key,
 	u8 old_force;
 	u8 scalar;
 	bool profile_key = false;
+	bool profile_changed = false;
 	bool operational_changed = false;
 	bool changed = false;
 	int ret = 0;
@@ -4805,12 +4806,21 @@ __omci_agent_config_set_source(struct omci_device *odev, u16 key,
 	}
 	if (!ret && profile_key) {
 		olt = omci_agent_olt_g_locked(agent);
-		ret = omci_agent_profile_refresh_locked(odev, olt, NULL);
+		ret = omci_agent_profile_refresh_locked(odev, olt,
+							&profile_changed);
 		if (ret) {
 			agent->config.olt_profile = old_profile;
 			agent->config.olt_profile_force = old_force;
 			agent->config.olt_profile_source = old_profile_source;
 			agent->config.olt_profile_force_source = old_force_source;
+		} else if (!profile_changed) {
+			/*
+			 * Only the configured value changed, for example "auto"
+			 * to the profile "auto" had already detected. The
+			 * effective profile and its quirks are the same, so do
+			 * not report a change that would restart the session.
+			 */
+			changed = false;
 		}
 	}
 	if (!ret && changed && !profile_key) {
