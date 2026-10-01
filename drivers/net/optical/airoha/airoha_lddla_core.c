@@ -500,7 +500,7 @@ airoha_lddla_frontend_set_mode(struct optical_frontend *frontend,
 		return -EOPNOTSUPP;
 	}
 
-	ret = lddla_lock(lddla);
+	ret = lddla_lock_ms(lddla, LDDLA_BRINGUP_LOCK_MS);
 	if (ret)
 		return ret;
 
