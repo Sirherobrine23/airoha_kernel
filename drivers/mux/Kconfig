@@ -4,7 +4,7 @@
 #
 
 config MULTIPLEXER
-	tristate
+	tristate "Multiplexer core"
 
 menu "Multiplexer drivers"
 	depends on MULTIPLEXER
