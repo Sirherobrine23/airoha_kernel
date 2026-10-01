@@ -495,6 +495,8 @@
 				airoha,scu = <&scuclk>;
 
 				leds {
+					#address-cells = <1>;
+					#size-cells = <0>;
 					led@0 {
 						reg = <0>;
 						function = LED_FUNCTION_LAN;
@@ -519,6 +521,8 @@
 				airoha,scu = <&scuclk>;
 
 				leds {
+					#address-cells = <1>;
+					#size-cells = <0>;
 					led@0 {
 						reg = <0>;
 						function = LED_FUNCTION_LAN;
@@ -543,6 +547,8 @@
 				airoha,scu = <&scuclk>;
 
 				leds {
+					#address-cells = <1>;
+					#size-cells = <0>;
 					led@0 {
 						reg = <0>;
 						function = LED_FUNCTION_LAN;
@@ -567,6 +573,8 @@
 				airoha,scu = <&scuclk>;
 
 				leds {
+					#address-cells = <1>;
+					#size-cells = <0>;
 					led@0 {
 						reg = <0>;
 						function = LED_FUNCTION_LAN;
@@ -591,6 +599,8 @@
 				airoha,scu = <&scuclk>;
 
 				leds {
+					#address-cells = <1>;
+					#size-cells = <0>;
 					led@0 {
 						reg = <0>;
 						function = LED_FUNCTION_LAN;
@@ -683,6 +693,8 @@
 						airoha,scu = <&scuclk>;
 
 						leds {
+							#address-cells = <1>;
+							#size-cells = <0>;
 							led@0 {
 								reg = <0>;
 								function = LED_FUNCTION_LAN;
@@ -706,6 +718,8 @@
 						airoha,scu = <&scuclk>;
 
 						leds {
+							#address-cells = <1>;
+							#size-cells = <0>;
 							led@0 {
 								reg = <0>;
 								function = LED_FUNCTION_LAN;
@@ -729,6 +743,8 @@
 						airoha,scu = <&scuclk>;
 
 						leds {
+							#address-cells = <1>;
+							#size-cells = <0>;
 							led@0 {
 								reg = <0>;
 								function = LED_FUNCTION_LAN;
@@ -752,6 +768,8 @@
 						airoha,scu = <&scuclk>;
 
 						leds {
+							#address-cells = <1>;
+							#size-cells = <0>;
 							led@0 {
 								reg = <0>;
 								function = LED_FUNCTION_LAN;
@@ -775,6 +793,8 @@
 						airoha,scu = <&scuclk>;
 
 						leds {
+							#address-cells = <1>;
+							#size-cells = <0>;
 							led@0 {
 								reg = <0>;
 								function = LED_FUNCTION_LAN;
