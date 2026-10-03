@@ -1777,8 +1777,12 @@ static void gpon_cb_set_gem_encryption(void *hw_priv, u16 port_id,
 	 * high-entropy frames with random MACs and nonsense ethertypes, which
 	 * is ciphertext handed up undecrypted.
 	 */
+	if (port_id && encrypt_mode == 3)
+		__set_bit(port_id, priv->encrypted_gems);
+	else
+		__clear_bit(port_id, priv->encrypted_gems);
 	ret = gpon_set_gem_port_hw(priv, port_id, true,
-				   port_id && encrypt_mode == 3);
+				   test_bit(port_id, priv->encrypted_gems));
 	if (ret)
 		dev_err(priv->dev,
 			"failed to update GEM port %u encryption: %d\n",
@@ -1961,6 +1965,15 @@ int airoha_gpon_omci_hw_set_gem_port(void *hw_priv, u16 entity_id,
 	struct xpon_priv *priv = hw_priv;
 	int ret;
 
+	/*
+	 * The OLT may announce encryption with Encrypted_Port-ID before OMCI
+	 * creates the GEM port, as Nokia/ALCL OLTs do. Keep it when OMCI then
+	 * writes the port, as the vendor stack does, or the port is left
+	 * passing ciphertext.
+	 */
+	if (gem_port_id < GPON_MAX_GEM_ID &&
+	    test_bit(gem_port_id, priv->encrypted_gems))
+		encrypted = true;
 	ret = gpon_set_gem_port_hw(priv, gem_port_id, valid, encrypted);
 	if (ret)
 		return ret;
@@ -2604,6 +2617,7 @@ reset_session:
 	priv->gpon_o5 = false;
 	priv->omci_operational = false;
 	bitmap_zero(priv->service_gems, GPON_MAX_GEM_ID);
+	bitmap_zero(priv->encrypted_gems, GPON_MAX_GEM_ID);
 	mutex_unlock(&priv->link_state_lock);
 	gpon_refresh_netdev_link(priv, true);
 	dev_info(priv->dev, "GPON MAC stopped, state reset to %s\n",
@@ -4093,6 +4107,7 @@ static int airoha_xpon_init_gpon(struct platform_device *pdev,
 	mutex_init(&priv->omci_config_lock);
 	mutex_init(&priv->link_state_lock);
 	bitmap_zero(priv->service_gems, GPON_MAX_GEM_ID);
+	bitmap_zero(priv->encrypted_gems, GPON_MAX_GEM_ID);
 	memset(priv->tcont_alloc_id, 0xff, sizeof(priv->tcont_alloc_id));
 	memset(priv->tcont_entity_id, 0xff, sizeof(priv->tcont_entity_id));
 
