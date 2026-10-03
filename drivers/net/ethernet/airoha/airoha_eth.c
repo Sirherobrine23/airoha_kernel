@@ -4750,50 +4750,180 @@ static bool airoha_pse_iq_abnormal(struct airoha_eth *eth)
 }
 
 /*
- * fe_api_set_channel_retire_all() in the vendor FE driver, in its default
- * channel-drop mode, run when the WAN link goes down: frames still queued for
- * the GDM2 T-CONT channels would otherwise stay held against the channels of
- * the lost session and wedge them once the next session reuses them. Loop
- * GDM2 back into a drop forward with every T-CONT channel enabled, let the
- * WAN QDMA push the queued frames through, then restore the channel map.
- *
- * The EN751221/EN7528 FE forwards to drop on port 7 and also needs the QDMA
- * UMAC loopback; the EN7523 FE drops on port 0xf and its QDMA has no such
- * bit (the vendor code writes it at the EN7512 WAN QDMA address, which on
- * EN7523 lies inside the LAN QDMA, so it is not reproduced here).
+ * QDMA_API_SET_TXBUF_THRESHOLD(ECNT_QDMA_WAN) as the vendor retire uses
+ * it: a one-page channel and 0x40-page total threshold on the WAN QDMA, so
+ * it stops feeding the channels being released.
  */
-static void airoha_retire_all(struct net_device *netdev)
+static void airoha_retire_txbuf_limit(struct airoha_eth *eth,
+				      struct airoha_retire_txbuf *saved)
+{
+	struct airoha_qdma *qdma = &eth->qdma[1];
+
+	if (airoha_has_legacy_qdma(eth)) {
+		struct qregs __iomem *regs = qdma->econet->regs;
+		u32 val;
+
+		saved->cfg = econet_rreg(&regs->buf_usage_cfg);
+		val = saved->cfg & ~(EN751221_PSE_BUF_CH_THR_MASK |
+				     EN751221_PSE_BUF_TOTAL_THR_MASK);
+		val |= EN751221_PSE_BUF_CTRL_EN |
+		       FIELD_PREP(EN751221_PSE_BUF_CH_THR_MASK, 1) |
+		       FIELD_PREP(EN751221_PSE_BUF_TOTAL_THR_MASK, 0x40);
+		econet_wreg(val, &regs->buf_usage_cfg);
+		return;
+	}
+
+	saved->cfg = airoha_qdma_rr(qdma, REG_PSE_BUF_USAGE_CFG);
+	saved->cfg1 = airoha_qdma_rr(qdma, REG_PSE_BUF_USAGE_CFG1);
+	airoha_qdma_set(qdma, REG_PSE_BUF_USAGE_CFG, PSE_BUF_ESTIMATE_EN_MASK);
+	airoha_qdma_rmw(qdma, REG_PSE_BUF_USAGE_CFG1,
+			PSE_BUF_CHAN_THR_MASK | PSE_BUF_TOTAL_THR_MASK,
+			FIELD_PREP(PSE_BUF_CHAN_THR_MASK, 1) |
+			FIELD_PREP(PSE_BUF_TOTAL_THR_MASK, 0x40));
+}
+
+static void airoha_retire_txbuf_restore(struct airoha_eth *eth,
+					const struct airoha_retire_txbuf *saved)
+{
+	struct airoha_qdma *qdma = &eth->qdma[1];
+
+	if (airoha_has_legacy_qdma(eth)) {
+		econet_wreg(saved->cfg, &qdma->econet->regs->buf_usage_cfg);
+		return;
+	}
+
+	airoha_qdma_wr(qdma, REG_PSE_BUF_USAGE_CFG1, saved->cfg1);
+	airoha_qdma_wr(qdma, REG_PSE_BUF_USAGE_CFG, saved->cfg);
+}
+
+static bool airoha_retire_channel_done(struct airoha_eth *eth,
+				       unsigned int channel)
+{
+	u32 rls = airoha_fe_rr(eth, REG_GDM_CHN_RLS(AIROHA_GDM2_IDX));
+	u32 vld = airoha_fe_rr(eth, REG_GDM_TX_CHN_VLD(AIROHA_GDM2_IDX));
+
+	return (rls & GDM_CHANNEL_RETIRE_DONE) && !(vld & BIT(channel));
+}
+
+/*
+ * fe_channel_retire_one(): ask GDM2 to release one channel and wait until it
+ * reports the release done with nothing left valid on that channel. The
+ * register also holds the MBI aging selection, which is kept.
+ */
+static int airoha_retire_channel_hw(struct airoha_eth *eth,
+				    unsigned int channel)
+{
+	const u32 mask = GDM_CHANNEL_RETIRE_CHANNEL_MASK |
+			 GDM_CHANNEL_RETIRE_DONE | GDM_CHANNEL_RETIRE_RELEASE;
+	bool done;
+	int ret;
+
+	airoha_fe_rmw(eth, REG_GDM_CHN_RLS(AIROHA_GDM2_IDX), mask,
+		      FIELD_PREP(GDM_CHANNEL_RETIRE_CHANNEL_MASK, channel) |
+		      GDM_CHANNEL_RETIRE_RELEASE);
+	ret = read_poll_timeout(airoha_retire_channel_done, done, done,
+				USEC_PER_MSEC,
+				GDM2_RETIRE_TIMEOUT_MS * USEC_PER_MSEC, true,
+				eth, channel);
+	airoha_fe_rmw(eth, REG_GDM_CHN_RLS(AIROHA_GDM2_IDX), mask, 0);
+
+	return ret;
+}
+
+/*
+ * fe_channel_retire(), the vendor channel_retire mode: with every GDM2
+ * channel and hardware forward disabled and the WAN QDMA held back, release
+ * each channel twice. The first pass retires what is queued in the PSE, the
+ * second what was still in the QDMA TX queues.
+ */
+static void airoha_retire_release_all(struct airoha_eth *eth,
+				      struct net_device *netdev,
+				      unsigned int channels)
+{
+	struct airoha_retire_txbuf txbuf;
+	u32 txchn, rxchn, hwf;
+	unsigned int ch, pass;
+
+	txchn = airoha_fe_rr(eth, REG_GDM_TXCHN_EN(AIROHA_GDM2_IDX));
+	rxchn = airoha_fe_rr(eth, REG_GDM_RXCHN_EN(AIROHA_GDM2_IDX));
+	hwf = airoha_fe_rr(eth, REG_CDM_HWF_CHN_EN(2));
+
+	airoha_fe_wr(eth, REG_CDM_HWF_CHN_EN(2), 0);
+	airoha_retire_txbuf_limit(eth, &txbuf);
+	airoha_fe_wr(eth, REG_GDM_RXCHN_EN(AIROHA_GDM2_IDX), 0);
+	airoha_fe_wr(eth, REG_GDM_TXCHN_EN(AIROHA_GDM2_IDX), 0);
+	usleep_range(1000, 2000);
+
+	for (pass = 0; pass < 2; pass++)
+		for (ch = 0; ch < channels; ch++)
+			if (airoha_retire_channel_hw(eth, ch) && pass)
+				netdev_warn(netdev,
+					    "GDM2 channel %u not retired: rls %#x vld %#x\n",
+					    ch,
+					    airoha_fe_rr(eth, REG_GDM_CHN_RLS(AIROHA_GDM2_IDX)),
+					    airoha_fe_rr(eth, REG_GDM_TX_CHN_VLD(AIROHA_GDM2_IDX)));
+
+	airoha_fe_wr(eth, REG_GDM_TXCHN_EN(AIROHA_GDM2_IDX), txchn);
+	airoha_fe_wr(eth, REG_GDM_RXCHN_EN(AIROHA_GDM2_IDX), rxchn);
+	airoha_retire_txbuf_restore(eth, &txbuf);
+	airoha_fe_wr(eth, REG_CDM_HWF_CHN_EN(2), hwf);
+}
+
+/*
+ * fe_api_set_channel_retire_one(): release a single GDM2 channel, with its
+ * hardware forward disabled and the WAN QDMA held back while it runs.
+ */
+static int airoha_retire_channel(struct net_device *netdev,
+				 unsigned int channel)
 {
 	struct airoha_gdm_common *common = airoha_gdm_common_from_netdev(netdev);
-	u32 txchn, rxchn, hwf, lpbk, fwd, glb = 0, vld;
-	struct airoha_gdm_dev *dev;
-	struct airoha_qdma *qdma;
+	struct airoha_retire_txbuf txbuf;
 	struct airoha_eth *eth;
+	u32 hwf;
+	int ret;
+
+	if (!common || common->id != AIROHA_GDM2_IDX)
+		return -EOPNOTSUPP;
+	if (channel >= 32)
+		return -EINVAL;
+
+	eth = common->eth;
+	if (airoha_is(eth, econet_en751221) && airoha_pse_iq_abnormal(eth)) {
+		netdev_info(netdev,
+			    "PSE input queues abnormal, GDM2 channel %u not retired\n",
+			    channel);
+		return 0;
+	}
+
+	hwf = airoha_fe_rr(eth, REG_CDM_HWF_CHN_EN(2));
+	airoha_fe_wr(eth, REG_CDM_HWF_CHN_EN(2), hwf & ~BIT(channel));
+	airoha_retire_txbuf_limit(eth, &txbuf);
+	usleep_range(1000, 2000);
+
+	ret = airoha_retire_channel_hw(eth, channel);
+
+	airoha_retire_txbuf_restore(eth, &txbuf);
+	airoha_fe_wr(eth, REG_CDM_HWF_CHN_EN(2), hwf);
+
+	return ret;
+}
+
+/*
+ * fe_channel_drop(), the vendor default: loop GDM2 back into a drop forward
+ * with every T-CONT channel enabled and let the WAN QDMA push the queued
+ * frames through until GDMA2_TX_CHN_VLD reads empty.
+ */
+static void airoha_retire_drop(struct airoha_eth *eth,
+			       struct net_device *netdev)
+{
+	struct airoha_qdma *qdma = &eth->qdma[1];
+	u32 txchn, rxchn, hwf, lpbk, fwd, glb = 0, vld;
 	bool en7512;
 	u8 drop;
 	int ret;
 
-	if (!common || common->id != AIROHA_GDM2_IDX)
-		return;
-
-	dev = container_of(common, struct airoha_gdm_dev, common);
-	eth = common->eth;
-	qdma = &eth->qdma[1];
 	en7512 = airoha_is(eth, econet_en751221, econet_en7528);
 	drop = en7512 ? ETX_FPORT_DROP : FE_PSE_PORT_DROP;
-
-	if (airoha_is(eth, econet_en751221) && airoha_pse_iq_abnormal(eth)) {
-		netdev_info(netdev,
-			    "PSE input queues abnormal, GDM2 channels not retired\n");
-		return;
-	}
-
-	/*
-	 * qdma_stop_flag: the vendor WAN QDMA refuses new frames while the
-	 * channels are retired, so nothing refills them behind the drain.
-	 */
-	WRITE_ONCE(dev->xpon_tx_stopped, true);
-	synchronize_net();
 
 	txchn = airoha_fe_rr(eth, REG_GDM_TXCHN_EN(AIROHA_GDM2_IDX));
 	rxchn = airoha_fe_rr(eth, REG_GDM_RXCHN_EN(AIROHA_GDM2_IDX));
@@ -4841,6 +4971,46 @@ static void airoha_retire_all(struct net_device *netdev)
 	airoha_fe_wr(eth, REG_GDM_TXCHN_EN(AIROHA_GDM2_IDX), txchn);
 	airoha_fe_wr(eth, REG_GDM_RXCHN_EN(AIROHA_GDM2_IDX), rxchn);
 	airoha_fe_wr(eth, REG_CDM_HWF_CHN_EN(2), hwf);
+}
+
+/*
+ * fe_api_set_channel_retire_all(), run when a PON session stops: frames still
+ * queued for the GDM2 T-CONT channels would otherwise stay held against the
+ * channels of the lost session and wedge them once the next session reuses
+ * them. Drop them (the vendor default) or, where eth->channel_retire is set, release
+ * each channel.
+ */
+static void airoha_retire_all(struct net_device *netdev)
+{
+	struct airoha_gdm_common *common = airoha_gdm_common_from_netdev(netdev);
+	struct airoha_gdm_dev *dev;
+	struct airoha_eth *eth;
+
+	if (!common || common->id != AIROHA_GDM2_IDX)
+		return;
+
+	dev = container_of(common, struct airoha_gdm_dev, common);
+	eth = common->eth;
+
+	if (airoha_is(eth, econet_en751221) && airoha_pse_iq_abnormal(eth)) {
+		netdev_info(netdev,
+			    "PSE input queues abnormal, GDM2 channels not retired\n");
+		return;
+	}
+
+	/*
+	 * qdma_stop_flag: the vendor WAN QDMA refuses new frames while the
+	 * channels are retired, so nothing refills them behind the retire.
+	 */
+	WRITE_ONCE(dev->xpon_tx_stopped, true);
+	synchronize_net();
+
+	if (eth->channel_retire)
+		airoha_retire_release_all(eth, netdev,
+					  dev->xpon_mode == AIROHA_XPON_MODE_EPON ?
+					  8 : 32);
+	else
+		airoha_retire_drop(eth, netdev);
 
 	WRITE_ONCE(dev->xpon_tx_stopped, false);
 }
@@ -9846,6 +10016,7 @@ static const struct airoha_eth_xpon_ops econet_xpon_ops = {
 	.has_gem_service = econet_xpon_has_gem_service,
 	.flush_services = econet_xpon_flush_services,
 	.retire_all = airoha_retire_all,
+	.retire_channel = airoha_retire_channel,
 };
 
 static const struct airoha_eth_xpon_ops airoha_xpon_ops = {
@@ -9867,6 +10038,7 @@ static const struct airoha_eth_xpon_ops airoha_xpon_ops = {
 	.has_gem_service = airoha_xpon_has_gem_service,
 	.flush_services = airoha_xpon_flush_services,
 	.retire_all = airoha_retire_all,
+	.retire_channel = airoha_retire_channel,
 };
 
 /*
@@ -9896,6 +10068,7 @@ static const struct airoha_eth_xpon_ops en7528_xpon_ops = {
 	.has_gem_service = econet_xpon_has_gem_service,
 	.flush_services = econet_xpon_flush_services,
 	.retire_all = airoha_retire_all,
+	.retire_channel = airoha_retire_channel,
 };
 
 const struct airoha_eth_soc_data econet_en751221_soc_data = {
@@ -10051,6 +10224,8 @@ static int airoha_eth_probe(struct platform_device *pdev)
 
 	eth->dev = &pdev->dev;
 	eth->soc = soc;
+	/* fe.c: EN7580 retires the GDM2 channels, every other SoC drops them */
+	eth->channel_retire = airoha_is(eth, econet_en7580);
 	eth->ppe_host_ops = &airoha_ppe_host_ops;
 	econet = airoha_is_econet(eth);
 	platform_set_drvdata(pdev, eth);
@@ -10433,6 +10608,16 @@ void airoha_eth_xpon_retire_all(struct net_device *netdev)
 		ops->retire_all(netdev);
 }
 EXPORT_SYMBOL_GPL(airoha_eth_xpon_retire_all);
+
+int airoha_eth_xpon_retire_channel(struct net_device *netdev,
+				   unsigned int channel)
+{
+	const struct airoha_eth_xpon_ops *ops = airoha_eth_get_xpon_ops(netdev, NULL);
+
+	return ops && ops->retire_channel ?
+		ops->retire_channel(netdev, channel) : -EOPNOTSUPP;
+}
+EXPORT_SYMBOL_GPL(airoha_eth_xpon_retire_channel);
 
 static const struct of_device_id airoha_eth_of_match[] = {
 	{ .compatible = "econet,en751221-eth", .data = &econet_en751221_soc_data },

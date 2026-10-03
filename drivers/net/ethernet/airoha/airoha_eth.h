@@ -48,6 +48,8 @@ struct gdm;
 #define EN751221_EPON_HWF_CHN_MASK		GENMASK(7, 0)
 /* GDM2 TX channels the vendor channel drop enables while retiring. */
 #define GDM2_RETIRE_TX_CHN_MASK			GENMASK(15, 0)
+/* GDMA_CHN_RLS_TIMEOUT: milliseconds to wait for one channel release */
+#define GDM2_RETIRE_TIMEOUT_MS			10
 /* EN751221/EN7528 QDMA GLB_CFG: loop UMAC TX back instead of sending it. */
 #define ECONET_GLOBAL_CFG_UMAC_LOOPBACK		BIT(17)
 
@@ -1201,6 +1203,13 @@ struct airoha_eth_xpon_ops {
 	bool (*has_gem_service)(struct net_device *netdev, u16 gem_port_id);
 	void (*flush_services)(struct net_device *netdev);
 	void (*retire_all)(struct net_device *netdev);
+	int (*retire_channel)(struct net_device *netdev, unsigned int channel);
+};
+
+/* WAN QDMA TX buffer thresholds saved while GDM2 channels are retired */
+struct airoha_retire_txbuf {
+	u32 cfg;
+	u32 cfg1;
 };
 
 enum airoha_mac_addr_mode {
@@ -1260,6 +1269,8 @@ struct airoha_eth {
 	struct airoha_qdma qdma[AIROHA_MAX_NUM_QDMA];
 	struct airoha_gdm_port **ports;
 
+	/* retire_all releases each GDM2 channel instead of dropping */
+	bool channel_retire;
 };
 
 #define airoha_fe_rr(eth, offset)				\
@@ -1399,6 +1410,8 @@ bool airoha_eth_xpon_has_gem_service(struct net_device *netdev,
 				     u16 gem_port_id);
 void airoha_eth_xpon_flush_services(struct net_device *netdev);
 void airoha_eth_xpon_retire_all(struct net_device *netdev);
+int airoha_eth_xpon_retire_channel(struct net_device *netdev,
+				   unsigned int channel);
 int airoha_eth_set_xpon_mode(struct net_device *netdev,
 			      enum airoha_xpon_mode mode);
 int airoha_eth_set_xpon_datapath(struct net_device *netdev,
