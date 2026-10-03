@@ -1813,6 +1813,41 @@ static void econet_qdma_destroy_rxq_locked(struct econet_q_rx *q)
 	q->page_pool = NULL;
 }
 
+/*
+ * Free the frames still on the TX rings. Only for teardown, with TX DMA, the
+ * interrupts and NAPI off: the hardware keeps its ring position across a
+ * stop and start, so the descriptors stay valid until then.
+ */
+static void econet_qdma_cleanup_tx(struct airoha_qdma_mips *qdma)
+{
+	int i, j;
+
+	for (i = 0; i < ARRAY_SIZE(qdma->q_tx); i++) {
+		struct econet_q_tx *q = &qdma->q_tx[i];
+
+		if (!q->ndesc)
+			continue;
+
+		guard(spinlock_bh)(&q->lock_bh);
+		for (j = 0; j < q->ndesc; j++) {
+			struct econet_q_tx_ent *e = &q->entry[j];
+
+			if (!e->dma_addr)
+				continue;
+
+			dma_unmap_single(qdma->qdma->eth->dev, e->dma_addr,
+					 e->dma_len, DMA_TO_DEVICE);
+			dev_kfree_skb_any(e->skb);
+			memset(e, 0, sizeof(*e));
+
+			e->freelist_next = 0xffff;
+			q->entry[q->freelist_tail].freelist_next = j;
+			q->freelist_tail = j;
+			q->free_count++;
+		}
+	}
+}
+
 static int econet_qdma_destroy_locked(struct airoha_qdma_mips *qdma)
 {
 	struct qregs_qcfg qcfg;
@@ -1858,6 +1893,7 @@ static int econet_qdma_destroy_locked(struct airoha_qdma_mips *qdma)
 			netif_napi_del(&q->napi);
 	}
 
+	econet_qdma_cleanup_tx(qdma);
 
 	return 0;
 }
@@ -1868,33 +1904,6 @@ static int econet_qdma_destroy(struct airoha_qdma_mips *qdma)
 	airoha_whnat_clear_qdma(qdma->qdma);
 
 	return econet_qdma_destroy_locked(qdma);
-}
-
-static void econet_qdma_cleanup_tx(struct airoha_qdma_mips *qdma)
-{
-	int i, j;
-
-	for (i = 0; i < ARRAY_SIZE(qdma->q_tx); i++) {
-		struct econet_q_tx *q = &qdma->q_tx[i];
-
-		guard(spinlock_bh)(&q->lock_bh);
-		for (j = 0; j < q->ndesc; j++) {
-			struct econet_q_tx_ent *e = &q->entry[j];
-
-			if (!e->dma_addr)
-				continue;
-
-			dma_unmap_single(qdma->qdma->eth->dev, e->dma_addr,
-					 e->dma_len, DMA_TO_DEVICE);
-			dev_kfree_skb_any(e->skb);
-			memset(e, 0, sizeof(*e));
-
-			e->freelist_next = 0xffff;
-			q->entry[q->freelist_tail].freelist_next = j;
-			q->freelist_tail = j;
-			q->free_count++;
-		}
-	}
 }
 
 static int airoha_qdma_mips_xmit(struct airoha_qdma *qdma,
@@ -3787,7 +3796,12 @@ void airoha_qdma_stop(struct airoha_qdma *qdma)
 		set_qregs_qcfg_rx_dma_en(&qcfg, false);
 		set_qregs_qcfg_tx_dma_en(&qcfg, false);
 		econet_wreg(qcfg, &qdma->econet->regs->qdma_cfg);
-		econet_qdma_cleanup_tx(qdma->econet);
+		/*
+		 * Leave the frames still on the TX rings alone: the hardware
+		 * may still be reading them, and it resumes from where it
+		 * stopped once TX DMA is enabled again, completing them as
+		 * usual. They are freed at teardown otherwise.
+		 */
 		return;
 	}
 
