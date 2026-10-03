@@ -3097,6 +3097,15 @@ static irqreturn_t gpon_dying_gasp_isr(int irq, void *data)
 {
 	struct xpon_priv *priv = data;
 
+	/*
+	 * Acknowledge the event in the SCU, as the vendor driver does, also
+	 * when it is ignored: a supply dip the board rides out would leave it
+	 * latched otherwise.
+	 */
+	if (priv->match_data->scu_dying_gasp_status)
+		regmap_set_bits(priv->scu, XPON_SCU_DYING_GASP,
+				XPON_SCU_DYING_GASP_STATUS);
+
 	if (!READ_ONCE(priv->mac_enabled))
 		return IRQ_HANDLED;
 
@@ -4572,6 +4581,7 @@ static const struct airoha_xpon_match_data en751221_xpon_data = {
 	.mac_irq_via_eth = true,
 	.gpon_rearm_tx_on_overhead = true,
 	.gpon_runtime_tgen = true,
+	.scu_dying_gasp_status = true,
 };
 
 /*
@@ -4592,6 +4602,7 @@ static const struct airoha_xpon_match_data en7528_xpon_data = {
 	.gpon_rearm_tx_on_overhead = true,
 	.gpon_runtime_tgen = true,
 	.gpon_has_mpi = true,
+	.scu_dying_gasp_status = true,
 };
 
 static const struct of_device_id airoha_xpon_of_match[] = {
