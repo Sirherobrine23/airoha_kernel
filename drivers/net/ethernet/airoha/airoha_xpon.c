@@ -1848,6 +1848,13 @@ void airoha_gpon_omci_hw_set_operational(void *hw_priv, bool operational)
 static bool airoha_gpon_config_requires_restart(u16 key)
 {
 	switch (key) {
+	/*
+	 * Not a live policy toggle: disabling the agent takes the service
+	 * down, and once enabled again it only becomes operational when the
+	 * OLT next sends a request. An OLT that has already provisioned the
+	 * ONU sends none, so the link would stay down until a reboot.
+	 */
+	case OMCI_CONFIG_AGENT_ENABLED:
 	case OMCI_CONFIG_SERIAL_NUMBER:
 	case OMCI_CONFIG_VENDOR_ID:
 	case OMCI_CONFIG_VERSION:
