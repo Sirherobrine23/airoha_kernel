@@ -796,6 +796,10 @@ struct airoha_flow_table_entry {
 	struct list_head v1_list;
 	/* v1: last real activity (RX bind or hardware BIND timestamp). */
 	unsigned long v1_lastused;
+	/* v1: the flow block this flow was offloaded through. */
+	const void *v1_owner;
+	/* v1: never bind again (its WiFi vif went away). */
+	bool v1_dead;
 	u16 addr_type;
 	u16 src_port;
 	u16 dest_port;
