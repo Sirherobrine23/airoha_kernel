@@ -459,6 +459,8 @@ struct xpon_priv {
 	/* Protects the GPON carrier readiness inputs. */
 	struct mutex		link_state_lock;
 	DECLARE_BITMAP(service_gems, GPON_MAX_GEM_ID);
+	/* GEM ports the OLT made encrypted with Encrypted_Port-ID (PLOAM) */
+	DECLARE_BITMAP(encrypted_gems, GPON_MAX_GEM_ID);
 	bool			gpon_o5;
 	bool			omci_operational;
 	bool			netdev_link;
