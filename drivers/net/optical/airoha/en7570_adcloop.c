@@ -30,14 +30,14 @@
 /* ------------------------------------------------------------------ */
 
 /* Select an ADC channel in SVADC_PD (byte 0, or byte 1 for the 0.875 V ref). */
-static void en7570_adc_select(struct en7570_priv *priv, u8 channel)
+static int en7570_adc_select(struct en7570_priv *priv, u8 channel)
 {
 	if (channel == EN7570_ADC_CH_BG0V875)
-		lddla_update8(&priv->lddla, EN7570_SVADC_PD + 1, EN7570_ADC_BG0V875_MASK,
-			       channel & ~EN7570_ADC_BG0V875_MASK);
-	else
-		lddla_update8(&priv->lddla, EN7570_SVADC_PD, EN7570_ADC_SELECT_MASK,
-			       channel & ~EN7570_ADC_SELECT_MASK);
+		return lddla_update8(&priv->lddla, EN7570_SVADC_PD + 1,
+				     EN7570_ADC_BG0V875_MASK,
+				     channel & ~EN7570_ADC_BG0V875_MASK);
+	return lddla_update8(&priv->lddla, EN7570_SVADC_PD, EN7570_ADC_SELECT_MASK,
+			     channel & ~EN7570_ADC_SELECT_MASK);
 }
 
 /* Restore the SVADC_PD channel field to its default (cleared). */
@@ -66,22 +66,28 @@ int en7570_adc_sample(struct en7570_priv *priv, u8 channel, int samples,
 	if (samples < 1)
 		samples = 1;
 
-	en7570_adc_select(priv, channel);
+	/* Sampling a channel that was not selected gives a plausible wrong code. */
+	ret = en7570_adc_select(priv, channel);
+	if (ret)
+		goto restore;
 
 	for (i = 0; i < samples; i++) {
 		/* Latch a fresh conversion (PROBE_CONTROL byte 1 bit 4). */
 		ret = lddla_update8(&priv->lddla, EN7570_PROBE_CONTROL + 1,
 				     EN7570_ADC_LATCH_MASK, EN7570_ADC_LATCH);
 		if (ret)
-			return ret;
+			goto restore;
 
 		ret = lddla_rd16(&priv->lddla, EN7570_ADC_PROBE_STATUS, &v);
 		if (ret)
-			return ret;
+			goto restore;
 		sum += v;
 	}
 
+restore:
 	en7570_adc_restore(priv, channel);
+	if (ret)
+		return ret;
 
 	*out = (sum + samples / 2) / samples;	/* round to nearest */
 	return 0;
@@ -130,12 +136,9 @@ int en7570_adc_calibrate(struct en7570_priv *priv)
 }
 
 /* Averaged on-die temperature ADC code. */
-u16 en7570_adc_temp(struct en7570_priv *priv)
+int en7570_adc_temp(struct en7570_priv *priv, u32 *code)
 {
-	u32 code = 0;
-
-	en7570_adc_sample(priv, EN7570_ADC_CH_TEMPERATURE, 8, &code);
-	return code;
+	return en7570_adc_sample(priv, EN7570_ADC_CH_TEMPERATURE, 8, code);
 }
 
 /* Averaged supply-voltage ADC code (toggles the Rx high-Z control). */
@@ -160,15 +163,40 @@ u16 en7570_adc_vcc(struct en7570_priv *priv)
  *   IC_temp        = T_V_offset - T_V_slope * sensor_voltage
  * with T_V_offset / T_V_slope held x10 (default 4958 / 3275 = 495.8 / 327.5).
  */
-void en7570_temp_update(struct en7570_priv *priv)
+int en7570_temp_update(struct en7570_priv *priv)
 {
-	u32 raw = en7570_adc_temp(priv);
-	s64 sensor_uv = en7570_adc_code_to_uv(priv, raw);
+	s64 sensor_uv, ic_temp_mc;
+	u32 raw;
+	int ret;
 
-	priv->ic_temp_mc = 100 * priv->temp_offset_x10 -
+	/*
+	 * Keep the previous temperatures when a read fails or decodes to
+	 * something no working part reports: a failed read used to decode as
+	 * code 0 (about 480 degC), and the APD tracking then drove the bias to
+	 * the top of the DAC range for a whole T_APD period.
+	 */
+	ret = en7570_adc_temp(priv, &raw);
+	if (ret)
+		goto fail;
+
+	sensor_uv = en7570_adc_code_to_uv(priv, raw);
+	ic_temp_mc = 100LL * priv->temp_offset_x10 -
 		div_s64((s64)priv->temp_slope_x10 * sensor_uv, 10000);
+	if (ic_temp_mc < EN7570_TEMP_MIN_MC || ic_temp_mc > EN7570_TEMP_MAX_MC) {
+		ret = -ERANGE;
+		goto fail;
+	}
+
+	priv->ic_temp_mc = ic_temp_mc;
 	priv->bosa_temp_mc = priv->ic_temp_mc - priv->bosa_temp_offset_mc;
 	priv->env_temp_mc = priv->ic_temp_mc - priv->env_temp_offset_mc;
+	return 0;
+
+fail:
+	dev_warn_ratelimited(priv->lddla.dev,
+			     "EN7570 temperature read failed (%d), keeping %d mC\n",
+			     ret, priv->ic_temp_mc);
+	return ret;
 }
 
 /* ------------------------------------------------------------------ */
