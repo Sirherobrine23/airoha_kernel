@@ -4828,7 +4828,10 @@ struct econet_q_rx {
 	 * and qdma->lock is held */
 	struct econet_q_rx_ent		*entry;
 	struct desc			*desc;
+	/* Last descriptor given back to the hardware. */
 	u16				cpu_i;
+	/* Next descriptor to process; past cpu_i + 1 after a failed refill. */
+	u16				next_i;
 
 	/* Not modified after init */
 	struct airoha_qdma_mips		*qdma;

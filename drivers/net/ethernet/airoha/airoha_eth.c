@@ -516,16 +516,19 @@ static int econet_qdma_rx_process(struct econet_q_rx *q, int budget,
 	 */
 	dma_rmb();
 
-	/* The stored value of cpu_i is the last entry actually handled.
-	 * Whereas hardware_i is the next entry that has not yet been received.
+	/* next_i is the first entry not handled yet, whereas hardware_i is
+	 * the next entry that has not yet been received. Entries between
+	 * cpu_i and next_i were handled but could not be refilled: their
+	 * buffers belong to the stack now, so never handle them again.
 	 */
-	cpu_i = (q->cpu_i + 1) % ndesc;
+	cpu_i = q->next_i;
 
 	for (done = 0; done < budget && cpu_i != hardware_i; done++) {
 		econet_qdma_rx_process_one(q, cpu_i, dir, batch);
 		cpu_i = (cpu_i + 1) % ndesc;
 	}
 
+	q->next_i = cpu_i;
 	econet_fill_rx_queue(q, cpu_i);
 
 	return done;
@@ -724,6 +727,14 @@ static int econet_qdma_rx_napi_poll(struct napi_struct *napi, int budget)
 
 	if (pending)
 		airoha_whnat_batch_flush(pending);
+
+	/*
+	 * A failed refill leaves the hardware short of descriptors. Once it
+	 * has none left it raises no interrupt that would retry the refill,
+	 * so keep polling until the ring is whole again.
+	 */
+	if (q->next_i != (q->cpu_i + 1) % q->ndesc)
+		return budget;
 
 	if (done < budget && napi_complete(napi)) {
 		union econet_irq_purpose purpose;
@@ -1096,6 +1107,7 @@ static int econet_init_rx_queue(struct econet_q_rx *q,
 	for (int i = 0; i < q->ndesc; i++)
 		if (!q->entry[i].dma_addr)
 			return -ENOMEM;
+	q->next_i = 1;
 
 	/* The RX hardware side considers that hwi == cpui means the queue is
 	 * full, not empty. Since cpui starts at 0, we initialize hwi to 1. */
