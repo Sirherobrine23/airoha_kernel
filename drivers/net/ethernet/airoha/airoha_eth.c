@@ -1006,8 +1006,18 @@ static int econet_qdma_xmit_mips(struct airoha_qdma_mips *qdma, struct sk_buff *
 	q->freelist_head = next_index;
 	q->free_count--;
 
-	if (skb->dev)
+	if (skb->dev) {
+		/*
+		 * Account the frame here, once it can no longer fail and under
+		 * the ring lock the completion path holds too: both the stack
+		 * and the xPON OAM path queue to the same netdev queue, and a
+		 * caller undoing its accounting would race the completions.
+		 */
+		netdev_tx_sent_queue(netdev_get_tx_queue(skb->dev,
+							 skb_get_queue_mapping(skb)),
+				     skb->len);
 		skb_tx_timestamp(skb);
+	}
 
 	/*
 	 * Match the vendor QDMA handoff: the descriptor must be globally visible
@@ -3937,7 +3947,7 @@ static netdev_tx_t econet_qdma_xmit(struct sk_buff *skb, struct net_device *dev)
 {
 	struct airoha_gdm_dev *port = netdev_priv(dev);
 	struct airoha_qdma_skb_meta skb_meta;
-	int qid, ret = 0, len = skb->len;
+	int qid, ret = 0;
 	struct netdev_queue *txq;
 	struct airoha_xpon_tx_info xpon_info;
 	union desc_msg msg = {0};
@@ -4019,8 +4029,6 @@ static netdev_tx_t econet_qdma_xmit(struct sk_buff *skb, struct net_device *dev)
 			dev->stats.tx_dropped++;
 			return NETDEV_TX_OK;
 		}
-
-		len = skb->len;
 	}
 
 	/*
@@ -4050,18 +4058,13 @@ static netdev_tx_t econet_qdma_xmit(struct sk_buff *skb, struct net_device *dev)
 		set_etx_tco(&msg.etx, true);
 	}
 
-	netdev_tx_sent_queue(txq, len);
-
 	ret = airoha_qdma_mips_xmit(port->qdma, skb, &msg, 0);
 	if (ret == -EBUSY) {
-		netdev_tx_completed_queue(txq, 1, len);
 		netif_tx_stop_queue(txq);
 		return NETDEV_TX_BUSY;
 	}
-	if (ret < 0) {
-		netdev_tx_completed_queue(txq, 1, len);
+	if (ret < 0)
 		goto drop;
-	}
 
 	/* Positive EBUSY means this packet was queued and filled the ring. */
 	if (ret == EBUSY)
@@ -4506,9 +4509,8 @@ static int econet_xmit_xpon_oam(struct net_device *netdev, struct sk_buff *skb,
 				u8 channel, u16 gem_port_id)
 {
 	struct airoha_gdm_dev *port;
-	struct netdev_queue *txq;
 	union desc_msg msg = {};
-	int len, ret;
+	int ret;
 
 	ret = econet_validate_xpon_gdm2(netdev, &port);
 	if (ret)
@@ -4529,17 +4531,10 @@ static int econet_xmit_xpon_oam(struct net_device *netdev, struct sk_buff *skb,
 
 	skb->dev = netdev;
 	skb_set_queue_mapping(skb, 0);
-	len = skb->len;
-	txq = netdev_get_tx_queue(netdev, 0);
-	netdev_tx_sent_queue(txq, len);
 
 	ret = airoha_qdma_mips_xmit(port->qdma, skb, &msg, 0);
-	if (ret < 0) {
-		netdev_tx_completed_queue(txq, 1, len);
-		return ret;
-	}
 
-	return 0;
+	return ret < 0 ? ret : 0;
 }
 
 static int econet_xpon_get_tx_info(struct net_device *netdev, bool vlan_valid,
