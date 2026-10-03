@@ -143,6 +143,13 @@ int en7570_init(struct en7570_priv *priv)
 	ret = en7570_adc_calibrate(priv);
 	if (ret)
 		return -EIO;
+	/*
+	 * Until a temperature is read, assume the APD knee temperature, so that
+	 * a failed first read programs the calibrated knee voltage.
+	 */
+	priv->bosa_temp_mc = EN7570_APD_KNEE_TEMP_MC;
+	priv->ic_temp_mc = priv->bosa_temp_mc + priv->bosa_temp_offset_mc;
+	priv->env_temp_mc = priv->ic_temp_mc - priv->env_temp_offset_mc;
 	en7570_temp_update(priv);
 	en7570_rssi_cal(priv);
 
@@ -235,8 +242,9 @@ void en7570_tick(struct en7570_priv *priv)
 	/* APD voltage tracking (GPON only) every T_APD seconds. */
 	if (priv->lddla.pon_mode == EN7570_PON_GPON &&
 	    (c % priv->t_apd) == priv->t_apd - 1) {
-		en7570_temp_update(priv);
-		en7570_apd_update(priv);
+		/* Only retune the APD from a fresh, plausible temperature. */
+		if (!en7570_temp_update(priv))
+			en7570_apd_update(priv);
 	}
 
 	/* Staggered DDMI refresh (only when internal DDMI is enabled). */
