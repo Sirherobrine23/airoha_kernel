@@ -263,6 +263,9 @@
 #define EN7570_APD_SLOPE_UP_UV_DEF	100000	/* 0.10 V/degC above knee, in uV/degC */
 #define EN7570_APD_SLOPE_DN_UV_DEF	70000	/* 0.07 V/degC below knee, in uV/degC */
 #define EN7570_APD_KNEE_TEMP_MC		25000	/* knee temperature 25 degC */
+/* On-die temperatures outside this range are a failed or bogus ADC read. */
+#define EN7570_TEMP_MIN_MC		(-50000)
+#define EN7570_TEMP_MAX_MC		150000
 #define EN7570_APD_ZERO_CODE_MV_DEF	30000	/* legacy: 30.0 V at DAC code 0 */
 #define EN7570_APD_STEP_UV_DEF		93750	/* legacy: 0.09375 V/code, in uV */
 #define EN7570_T_APD_DEFAULT		600	/* APD update interval (s) */

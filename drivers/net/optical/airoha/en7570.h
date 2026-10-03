@@ -128,10 +128,10 @@ void en7570_fiber_plug(struct en7570_priv *priv);
 /* --- ADC (en7570_adcloop.c) --- */
 int en7570_adc_calibrate(struct en7570_priv *priv);
 int en7570_adc_sample(struct en7570_priv *priv, u8 channel, int samples, u32 *out);
-u16 en7570_adc_temp(struct en7570_priv *priv);
+int en7570_adc_temp(struct en7570_priv *priv, u32 *code);
 u16 en7570_adc_vcc(struct en7570_priv *priv);
 s64 en7570_adc_code_to_uv(struct en7570_priv *priv, u32 code);
-void en7570_temp_update(struct en7570_priv *priv);
+int en7570_temp_update(struct en7570_priv *priv);
 
 /* --- Tx path (en7570_txrx.c) --- */
 void en7570_tx_load_init_current(struct en7570_priv *priv);
