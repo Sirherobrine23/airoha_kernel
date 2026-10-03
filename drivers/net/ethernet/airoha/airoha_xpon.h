@@ -29,6 +29,8 @@
 #define EN751221_SCU_WAN_MODE_MASK	GENMASK(2, 0)
 #define XPON_SCU_WAN_MODE_GPON		0x00
 #define XPON_SCU_WAN_MODE_EPON		0x01
+#define XPON_SCU_DYING_GASP		0x084
+#define XPON_SCU_DYING_GASP_STATUS	BIT(16)
 
 struct airoha_xpon_match_data {
 	enum airoha_ids version;
@@ -47,6 +49,8 @@ struct airoha_xpon_match_data {
 	bool gpon_rearm_tx_on_overhead;
 	bool gpon_runtime_tgen;
 	bool gpon_has_mpi;
+	/* The SCU latches the dying-gasp IRQ until its status is written. */
+	bool scu_dying_gasp_status;
 };
 
 
