@@ -86,6 +86,8 @@
  * (Note: Actual mapping depends on Device Tree and PORT_REMAP config)
  */
 
+#include <linux/bitmap.h>
+#include <linux/bitops.h>
 #include <linux/i2c.h>
 #include <linux/module.h>
 #include <linux/of.h>
@@ -103,6 +105,25 @@
 #define TEMPERATURE_REG 0x2C
 #define FIRMWARE_REVISION_REG 0x41
 #define CHIP_REVISION_REG 0x43
+
+/* Interrupt registers */
+#define INTERRUPT_REG 0x00
+#define INTERRUPT_MASK_REG 0x01
+#define POWER_EVENT_COR_REG 0x03
+#define DISCONNECT_PCUT_FAULT_COR_REG 0x07
+#define ILIM_START_FAULT_COR_REG 0x09
+#define SUPPLY_EVENT_COR_REG 0x0B
+#define POWER_ON_FAULT_COR_REG 0x25
+
+/* INTERRUPT and INTERRUPT_MASK bits */
+#define INT_START_EVENT BIT(6)
+#define INT_P_I_FAULT BIT(5)
+#define INT_POWER_GOOD_CHANGE BIT(1)
+#define INT_POWER_ENABLE_CHANGE BIT(0)
+
+#define SI3474_INT_MASK                                            \
+	(INT_START_EVENT | INT_P_I_FAULT | INT_POWER_GOOD_CHANGE | \
+	 INT_POWER_ENABLE_CHANGE)
 
 /* Main status registers */
 #define POWER_STATUS_REG 0x10
@@ -135,9 +156,20 @@
 #define CHAN_MASK(chan) (0x03U << (2 * CHAN_IDX(chan)))
 #define CHAN_REG(base, chan) ((base) + (CHAN_IDX(chan) * 4))
 
+/* PORT12 / PORT34 PCUT_FAULT_4P bits of SUPPLY_EVENT */
+#define CHAN_PCUT_FAULT_4P_BIT(chan) BIT(2 + CHAN_IDX(chan) / 2)
+
 struct si3474_pi_desc {
 	u8 chan[2];
 	bool is_4p;
+};
+
+/* Per-quad snapshot of the event registers, read clear-on-read */
+struct si3474_events {
+	u8 power;
+	u8 pcut;
+	u8 ilim_start;
+	u8 supply;
 };
 
 struct si3474_priv {
@@ -145,6 +177,7 @@ struct si3474_priv {
 	struct pse_controller_dev pcdev;
 	struct device_node *np;
 	struct si3474_pi_desc pi[SI3474_MAX_CHANS];
+	unsigned long fault_pis;
 };
 
 static struct si3474_priv *to_si3474_priv(struct pse_controller_dev *pcdev)
@@ -159,10 +192,15 @@ static void si3474_get_channels(struct si3474_priv *priv, int id,
 	*chan1 = priv->pi[id].chan[1];
 }
 
+static unsigned int si3474_chan_quad(u8 chan)
+{
+	return chan < 4 ? 0 : 1;
+}
+
 static struct i2c_client *si3474_get_chan_client(struct si3474_priv *priv,
 						 u8 chan)
 {
-	return (chan < 4) ? priv->client[0] : priv->client[1];
+	return priv->client[si3474_chan_quad(chan)];
 }
 
 static int si3474_pi_get_admin_state(struct pse_controller_dev *pcdev, int id,
@@ -216,11 +254,15 @@ static int si3474_pi_get_pw_status(struct pse_controller_dev *pcdev, int id,
 
 	delivering = ret & (CHAN_UPPER_BIT(chan0) | CHAN_UPPER_BIT(chan1));
 
-	if (delivering)
+	if (delivering) {
+		clear_bit(id, &priv->fault_pis);
 		pw_status->c33_pw_status =
 			ETHTOOL_C33_PSE_PW_D_STATUS_DELIVERING;
-	else
+	} else if (test_bit(id, &priv->fault_pis)) {
+		pw_status->c33_pw_status = ETHTOOL_C33_PSE_PW_D_STATUS_FAULT;
+	} else {
 		pw_status->c33_pw_status = ETHTOOL_C33_PSE_PW_D_STATUS_DISABLED;
+	}
 
 	return 0;
 }
@@ -309,6 +351,8 @@ static int si3474_pi_enable(struct pse_controller_dev *pcdev, int id)
 	if (ret)
 		return ret;
 
+	clear_bit(id, &priv->fault_pis);
+
 	/* DETECT_CLASS_ENABLE must be set when using AUTO mode,
 	 * otherwise PI does not power up - datasheet section 2.10.2
 	 */
@@ -345,6 +389,8 @@ static int si3474_pi_disable(struct pse_controller_dev *pcdev, int id)
 	ret = i2c_smbus_write_byte_data(client, PORT_MODE_REG, val);
 	if (ret)
 		return ret;
+
+	clear_bit(id, &priv->fault_pis);
 
 	return 0;
 }
@@ -453,6 +499,128 @@ static int si3474_pi_get_actual_pw(struct pse_controller_dev *pcdev, int id)
 	return DIV_ROUND_CLOSEST_ULL(tmp_64, 1000000000);
 }
 
+static int si3474_events_read(struct i2c_client *client,
+			      struct si3474_events *ev)
+{
+	s32 ret;
+
+	ret = i2c_smbus_read_byte_data(client, INTERRUPT_REG);
+	if (ret < 0)
+		return ret;
+
+	if (!(ret & SI3474_INT_MASK))
+		return 0;
+
+	ret = i2c_smbus_read_byte_data(client, POWER_EVENT_COR_REG);
+	if (ret < 0)
+		return ret;
+	ev->power = ret;
+
+	ret = i2c_smbus_read_byte_data(client, DISCONNECT_PCUT_FAULT_COR_REG);
+	if (ret < 0)
+		return ret;
+	ev->pcut = ret;
+
+	ret = i2c_smbus_read_byte_data(client, ILIM_START_FAULT_COR_REG);
+	if (ret < 0)
+		return ret;
+	ev->ilim_start = ret;
+
+	ret = i2c_smbus_read_byte_data(client, SUPPLY_EVENT_COR_REG);
+	if (ret < 0)
+		return ret;
+	ev->supply = ret;
+
+	/* START_EVENT stays set until POWER_ON_FAULT is read as well */
+	ret = i2c_smbus_read_byte_data(client, POWER_ON_FAULT_COR_REG);
+	if (ret < 0)
+		return ret;
+
+	return 0;
+}
+
+static bool si3474_chan_over_current(const struct si3474_events *ev, u8 chan)
+{
+	return (ev->pcut & CHAN_BIT(chan)) ||
+	       (ev->ilim_start & (CHAN_BIT(chan) | CHAN_UPPER_BIT(chan))) ||
+	       (ev->supply & CHAN_PCUT_FAULT_4P_BIT(chan));
+}
+
+static void si3474_pi_map_event(struct si3474_priv *priv, int id,
+				const struct si3474_events *ev,
+				unsigned long *notifs,
+				unsigned long *notifs_mask)
+{
+	bool over_current = false, power_change = false;
+	const struct si3474_events *quad_ev;
+	u8 chan[2];
+	int i;
+
+	if (!priv->pi[id].is_4p)
+		return;
+
+	si3474_get_channels(priv, id, &chan[0], &chan[1]);
+
+	for (i = 0; i < 2; i++) {
+		quad_ev = &ev[si3474_chan_quad(chan[i])];
+		over_current |= si3474_chan_over_current(quad_ev, chan[i]);
+		power_change |= quad_ev->power &
+				(CHAN_BIT(chan[i]) | CHAN_UPPER_BIT(chan[i]));
+	}
+
+	if (over_current) {
+		set_bit(id, &priv->fault_pis);
+		notifs[id] |= ETHTOOL_PSE_EVENT_OVER_CURRENT;
+	}
+
+	if (over_current || power_change)
+		set_bit(id, notifs_mask);
+}
+
+static int si3474_map_event(int irq, struct pse_controller_dev *pcdev,
+			    unsigned long *notifs, unsigned long *notifs_mask)
+{
+	struct si3474_priv *priv = to_si3474_priv(pcdev);
+	struct si3474_events ev[2] = {};
+	int quad, id, ret = 0, err;
+
+	/* Events of a quad that was read are consumed even if the other fails */
+	for (quad = 0; quad < 2; quad++) {
+		err = si3474_events_read(priv->client[quad], &ev[quad]);
+		if (err)
+			ret = err;
+	}
+
+	for (id = 0; id < SI3474_MAX_CHANS; id++)
+		si3474_pi_map_event(priv, id, ev, notifs, notifs_mask);
+
+	return bitmap_empty(notifs_mask, pcdev->nr_lines) ? ret : 0;
+}
+
+static int si3474_setup_irq(struct si3474_priv *priv, int irq)
+{
+	struct pse_irq_desc irq_desc = {
+		.name = "si3474-irq",
+		.map_event = si3474_map_event,
+	};
+	struct si3474_events ev;
+	int quad, ret;
+
+	for (quad = 0; quad < 2; quad++) {
+		ret = si3474_events_read(priv->client[quad], &ev);
+		if (ret)
+			return ret;
+
+		ret = i2c_smbus_write_byte_data(priv->client[quad],
+						INTERRUPT_MASK_REG,
+						SI3474_INT_MASK);
+		if (ret)
+			return ret;
+	}
+
+	return devm_pse_irq_helper(&priv->pcdev, irq, 0, &irq_desc);
+}
+
 static const struct pse_controller_ops si3474_ops = {
 	.setup_pi_matrix = si3474_setup_pi_matrix,
 	.pi_enable = si3474_pi_enable,
@@ -546,7 +714,10 @@ static int si3474_i2c_probe(struct i2c_client *client)
 		return ret;
 	}
 
-	return 0;
+	if (client->irq <= 0)
+		return 0;
+
+	return si3474_setup_irq(priv, client->irq);
 }
 
 static const struct i2c_device_id si3474_id[] = {
