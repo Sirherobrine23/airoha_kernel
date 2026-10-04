@@ -6,6 +6,7 @@
 #include <linux/i2c.h>
 #include <linux/interrupt.h>
 #include <linux/jiffies.h>
+#include <linux/leds.h>
 #include <linux/mdio/mdio-i2c.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
@@ -237,6 +238,26 @@ struct sff_data {
 	bool (*module_supported)(const struct sfp_eeprom_id *id);
 };
 
+#if IS_ENABLED(CONFIG_LEDS_TRIGGERS)
+enum {
+	SFP_LED_PRESENT,
+	SFP_LED_LOS,
+	SFP_LED_TX_FAULT,
+	SFP_LED_ERROR,
+	SFP_LED_FAULT,
+	SFP_LED_MAX,
+};
+
+static const char *const sfp_led_names[SFP_LED_MAX] = {
+	"present", "los", "tx-fault", "error", "fault",
+};
+
+struct sfp_led {
+	struct led_trigger trig;
+	bool active;
+};
+#endif
+
 struct sfp {
 	struct device *dev;
 	struct i2c_adapter *i2c;
@@ -314,6 +335,10 @@ struct sfp {
 
 #if IS_ENABLED(CONFIG_DEBUG_FS)
 	struct dentry *debugfs_dir;
+#endif
+
+#if IS_ENABLED(CONFIG_LEDS_TRIGGERS)
+	struct sfp_led led[SFP_LED_MAX];
 #endif
 };
 
@@ -2029,23 +2054,27 @@ static void sfp_sm_link_down(struct sfp *sfp)
 	sfp_link_down(sfp->sfp_bus);
 }
 
-static void sfp_sm_link_check_los(struct sfp *sfp)
+static bool sfp_los_asserted(struct sfp *sfp)
 {
 	const __be16 los_inverted = cpu_to_be16(SFP_OPTIONS_LOS_INVERTED);
 	const __be16 los_normal = cpu_to_be16(SFP_OPTIONS_LOS_NORMAL);
 	__be16 los_options = sfp->id.ext.options & (los_inverted | los_normal);
-	bool los = false;
 
 	/* If neither SFP_OPTIONS_LOS_INVERTED nor SFP_OPTIONS_LOS_NORMAL
 	 * are set, we assume that no LOS signal is available. If both are
 	 * set, we assume LOS is not implemented (and is meaningless.)
 	 */
 	if (los_options == los_inverted)
-		los = !(sfp->state & SFP_F_LOS);
-	else if (los_options == los_normal)
-		los = !!(sfp->state & SFP_F_LOS);
+		return !(sfp->state & SFP_F_LOS);
+	if (los_options == los_normal)
+		return !!(sfp->state & SFP_F_LOS);
 
-	if (los)
+	return false;
+}
+
+static void sfp_sm_link_check_los(struct sfp *sfp)
+{
+	if (sfp_los_asserted(sfp))
 		sfp_sm_next(sfp, SFP_S_WAIT_LOS, 0);
 	else
 		sfp_sm_link_up(sfp);
@@ -2904,6 +2933,102 @@ static void sfp_sm_main(struct sfp *sfp, unsigned int event)
 	}
 }
 
+#if IS_ENABLED(CONFIG_LEDS_TRIGGERS)
+static unsigned int sfp_led_states(struct sfp *sfp)
+{
+	unsigned int states = 0;
+	bool tx_fault, error;
+
+	if (sfp->state & SFP_F_PRESENT)
+		states |= BIT(SFP_LED_PRESENT);
+
+	if (sfp->sm_mod_state == SFP_MOD_PRESENT && sfp_los_asserted(sfp))
+		states |= BIT(SFP_LED_LOS);
+
+	tx_fault = sfp->sm_state == SFP_S_INIT_TX_FAULT ||
+		   sfp->sm_state == SFP_S_TX_FAULT ||
+		   sfp->sm_state == SFP_S_REINIT ||
+		   sfp->sm_state == SFP_S_TX_DISABLE;
+	error = sfp->sm_mod_state == SFP_MOD_ERROR ||
+		sfp->sm_state == SFP_S_FAIL;
+
+	if (tx_fault)
+		states |= BIT(SFP_LED_TX_FAULT);
+	if (error)
+		states |= BIT(SFP_LED_ERROR);
+	if (tx_fault || error)
+		states |= BIT(SFP_LED_FAULT);
+
+	return states;
+}
+
+static void sfp_led_update(struct sfp *sfp)
+{
+	unsigned int states = sfp_led_states(sfp);
+	struct sfp_led *led;
+	bool active;
+	int i;
+
+	for (i = 0; i < SFP_LED_MAX; i++) {
+		led = &sfp->led[i];
+		active = states & BIT(i);
+
+		if (!led->trig.name || led->active == active)
+			continue;
+
+		led->active = active;
+		led_trigger_event(&led->trig, active ? LED_FULL : LED_OFF);
+	}
+}
+
+static int sfp_led_activate(struct led_classdev *led_cdev)
+{
+	struct sfp_led *led =
+		container_of(led_cdev->trigger, struct sfp_led, trig);
+
+	led_set_brightness(led_cdev, led->active ? LED_FULL : LED_OFF);
+
+	return 0;
+}
+
+static int sfp_led_register(struct sfp *sfp)
+{
+	struct sfp_led *led;
+	int i, err;
+
+	for (i = 0; i < SFP_LED_MAX; i++) {
+		led = &sfp->led[i];
+
+		led->trig.name = devm_kasprintf(sfp->dev, GFP_KERNEL,
+						"sfp-%s:%s", dev_name(sfp->dev),
+						sfp_led_names[i]);
+		if (!led->trig.name)
+			return -ENOMEM;
+
+		led->trig.activate = sfp_led_activate;
+
+		err = devm_led_trigger_register(sfp->dev, &led->trig);
+		if (err) {
+			dev_warn(sfp->dev,
+				 "failed to register LED trigger %s: %pe\n",
+				 led->trig.name, ERR_PTR(err));
+			led->trig.name = NULL;
+		}
+	}
+
+	return 0;
+}
+#else
+static void sfp_led_update(struct sfp *sfp)
+{
+}
+
+static int sfp_led_register(struct sfp *sfp)
+{
+	return 0;
+}
+#endif
+
 static void __sfp_sm_event(struct sfp *sfp, unsigned int event)
 {
 	dev_dbg(sfp->dev, "SM: enter %s:%s:%s event %s\n",
@@ -2920,6 +3045,8 @@ static void __sfp_sm_event(struct sfp *sfp, unsigned int event)
 		mod_state_to_str(sfp->sm_mod_state),
 		dev_state_to_str(sfp->sm_dev_state),
 		sm_state_to_str(sfp->sm_state));
+
+	sfp_led_update(sfp);
 }
 
 static void sfp_sm_event(struct sfp *sfp, unsigned int event)
@@ -3259,6 +3386,10 @@ static int sfp_probe(struct platform_device *pdev)
 
 	dev_info(sfp->dev, "Host maximum power %u.%uW\n",
 		 sfp->max_power_mW / 1000, (sfp->max_power_mW / 100) % 10);
+
+	err = sfp_led_register(sfp);
+	if (err)
+		return err;
 
 	/* Get the initial state, and always signal TX disable,
 	 * since the network interface will not be up.
