@@ -25,6 +25,11 @@ properties:
       - const: main
       - const: secondary
 
+  interrupts:
+    maxItems: 1
+    description: INTb output, asserted low by an unserved event in either
+      quad.
+
   channels:
     description: The Si3474 is a single-chip PoE PSE controller managing
       8 physical power delivery channels. Internally, it's structured
