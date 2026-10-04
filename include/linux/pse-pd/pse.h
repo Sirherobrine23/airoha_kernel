@@ -273,14 +273,18 @@ struct pse_pi {
  *
  * @delivering: LED trigger for power delivering state
  * @enabled: LED trigger for admin enabled state
+ * @fault: LED trigger for power fault state
  * @last_delivering: cached delivering state for change detection
  * @last_enabled: cached enabled state for change detection
+ * @last_fault: cached fault state for change detection
  */
 struct pse_pi_led_triggers {
 	struct led_trigger delivering;
 	struct led_trigger enabled;
+	struct led_trigger fault;
 	bool last_delivering;
 	bool last_enabled;
+	bool last_fault;
 };
 
 /**
