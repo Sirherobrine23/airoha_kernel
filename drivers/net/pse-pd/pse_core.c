@@ -753,18 +753,19 @@ static int _pse_pi_delivery_power_sw_pw_ctrl(struct pse_controller_dev *pcdev,
 
 #if IS_ENABLED(CONFIG_LEDS_TRIGGERS)
 /**
- * pse_pi_get_states - Fetch current delivering/enabled state for a PI
+ * pse_pi_get_states - Fetch current delivering/enabled/fault state for a PI
  * @pcdev: PSE controller device
  * @id: PI index
  * @delivering: out, set to true if PI is currently delivering power
  * @enabled: out, set to true if PI is administratively enabled
+ * @fault: out, set to true if PI reports a power fault
  *
  * Queries hardware via the controller ops. Caller must hold pcdev->lock.
  *
  * Return: 0 on success, negative errno on failure.
  */
 static int pse_pi_get_states(struct pse_controller_dev *pcdev, int id,
-			     bool *delivering, bool *enabled)
+			     bool *delivering, bool *enabled, bool *fault)
 {
 	struct pse_pw_status pw_status = {};
 	struct pse_admin_state admin_state = {};
@@ -785,6 +786,10 @@ static int pse_pi_get_states(struct pse_controller_dev *pcdev, int id,
 		ETHTOOL_C33_PSE_ADMIN_STATE_ENABLED ||
 		admin_state.podl_admin_state ==
 		ETHTOOL_PODL_PSE_ADMIN_STATE_ENABLED;
+	*fault = pw_status.c33_pw_status == ETHTOOL_C33_PSE_PW_D_STATUS_FAULT ||
+		 pw_status.c33_pw_status ==
+			 ETHTOOL_C33_PSE_PW_D_STATUS_OTHERFAULT ||
+		 pw_status.podl_pw_status == ETHTOOL_PODL_PSE_PW_D_STATUS_ERROR;
 
 	return 0;
 }
@@ -803,7 +808,7 @@ static int pse_pi_get_states(struct pse_controller_dev *pcdev, int id,
 static void pse_led_update(struct pse_controller_dev *pcdev, int id)
 {
 	struct pse_pi_led_triggers *trigs;
-	bool delivering, enabled;
+	bool delivering, enabled, fault;
 
 	if (!pcdev->pi_led_trigs)
 		return;
@@ -812,7 +817,7 @@ static void pse_led_update(struct pse_controller_dev *pcdev, int id)
 	if (!trigs->delivering.name)
 		return;
 
-	if (pse_pi_get_states(pcdev, id, &delivering, &enabled))
+	if (pse_pi_get_states(pcdev, id, &delivering, &enabled, &fault))
 		return;
 
 	if (trigs->last_delivering != delivering) {
@@ -825,6 +830,11 @@ static void pse_led_update(struct pse_controller_dev *pcdev, int id)
 		trigs->last_enabled = enabled;
 		led_trigger_event(&trigs->enabled,
 				  enabled ? LED_FULL : LED_OFF);
+	}
+
+	if (trigs->last_fault != fault) {
+		trigs->last_fault = fault;
+		led_trigger_event(&trigs->fault, fault ? LED_FULL : LED_OFF);
 	}
 }
 
@@ -852,6 +862,15 @@ static int pse_led_enabled_activate(struct led_classdev *led_cdev)
 
 	led_set_brightness(led_cdev,
 			   trigs->last_enabled ? LED_FULL : LED_OFF);
+	return 0;
+}
+
+static int pse_led_fault_activate(struct led_classdev *led_cdev)
+{
+	struct pse_pi_led_triggers *trigs = container_of(
+		led_cdev->trigger, struct pse_pi_led_triggers, fault);
+
+	led_set_brightness(led_cdev, trigs->last_fault ? LED_FULL : LED_OFF);
 	return 0;
 }
 
@@ -899,6 +918,18 @@ static int pse_led_triggers_register(struct pse_controller_dev *pcdev)
 		ret = devm_led_trigger_register(dev, &trigs->enabled);
 		if (ret) {
 			trigs->enabled.name = NULL;
+			return ret;
+		}
+
+		trigs->fault.name = devm_kasprintf(
+			dev, GFP_KERNEL, "pse-%s:port%d:fault", dev_id, i);
+		if (!trigs->fault.name)
+			return -ENOMEM;
+		trigs->fault.activate = pse_led_fault_activate;
+
+		ret = devm_led_trigger_register(dev, &trigs->fault);
+		if (ret) {
+			trigs->fault.name = NULL;
 			return ret;
 		}
 	}
