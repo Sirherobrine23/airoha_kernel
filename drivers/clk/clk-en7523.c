@@ -19,6 +19,7 @@
 #include <dt-bindings/clock/en7523-clk.h>
 #include <dt-bindings/clock/econet,en751221-scu.h>
 #include <dt-bindings/clock/econet,en7528-scu.h>
+#include <dt-bindings/clock/econet,en7580-scu.h>
 #include <dt-bindings/reset/airoha,en7523-reset.h>
 #include <dt-bindings/reset/airoha,en7581-reset.h>
 #include <dt-bindings/reset/airoha,an7583-reset.h>
@@ -125,6 +126,14 @@
 #define EN7528_REG_SHARED_UNZIPMENT_SEL	0x954
 #define EN7528_SHARED_UNZIPMENT_FE	0x3
 #define EN7528_MAX_CLKS		5
+
+/* EN7580 MIPS CHIP-SCU layout (ecnt_scu.h and spi_controller.c). */
+#define EN7580_REG_SPI_DIV		0x1b8
+#define EN7580_SPI_BASE			400000000
+#define EN7580_SPI_DIV_DEFAULT		40
+#define EN7580_REG_NP_PER_DOM_CLK_GAT_1	0x1dc
+#define EN7580_REG_TOD_DIVIDER_ENABLE	0x1e4
+#define EN7580_MAX_CLKS			5
 
 enum en_hir {
 	HIR_UNKNOWN	= -1,
@@ -1812,6 +1821,9 @@ static int econet_register_clocks(struct device *dev,
 				     "Failed reading fixed clk rate bus\n");
 
 	rate = FIELD_GET(EN751221_REG_BUS_MASK, val) * 1000000;
+	if (!rate)
+		return dev_err_probe(dev, -EINVAL,
+				     "Bootloader did not save the bus clock rate\n");
 	err = econet_register_fixed_rate(dev, ECONET_CLK_BUS, clk_data,
 					 "bus", rate);
 	if (err)
@@ -2010,6 +2022,18 @@ static const struct econet_clk_soc_data en7528_econet_data = {
 	.shared_unzip_val = EN7528_SHARED_UNZIPMENT_FE,
 };
 
+static const struct econet_clk_soc_data en7580_econet_data = {
+	.chip_scu_compatible = "econet,en7580-chip-scu",
+	.spi_base = EN7580_SPI_BASE,
+	.spi_div_reg = EN7580_REG_SPI_DIV,
+	.spi_div_mask = EN751221_REG_SPI_DIV_MASK,
+	.spi_div_default = EN7580_SPI_DIV_DEFAULT,
+	.xpon_tod_clk_reg = EN7580_REG_NP_PER_DOM_CLK_GAT_1,
+	.xpon_tod_clk_mask = EN751221_XPON_TOD_CLK_EN,
+	.xpon_tod_div_reg = EN7580_REG_TOD_DIVIDER_ENABLE,
+	.xpon_tod_div_mask = EN751221_XPON_TOD_DIV_EN,
+};
+
 static const struct en_clk_soc_data en751221_data = {
 	.num_clocks = EN751221_MAX_CLKS,
 	.rst_map = en751221_rst_map,
@@ -2039,12 +2063,28 @@ static const struct en_clk_soc_data en7528_data = {
 	.hw_init = econet_clk_hw_init,
 };
 
+static const struct en_clk_soc_data en7580_data = {
+	.num_clocks = EN7580_MAX_CLKS,
+	/* The MIPS EN7580 retains the legacy NP-SCU reset banks. */
+	.rst_map = en751221_rst_map,
+	.rst_ofs = en751221_rst_ofs,
+	.nr_resets = ARRAY_SIZE(en751221_rst_map),
+	.econet = &en7580_econet_data,
+	.pcie_ops = {
+		.is_enabled = en7523_pci_is_enabled,
+		.prepare = en7523_pci_prepare,
+		.unprepare = en7523_pci_unprepare,
+	},
+	.hw_init = econet_clk_hw_init,
+};
+
 static const struct of_device_id of_match_clk_en7523[] = {
 	{ .compatible = "airoha,en7523-scu", .data = &en7523_data },
 	{ .compatible = "airoha,en7581-scu", .data = &en7581_data },
 	{ .compatible = "airoha,an7583-scu", .data = &an7583_data },
 	{ .compatible = "econet,en751221-scu", .data = &en751221_data },
 	{ .compatible = "econet,en7528-scu", .data = &en7528_data },
+	{ .compatible = "econet,en7580-scu", .data = &en7580_data },
 	{ /* sentinel */ }
 };
 

@@ -54,6 +54,9 @@ choice
 		select MIPS_CPU_SCACHE
 		select MIPS_GIC
 		select PCI_DRIVERS_GENERIC
+		select PINCTRL
+		select PINCTRL_AIROHA
+		select PINCTRL_AIROHA_EN7580
 		select SMP
 		select SMP_UP
 		select SYS_SUPPORTS_HIGHMEM
@@ -61,7 +64,7 @@ choice
 		select SYS_SUPPORTS_MULTITHREADING
 		select SYS_SUPPORTS_SMP
 		help
-		  The EN7580 family with dual-core MIPS 1004Kc.
+		  The EN7580 family with dual-core MIPS interAptiv.
 		  Requires MIPS_RAW_APPENDED_DTB=y for boot.
 endchoice
 
