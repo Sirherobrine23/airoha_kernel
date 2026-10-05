@@ -79,7 +79,7 @@ config PINCTRL_AIROHA_EN7580
 	depends on PINCTRL_AIROHA
 	help
 	  Say yes here to support the GPIO and pin controller found in the
-	  EcoNet EN7528 SoC through the common Airoha pin controller
+	  EcoNet EN7580 SoC through the common Airoha pin controller
 	  implementation.
 
 endmenu
