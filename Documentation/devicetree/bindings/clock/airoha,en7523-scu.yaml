@@ -29,6 +29,7 @@ properties:
           - enum:
               - econet,en751221-scu
               - econet,en7528-scu
+              - econet,en7580-scu
           - const: syscon
 
   reg:
@@ -39,8 +40,6 @@ properties:
     items:
       - const: np-scu
       - const: mcucfg
-    minItems: 2
-    maxItems: 2
 
   airoha,chip-scu:
     $ref: /schemas/types.yaml#/definitions/phandle
@@ -71,8 +70,6 @@ allOf:
           items:
             - description: NP-SCU registers
             - description: MCUCFG registers used while switching the CPU PLL
-          minItems: 2
-          maxItems: 2
       required:
         - reg-names
         - airoha,chip-scu
@@ -87,8 +84,6 @@ allOf:
           items:
             - description: CHIP-SCU registers
             - description: NP-SCU registers
-          minItems: 2
-          maxItems: 2
 
   - if:
       properties:
@@ -109,6 +104,7 @@ allOf:
             enum:
               - econet,en751221-scu
               - econet,en7528-scu
+              - econet,en7580-scu
     then:
       properties:
         reg:

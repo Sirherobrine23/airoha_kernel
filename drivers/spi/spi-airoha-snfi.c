@@ -918,16 +918,18 @@ static int airoha_spi_probe(struct platform_device *pdev)
 	if (!as_ctrl->soc)
 		return -EINVAL;
 
-	base = devm_platform_ioremap_resource_byname(pdev, "ctrl");
-	if (IS_ERR(base))
+	if (of_property_present(dev->of_node, "reg-names"))
+		base = devm_platform_ioremap_resource_byname(pdev, "ctrl");
+	else
 		base = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(base))
 		return PTR_ERR(base);
 
 	as_ctrl->ctrl_base = base;
 	if (as_ctrl->soc->has_nfi) {
-		base = devm_platform_ioremap_resource_byname(pdev, "nfi");
-		if (IS_ERR(base))
+		if (of_property_present(dev->of_node, "reg-names"))
+			base = devm_platform_ioremap_resource_byname(pdev, "nfi");
+		else
 			base = devm_platform_ioremap_resource(pdev, 1);
 		if (IS_ERR(base))
 			return PTR_ERR(base);
@@ -1036,8 +1038,14 @@ static const struct airoha_spi_soc_data en7523_spi_data = {
 	.has_boot_trp = true,
 };
 
+static const struct airoha_spi_soc_data en7580_spi_data = {
+	.has_nfi = true,
+	.has_nfi2spi = true,
+};
+
 static const struct of_device_id airoha_spi_ids[] = {
 	{ .compatible = "econet,en751221-spi", .data = &en751221_spi_data },
+	{ .compatible = "econet,en7580-spi", .data = &en7580_spi_data },
 	{ .compatible = "airoha,en7523-spi", .data = &en7523_spi_data },
 	{ /* sentinel */ }
 };

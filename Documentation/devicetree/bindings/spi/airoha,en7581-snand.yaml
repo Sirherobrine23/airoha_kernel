@@ -4,7 +4,7 @@
 $id: http://devicetree.org/schemas/spi/airoha,en7581-snand.yaml#
 $schema: http://devicetree.org/meta-schemas/core.yaml#
 
-title: SPI-NAND flash controller for Airoha ARM SoCs
+title: SPI-NAND flash controller for Airoha and EcoNet SoCs
 
 maintainers:
   - Lorenzo Bianconi <lorenzo@kernel.org>
@@ -14,12 +14,23 @@ allOf:
 
 properties:
   compatible:
-    const: airoha,en7581-snand
+    enum:
+      - airoha,en7581-snand
+      - econet,en7580-spi
 
   reg:
     items:
       - description: spi base address
       - description: nfi2spi base address
+
+  reg-names:
+    items:
+      - const: ctrl
+      - const: nfi
+
+  airoha,scu:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: NP-SCU syscon containing the SoC boot configuration.
 
   clocks:
     maxItems: 1

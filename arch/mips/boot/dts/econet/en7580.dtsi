@@ -3,9 +3,9 @@
 
 #include <dt-bindings/interrupt-controller/irq.h>
 #include <dt-bindings/interrupt-controller/mips-gic.h>
-#include <dt-bindings/clock/econet,en7528-scu.h>
+#include <dt-bindings/clock/econet,en7580-scu.h>
 #include <dt-bindings/phy/phy.h>
-#include <dt-bindings/reset/econet,en7528-scu.h>
+#include <dt-bindings/reset/econet,en7580-scu.h>
 #include <dt-bindings/leds/common.h>
 #include <dt-bindings/soc/airoha,scu-ssr.h>
 #include <dt-bindings/soc/airoha,soc-variant.h>
@@ -131,7 +131,7 @@
 		};
 
 		chip_scu: syscon@1fa20000 {
-			compatible = "airoha,scuclk", "econet,en7580-chip-scu", "syscon";
+			compatible = "econet,en7580-chip-scu", "syscon";
 			reg = <0x1fa20000 0x400>;
 		};
 
@@ -161,7 +161,7 @@
 				interrupt-controller;
 				#interrupt-cells = <2>;
 
-				gpio-ranges = <&pinctrl 0 0 42>;
+				gpio-ranges = <&pinctrl 0 0 46>;
 
 				pcie0_rst_pins: pcie0-rst-pins {
 					conf {
@@ -290,15 +290,15 @@
 		};
 
 		spi0: spi@1fa10000 {
-			compatible = "airoha,en7523-spi";
+			compatible = "econet,en7580-spi";
 			reg = <0x1fa10000 0x140>,
 			      <0x1fa11000 0x160>;
+			reg-names = "ctrl", "nfi";
 
-			clocks = <&scuclk EN7528_CLK_SPI>;
+			clocks = <&scuclk EN7580_CLK_SPI>;
 			clock-names = "spi";
 
-			airoha,scu = <&scuclk>, <&chip_scu>;
-			airoha,scu-names = "scuclk", "chip-scu";
+			airoha,scu = <&scuclk>;
 
 			#address-cells = <1>;
 			#size-cells = <0>;
@@ -308,7 +308,7 @@
 			compatible = "econet,en751221-wdt";
 			reg = <0x1fbf0100 0x3c>;
 
-			clocks = <&scuclk EN7528_CLK_BUS>;
+			clocks = <&scuclk EN7580_CLK_BUS>;
 			clock-names = "bus";
 
 			interrupts = <GIC_SHARED 9 IRQ_TYPE_LEVEL_HIGH>;
@@ -467,7 +467,7 @@
 			#size-cells = <2>;
 			interrupts = <GIC_SHARED 23 IRQ_TYPE_LEVEL_HIGH>;
 			interrupt-names = "pcie_irq";
-			clocks = <&scuclk EN7528_CLK_PCIE>;
+			clocks = <&scuclk EN7580_CLK_PCIE>;
 			clock-names = "sys_ck0";
 			phys = <&pcie_phy0>;
 			phy-names = "pcie-phy0";
@@ -507,7 +507,7 @@
 			#size-cells = <2>;
 			interrupts = <GIC_SHARED 24 IRQ_TYPE_LEVEL_HIGH>;
 			interrupt-names = "pcie_irq";
-			clocks = <&scuclk EN7528_CLK_PCIE>;
+			clocks = <&scuclk EN7580_CLK_PCIE>;
 			clock-names = "sys_ck1";
 			phys = <&pcie_phy1>;
 			phy-names = "pcie-phy1";
@@ -556,7 +556,9 @@
 			pinctrl-names = "default";
 			pinctrl-0 = <&pon_pinctrl>;
 
-			resets = <&scuclk EN7528_XPON_PHY_RST>;
+			tx-disable-gpios = <&pinctrl 38 GPIO_ACTIVE_HIGH>;
+
+			resets = <&scuclk EN7580_XPON_PHY_RST>;
 			reset-names = "phy";
 
 			interrupts = <GIC_SHARED 27 IRQ_TYPE_LEVEL_HIGH>;
@@ -578,7 +580,7 @@
 			             <GIC_SHARED 18 IRQ_TYPE_LEVEL_HIGH>;
 			interrupt-names = "mac", "dying-gasp";
 
-			resets = <&scuclk EN7528_XPON_MAC_RST>;
+			resets = <&scuclk EN7580_XPON_MAC_RST>;
 			reset-names = "mac";
 			phys = <&xpon_phy>;
 			phy-names = "xpon";
@@ -623,10 +625,10 @@
 			      <0x1fbf9000 0x1000>;
 			reg-names = "fe", "qdma0", "qdma1", "gdmp";
 
-			resets = <&scuclk EN7528_FE_RST>,
-			         <&scuclk EN7528_FE_QDMA1_RST>,
-			         <&scuclk EN7528_FE_QDMA2_RST>,
-			         <&scuclk EN7528_GDMP_RST>;
+			resets = <&scuclk EN7580_FE_RST>,
+				 <&scuclk EN7580_FE_QDMA1_RST>,
+				 <&scuclk EN7580_FE_QDMA2_RST>,
+				 <&scuclk EN7580_GDMP_RST>;
 			reset-names = "fe", "pdma", "qdma", "gdmp";
 
 			airoha,wed = <&wed0>, <&wed1>;
@@ -678,7 +680,7 @@
 		switch: switch@1fb58000 {
 			compatible = "airoha,en7580-switch", "econet,en7580-switch";
 			reg = <0x1fb58000 0x8000>;
-			resets = <&scuclk EN7528_GSW_RST>;
+			resets = <&scuclk EN7580_GSW_RST>;
 
 			interrupt-controller;
 			#interrupt-cells = <1>;
