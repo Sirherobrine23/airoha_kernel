@@ -2090,6 +2090,21 @@ static int econet_qdma_init_tx(struct airoha_qdma_mips *qdma)
 }
 
 /* Airoha QDMA backend. */
+static int airoha_qdma_irq_reg_count(struct airoha_qdma *qdma)
+{
+	/* EN7580 has STATUS1/2 and two enable words per IRQ bank. */
+	return airoha_is(qdma->eth, econet_en7580) ? 2 : QDMA_INT_REG_MAX;
+}
+
+static u32 airoha_qdma_rx_irq_mask(struct airoha_qdma *qdma, int bank)
+{
+	/* EN7580 RX rings 10..14 reside in the low 16-ring status word. */
+	if (airoha_is(qdma->eth, econet_en7580) && bank == 1)
+		return GENMASK(14, 10);
+
+	return RX_IRQ_BANK_PIN_MASK(bank);
+}
+
 static void airoha_qdma_set_irqmask(struct airoha_irq_bank *irq_bank,
 				    int index, u32 clear, u32 set)
 {
@@ -2097,7 +2112,7 @@ static void airoha_qdma_set_irqmask(struct airoha_irq_bank *irq_bank,
 	int bank = irq_bank - &qdma->irq_banks[0];
 	unsigned long flags;
 
-	if (WARN_ON_ONCE(index >= ARRAY_SIZE(irq_bank->irqmask)))
+	if (WARN_ON_ONCE(index >= airoha_qdma_irq_reg_count(qdma)))
 		return;
 
 	spin_lock_irqsave(&irq_bank->irq_lock, flags);
@@ -2699,7 +2714,7 @@ static int airoha_qdma_rx_napi_poll(struct napi_struct *napi, int budget)
 							 : QDMA_INT_REG_IDX2;
 
 		for (i = 0; i < qdma->eth->soc->irq_banks; i++) {
-			if (!(BIT(qid) & RX_IRQ_BANK_PIN_MASK(i)))
+			if (!(BIT(qid) & airoha_qdma_rx_irq_mask(qdma, i)))
 				continue;
 
 			airoha_qdma_irq_enable(&qdma->irq_banks[i], intr_reg,
@@ -3350,16 +3365,26 @@ static void airoha_qdma_init_qos_stats(struct airoha_qdma *qdma)
 
 static int airoha_qdma_modern_hw_init(struct airoha_qdma *qdma)
 {
+	bool en7580 = airoha_is(qdma->eth, econet_en7580);
 	int i;
+
+	/* Status words are shared by the four IRQ output banks. */
+	if (en7580)
+		for (i = 0; i < airoha_qdma_irq_reg_count(qdma); i++)
+			airoha_qdma_wr(qdma, REG_INT_STATUS(i), 0xffffffff);
 
 	for (i = 0; i < qdma->eth->soc->irq_banks; i++) {
 		/* clear pending irqs */
-		airoha_qdma_wr(qdma, REG_INT_STATUS(i), 0xffffffff);
+		if (!en7580)
+			airoha_qdma_wr(qdma, REG_INT_STATUS(i), 0xffffffff);
 		/* setup rx irqs */
 		airoha_qdma_irq_enable(&qdma->irq_banks[i], QDMA_INT_REG_IDX0,
-				       INT_RX0_MASK(RX_IRQ_BANK_PIN_MASK(i)));
+				       INT_RX0_MASK(airoha_qdma_rx_irq_mask(qdma, i)));
 		airoha_qdma_irq_enable(&qdma->irq_banks[i], QDMA_INT_REG_IDX1,
-				       INT_RX1_MASK(RX_IRQ_BANK_PIN_MASK(i)));
+				       INT_RX1_MASK(airoha_qdma_rx_irq_mask(qdma, i)));
+		if (en7580)
+			continue;
+
 		airoha_qdma_irq_enable(&qdma->irq_banks[i], QDMA_INT_REG_IDX2,
 				       INT_RX2_MASK(RX_IRQ_BANK_PIN_MASK(i)));
 		airoha_qdma_irq_enable(&qdma->irq_banks[i], QDMA_INT_REG_IDX3,
@@ -3368,8 +3393,9 @@ static int airoha_qdma_modern_hw_init(struct airoha_qdma *qdma)
 	/* setup tx irqs */
 	airoha_qdma_irq_enable(&qdma->irq_banks[0], QDMA_INT_REG_IDX0,
 			       TX_COHERENT_LOW_INT_MASK | INT_TX_MASK);
-	airoha_qdma_irq_enable(&qdma->irq_banks[0], QDMA_INT_REG_IDX4,
-			       TX_COHERENT_HIGH_INT_MASK);
+	if (!en7580)
+		airoha_qdma_irq_enable(&qdma->irq_banks[0], QDMA_INT_REG_IDX4,
+				       TX_COHERENT_HIGH_INT_MASK);
 
 	if (airoha_is(qdma->eth, airoha_en7523)) {
 		airoha_qdma_wr(qdma, 0x30, 0x7C000000);
@@ -3435,17 +3461,23 @@ static irqreturn_t airoha_irq_handler(int irq, void *dev_instance)
 	struct airoha_irq_bank *irq_bank = dev_instance;
 	struct airoha_qdma *qdma = irq_bank->qdma;
 	u32 rx_intr_mask = 0, rx_intr1, rx_intr2;
-	u32 intr[ARRAY_SIZE(irq_bank->irqmask)];
+	u32 intr[ARRAY_SIZE(irq_bank->irqmask)] = {};
+	u32 pending = 0;
 	int i;
 
-	for (i = 0; i < ARRAY_SIZE(intr); i++) {
+	for (i = 0; i < airoha_qdma_irq_reg_count(qdma); i++) {
 		intr[i] = airoha_qdma_rr(qdma, REG_INT_STATUS(i));
 		intr[i] &= irq_bank->irqmask[i];
 		airoha_qdma_wr(qdma, REG_INT_STATUS(i), intr[i]);
+		pending |= intr[i];
 	}
 
-	if (!test_bit(DEV_STATE_INITIALIZED, &qdma->eth->state))
+	if (!pending)
 		return IRQ_NONE;
+
+	if (!test_bit(DEV_STATE_INITIALIZED, &qdma->eth->state) ||
+	    !test_bit(DEV_STATE_NAPI_STARTED, &qdma->eth->state))
+		return IRQ_HANDLED;
 
 	rx_intr1 = intr[1] & RX_DONE_LOW_INT_MASK;
 	if (rx_intr1) {
@@ -3499,7 +3531,19 @@ static int airoha_qdma_modern_init_irqs(struct platform_device *pdev,
 		spin_lock_init(&irq_bank->irq_lock);
 		irq_bank->qdma = qdma;
 
-		irq_bank->irq = platform_get_irq(pdev, irq_index);
+		if (airoha_is(eth, econet_en7580)) {
+			char irq_name[8];
+			int j;
+
+			/* The EN7580 DT interleaves lan0/wan0 before lan1..3. */
+			snprintf(irq_name, sizeof(irq_name), "%s%d",
+				 id ? "wan" : "lan", i);
+			irq_bank->irq = platform_get_irq_byname(pdev, irq_name);
+			for (j = 0; j < airoha_qdma_irq_reg_count(qdma); j++)
+				airoha_qdma_wr(qdma, REG_INT_ENABLE(i, j), 0);
+		} else {
+			irq_bank->irq = platform_get_irq(pdev, irq_index);
+		}
 		if (irq_bank->irq < 0)
 			return irq_bank->irq;
 
@@ -3555,6 +3599,8 @@ static int airoha_qdma_prepare(struct platform_device *pdev,
 		return -ENOMEM;
 
 	airoha_qdma_setup(qdma, eth, qdma->regs, id, AIROHA_NUM_QOS_CHANNELS);
+	if (airoha_is(eth, econet_en7580))
+		airoha_qdma_wr(qdma, REG_QDMA_GLOBAL_CFG, 0);
 
 	return 0;
 }
@@ -3646,6 +3692,24 @@ void airoha_qdma_cleanup(struct airoha_qdma *qdma)
 		econet_qdma_destroy(qdma->econet);
 		qdma->econet = NULL;
 		return;
+	}
+
+	if (airoha_is(qdma->eth, econet_en7580)) {
+		airoha_qdma_wr(qdma, REG_QDMA_GLOBAL_CFG, 0);
+		if (qdma->irq_banks) {
+			for (i = 0; i < qdma->eth->soc->irq_banks; i++) {
+				struct airoha_irq_bank *bank = &qdma->irq_banks[i];
+				int j;
+
+				if (!bank->qdma)
+					continue;
+
+				for (j = 0; j < airoha_qdma_irq_reg_count(qdma); j++)
+					airoha_qdma_irq_disable(bank, j, U32_MAX);
+				if (bank->irq > 0)
+					synchronize_irq(bank->irq);
+			}
+		}
 	}
 
 	for (i = 0; i < qdma->eth->soc->rx_ring; i++) {
@@ -9767,7 +9831,7 @@ const struct airoha_eth_soc_data econet_en7580_soc_data = {
 	.tx_ring = 8,
 	.rx_ring = 16,
 	.irq_banks = 4,
-	.max_gdm_ports = 2,
+	.max_gdm_ports = 3,
 	.ppe_stats_entries = 0,
 	.ppe_sram_entries = 16 * 1024,
 	.ppe_dram_entries = 16 * 1024,
@@ -9776,6 +9840,10 @@ const struct airoha_eth_soc_data econet_en7580_soc_data = {
 	.ops = {
 		.get_sport = airoha_en7580_get_sport,
 		.get_dev_from_sport = airoha_en7580_get_dev_from_sport,
+
+		// .get_sport = airoha_en7523_get_sport,
+		// .get_vip_port = airoha_en7523_get_vip_port,
+		// .get_dev_from_sport = airoha_en7523_get_dev_from_sport,
 	},
 };
 
