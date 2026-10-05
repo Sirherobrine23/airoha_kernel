@@ -285,7 +285,7 @@ static enum airoha_spi_type airoha_spi_type(struct airoha_spi_ctrl *as_ctrl)
 			return SPI_CTRL_EMMC;
 	}
 
-	if (as_ctrl->soc->has_nfi) {
+	if (as_ctrl->soc->has_nfi && as_ctrl->soc->has_boot_trp) {
 		val = NFI_READ(as_ctrl, REG_SPI_NFI_SNF_NFI_CNFG);
 		if (!(val & BIT(2)))
 			return SPI_CTRL_PARALLEL_NAND;
@@ -1017,7 +1017,8 @@ static int airoha_spi_probe(struct platform_device *pdev)
 	 * FIFO and the flash on-die ECC, so it is initialized like the SFC
 	 * NOR path rather than trying to access a non-existent NFI resource.
 	 */
-	if (as_ctrl->boot_type == SPI_CTRL_NAND && as_ctrl->soc->has_nfi)
+	if (as_ctrl->soc->has_nfi &&
+	    (as_ctrl->boot_type == SPI_CTRL_NAND||as_ctrl->boot_type == SPI_CTRL_PARALLEL_NAND))
 		err = airoha_spi_nfi_init(as_ctrl);
 	else
 		err = airoha_spi_nor_init(as_ctrl);
@@ -1028,6 +1029,9 @@ static int airoha_spi_probe(struct platform_device *pdev)
 }
 
 static const struct airoha_spi_soc_data en751221_spi_data = {
+	.has_nfi = false,
+	.has_nfi2spi = false,
+	.has_boot_trp = false,
 	.double_cs = true,
 	.manual_dummy = 1,
 };
@@ -1036,11 +1040,16 @@ static const struct airoha_spi_soc_data en7523_spi_data = {
 	.has_nfi = true,
 	.has_nfi2spi = true,
 	.has_boot_trp = true,
+	.double_cs = false,
+	.manual_dummy = 0,
 };
 
 static const struct airoha_spi_soc_data en7580_spi_data = {
 	.has_nfi = true,
 	.has_nfi2spi = true,
+	.has_boot_trp = false,
+	.double_cs = false,
+	.manual_dummy = 0,
 };
 
 static const struct of_device_id airoha_spi_ids[] = {
