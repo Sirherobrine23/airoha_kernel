@@ -537,6 +537,18 @@
 			};
 		};
 
+		xsi_pcs: pcs@1fa04000 {
+			compatible = "airoha,en7580-pcs";
+			reg = <0x1fa04000 0x200>,
+			      <0x1faf6000 0x1000>,
+			      <0x1faf7900 0x1000>;
+			reg-names = "mac", "pma", "pcs";
+			airoha,scu = <&scuclk>;
+			airoha,chip-scu = <&chip_scu>;
+			#pcs-cells = <0>;
+			status = "disabled";
+		};
+
 		xpon_phy: phy@1faf0000 {
 			compatible = "airoha,en7580-xpon-phy";
 			reg = <0x1faf0000 0x5000>;

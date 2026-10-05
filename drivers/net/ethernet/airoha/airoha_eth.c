@@ -8884,7 +8884,9 @@ static int airoha_setup_phylink(struct net_device *netdev)
 
 		__set_bit(PHY_INTERFACE_MODE_INTERNAL,
 			  config->supported_interfaces);
-	} else if (econet) {
+	} else if (econet &&
+		   !(airoha_is(dev->eth, econet_en7580) &&
+		     of_property_present(np, "pcs-handle"))) {
 		config->mac_capabilities = MAC_ASYM_PAUSE | MAC_SYM_PAUSE |
 					   MAC_10 | MAC_100 | MAC_1000 |
 					   MAC_2500FD | MAC_5000FD | MAC_10000FD;
@@ -8922,6 +8924,10 @@ static int airoha_setup_phylink(struct net_device *netdev)
 			__set_bit(PHY_INTERFACE_MODE_USXGMII,
 				  dev->common.phylink_config.supported_interfaces);
 		}
+
+		if (airoha_is(dev->eth, econet_en7580))
+			__set_bit(PHY_INTERFACE_MODE_5GBASER,
+				  config->supported_interfaces);
 
 		phy_interface_copy(config->pcs_interfaces,
 				   config->supported_interfaces);
