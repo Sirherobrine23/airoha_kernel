@@ -28,3 +28,14 @@ config PCS_AIROHA_EN7523
 	help
 	  This module provides helper to phylink for managing the Airoha
 	  EN7523 SGMII/HSGMII PCS for PON, PCIe and USB SERDES lanes.
+
+config PCS_AIROHA_EN7580
+	tristate "Airoha EN7580 XSI PCS driver"
+	depends on OF && HAS_IOMEM
+	select PHYLINK
+	select MFD_SYSCON
+	select PCS_AIROHA
+	select REGMAP_MMIO
+	help
+	  Provide a phylink PCS for the EN7580 Ethernet XSI lane, including
+	  the XFI/HSGMII PMA initialization and receive calibration.

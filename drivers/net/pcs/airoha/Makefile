@@ -9,3 +9,4 @@ ifdef CONFIG_PCS_AIROHA_AN7583
 pcs-airoha-y			+= pcs-an7583.o
 endif
 obj-$(CONFIG_PCS_AIROHA_EN7523)	+= pcs-en7523.o
+obj-$(CONFIG_PCS_AIROHA_EN7580)	+= pcs-en7580.o
