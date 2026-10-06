@@ -8969,6 +8969,26 @@ static int airoha_setup_phylink(struct net_device *netdev)
 
 		config->fill_available_pcs = airoha_fill_available_pcs;
 
+		if (airoha_is(dev->eth, econet_en7580)) {
+			/* XSI uses XFI/HSGMII with negotiation in the external PHY. */
+			config->mac_capabilities = MAC_ASYM_PAUSE | MAC_SYM_PAUSE |
+						   MAC_1000FD | MAC_2500FD |
+						   MAC_5000FD | MAC_10000FD;
+			__set_bit(PHY_INTERFACE_MODE_SGMII,
+				  config->supported_interfaces);
+			__set_bit(PHY_INTERFACE_MODE_1000BASEX,
+				  config->supported_interfaces);
+			__set_bit(PHY_INTERFACE_MODE_2500BASEX,
+				  config->supported_interfaces);
+			__set_bit(PHY_INTERFACE_MODE_5GBASER,
+				  config->supported_interfaces);
+			__set_bit(PHY_INTERFACE_MODE_10GBASER,
+				  config->supported_interfaces);
+			phy_interface_copy(config->pcs_interfaces,
+					   config->supported_interfaces);
+			return airoha_gdm_phylink_create(&dev->common, np, phy_mode);
+		}
+
 		__set_bit(PHY_INTERFACE_MODE_SGMII,
 			  config->supported_interfaces);
 		__set_bit(PHY_INTERFACE_MODE_1000BASEX,
@@ -8988,10 +9008,6 @@ static int airoha_setup_phylink(struct net_device *netdev)
 			__set_bit(PHY_INTERFACE_MODE_USXGMII,
 				  dev->common.phylink_config.supported_interfaces);
 		}
-
-		if (airoha_is(dev->eth, econet_en7580))
-			__set_bit(PHY_INTERFACE_MODE_5GBASER,
-				  config->supported_interfaces);
 
 		phy_interface_copy(config->pcs_interfaces,
 				   config->supported_interfaces);
@@ -9098,7 +9114,9 @@ static int airoha_alloc_gdm_device(struct airoha_eth *eth,
 		dev->g2_stats = port->id == AIROHA_GDM2_IDX;
 		dev->fport = port->id == AIROHA_GDM2_IDX ?
 			     ETX_FPORT_GDM2 : ETX_FPORT_GDM1;
-		rcu_assign_pointer(dev->qdma, &eth->qdma[port->id - 1]);
+		/* GDM1 and GDM3/XSI share LAN QDMA0; GDM2 uses WAN QDMA1. */
+		rcu_assign_pointer(dev->qdma,
+				   &eth->qdma[port->id == AIROHA_GDM2_IDX]);
 		if (port->id == AIROHA_GDM2_IDX)
 			dev->flags |= AIROHA_PRIV_F_WAN;
 	}
@@ -9461,17 +9479,21 @@ static int airoha_en7580_get_dev_from_sport(struct airoha_eth *eth, u32 sport,
 	case ETX_FPORT_GDM2:
 	case ETX_FPORT_QDMA1_CPU:
 		*port = AIROHA_GDM2_IDX - 1;
+		dev_info_ratelimited(eth->dev, "RX sport %#x, Port %#x\n", sport, *port);
 		return 0;
 	case ETX_FPORT_GDM1:
 	case ETX_FPORT_QDMA0_CPU:
 	case 8 ... 13:
 	case 16 ... 21:
 		*port = AIROHA_GDM1_IDX - 1;
+		dev_info_ratelimited(eth->dev, "RX sport %#x, Port %#x\n", sport, *port);
 		return 0;
 	default:
-		dev_info_ratelimited(eth->dev, "RX sport %#x\n", sport);
+		dev_info_ratelimited(eth->dev, "RX sport %#x invalid\n", sport);
 		return -EINVAL;
 	}
+
+	return 0;
 }
 
 static int airoha_en7523_get_sport(struct airoha_gdm_port *port, int nbq)
