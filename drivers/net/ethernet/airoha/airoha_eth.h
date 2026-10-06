@@ -265,6 +265,9 @@ airoha_gdm_common_from_netdev(struct net_device *netdev)
 #define AIROHA_FOE_ENTRY_WORDS		(AIROHA_FOE_ENTRY_SIZE / sizeof(u32))
 #define PPE_RAM_NUM_ENTRIES_SHIFT(_n)	((_n) == 512 ? 7 : __ffs((_n) >> 10))
 
+#define OFFLOAD_FAST_TXRING_IDX		7 /* for en7580, en7523, an7581, an7583 and an7552 */
+#define EN7516_OFFLOAD_FAST_TXRING_IDX	0 /* for en751627 and en7528 */
+
 enum {
 	QDMA_INT_REG_IDX0,
 	QDMA_INT_REG_IDX1,
@@ -423,6 +426,8 @@ struct airoha_queue {
 	struct napi_struct napi;
 	struct page_pool *page_pool;
 	struct sk_buff *skb;
+	__le32 rx_ctrl;
+	__le32 rx_msg[4];
 
 	struct list_head tx_list;
 };
@@ -1341,6 +1346,11 @@ static inline bool airoha_qdma_is_lro_queue(struct airoha_queue *q)
 		return false;
 	}
 }
+
+#define airoha_is_en7580_xsi(dev)	(airoha_is(dev->eth, econet_en7580) && \
+					 dev->port->id == AIROHA_GDM3_IDX && \
+					 !netdev_uses_dsa(netdev_from_priv(dev)))
+
 
 extern const struct airoha_eth_soc_data econet_en751221_soc_data;
 extern const struct airoha_eth_soc_data econet_en7528_soc_data;
@@ -4746,7 +4756,6 @@ static inline char *econet_irq_purpose_source_str(enum econet_irq_purpose_source
 	}
 }
 
-
 enum econet_fport {
 	DPORT_CPU		= 0,
 	DPORT_GDMA1		= 1,
@@ -4780,6 +4789,99 @@ bool econet_rx_xpon_oam(struct airoha_eth *eth, u8 qdma_id,
 void econet_xpon_irq(struct airoha_eth *eth, u8 qdma_id,
 			      enum airoha_xpon_mode mode);
 
+
+/* QDMA datapath. */
+/* The non-dma part of RX packet descriptor */
+struct econet_q_rx_ent {
+	void				*buf;
+	dma_addr_t			dma_addr;
+	u16				dma_len;
+};
+
+struct econet_q_rx {
+	/* No lock, access only in NAPI, or else when NAPI is disabled
+	 * and qdma->lock is held */
+	struct econet_q_rx_ent		*entry;
+	struct desc			*desc;
+	u16				cpu_i;
+
+	/* Not modified after init */
+	struct airoha_qdma_mips		*qdma;
+	struct qchain_regs __iomem	*qchain_regs;
+	int				ndesc;
+	int				buf_size;
+	struct napi_struct		napi;
+	struct page_pool		*page_pool;
+};
+
+/* The non-dma part of TX packet descriptor */
+struct econet_q_tx_ent {
+	struct sk_buff			*skb;
+	dma_addr_t			dma_addr;
+	u16				dma_len;
+	u16				freelist_next;
+};
+
+struct econet_q_tx {
+	/* protect concurrent queue accesses
+	 * use _bh unless in napi poll */
+	spinlock_t			lock_bh;
+	struct econet_q_tx_ent		*entry;
+	struct desc			*desc;
+
+	/* FIFO of free entries because they complete out of order. */
+	u16				freelist_head;
+	u16				freelist_tail;
+	u16				free_count;
+
+	/* Not modified after init */
+	struct airoha_qdma_mips		*qdma;
+	struct qchain_regs __iomem	*qchain_regs;
+	int				ndesc;
+	struct napi_struct		napi;
+};
+
+struct econet_irq {
+	/* protect concurrent irqmask accesses
+	 * use _irqsave unless in irq handler */
+	spinlock_t 			lock_irq;
+	u32 				irqmask[ECONET_QDMA_IRQ_REGS];
+	u32 __iomem 			*mask_reg[ECONET_QDMA_IRQ_REGS];
+	u32 __iomem 			*status_reg[ECONET_QDMA_IRQ_REGS];
+
+	/* Not modified after init */
+	struct airoha_qdma_mips 		*qdma;
+	int 				irq;
+};
+
+struct econet_tx_doneq {
+	/* No lock, access only in NAPI */
+	u32 				*q;
+	struct qregs_doneq __iomem	*regs;
+
+	/* Not modified after init */
+	struct airoha_qdma_mips 		*qdma;
+	int 				size;
+	struct napi_struct 		napi;
+};
+
+
+struct airoha_qdma_mips {
+	struct airoha_qdma *qdma;
+	struct mutex lock;
+	struct qregs __iomem *regs;
+
+	struct econet_irq irqs[ECONET_MAX_QDMA_IRQS];
+	struct econet_tx_doneq q_tx_done[QDMA_NUM_TX_DONE];
+	struct econet_q_tx q_tx[QDMA_NUM_CHAINS];
+	struct econet_q_rx q_rx[QDMA_NUM_CHAINS];
+
+	struct fwdesc *hwf_desc;
+	int num_fwd_descs;
+	u32 fwd_buf_size;
+	struct airoha_qdma_slm slm;
+	struct airoha_qdma_mips_cfg cfg;
+};
 
 #define econet_rreg(reg) __extension__({ \
 		BUILD_BUG_ON(sizeof(*(reg)) != sizeof(u32)); \
