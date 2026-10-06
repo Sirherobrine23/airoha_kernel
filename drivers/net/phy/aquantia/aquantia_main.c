@@ -703,6 +703,14 @@ static int aqr_gen2_read_status(struct phy_device *phydev)
 		if (syscfg->speed != phydev->speed)
 			continue;
 
+		/* IF_STATUS reports both XFI rates as XFI. Use the firmware's
+		 * per-speed configuration to distinguish 5GBASE-R from 10GBASE-R.
+		 */
+		if (phydev->link && phydev->autoneg == AUTONEG_ENABLE &&
+		    phydev->interface == PHY_INTERFACE_MODE_10GBASER &&
+		    syscfg->interface == PHY_INTERFACE_MODE_5GBASER)
+			phydev->interface = PHY_INTERFACE_MODE_5GBASER;
+
 		if (syscfg->rate_adapt == AQR_RATE_ADAPT_PAUSE)
 			phydev->rate_matching = RATE_MATCH_PAUSE;
 		else
