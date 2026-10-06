@@ -66,9 +66,6 @@ static void econet_prepare_qdma_cfg(struct airoha_qdma_mips_cfg *cfg,
 				    const struct airoha_eth_soc_data *soc,
 				    int id);
 
-/* ------------------------------------------------------------------------- */
-/* Common Ethernet helpers shared by all supported frame engines. */
-
 u32 airoha_rr(void __iomem *base, u32 offset)
 {
 	return readl(base + offset);
@@ -286,10 +283,6 @@ void airoha_gdm_phylink_destroy(struct airoha_gdm_common *gdm)
 	gdm->phylink = NULL;
 }
 
-
-/* ------------------------------------------------------------------------- */
-/* QDMA common helpers and hardware-specific implementations. */
-
 void airoha_qdma_setup(struct airoha_qdma *qdma, struct airoha_eth *eth,
 		       void __iomem *regs, u8 id, u8 num_channels)
 {
@@ -298,7 +291,6 @@ void airoha_qdma_setup(struct airoha_qdma *qdma, struct airoha_eth *eth,
 	qdma->id = id;
 	qdma->num_channels = num_channels;
 }
-
 
 static void airoha_qdma_skb_meta_init(struct airoha_qdma_skb_meta *meta)
 {
@@ -366,99 +358,6 @@ void airoha_qdma_skb_get_mtk_meta(struct sk_buff *skb,
 	airoha_qdma_skb_meta_init(meta);
 #endif
 }
-
-/* QDMA datapath. */
-/* The non-dma part of RX packet descriptor */
-struct econet_q_rx_ent {
-	void				*buf;
-	dma_addr_t			dma_addr;
-	u16				dma_len;
-};
-
-struct econet_q_rx {
-	/* No lock, access only in NAPI, or else when NAPI is disabled
-	 * and qdma->lock is held */
-	struct econet_q_rx_ent		*entry;
-	struct desc			*desc;
-	u16				cpu_i;
-
-	/* Not modified after init */
-	struct airoha_qdma_mips		*qdma;
-	struct qchain_regs __iomem	*qchain_regs;
-	int				ndesc;
-	int				buf_size;
-	struct napi_struct		napi;
-	struct page_pool		*page_pool;
-};
-
-/* The non-dma part of TX packet descriptor */
-struct econet_q_tx_ent {
-	struct sk_buff			*skb;
-	dma_addr_t			dma_addr;
-	u16				dma_len;
-	u16				freelist_next;
-};
-
-struct econet_q_tx {
-	/* protect concurrent queue accesses
-	 * use _bh unless in napi poll */
-	spinlock_t			lock_bh;
-	struct econet_q_tx_ent		*entry;
-	struct desc			*desc;
-
-	/* FIFO of free entries because they complete out of order. */
-	u16				freelist_head;
-	u16				freelist_tail;
-	u16				free_count;
-
-	/* Not modified after init */
-	struct airoha_qdma_mips		*qdma;
-	struct qchain_regs __iomem	*qchain_regs;
-	int				ndesc;
-	struct napi_struct		napi;
-};
-
-struct econet_irq {
-	/* protect concurrent irqmask accesses
-	 * use _irqsave unless in irq handler */
-	spinlock_t 			lock_irq;
-	u32 				irqmask[ECONET_QDMA_IRQ_REGS];
-	u32 __iomem 			*mask_reg[ECONET_QDMA_IRQ_REGS];
-	u32 __iomem 			*status_reg[ECONET_QDMA_IRQ_REGS];
-
-	/* Not modified after init */
-	struct airoha_qdma_mips 		*qdma;
-	int 				irq;
-};
-
-struct econet_tx_doneq {
-	/* No lock, access only in NAPI */
-	u32 				*q;
-	struct qregs_doneq __iomem	*regs;
-
-	/* Not modified after init */
-	struct airoha_qdma_mips 		*qdma;
-	int 				size;
-	struct napi_struct 		napi;
-};
-
-
-struct airoha_qdma_mips {
-	struct airoha_qdma *qdma;
-	struct mutex lock;
-	struct qregs __iomem *regs;
-
-	struct econet_irq irqs[ECONET_MAX_QDMA_IRQS];
-	struct econet_tx_doneq q_tx_done[QDMA_NUM_TX_DONE];
-	struct econet_q_tx q_tx[QDMA_NUM_CHAINS];
-	struct econet_q_rx q_rx[QDMA_NUM_CHAINS];
-
-	struct fwdesc *hwf_desc;
-	int num_fwd_descs;
-	u32 fwd_buf_size;
-	struct airoha_qdma_slm slm;
-	struct airoha_qdma_mips_cfg cfg;
-};
 
 /* WHNAT hands LAN frames to mt76, which pushes its TX descriptor in front. */
 static int econet_rx_headroom(struct airoha_qdma_mips *qdma)
@@ -2476,6 +2375,36 @@ static bool airoha_qdma_should_check_ppe_skb(struct airoha_eth *eth,
 	       reason == AIROHA_PPE_CPU_REASON_FOE_UNHIT;
 }
 
+static struct airoha_qdma_desc *
+airoha_qdma_rx_frame_desc(struct airoha_queue *q,
+			  struct airoha_qdma_desc *desc,
+			  struct airoha_qdma_desc *frame_desc)
+{
+	if (!airoha_is(q->qdma->eth, econet_en7580))
+		return desc;
+
+	/* EN7580 continuation descriptors can have a different SPORT and tag.
+	 * Save the first descriptor's metadata across polls and ring refills.
+	 */
+	if (!q->skb) {
+		q->rx_ctrl = READ_ONCE(desc->ctrl);
+		q->rx_msg[0] = READ_ONCE(desc->msg0);
+		q->rx_msg[1] = READ_ONCE(desc->msg1);
+		q->rx_msg[2] = READ_ONCE(desc->msg2);
+		q->rx_msg[3] = READ_ONCE(desc->msg3);
+	}
+
+	*frame_desc = (struct airoha_qdma_desc) {
+		.ctrl = q->rx_ctrl,
+		.msg0 = q->rx_msg[0],
+		.msg1 = q->rx_msg[1],
+		.msg2 = q->rx_msg[2],
+		.msg3 = q->rx_msg[3],
+	};
+
+	return frame_desc;
+}
+
 static int airoha_qdma_rx_process(struct airoha_queue *q, int budget)
 {
 	enum dma_data_direction dir = page_pool_get_dma_dir(q->page_pool);
@@ -2485,6 +2414,7 @@ static int airoha_qdma_rx_process(struct airoha_queue *q, int budget)
 	while (done < budget) {
 		struct airoha_queue_entry *e = &q->entry[q->tail];
 		struct airoha_qdma_desc *desc = &q->desc[q->tail];
+		struct airoha_qdma_desc frame_desc;
 		u32 hash, reason, msg0, msg1, desc_ctrl;
 		struct airoha_gdm_dev *dev;
 		struct net_device *netdev;
@@ -2513,6 +2443,7 @@ static int airoha_qdma_rx_process(struct airoha_queue *q, int budget)
 		if (!len || data_len < len)
 			goto free_frag;
 
+		desc = airoha_qdma_rx_frame_desc(q, desc, &frame_desc);
 		msg0 = le32_to_cpu(READ_ONCE(desc->msg0));
 		if (airoha_is(eth, airoha_en7523) &&
 		    q - &q->qdma->q_rx[0] == 15) {
@@ -3867,13 +3798,13 @@ static u16 econet_gdm_oversize_len(struct airoha_gdm_dev *port, int mtu)
 	u16 len = ETH_HLEN + mtu + ETH_FCS_LEN;
 
 	/*
-	 * The EN7512/EN7521 SDK programs GDM1_LONG_LEN_VALUE to 1700, not to
-	 * the bare 1518-byte Ethernet size. GDM1 sees the in-band MT7530
-	 * special tag and can also see customer/service VLAN tags, so using the
+	 * The vendor SDK programs GDM1_LONG_LEN_VALUE to 1700, including
+	 * EN7580, rather than the bare 1518-byte Ethernet size. GDM1 sees the
+	 * MT7530 special tag and customer/service VLAN tags, so using the
 	 * bare MTU wire length causes otherwise valid full-sized frames to be
 	 * classified as long packets and dropped before they reach QDMA/PPE.
 	 */
-	if (airoha_is(port->eth, econet_en751221) &&
+	if (airoha_is(port->eth, econet_en751221, econet_en7580) &&
 	    port->fport == ETX_FPORT_GDM1)
 		len = max_t(u16, len, EN751221_GDM1_LONG_LEN);
 
@@ -3897,7 +3828,7 @@ static void econet_set_gdm_port_fwd_cfg(struct airoha_gdm_dev *port,
 	 * disabled when special-tag mode is enabled. Do not preserve the
 	 * reset value here: some bootloaders leave bit 25 set.
 	 */
-	if (airoha_is_econet(port->eth))
+	if (airoha_has_legacy_qdma(port->eth))
 		fc.word &= ~EN751221_GDM_UNTAG_EN;
 	else
 		set_gdm_fwd_cfg_drop_oversize(&fc, true);
@@ -6115,6 +6046,10 @@ static int airoha_fe_init(struct airoha_eth *eth)
 		airoha_fe_vip_setup(eth);
 		if (airoha_is(eth, econet_en7528, econet_en7580))
 			airoha_fe_crsn_qsel_init(eth);
+		/* Match the SDK GDM3 padding and RX CRC stripping setup. */
+		if (airoha_is(eth, econet_en7580))
+			airoha_fe_set(eth, REG_GDM_FWD_CFG(AIROHA_GDM3_IDX),
+				      GDM_PAD_EN_MASK | GDM_STRIP_CRC_MASK);
 		return 0;
 	}
 
@@ -6750,7 +6685,8 @@ static int airoha_dev_open(struct net_device *netdev)
 		 * CDM/GDM special-tag bits used by the vendor datapath.
 		 */
 		scoped_guard(spinlock, &dev->reg_lock) {
-			if (dev->fport == ETX_FPORT_GDM1) {
+			if (airoha_has_legacy_qdma(eth) &&
+			    dev->fport == ETX_FPORT_GDM1) {
 				struct fwd_cfg fc;
 
 				fc = econet_rreg(&dev->econet_regs->fwd_cfg);
@@ -6767,7 +6703,12 @@ static int airoha_dev_open(struct net_device *netdev)
 					   dsa ? EN751221_CDM_STAG_EN : 0);
 			}
 
-			econet_wreg((u32)dsa, &dev->econet_regs->stag_en);
+			if (airoha_is(eth, econet_en7580))
+				airoha_fe_rmw(eth, REG_GDM_INGRESS_CFG(port->id),
+					      GDM_STAG_EN_MASK,
+					      dsa ? GDM_STAG_EN_MASK : 0);
+			else
+				econet_wreg((u32)dsa, &dev->econet_regs->stag_en);
 			rlt = econet_rreg(&dev->econet_regs->rx_len_threshold);
 			oversize_len = econet_gdm_oversize_len(dev, netdev->mtu);
 			set_gdm_len_th_runt_len(&rlt, 60);
@@ -6842,8 +6783,14 @@ static int airoha_dev_stop(struct net_device *netdev)
 
 	if (econet) {
 		scoped_guard(spinlock, &dev->reg_lock) {
-			econet_wreg(0U, &dev->econet_regs->stag_en);
-			if (dev->fport == ETX_FPORT_GDM1) {
+			if (airoha_is(dev->eth, econet_en7580))
+				airoha_fe_clear(dev->eth,
+						REG_GDM_INGRESS_CFG(port->id),
+						GDM_STAG_EN_MASK);
+			else
+				econet_wreg(0U, &dev->econet_regs->stag_en);
+			if (airoha_has_legacy_qdma(dev->eth) &&
+			    dev->fport == ETX_FPORT_GDM1) {
 				struct fwd_cfg fc;
 
 				fc = econet_rreg(&dev->econet_regs->fwd_cfg);
@@ -7191,6 +7138,10 @@ static u16 airoha_dev_select_queue(struct net_device *netdev,
 	struct airoha_gdm_port *port = dev->port;
 	int queue, channel;
 
+	/* OFFLOAD_FAST_TXRING_IDX in the EN7580 vendor QDMA LAN driver. */
+	if (airoha_is_en7580_xsi(dev))
+		return OFFLOAD_FAST_TXRING_IDX;
+
 	/* EcoNet previously had no ndo_select_queue. Preserve the generic
 	 * networking-core queue selection now that all GDM netdevs share one
 	 * net_device_ops table.
@@ -7507,6 +7458,7 @@ static netdev_tx_t __airoha_dev_xmit(struct sk_buff *skb,
 	struct airoha_qdma_skb_meta skb_meta;
 	bool xpon_oam = xpon && xpon->oam;
 	u32 nr_frags, tag = 0, msg0, msg1, len;
+	bool en7580_xsi = airoha_is_en7580_xsi(dev);
 	struct airoha_queue_entry *e;
 	struct airoha_qdma *qdma;
 	struct netdev_queue *txq;
@@ -7542,8 +7494,16 @@ static netdev_tx_t __airoha_dev_xmit(struct sk_buff *skb,
 					     &skb_meta);
 		tag = skb_meta.mtk_tag;
 		chn = skb_meta.channel;
+		/* A direct EN7580 PHY has no MTK tag or switch channel. */
+		if (airoha_is(qdma->eth, econet_en7580) &&
+		    !skb_meta.has_mtk_tag) {
+			tag = 0;
+			chn = en7580_xsi ? 12 : 0;
+		} else {
+			tag |= 0x8000;
+		}
 		msg0 = FIELD_PREP(QDMA_ETH_TXMSG_CHAN_MASK, chn) |
-		       FIELD_PREP(QDMA_ETH_TXMSG_SP_TAG_MASK, tag | 0x8000);
+		       FIELD_PREP(QDMA_ETH_TXMSG_SP_TAG_MASK, tag);
 	} else {
 		airoha_qdma_skb_get_mtk_meta(skb, netdev,
 					     AIROHA_MTK_TAG_TO_DESC,
@@ -7577,16 +7537,20 @@ static netdev_tx_t __airoha_dev_xmit(struct sk_buff *skb,
 	}
 
 	fport = airoha_get_fe_port(dev);
-	if (airoha_is(qdma->eth, econet_en7580))
+	if (airoha_is(qdma->eth, econet_en7580)) {
 		msg1 = FIELD_PREP(EN7580_QDMA_ETH_TXMSG_NBOQ_MASK,
-				  dev->nbq) |
+				  en7580_xsi ? 4 : dev->nbq) |
 		       FIELD_PREP(EN7580_QDMA_ETH_TXMSG_FPORT_MASK, fport) |
 		       FIELD_PREP(QDMA_ETH_TXMSG_METER_MASK, 0x7f);
-	else
+		/* Use the TX metadata from the SDK XSI fast hook. */
+		if (en7580_xsi)
+			msg1 |= GENMASK(9, 0); /* EN7580 accounting groups disabled */
+	} else {
 		msg1 = FIELD_PREP(QDMA_ETH_TXMSG_NBOQ_MASK,
 				  xpon ? xpon->tcont : dev->nbq) |
 		       FIELD_PREP(QDMA_ETH_TXMSG_FPORT_MASK, fport) |
 		       FIELD_PREP(QDMA_ETH_TXMSG_METER_MASK, 0x7f);
+	}
 
 	if (xpon_oam)
 		msg1 |= QDMA_ETH_TXMSG_NO_DROP;
@@ -9099,8 +9063,7 @@ static int airoha_alloc_gdm_device(struct airoha_eth *eth,
 			       econet ? AIROHA_ETH_FAMILY_ECONET :
 					AIROHA_ETH_FAMILY_AIROHA,
 			       port->id,
-			       econet ? (port->id == AIROHA_GDM2_IDX ?
-					 DPORT_GDMA2 : DPORT_GDMA1) : 0,
+			       econet ? port->id : 0,
 			       dev, econet ? NULL : &airoha_gdm_mac_ops);
 	dev->common.ppe = eth->ppe_dev;
 	u64_stats_init(&dev->stats.syncp);
@@ -9112,11 +9075,14 @@ static int airoha_alloc_gdm_device(struct airoha_eth *eth,
 	spin_lock_init(&dev->xpon_service_lock);
 
 	if (econet) {
-		dev->regs = eth->fe_regs + CDM_BASE(port->id);
+		/* The legacy view places fwd_cfg 0x100 bytes after its base.
+		 * GDM3 is at FE + 0x1100 and has no matching CDM_BASE(3).
+		 */
+		dev->regs = eth->fe_regs + GDM_BASE(port->id) -
+			    offsetof(struct gdm, fwd_cfg);
 		spin_lock_init(&dev->reg_lock);
 		dev->g2_stats = port->id == AIROHA_GDM2_IDX;
-		dev->fport = port->id == AIROHA_GDM2_IDX ?
-			     ETX_FPORT_GDM2 : ETX_FPORT_GDM1;
+		dev->fport = port->id;
 		/* GDM1 and GDM3/XSI share LAN QDMA0; GDM2 uses WAN QDMA1. */
 		rcu_assign_pointer(dev->qdma,
 				   &eth->qdma[port->id == AIROHA_GDM2_IDX]);
@@ -9124,7 +9090,9 @@ static int airoha_alloc_gdm_device(struct airoha_eth *eth,
 			dev->flags |= AIROHA_PRIV_F_WAN;
 	}
 
-	if (of_property_read_bool(np, "airoha,xpon-managed")) {
+	/* Disable same features cause Offload and another issues for xDSL and xPON MACs */
+	if (index == 2 && of_property_present(np, "phy-mode") &&
+	    of_property_match_string(np, "phy-mode", "internal")) {
 		dev->flags |= AIROHA_PRIV_F_XPON_MANAGED;
 		netdev->features |= NETIF_F_GRO_HW;
 
@@ -9479,23 +9447,24 @@ static int airoha_en7580_get_dev_from_sport(struct airoha_eth *eth, u32 sport,
 	*dev = 0;
 
 	switch (sport) {
-	case ETX_FPORT_GDM2:
-	case ETX_FPORT_QDMA1_CPU:
-		*port = AIROHA_GDM2_IDX - 1;
-		dev_info_ratelimited(eth->dev, "RX sport %#x, Port %#x\n", sport, *port);
-		return 0;
-	case ETX_FPORT_GDM1:
-	case ETX_FPORT_QDMA0_CPU:
-	case 8 ... 13:
-	case 16 ... 21:
+	case 0x00: /* SPORT_QDMA_LAN */
+	case 0x01: /* SPORT_GDMA1 */
+	case 0x10 ... 0x15: /* EN7580 switch ingress ports */
 		*port = AIROHA_GDM1_IDX - 1;
-		dev_info_ratelimited(eth->dev, "RX sport %#x, Port %#x\n", sport, *port);
-		return 0;
+		break;
+	case 0x02: /* SPORT_GDMA2 */
+	case 0x05: /* SPORT_QDMA_WAN */
+		*port = AIROHA_GDM2_IDX - 1;
+		break;
+	case 0x03: /* SPORT_GDMA3: XSI/XFI */
+		*port = AIROHA_GDM3_IDX - 1;
+		break;
 	default:
 		dev_info_ratelimited(eth->dev, "RX sport %#x invalid\n", sport);
 		return -EINVAL;
 	}
 
+	dev_dbg_ratelimited(eth->dev, "RX sport %#x, Port %#x\n", sport, *port);
 	return 0;
 }
 
@@ -9935,9 +9904,6 @@ const struct airoha_eth_soc_data airoha_en7523_soc_data = {
 		.get_dev_from_sport = airoha_en7523_get_dev_from_sport,
 	},
 };
-
-/* ------------------------------------------------------------------------- */
-/* Platform driver and xPON API. */
 
 static int airoha_eth_probe(struct platform_device *pdev)
 {
