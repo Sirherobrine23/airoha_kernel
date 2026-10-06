@@ -48,6 +48,7 @@ struct en7580_pcs_step {
 
 struct en7580_pcs {
 	struct phylink_pcs pcs;
+	struct device *dev;
 	struct regmap *mac;
 	struct regmap *pma;
 	struct regmap *digital;
@@ -71,6 +72,7 @@ static int en7580_pcs_mode(phy_interface_t interface)
 		return 1;
 	case PHY_INTERFACE_MODE_2500BASEX:
 		return 2;
+	case PHY_INTERFACE_MODE_SGMII:
 	case PHY_INTERFACE_MODE_1000BASEX:
 		return 3;
 	default:
@@ -199,6 +201,7 @@ static int en7580_pcs_config(struct phylink_pcs *pcs, unsigned int neg_mode,
 
 	priv->interface = interface;
 	priv->configured = true;
+	dev_info(priv->dev, "XSI PCS configured for %s\n", phy_modes(interface));
 	return 0;
 }
 
@@ -295,6 +298,7 @@ static int en7580_pcs_probe(struct platform_device *pdev)
 	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
 	if (!priv)
 		return -ENOMEM;
+	priv->dev = dev;
 
 	priv->mac = en7580_pcs_map(pdev, "mac");
 	if (IS_ERR(priv->mac))
@@ -332,10 +336,16 @@ static int en7580_pcs_probe(struct platform_device *pdev)
 	__set_bit(PHY_INTERFACE_MODE_10GBASER, priv->pcs.supported_interfaces);
 	__set_bit(PHY_INTERFACE_MODE_5GBASER, priv->pcs.supported_interfaces);
 	__set_bit(PHY_INTERFACE_MODE_2500BASEX, priv->pcs.supported_interfaces);
+	__set_bit(PHY_INTERFACE_MODE_SGMII, priv->pcs.supported_interfaces);
 	__set_bit(PHY_INTERFACE_MODE_1000BASEX, priv->pcs.supported_interfaces);
 	platform_set_drvdata(pdev, priv);
 
-	return fwnode_pcs_add_provider(dev_fwnode(dev), en7580_pcs_get, priv);
+	ret = fwnode_pcs_add_provider(dev_fwnode(dev), en7580_pcs_get, priv);
+	if (ret)
+		return dev_err_probe(dev, ret, "failed to register PCS provider\n");
+
+	dev_info(dev, "EN7580 XSI PCS registered\n");
+	return 0;
 }
 
 static void en7580_pcs_remove(struct platform_device *pdev)
