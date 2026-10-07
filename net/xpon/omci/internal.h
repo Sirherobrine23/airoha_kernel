@@ -75,6 +75,7 @@ struct omci_agent_config {
 	u8 olt_profile_source;
 	u8 olt_profile_force_source;
 	u8 dying_gasp_source;
+	u8 reboot_source;
 };
 
 struct omci_agent {
@@ -89,6 +90,11 @@ struct omci_agent {
 	bool permissive;
 	bool fake_omci;
 	bool dying_gasp;
+	/* Honour an ONU-G Reboot from the OLT */
+	bool reboot;
+	/* Voice calls in progress, reported by the voice application */
+	u8 voice_calls;
+	struct delayed_work reboot_work;
 	bool operational;
 	u8 alarm_sequence;
 	u8 profile_effective;

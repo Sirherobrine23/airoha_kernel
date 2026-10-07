@@ -17,6 +17,7 @@
 #include <linux/kernel.h>
 #include <linux/math.h>
 #include <linux/math64.h>
+#include <linux/reboot.h>
 #include <linux/slab.h>
 #include <linux/string.h>
 #include <linux/unaligned.h>
@@ -1851,6 +1852,12 @@ static int omci_agent_populate_defaults(struct omci_device *odev)
 	return 0;
 }
 
+static void omci_agent_reboot_work(struct work_struct *work)
+{
+	/* The response has gone out; let init stop the services cleanly. */
+	orderly_reboot();
+}
+
 int omci_agent_init(struct omci_device *odev)
 {
 	struct omci_agent *agent = &odev->agent;
@@ -1865,6 +1872,10 @@ int omci_agent_init(struct omci_device *odev)
 	agent->fake_omci = false;
 	agent->dying_gasp = false;
 	agent->config.dying_gasp_source = OMCI_CONFIG_SOURCE_DEFAULT;
+	agent->reboot = true;
+	agent->config.reboot_source = OMCI_CONFIG_SOURCE_DEFAULT;
+	agent->voice_calls = 0;
+	INIT_DELAYED_WORK(&agent->reboot_work, omci_agent_reboot_work);
 	agent->config.uni_count = 4;
 	agent->config.onu_type = OMCI_ONU_TYPE_HGU;
 	agent->config.onu_type_source = OMCI_CONFIG_SOURCE_DEFAULT;
@@ -1911,6 +1922,7 @@ void omci_agent_cleanup(struct omci_device *odev)
 	struct omci_mib_object *object;
 	unsigned long index;
 
+	cancel_delayed_work_sync(&agent->reboot_work);
 	mutex_lock(&agent->lock);
 	omci_agent_reset_duplicate_locked(agent);
 	omci_agent_reset_table_snapshot_locked(agent);
@@ -4045,6 +4057,56 @@ found:
 	return 0;
 }
 
+/* ITU-T G.988 Reboot flags, the first content byte of an ONU-G Reboot */
+#define OMCI_REBOOT_UNCONDITIONAL	0
+#define OMCI_REBOOT_IF_NO_CALLS		1
+#define OMCI_REBOOT_IF_NO_EMERGENCY	2
+/* Long enough for the response to leave before services stop */
+#define OMCI_REBOOT_DELAY_MS		2000
+
+static u8 omci_agent_reboot_locked(struct omci_device *odev, u16 class_id,
+				   u16 entity_id, const u8 *payload,
+				   size_t payload_len)
+{
+	struct omci_agent *agent = &odev->agent;
+	u8 flags = payload_len ? payload[0] : OMCI_REBOOT_UNCONDITIONAL;
+
+	/* Other managed entities still acknowledge without a reboot. */
+	if (class_id != OMCI_CLASS_ONU_G || entity_id)
+		return OMCI_RESULT_SUCCESS;
+
+	if (!agent->reboot) {
+		dev_warn(odev->parent,
+			 "OLT requested an ONU reboot (flags %u): refused, OLT reboots are disabled\n",
+			 flags);
+		return OMCI_RESULT_PROCESSING_ERROR;
+	}
+	if (flags > OMCI_REBOOT_IF_NO_EMERGENCY) {
+		dev_warn(odev->parent,
+			 "OLT requested an ONU reboot with reserved flags %u\n",
+			 flags);
+		return OMCI_RESULT_PARAMETER_ERROR;
+	}
+	/*
+	 * The voice application reports calls, not which of them are
+	 * emergency calls: treat every call as one, so that flag 2 can
+	 * never drop an emergency call.
+	 */
+	if (flags != OMCI_REBOOT_UNCONDITIONAL && agent->voice_calls) {
+		dev_warn(odev->parent,
+			 "OLT requested an ONU reboot (flags %u): device busy, %u voice call(s) in progress\n",
+			 flags, agent->voice_calls);
+		return OMCI_RESULT_DEVICE_BUSY;
+	}
+
+	dev_warn(odev->parent,
+		 "OLT requested an ONU reboot (flags %u): rebooting in %u ms\n",
+		 flags, OMCI_REBOOT_DELAY_MS);
+	schedule_delayed_work(&agent->reboot_work,
+			      msecs_to_jiffies(OMCI_REBOOT_DELAY_MS));
+	return OMCI_RESULT_SUCCESS;
+}
+
 static int
 omci_agent_build_response_locked(struct omci_device *odev,
 				 const struct omci_wire_request *request,
@@ -4176,8 +4238,12 @@ omci_agent_build_response_locked(struct omci_device *odev,
 		else
 			content[0] = OMCI_RESULT_SUCCESS;
 		break;
-	case OMCI_MSG_TYPE_SYNC_TIME:
 	case OMCI_MSG_TYPE_REBOOT:
+		content[0] = omci_agent_reboot_locked(odev, class_id, entity_id,
+						      request->payload,
+						      request->payload_len);
+		break;
+	case OMCI_MSG_TYPE_SYNC_TIME:
 	case OMCI_MSG_TYPE_TEST:
 		content[0] = OMCI_RESULT_SUCCESS;
 		break;
@@ -4548,6 +4614,11 @@ int omci_agent_config_get(struct omci_device *odev, u16 key,
 		source = &scalar;
 		source_len = sizeof(scalar);
 		break;
+	case OMCI_CONFIG_AGENT_REBOOT:
+		scalar = agent->reboot;
+		source = &scalar;
+		source_len = sizeof(scalar);
+		break;
 	case OMCI_CONFIG_OMCC_VERSION:
 		scalar = agent->config.omcc_version;
 		source = &scalar;
@@ -4744,6 +4815,17 @@ __omci_agent_config_set_source(struct omci_device *odev, u16 key,
 		agent->config.dying_gasp_source = source;
 		omci_agent_reset_duplicate_locked(agent);
 		break;
+	case OMCI_CONFIG_AGENT_REBOOT:
+		if (len != sizeof(scalar)) {
+			ret = -EINVAL;
+			break;
+		}
+		scalar = *(const u8 *)value;
+		changed = agent->reboot != !!scalar;
+		agent->reboot = !!scalar;
+		agent->config.reboot_source = source;
+		omci_agent_reset_duplicate_locked(agent);
+		break;
 	case OMCI_CONFIG_OMCC_VERSION:
 		if (len != sizeof(scalar)) {
 			ret = -EINVAL;
@@ -4906,6 +4988,9 @@ int omci_agent_config_source_get(struct omci_device *odev, u16 key, u8 *source)
 		break;
 	case OMCI_CONFIG_AGENT_DYING_GASP:
 		*source = agent->config.dying_gasp_source;
+		break;
+	case OMCI_CONFIG_AGENT_REBOOT:
+		*source = agent->config.reboot_source;
 		break;
 	case OMCI_CONFIG_OMCC_VERSION:
 		*source = agent->config.omcc_version_source;
