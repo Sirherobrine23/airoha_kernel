@@ -386,6 +386,8 @@ struct xpon_priv {
 	bool			started;
 	bool			optical_active;
 	bool			mac_enabled;
+	/* O7 gated a transmitter that O2 does not gate again */
+	bool			gpon_o7_tx_off;
 	bool			phy_link_known;
 	bool			phy_link_up;
 	struct xpon_device	*xpon;
