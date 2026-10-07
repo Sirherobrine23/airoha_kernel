@@ -2250,7 +2250,22 @@ static void gpon_cb_state_changed(void *hw_priv, enum gpon_state state)
 				dev_warn(priv->dev,
 					 "failed to disable optical transmitter in GPON O2: %d\n",
 					 ret);
+		} else if (priv->gpon_o7_tx_off) {
+			/*
+			 * This generation transmits from PHY power-on, and
+			 * Upstream_Overhead will not release the transmitter
+			 * that O7 gated: do it on leaving O7.
+			 */
+			ret = airoha_xpon_tx_enable(priv, true);
+			if (!ret)
+				ret = airoha_xpon_tx_rearm(priv->dev,
+							   priv->frontend);
+			if (ret)
+				dev_warn(priv->dev,
+					 "failed to enable optical transmitter after GPON O7: %d\n",
+					 ret);
 		}
+		priv->gpon_o7_tx_off = false;
 		/*
 		 * Match the stock SDK for this generation: 0x058b is the
 		 * reset/O1 value, and activation starts from O2 with the
@@ -2295,6 +2310,23 @@ static void gpon_cb_state_changed(void *hw_priv, enum gpon_state state)
 	case GPON_O7_EMERGENCY_STOP:
 		cancel_delayed_work(&priv->to1_work);
 		cancel_delayed_work(&priv->to2_work);
+		/*
+		 * G.984.3: an ONU in emergency stop must not transmit. The
+		 * transmitter was released at Upstream_Overhead (or at PHY
+		 * power-on), so gate it here until Disable_Serial_Number
+		 * enables the ONU again.
+		 */
+		ret = airoha_xpon_tx_enable(priv, false);
+		if (ret)
+			dev_warn(priv->dev,
+				 "failed to disable optical transmitter in GPON O7: %d\n",
+				 ret);
+		priv->gpon_o7_tx_off = true;
+		/*
+		 * Drop the ONU-ID, as the TO1 return to O2 does: the next
+		 * activation gets a new one from the OLT.
+		 */
+		gpon_write(priv, GPON_ONU_ID, PLOAM_ONU_UNASSIGNED);
 		break;
 	case GPON_O1_INITIAL:
 		cancel_delayed_work(&priv->to1_work);

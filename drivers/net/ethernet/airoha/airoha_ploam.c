@@ -358,7 +358,13 @@ static void handle_disable_sn(struct ploam_priv *pp,
 		    (mode == PLOAM_DISABLE_PARTICIPATE &&
 		     memcmp(&c[1], pp->sn, 8) == 0)) {
 			pp->emergency_state = false;
-			ploam_set_state(pp, GPON_O2_STANDBY);
+			/*
+			 * Activation starts over from O2, without the ONU-ID,
+			 * the equalization delay or the PLOAM history of the
+			 * session the OLT stopped.
+			 */
+			ploam_reset(pp);
+			ploam_start(pp);
 		}
 	} else if (pp->state != GPON_O1_INITIAL) {
 		if (mode == PLOAM_DISABLE_DENIED_ALL ||
@@ -638,8 +644,16 @@ void ploam_reset(struct ploam_priv *pp)
 
 void ploam_start(struct ploam_priv *pp)
 {
-	if (pp->state == GPON_O1_INITIAL && !pp->emergency_state)
-		ploam_set_state(pp, GPON_O2_STANDBY);
+	if (pp->state != GPON_O1_INITIAL)
+		return;
+
+	/*
+	 * A session restart must not release an ONU that the OLT disabled:
+	 * go back to O7, where Disable_Serial_Number can enable it again.
+	 * Staying in O1 would ignore that message until the driver reloads.
+	 */
+	ploam_set_state(pp, pp->emergency_state ? GPON_O7_EMERGENCY_STOP :
+						  GPON_O2_STANDBY);
 }
 
 void ploam_handle_downstream(struct ploam_priv *pp,
@@ -721,7 +735,9 @@ void ploam_handle_downstream(struct ploam_priv *pp,
 
 void ploam_notify_dying_gasp(struct ploam_priv *pp)
 {
-	if (pp->state >= GPON_O2_STANDBY)
+	/* An ONU in emergency stop must not transmit at all. */
+	if (pp->state >= GPON_O2_STANDBY &&
+	    pp->state != GPON_O7_EMERGENCY_STOP)
 		ploam_send_dying_gasp(pp);
 }
 
