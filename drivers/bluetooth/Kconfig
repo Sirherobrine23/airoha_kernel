@@ -147,6 +147,21 @@ config BT_HCIUART_NOKIA
 
 	  Say Y here to compile support for Nokia's H4+ protocol.
 
+config BT_AB1536U
+	tristate "Airoha AB1536U UART bring-up support"
+	depends on BT_HCIUART && BT_HCIUART_SERDEV
+	depends on OF && GPIOLIB
+	select BT_HCIUART_H4
+	help
+	  Experimental serdev driver for the AB1536U Bluetooth module used
+	  by the Quantum C6500XK. It queries the Gemtek firmware version
+	  using RACE and tests whether the firmware accepts standard HCI.
+	  Firmware which only exposes the embedded application through
+	  RACE cannot be used as a Linux HCI controller with this driver.
+
+	  This driver does not change NVKEYs or upload firmware.
+	  Say M here to build the driver as a module (btab1536u).
+
 config BT_HCIUART_BCSP
 	bool "BCSP protocol support"
 	depends on BT_HCIUART

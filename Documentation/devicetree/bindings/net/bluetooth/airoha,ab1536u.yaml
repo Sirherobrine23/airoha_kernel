@@ -1,0 +1,66 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/net/bluetooth/airoha,ab1536u.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Experimental Airoha AB1536U UART Bluetooth transport
+
+maintainers:
+  - Linux Bluetooth <linux-bluetooth@vger.kernel.org>
+
+description: |
+  AB1536U firmware can expose an embedded Bluetooth application through
+  RACE. External HCI availability depends on the firmware configuration.
+  This experimental binding permits testing the UART transport without
+  modifying nonvolatile settings. The Gemtek control sequence is specific
+  to the Quantum C6500XK and comes from its stock firmware.
+
+properties:
+  compatible:
+    oneOf:
+      - const: airoha,ab1536u
+      - items:
+          - const: gemtek,c6500xk-ab1536u
+          - const: airoha,ab1536u
+
+  max-speed:
+    const: 115200
+
+  gemtek,control-gpios:
+    minItems: 2
+    maxItems: 2
+    description: |
+      Stock Gemtek control lines, both specified active high. The first
+      line is pulsed high and then driven low; the second stays low.
+      On the C6500XK these are GPIO26 and GPIO28 respectively. Their
+      electrical signal names have not been established. Omit this
+      property to test a module already initialized by the bootloader.
+
+required:
+  - compatible
+
+allOf:
+  - $ref: /schemas/serial/serial-peripheral-props.yaml#
+  - if:
+      properties:
+        compatible:
+          const: airoha,ab1536u
+    then:
+      properties:
+        gemtek,control-gpios: false
+
+unevaluatedProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/gpio/gpio.h>
+
+    serial {
+        bluetooth {
+            compatible = "gemtek,c6500xk-ab1536u", "airoha,ab1536u";
+            max-speed = <115200>;
+            gemtek,control-gpios = <&gpio 26 GPIO_ACTIVE_HIGH>,
+                                   <&gpio 28 GPIO_ACTIVE_HIGH>;
+        };
+    };
