@@ -15,6 +15,7 @@
 #include <linux/err.h>
 #include <linux/idr.h>
 #include <linux/jiffies.h>
+#include <linux/log2.h>
 #include <linux/module.h>
 #include <linux/minmax.h>
 #include <linux/mutex.h>
@@ -51,6 +52,8 @@ static const char *optical_frontend_protocol_name(enum optical_frontend_protocol
 		return "ethernet";
 	case OPTICAL_FRONTEND_PROTO_EPON:
 		return "epon";
+	case OPTICAL_FRONTEND_PROTO_XEPON:
+		return "xepon";
 	case OPTICAL_FRONTEND_PROTO_GPON:
 		return "gpon";
 	case OPTICAL_FRONTEND_PROTO_XGPON:
@@ -116,14 +119,14 @@ static ssize_t supported_protocols_show(struct device *dev,
 	unsigned int protocol;
 
 	for (protocol = OPTICAL_FRONTEND_PROTO_ETHERNET;
-	     protocol <= OPTICAL_FRONTEND_PROTO_NGPON2; protocol++) {
-		if (!(frontend->desc->protocols & BIT(protocol)))
+	     protocol <= OPTICAL_FRONTEND_PROTO_NGPON2; protocol <<= 1) {
+		if (!(frontend->desc->protocols & protocol))
 			continue;
 		len += sysfs_emit_at(buf, len, "%s%s", len ? " " : "",
 				     optical_frontend_protocol_name(protocol));
 	}
 
-	return sysfs_emit_at(buf, len, "\n");
+	return len + sysfs_emit_at(buf, len, "\n");
 }
 static DEVICE_ATTR_RO(supported_protocols);
 
@@ -472,8 +475,10 @@ int optical_frontend_set_mode(struct optical_frontend *frontend,
 	if (!frontend || !mode)
 		return -EINVAL;
 
-	if (mode->protocol >= 32 ||
-	    !(frontend->desc->protocols & BIT(mode->protocol)))
+	if (mode->protocol < OPTICAL_FRONTEND_PROTO_ETHERNET ||
+	    mode->protocol > OPTICAL_FRONTEND_PROTO_NGPON2 ||
+	    !is_power_of_2(mode->protocol) ||
+	    !(frontend->desc->protocols & mode->protocol))
 		return -EOPNOTSUPP;
 
 	mutex_lock(&frontend->op_lock);
