@@ -293,6 +293,36 @@ static int lddla_bob_import(struct airoha_lddla *lddla, const u8 *data,
 	    max_bob > sizeof(lddla->bob))
 		return -EINVAL;
 
+	/*
+	 * EN7572/EN7573 firmware consumes two byte-addressed A0/A2 pages.
+	 * Offset 0x94 is FAST_INST_CTRL, not the EN7570/EN7571 word-table
+	 * signature. Preserve every byte, including the mixed-endian fields.
+	 */
+	if (lddla->ops->bob_format == AIROHA_LDDLA_BOB_FORMAT_A0A2) {
+		if (len != max_bob || min_bob != max_bob) {
+			dev_err(lddla->dev,
+				"%s A0/A2 BOB must be %zu bytes (got %zu)\n",
+				source, max_bob, len);
+			return -EINVAL;
+		}
+		if (!memchr_inv(data, 0xff, len) || !memchr_inv(data, 0, len)) {
+			dev_err(lddla->dev, "%s A0/A2 BOB is blank\n", source);
+			return -EINVAL;
+		}
+
+		memset(lddla->bob, 0xff, sizeof(lddla->bob));
+		memcpy(lddla->bob, data, len);
+		lddla->bob_len = len;
+		lddla->bob_valid = true;
+		lddla->bob_source_endian = AIROHA_LDDLA_BOB_ENDIAN_BYTES;
+		lddla->bob_magic = 0;
+		lddla->bob_chip_id = 0;
+		lddla->bob_profile = 0;
+		dev_info(lddla->dev, "loaded %zu-byte A0/A2 BOB from %s\n",
+			 len, source);
+		return 0;
+	}
+
 	if (len < min_bob) {
 		dev_err(lddla->dev, "%s BOB is too small (%zu < %zu bytes)\n",
 			source, len, min_bob);
@@ -394,14 +424,14 @@ static int lddla_bob_load_firmware(struct airoha_lddla *lddla)
  * lddla_bob_load() - load and normalize an Airoha factory BOB image.
  * @lddla: device
  *
- * NVMEM is preferred over a firmware file.  The magic at byte 0x94 identifies
- * both the EN757x family member and whether the source stores 32-bit words in
- * little or big endian.  The in-memory image is always normalized to
- * little-endian bytes, so the chip algorithms behave identically on LE and BE
- * hosts and no userspace byte-swap step is required.
+ * NVMEM is preferred over a firmware file. For EN7570/EN7571 word tables,
+ * the magic at byte 0x94 identifies the chip/profile and the source word
+ * order. These tables are normalized to little-endian words. EN7572/EN7573
+ * A0/A2 pages are copied unchanged; they have no word-table signature and
+ * contain fields in different byte orders, independent of the host CPU.
  *
- * Missing calibration is non-fatal and leaves an erased mirror.  A present but
- * malformed or wrong-chip BOB is rejected.
+ * Missing calibration is non-fatal and leaves an erased mirror. Import rejects
+ * invalid layouts and blank A0/A2 images; calibration remains board-specific.
  */
 int lddla_bob_load(struct airoha_lddla *lddla)
 {
@@ -683,6 +713,9 @@ static ssize_t endian_show(struct device *dev,
 	case AIROHA_LDDLA_BOB_ENDIAN_BIG:
 		endian = "big";
 		break;
+	case AIROHA_LDDLA_BOB_ENDIAN_BYTES:
+		endian = "bytes";
+		break;
 	case AIROHA_LDDLA_BOB_ENDIAN_UNKNOWN:
 	default:
 		endian = "unknown";
@@ -709,7 +742,8 @@ static ssize_t magic_show(struct device *dev,
 
 	if (!lddla)
 		return -ENODEV;
-	if (!lddla->bob_valid)
+	if (!lddla->bob_valid ||
+	    lddla->bob_source_endian == AIROHA_LDDLA_BOB_ENDIAN_BYTES)
 		return -ENODATA;
 	return sysfs_emit(buf, "0x%08x\n", lddla->bob_magic);
 }
@@ -722,7 +756,8 @@ static ssize_t chip_id_show(struct device *dev,
 
 	if (!lddla)
 		return -ENODEV;
-	if (!lddla->bob_valid)
+	if (!lddla->bob_valid ||
+	    lddla->bob_source_endian == AIROHA_LDDLA_BOB_ENDIAN_BYTES)
 		return -ENODATA;
 	return sysfs_emit(buf, "0x%02x\n", lddla->bob_chip_id);
 }
@@ -735,7 +770,8 @@ static ssize_t profile_show(struct device *dev,
 
 	if (!lddla)
 		return -ENODEV;
-	if (!lddla->bob_valid)
+	if (!lddla->bob_valid ||
+	    lddla->bob_source_endian == AIROHA_LDDLA_BOB_ENDIAN_BYTES)
 		return -ENODATA;
 	return sysfs_emit(buf, "0x%02x\n", lddla->bob_profile);
 }
@@ -831,11 +867,12 @@ static int airoha_lddla_diag_show(struct seq_file *s, void *unused)
 	seq_printf(s, "ddmi tx_pwr: 0x%04x\n", lddla->ddmi_tx_power);
 	seq_printf(s, "ddmi rx_pwr: 0x%04x\n", lddla->ddmi_rx_power);
 	seq_printf(s, "alarm:       0x%04x\n", lddla->alarm);
-	seq_printf(s, "bob:         %s, %zu bytes, source %s-endian\n",
+	seq_printf(s, "bob:         %s, %zu bytes, source format %s\n",
 		   lddla->bob_valid ? "valid" : "not loaded", lddla->bob_len,
 		   lddla->bob_source_endian == AIROHA_LDDLA_BOB_ENDIAN_BIG ?
 		   "big" : lddla->bob_source_endian == AIROHA_LDDLA_BOB_ENDIAN_LITTLE ?
-		   "little" : "unknown");
+		   "little" : lddla->bob_source_endian == AIROHA_LDDLA_BOB_ENDIAN_BYTES ?
+		   "A0/A2 bytes" : "unknown");
 	if (lddla->ops->diag_show)
 		lddla->ops->diag_show(lddla, s);
 	mutex_unlock(&lddla->lock);

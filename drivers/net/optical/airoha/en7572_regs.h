@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Register / mailbox map for the Airoha EN7572 / AN8901 xPON LDDLA controller.
+ * Register / mailbox map for the Airoha EN7572 / EN7573 / AN8901 controller.
  *
  * Unlike the EN7570/EN7571 (whose host directly drives the analog ADC and
  * power-control registers), the EN7572/AN8901 carries an embedded MD32
@@ -60,10 +60,12 @@
 #define EN7572_RG_TX_DIS		0x000003e0	/* TX_DIS / status */
 #define EN7572_RG_OCP_STATUS		0x000003e4	/* OCP detected (bit 8) */
 #define EN7572_CSR_CHIP_ID		0x00000408	/* identity word == 0x1388 */
+#define EN7572_CSR_CHIP_ID2		0x0000040a	/* identity word == 0x007d */
 #define EN7572_RG_LOS_DAC		0x0000043c	/* LOS/SD DAC */
 #define EN7572_RG_BEN_STATUS		0x00000488	/* burst-enable (bit 0) */
 
 #define EN7572_CHIP_ID			0x1388		/* WordReadA2(0x408) */
+#define EN7572_CHIP_ID2			0x007d		/* WordReadA2(0x40a) */
 
 /* A2 firmware mailbox (device 0x51, byte offsets 0x80-0xFF). */
 #define EN7572_A2_FW_VER		0x82
@@ -115,5 +117,6 @@
 /* Chip variants (driver_data / of_device_id data). */
 #define EN7572_VARIANT_EN7572		0
 #define EN7572_VARIANT_AN8901		1
+#define EN7572_VARIANT_EN7573		2
 
 #endif /* _EN7572_REGS_H */

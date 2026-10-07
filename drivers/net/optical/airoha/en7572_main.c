@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * Airoha EN7572 / AN8901 xPON LDDLA controller: I2C transport, MD32 firmware
+ * Airoha EN7572 / EN7573 / AN8901 controller: I2C transport, MD32 firmware
  * loader, reset / detect, the per-chip ops table and the 1 Hz worker.
  *
  * The device exposes two I2C slaves on the same bus: the A0 page (0x50, used
@@ -144,18 +144,23 @@ u32 en7572_bit_rd(struct en7572_priv *priv, u16 reg, int start, int end)
  * @start: least-significant bit of the field
  * @end:   most-significant bit of the field
  * @val:   value to place in the field
+ *
+ * Return: 0 on success, negative errno on failure.
  */
-void en7572_bit_wr(struct en7572_priv *priv, u16 reg, int start, int end, u32 val)
+int en7572_bit_wr(struct en7572_priv *priv, u16 reg, int start, int end, u32 val)
 {
 	u8 b[4] = { 0 };
 	u32 cur, mask;
+	int ret;
 
 	if (end < start)
 		swap(start, end);
 
 	mask = ((end - start == 31) ? 0xffffffff : (BIT(end - start + 1) - 1)) << start;
 
-	en7572_rd(priv, EN7572_DEV_A2, reg, b, 4);
+	ret = en7572_rd(priv, EN7572_DEV_A2, reg, b, 4);
+	if (ret)
+		return ret;
 	cur = b[0] | (b[1] << 8) | (b[2] << 16) | (b[3] << 24);
 	cur = (cur & ~mask) | ((val << start) & mask);
 
@@ -163,7 +168,7 @@ void en7572_bit_wr(struct en7572_priv *priv, u16 reg, int start, int end, u32 va
 	b[1] = cur >> 8;
 	b[2] = cur >> 16;
 	b[3] = cur >> 24;
-	en7572_wr(priv, EN7572_DEV_A2, reg, b, 4);
+	return en7572_wr(priv, EN7572_DEV_A2, reg, b, 4);
 }
 
 /* ------------------------------------------------------------------ */
@@ -171,17 +176,28 @@ void en7572_bit_wr(struct en7572_priv *priv, u16 reg, int start, int end, u32 va
 /* ------------------------------------------------------------------ */
 
 /**
- * en7572_detect() - confirm an EN7572/AN8901 is present.
+ * en7572_detect() - confirm an EN7572/EN7573/AN8901 is present.
  * @priv: device
  *
- * Return: 0 if the identity word reads back as expected, -ENODEV otherwise.
+ * The SDK identifies EN7572/EN7573 using either identity word. These words
+ * identify the family, so the board's match data selects the chip variant.
+ *
+ * Return: 0 on a family match, -ENODEV on mismatch, or an I2C error.
  */
 int en7572_detect(struct en7572_priv *priv)
 {
-	u16 id = en7572_a2_word(priv, EN7572_CSR_CHIP_ID);
+	u8 b[4];
+	u16 id, id2;
+	int ret;
 
-	if (id != EN7572_CHIP_ID) {
-		dev_info(priv->lddla.dev, "no EN7572 (id 0x%04x)\n", id);
+	ret = en7572_rd(priv, EN7572_DEV_A2, EN7572_CSR_CHIP_ID, b, sizeof(b));
+	if (ret)
+		return ret;
+	id = b[0] | (b[1] << 8);
+	id2 = b[2] | (b[3] << 8);
+	if (id != EN7572_CHIP_ID && id2 != EN7572_CHIP_ID2) {
+		dev_info(priv->lddla.dev, "no %s (ids 0x%04x, 0x%04x)\n",
+			 priv->lddla.ops->part_number, id, id2);
 		return -ENODEV;
 	}
 	return 0;
@@ -192,20 +208,29 @@ int en7572_detect(struct en7572_priv *priv)
 /* ------------------------------------------------------------------ */
 
 /* Stream one firmware image into MD32 memory, 32 bits at a time. */
-static void en7572_load_block(struct en7572_priv *priv, u16 cfg, u16 addr_reg,
-			      u16 data_reg, const u8 *data, size_t size, u32 base)
+static int en7572_load_block(struct en7572_priv *priv, u16 cfg, u16 addr_reg,
+			     u16 data_reg, const u8 *data, size_t size, u32 base)
 {
 	size_t i;
+	int ret;
 
-	en7572_bit_wr(priv, cfg, 0, 0, 1);
-	en7572_bit_wr(priv, addr_reg, 0, 31, base);
-	for (i = 0; i + 4 <= size; i += 4)
-		en7572_wr(priv, EN7572_DEV_A0, data_reg, &data[i], 4);
+	ret = en7572_bit_wr(priv, cfg, 0, 0, 1);
+	if (ret)
+		return ret;
+	ret = en7572_bit_wr(priv, addr_reg, 0, 31, base);
+	if (ret)
+		return ret;
+	for (i = 0; i + 4 <= size; i += 4) {
+		ret = en7572_wr(priv, EN7572_DEV_A0, data_reg, &data[i], 4);
+		if (ret)
+			return ret;
+	}
+	return 0;
 }
 
-/* Load a firmware image of the expected size, or return an error. */
+/* The SDK zero-fills unused PM/DM memory for shorter word-aligned images. */
 static int en7572_request_image(struct en7572_priv *priv, const char *name,
-				u8 *dst, size_t want)
+				u8 *dst, size_t capacity)
 {
 	const struct firmware *fw;
 	int ret;
@@ -215,13 +240,14 @@ static int en7572_request_image(struct en7572_priv *priv, const char *name,
 		dev_err(priv->lddla.dev, "firmware '%s' not found (%d)\n", name, ret);
 		return ret;
 	}
-	if (fw->size < want) {
-		dev_err(priv->lddla.dev, "firmware '%s' too small (%zu < %zu)\n",
-			name, fw->size, want);
+	if (!fw->size || fw->size > capacity || !IS_ALIGNED(fw->size, 4)) {
+		dev_err(priv->lddla.dev, "firmware '%s' has invalid size %zu (max %zu)\n",
+			name, fw->size, capacity);
 		release_firmware(fw);
 		return -EINVAL;
 	}
-	memcpy(dst, fw->data, want);
+	memset(dst, 0, capacity);
+	memcpy(dst, fw->data, fw->size);
 	release_firmware(fw);
 	return 0;
 }
@@ -253,19 +279,25 @@ static int en7572_load_firmware(struct en7572_priv *priv)
 	if (ret)
 		goto out;
 
-	en7572_load_block(priv, EN7572_MD32_PM_CFG, EN7572_MD32_PM_ADDR,
-			  EN7572_MD32_PM_DATA, pm, EN7572_PM_SIZE, 0);
-	en7572_load_block(priv, EN7572_MD32_DM_CFG, EN7572_MD32_DM_ADDR,
-			  EN7572_MD32_DM_DATA, dm, EN7572_DM_SIZE, 0);
+	ret = en7572_load_block(priv, EN7572_MD32_PM_CFG, EN7572_MD32_PM_ADDR,
+				EN7572_MD32_PM_DATA, pm, EN7572_PM_SIZE, 0);
+	if (ret)
+		goto out;
+	ret = en7572_load_block(priv, EN7572_MD32_DM_CFG, EN7572_MD32_DM_ADDR,
+				EN7572_MD32_DM_DATA, dm, EN7572_DM_SIZE, 0);
+	if (ret)
+		goto out;
 	dev_dbg(priv->lddla.dev, "MD32 PM/DM loaded\n");
 
 	ret = lddla_bob_load(&priv->lddla);
 	if (ret)
 		goto out;
 	if (priv->lddla.bob_valid) {
-		en7572_load_block(priv, EN7572_MD32_DM_CFG, EN7572_MD32_DM_ADDR,
-				  EN7572_MD32_DM_DATA, priv->lddla.bob,
-				  EN7572_BOB_SIZE, EN7572_MD32_BOB_DM_OFFSET);
+		ret = en7572_load_block(priv, EN7572_MD32_DM_CFG, EN7572_MD32_DM_ADDR,
+					EN7572_MD32_DM_DATA, priv->lddla.bob,
+					EN7572_BOB_SIZE, EN7572_MD32_BOB_DM_OFFSET);
+		if (ret)
+			goto out;
 		dev_dbg(priv->lddla.dev, "BOB table loaded\n");
 	} else {
 		dev_warn(priv->lddla.dev,
@@ -309,13 +341,23 @@ int en7572_init(struct en7572_priv *priv)
 {
 	int ret;
 
-	en7572_bit_wr(priv, EN7572_MD32_EN_CFG, 0, 0, 0);	/* hold MCU */
-	en7572_bit_wr(priv, EN7572_RG_OCP_CTRL, 30, 30, 0);	/* OCP off */
-	en7572_bit_wr(priv, EN7572_RG_APD_DAC_CODE, 8, 8, 0);	/* APD off */
+	ret = en7572_bit_wr(priv, EN7572_MD32_EN_CFG, 0, 0, 0); /* hold MCU */
+	if (ret)
+		return ret;
+	ret = en7572_bit_wr(priv, EN7572_RG_OCP_CTRL, 30, 30, 0); /* OCP off */
+	if (ret)
+		return ret;
+	ret = en7572_bit_wr(priv, EN7572_RG_APD_DAC_CODE, 8, 8, 0); /* APD off */
+	if (ret)
+		return ret;
 	msleep(100);
 
-	en7572_bit_wr(priv, EN7572_RG_SYS_RESET, 30, 31, 0);
-	en7572_bit_wr(priv, EN7572_RG_SYS_RESET, 30, 31, 3);
+	ret = en7572_bit_wr(priv, EN7572_RG_SYS_RESET, 30, 31, 0);
+	if (ret)
+		return ret;
+	ret = en7572_bit_wr(priv, EN7572_RG_SYS_RESET, 30, 31, 3);
+	if (ret)
+		return ret;
 
 	ret = en7572_load_firmware(priv);
 	if (ret)
@@ -329,7 +371,9 @@ int en7572_init(struct en7572_priv *priv)
 	en7572_word_wr(priv, EN7572_DEV_A2, EN7572_A2_ALARM_FLAGS, 0);
 	en7572_word_wr(priv, EN7572_DEV_A2, EN7572_A2_WARN_FLAGS, 0);
 
-	en7572_bit_wr(priv, EN7572_MD32_EN_CFG, 0, 0, 1);	/* release MCU */
+	ret = en7572_bit_wr(priv, EN7572_MD32_EN_CFG, 0, 0, 1); /* release MCU */
+	if (ret)
+		return ret;
 	priv->mcu_ready = true;
 
 	/* Arm the control loops: first pass after BEN comes up. */
@@ -416,6 +460,29 @@ static const struct airoha_lddla_ops en7572_ops = {
 			  BIT(OPTICAL_FRONTEND_PROTO_XGSPON) |
 			  BIT(OPTICAL_FRONTEND_PROTO_NGPON2),
 	.thresholds	= &en7572_thresholds,
+	.bob_format	= AIROHA_LDDLA_BOB_FORMAT_A0A2,
+	.bob_size_min	= EN7572_BOB_SIZE,
+	.bob_size_max	= EN7572_BOB_SIZE,
+	.temp_refresh	= en7572_temp_refresh,
+	.vcc_refresh	= en7572_vcc_refresh,
+	.bias_refresh	= en7572_bias_refresh,
+	.tx_power_refresh = en7572_tx_power_refresh,
+	.rx_power_refresh = en7572_rx_power_refresh,
+	.diag_show	= en7572_diag_show,
+};
+
+static const struct airoha_lddla_ops en7573_ops = {
+	.name		= "en7573",
+	.part_number	= "EN7573",
+	.serial		= "0000000000000000",
+	.date_code	= "000000",
+	.protocols	= BIT(OPTICAL_FRONTEND_PROTO_EPON) |
+			  BIT(OPTICAL_FRONTEND_PROTO_GPON) |
+			  BIT(OPTICAL_FRONTEND_PROTO_XGPON) |
+			  BIT(OPTICAL_FRONTEND_PROTO_XGSPON) |
+			  BIT(OPTICAL_FRONTEND_PROTO_NGPON2),
+	.thresholds	= &en7572_thresholds,
+	.bob_format	= AIROHA_LDDLA_BOB_FORMAT_A0A2,
 	.bob_size_min	= EN7572_BOB_SIZE,
 	.bob_size_max	= EN7572_BOB_SIZE,
 	.temp_refresh	= en7572_temp_refresh,
@@ -432,12 +499,25 @@ static const struct airoha_lddla_ops en7572_ops = {
 
 static const struct {
 	const char *pm, *dm, *bob;
+	const struct airoha_lddla_ops *ops;
 } en7572_fw[] = {
 	[EN7572_VARIANT_EN7572] = {
-		"airoha/en7572-pm.bin", "airoha/en7572-dm.bin", "airoha/en7572-bob.bin",
+		.pm = "airoha/en7572-pm.bin",
+		.dm = "airoha/en7572-dm.bin",
+		.bob = "airoha/en7572-bob.bin",
+		.ops = &en7572_ops,
 	},
 	[EN7572_VARIANT_AN8901] = {
-		"airoha/an8901-pm.bin", "airoha/an8901-dm.bin", "airoha/an8901-bob.bin",
+		.pm = "airoha/an8901-pm.bin",
+		.dm = "airoha/an8901-dm.bin",
+		.bob = "airoha/an8901-bob.bin",
+		.ops = &en7572_ops,
+	},
+	[EN7572_VARIANT_EN7573] = {
+		.pm = "airoha/en7573-pm.bin",
+		.dm = "airoha/en7573-dm.bin",
+		.bob = "airoha/en7573-bob.bin",
+		.ops = &en7573_ops,
 	},
 };
 
@@ -452,7 +532,6 @@ static int en7572_probe(struct i2c_client *client)
 
 	priv->lddla.client = client;
 	priv->lddla.dev = &client->dev;
-	priv->lddla.ops = &en7572_ops;
 	priv->lddla.pon_mode = AIROHA_PON_GPON;
 	mutex_init(&priv->lddla.lock);
 	i2c_set_clientdata(client, priv);
@@ -460,6 +539,7 @@ static int en7572_probe(struct i2c_client *client)
 	priv->variant = (uintptr_t)i2c_get_match_data(client);
 	if (priv->variant >= ARRAY_SIZE(en7572_fw))
 		priv->variant = EN7572_VARIANT_EN7572;
+	priv->lddla.ops = en7572_fw[priv->variant].ops;
 	priv->fw_pm = en7572_fw[priv->variant].pm;
 	priv->fw_dm = en7572_fw[priv->variant].dm;
 	if (device_property_read_string(&client->dev, "firmware-name",
@@ -500,6 +580,7 @@ static void en7572_remove(struct i2c_client *client)
 static const struct i2c_device_id en7572_id[] = {
 	{ "en7572", EN7572_VARIANT_EN7572 },
 	{ "an8901", EN7572_VARIANT_AN8901 },
+	{ "en7573", EN7572_VARIANT_EN7573 },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, en7572_id);
@@ -507,6 +588,7 @@ MODULE_DEVICE_TABLE(i2c, en7572_id);
 static const struct of_device_id en7572_of_match[] = {
 	{ .compatible = "airoha,en7572", .data = (void *)EN7572_VARIANT_EN7572 },
 	{ .compatible = "airoha,an8901", .data = (void *)EN7572_VARIANT_AN8901 },
+	{ .compatible = "airoha,en7573", .data = (void *)EN7572_VARIANT_EN7573 },
 	{ }
 };
 MODULE_DEVICE_TABLE(of, en7572_of_match);
@@ -520,3 +602,7 @@ struct i2c_driver en7572_i2c_driver = {
 	.remove = en7572_remove,
 	.id_table = en7572_id,
 };
+
+MODULE_FIRMWARE("airoha/en7573-pm.bin");
+MODULE_FIRMWARE("airoha/en7573-dm.bin");
+MODULE_FIRMWARE("airoha/en7573-bob.bin");

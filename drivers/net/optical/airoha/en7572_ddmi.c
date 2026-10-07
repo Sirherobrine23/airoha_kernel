@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * EN7572 / AN8901 SFF-8472 diagnostics readback and alarm evaluation.
+ * EN7572 / EN7573 / AN8901 SFF-8472 diagnostics and alarm evaluation.
  *
  * The MD32 firmware maintains the SFF-8472 diagnostic block on the A2 page
  * (big-endian words at 0x60-0x6B) already in MSA units, so temperature,

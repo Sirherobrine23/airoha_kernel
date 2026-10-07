@@ -2,10 +2,10 @@
 /*
  * Shared Airoha EN757x xPON laser-driver / limiting-amplifier core.
  *
- * EN7570/EN7571 use the shared 0x70 transport helpers below. EN7572 keeps its
- * own transport but reuses the Airoha family state and provider bridge. Generic
- * telemetry, hwmon, SFF compatibility and consumer lookup live in the vendor-
- * neutral optical_frontend subsystem.
+ * EN7570/EN7571 use the shared 0x70 transport helpers below. EN7572/EN7573 keep
+ * their own transport but reuse the Airoha family state and provider bridge.
+ * Generic telemetry, hwmon, SFF compatibility and consumer lookup live in the
+ * vendor-neutral optical_frontend subsystem.
  *
  * This header defines the Airoha family state, per-chip operations, EN757x
  * calibration helpers and legacy SFF-8472 units used by the chip algorithms.
@@ -88,10 +88,16 @@ enum airoha_lddla_bob_profile {
 	 (AIROHA_LDDLA_BOB_MAGIC_BASE | \
 	  ((u32)(_variant) & AIROHA_LDDLA_BOB_MAGIC_VARIANT_MASK)))
 
+enum airoha_lddla_bob_format {
+	AIROHA_LDDLA_BOB_FORMAT_WORDS,
+	AIROHA_LDDLA_BOB_FORMAT_A0A2,
+};
+
 enum airoha_lddla_bob_endian {
 	AIROHA_LDDLA_BOB_ENDIAN_UNKNOWN,
 	AIROHA_LDDLA_BOB_ENDIAN_LITTLE,
 	AIROHA_LDDLA_BOB_ENDIAN_BIG,
+	AIROHA_LDDLA_BOB_ENDIAN_BYTES,
 };
 
 enum airoha_lddla_bob_source {
@@ -137,7 +143,9 @@ airoha_lddla_default_thresholds;
  * @date_code: SFP MSA date code (6 chars).
  * @protocols: BIT(OPTICAL_FRONTEND_PROTO_*) bitmap supported by this chip.
  * @thresholds: normalized alarm thresholds for this chip/firmware family.
- * @bob_size: expected BOB/calibration image size in bytes.
+ * @bob_format: calibration layout; defaults to the EN7570/EN7571 word table.
+ * @bob_size_min: minimum BOB/calibration image size in bytes.
+ * @bob_size_max: maximum BOB/calibration image size in bytes.
  * @temp_refresh: refresh the temperature DDMI word; return IC temp (m degC).
  * @bosa_temp_refresh: refresh and return BOSA temperature (m degC).
  * @vcc_refresh: refresh and return the cached supply-voltage word.
@@ -161,6 +169,7 @@ struct airoha_lddla_ops {
 	const char *date_code;
 	u32 protocols;
 	const struct optical_frontend_thresholds *thresholds;
+	enum airoha_lddla_bob_format bob_format;
 	size_t bob_size_min;
 	size_t bob_size_max;
 
@@ -186,12 +195,12 @@ struct airoha_lddla_ops {
  * @frontend_desc: immutable description exported to generic consumers.
  * @debugfs: per-device debugfs directory.
  * @bob_fw_name: calibration/BOB firmware blob name.
- * @bob: canonical little-endian in-memory BOB image.
+ * @bob: little-endian word table or unmodified A0/A2 calibration pages.
  * @bob_len: number of valid bytes in @bob.
  * @bob_valid: true when a valid BOB image was loaded.
  * @bob_source: origin of the active BOB image.
  * @bob_source_endian: byte order detected in the source blob.
- * @bob_magic: normalized BOB magic read from byte 0x94.
+ * @bob_magic: normalized word-table magic at byte 0x94; absent for A0/A2.
  * @bob_chip_id: model/variant byte dynamically extracted from @bob_magic.
  * @bob_profile: PON/profile byte dynamically extracted from @bob_magic.
  * @pon_mode: AIROHA_PON_* operating mode.
