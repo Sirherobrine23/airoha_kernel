@@ -21,6 +21,7 @@
 #include <linux/property.h>
 #include <linux/seq_file.h>
 #include <linux/slab.h>
+#include <linux/string.h>
 
 #include "en7572.h"
 
@@ -252,13 +253,32 @@ static int en7572_request_image(struct en7572_priv *priv, const char *name,
 	return 0;
 }
 
+static int en7572_validate_bob(struct en7572_priv *priv)
+{
+	struct airoha_lddla *lddla = &priv->lddla;
+	const u8 *cal = lddla->bob + EN7572_BOB_A2(0x80);
+
+	if (!lddla->bob_valid)
+		return 0;
+
+	/* The upper A2 page contains the default Tx and Rx calibration. */
+	if (!memchr_inv(cal, 0xff, 0x80) || !memchr_inv(cal, 0, 0x80)) {
+		lddla->bob_valid = false;
+		dev_err(lddla->dev,
+			"BOB A2 calibration (0x180-0x1ff) is blank; check the source offset and format\n");
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
 /**
  * en7572_load_firmware() - load MD32 program/data memory and the BOB table.
  * @priv: device
  *
  * The PM and DM images are mandatory; the BOB calibration table is optional
- * (an uncalibrated module still runs).  Return: 0 on success, negative errno
- * if a mandatory image is missing.
+ * (an uncalibrated module still runs). Return: 0 on success, negative errno
+ * if an image is missing or a supplied BOB has blank A2 calibration.
  */
 static int en7572_load_firmware(struct en7572_priv *priv)
 {
@@ -278,6 +298,12 @@ static int en7572_load_firmware(struct en7572_priv *priv)
 	ret = en7572_request_image(priv, priv->fw_dm, dm, EN7572_DM_SIZE);
 	if (ret)
 		goto out;
+	ret = lddla_bob_load(&priv->lddla);
+	if (ret)
+		goto out;
+	ret = en7572_validate_bob(priv);
+	if (ret)
+		goto out;
 
 	ret = en7572_load_block(priv, EN7572_MD32_PM_CFG, EN7572_MD32_PM_ADDR,
 				EN7572_MD32_PM_DATA, pm, EN7572_PM_SIZE, 0);
@@ -289,9 +315,6 @@ static int en7572_load_firmware(struct en7572_priv *priv)
 		goto out;
 	dev_dbg(priv->lddla.dev, "MD32 PM/DM loaded\n");
 
-	ret = lddla_bob_load(&priv->lddla);
-	if (ret)
-		goto out;
 	if (priv->lddla.bob_valid) {
 		ret = en7572_load_block(priv, EN7572_MD32_DM_CFG, EN7572_MD32_DM_ADDR,
 					EN7572_MD32_DM_DATA, priv->lddla.bob,

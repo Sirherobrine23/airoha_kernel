@@ -25,6 +25,8 @@ description: |
   The BOB calibration image contains the A0 and A2 pages as 512 bytes in
   device order. It is not an EN7570/EN7571 table of 32-bit factory words:
   do not byte-swap it or insert a word-table signature at offset 0x94.
+  The upper A2 page (image offsets 0x180 through 0x1ff) contains the
+  default Tx and Rx calibration and must not be entirely erased or zero.
 
 allOf:
   - $ref: optical-frontend.yaml#
