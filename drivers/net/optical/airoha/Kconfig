@@ -24,9 +24,11 @@ config EN7571_PHY
 	  Enable the EN7571 provider in the shared Airoha LDDLA driver.
 
 config EN7572_PHY
-	bool "Airoha EN7572 / AN8901 optical frontend"
+	bool "Airoha EN7572 / EN7573 / AN8901 optical frontend"
 	default y
 	help
-	  Enable the EN7572 and AN8901 providers in the shared Airoha LDDLA driver.
+	  Enable the EN7572, EN7573 and AN8901 providers in the shared Airoha
+	  LDDLA driver. These devices share the MD32 firmware loader, I2C
+	  transport and diagnostics implementation.
 
 endif

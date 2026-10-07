@@ -1,0 +1,86 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/net/airoha,en7572.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Airoha EN7572, EN7573 and AN8901 optical frontends
+
+maintainers:
+  - Matheus Sampaio Queiroga <srherobrine20@gmail.com>
+
+description: |
+  Laser-driver and limiting-amplifier controllers with an embedded MD32.
+  Each controller occupies I2C addresses 0x50 (A0) and 0x51 (A2). Describe
+  only one device at 0x50; the driver also accesses 0x51 on the same bus.
+  Both pages use 16-bit big-endian register addresses. CSR words are
+  little-endian, while SFF-8472 diagnostics are big-endian.
+
+  The compatible selects the chip and its MD32 firmware. The shared
+  identity registers cannot distinguish EN7572 from EN7573. EN7573 uses
+  airoha/en7573-pm.bin and airoha/en7573-dm.bin for program and data memory.
+  Images must be nonempty, aligned to four bytes and fit in 16 KiB (PM)
+  or 4 KiB (DM); unused memory is zero-filled.
+
+  The BOB calibration image contains the A0 and A2 pages as 512 bytes in
+  device order. It is not an EN7570/EN7571 table of 32-bit factory words:
+  do not byte-swap it or insert a word-table signature at offset 0x94.
+
+allOf:
+  - $ref: optical-frontend.yaml#
+  - $ref: /schemas/nvmem/nvmem-consumer.yaml#
+
+properties:
+  compatible:
+    enum:
+      - airoha,en7572
+      - airoha,en7573
+      - airoha,an8901
+
+  reg:
+    const: 0x50
+
+  '#optical-frontend-cells':
+    const: 0
+
+  firmware-name:
+    $ref: /schemas/types.yaml#/definitions/string
+    description: |
+      Optional name of the 512-byte BOB calibration firmware. Defaults to
+      airoha/en7572-bob.bin, airoha/en7573-bob.bin or airoha/an8901-bob.bin,
+      according to the compatible. A BOB NVMEM cell takes precedence.
+
+  nvmem-cells:
+    maxItems: 1
+    description: Factory BOB calibration image (512 bytes).
+
+  nvmem-cell-names:
+    const: calibration
+
+required:
+  - compatible
+  - reg
+  - '#optical-frontend-cells'
+
+dependentRequired:
+  nvmem-cells:
+    - nvmem-cell-names
+  nvmem-cell-names:
+    - nvmem-cells
+
+unevaluatedProperties: false
+
+examples:
+  - |
+    i2c {
+        #address-cells = <1>;
+        #size-cells = <0>;
+
+        optical: optical-frontend@50 {
+            compatible = "airoha,en7573";
+            reg = <0x50>;
+            #optical-frontend-cells = <0>;
+            firmware-name = "airoha/en7573-bob.bin";
+        };
+    };
+...
