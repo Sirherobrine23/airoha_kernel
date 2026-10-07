@@ -125,15 +125,16 @@ config PHY_EN7528_PCIE
 	  on EN7528 SoC.
 
 config PHY_EN7528_USB
-	tristate "EcoNet EN7528 USB PHY Driver"
+	tristate "EcoNet EN7528/EN7580 USB PHY Driver"
 	depends on ECONET || COMPILE_TEST
 	depends on OF
 	select GENERIC_PHY
+	select NVMEM
 	select REGMAP_MMIO
 	help
-	  Say 'Y' here to add support for EcoNet EN7528 USB PHY driver.
-	  This driver creates the basic PHY instance and provides
-	  initialization callback for the USB port.
+	  Say Y here to add support for the EcoNet EN7528 and EN7580 USB PHYs.
+	  This driver initializes and calibrates the USB2 and USB3 PHYs.
+	  EN7580 factory calibration data is provided by NVMEM_ECONET_EFUSE.
 
 source "drivers/phy/airoha/Kconfig"
 source "drivers/phy/allwinner/Kconfig"
