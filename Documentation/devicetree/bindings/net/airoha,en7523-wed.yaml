@@ -20,6 +20,7 @@ properties:
     items:
       - enum:
           - econet,en751221-wed
+          - econet,en751627-wed
           - econet,en7528-wed
           - airoha,en7523-wed
       - const: syscon
@@ -53,7 +54,9 @@ allOf:
       properties:
         compatible:
           contains:
-            const: econet,en7528-wed
+            enum:
+              - econet,en751627-wed
+              - econet,en7528-wed
     then:
       required:
         - airoha,scu

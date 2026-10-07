@@ -477,6 +477,7 @@ static const struct en7528_usb_phy_soc_data en7580_usb_phy_data = {
 };
 
 static const struct of_device_id en7528_usb_phy_match[] = {
+	{ .compatible = "econet,en751627-usb-phy", .data = &en7528_usb_phy_data },
 	{ .compatible = "econet,en7528-usb-phy", .data = &en7528_usb_phy_data },
 	{ .compatible = "econet,en7580-usb-phy", .data = &en7580_usb_phy_data },
 	{ },

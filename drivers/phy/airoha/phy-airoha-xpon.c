@@ -1347,6 +1347,10 @@ static const struct of_device_id airoha_xpon_phy_of_match[] = {
 		.data = &airoha_en7523_xpon_phy_data,
 	},
 	{
+		.compatible = "airoha,en751627-xpon-phy",
+		.data = &airoha_en7528_xpon_phy_data,
+	},
+	{
 		.compatible = "airoha,en7528-xpon-phy",
 		.data = &airoha_en7528_xpon_phy_data,
 	},

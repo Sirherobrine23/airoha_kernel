@@ -3,9 +3,9 @@
 
 #include <dt-bindings/interrupt-controller/irq.h>
 #include <dt-bindings/interrupt-controller/mips-gic.h>
-#include <dt-bindings/clock/econet,en7580-scu.h>
+#include <dt-bindings/clock/econet,en751627-scu.h>
 #include <dt-bindings/phy/phy.h>
-#include <dt-bindings/reset/econet,en7580-scu.h>
+#include <dt-bindings/reset/econet,en751627-scu.h>
 #include <dt-bindings/leds/common.h>
 #include <dt-bindings/soc/airoha,scu-ssr.h>
 #include <dt-bindings/soc/airoha,soc-variant.h>
@@ -13,7 +13,7 @@
 #include <dt-bindings/input/input.h>
 
 / {
-	compatible = "econet,en7580";
+	compatible = "econet,en751627";
 	#address-cells = <1>;
 	#size-cells = <1>;
 
@@ -44,52 +44,16 @@
 		#address-cells = <1>;
 		#size-cells = <0>;
 
-		cpu0: cpu@0 {
+		cpu@0 {
 			device_type = "cpu";
 			compatible = "mips,mips1004Kc";
 			reg = <0>;
 		};
 
-		cpu1: cpu@1 {
+		cpu@1 {
 			device_type = "cpu";
 			compatible = "mips,mips1004Kc";
 			reg = <1>;
-		};
-
-		cpu2: cpu@2 {
-			device_type = "cpu";
-			compatible = "mips,mips1004Kc";
-			reg = <2>;
-		};
-
-		cpu3: cpu@3 {
-			device_type = "cpu";
-			compatible = "mips,mips1004Kc";
-			reg = <3>;
-		};
-
-		cpu-map {
-			cluster0 {
-				core0 {
-					thread0 {
-						cpu = <&cpu0>;
-					};
-
-				thread1 {
-					cpu = <&cpu1>;
-				};
-			};
-
-			core1 {
-				thread0 {
-					cpu = <&cpu2>;
-				};
-
-				thread1 {
-						cpu = <&cpu3>;
-					};
-				};
-			};
 		};
 	};
 
@@ -119,24 +83,24 @@
 		ranges;
 
 		pcie_phy0: pcie-phy@1faf2000 {
-			compatible = "econet,en7528-pcie-phy0";
+			compatible = "econet,en751627-pcie-phy0";
 			reg = <0x1faf2000 0x1000>;
 			#phy-cells = <0>;
 		};
 
 		pcie_phy1: pcie-phy@1fac0000 {
-			compatible = "econet,en7528-pcie-phy1";
+			compatible = "econet,en751627-pcie-phy1";
 			reg = <0x1fac0000 0x1000>;
 			#phy-cells = <0>;
 		};
 
 		chip_scu: syscon@1fa20000 {
-			compatible = "airoha,scuclk", "econet,en7580-chip-scu", "syscon";
+			compatible = "airoha,scuclk", "econet,en751627-chip-scu", "syscon";
 			reg = <0x1fa20000 0x400>;
 		};
 
 		scuclk: system-controller@1fb00000 {
-			compatible = "econet,en7580-scu", "syscon";
+			compatible = "econet,en751627-scu", "syscon";
 			reg = <0x1fb00000 0x1000>;
 
 			airoha,chip-scu = <&chip_scu>;
@@ -149,7 +113,7 @@
 			reg = <0x1fbf0200 0xc0>;
 
 			pinctrl: pinctrl {
-				compatible = "econet,en7580-pinctrl";
+				compatible = "econet,en751627-pinctrl";
 				airoha,chip-scu = <&chip_scu>;
 
 				interrupt-parent = <&gic>;
@@ -161,7 +125,7 @@
 				interrupt-controller;
 				#interrupt-cells = <2>;
 
-				gpio-ranges = <&pinctrl 0 0 46>;
+				gpio-ranges = <&pinctrl 0 0 42>;
 
 				pcie0_rst_pins: pcie0-rst-pins {
 					conf {
@@ -191,20 +155,6 @@
 					};
 				};
 
-				uart4_pins: uart4 {
-					mux {
-						function = "uart";
-						groups = "uart4";
-					};
-				};
-
-				uart5_pins: uart5 {
-					mux {
-						function = "uart";
-						groups = "uart5";
-					};
-				};
-
 				pon_pinctrl: pon {
 					mux {
 						function = "pon";
@@ -212,56 +162,66 @@
 					};
 				};
 
-				swp1_led0: swp1-led0 {
-					function = "phy1_led0";
-					groups = "gpio8";
+				swp1_led0: switch_port-1-led0 {
+					mux {
+						function = "phy1_led0";
+						groups = "gpio30";
+					};
 				};
 
-				swp2_led0: swp2-led0 {
-					function = "phy2_led0";
-					groups = "gpio9";
+				swp1_led1: switch_port-1-led1 {
+					mux {
+						function = "phy1_led1";
+						groups = "gpio31";
+					};
 				};
 
-				swp3_led0: swp3-led0 {
-					function = "phy3_led0";
-					groups = "gpio10";
+				swp2_led0: switch_port-2-led0 {
+					mux {
+						function = "phy2_led0";
+						groups = "gpio32";
+					};
 				};
 
-				swp4_led0: swp4-led0 {
-					function = "phy4_led0";
-					groups = "gpio11";
+				swp2_led1: switch_port-2-led1 {
+					mux {
+						function = "phy2_led1";
+						groups = "gpio33";
+					};
 				};
 
-				swp1_led1: swp1-led1 {
-					function = "phy1_led1";
-					groups = "gpio12";
+				swp3_led0: switch_port-3-led0 {
+					mux {
+						function = "phy3_led0";
+						groups = "gpio34";
+					};
 				};
 
-				swp2_led1: swp2-led1 {
-					function = "phy2_led1";
-					groups = "gpio13";
+				swp3_led1: switch_port-3-led1 {
+					mux {
+						function = "phy3_led1";
+						groups = "gpio35";
+					};
 				};
 
-				swp3_led1: swp3-led1 {
-					function = "phy3_led1";
-					groups = "gpio14";
+				swp4_led0: switch_port-4-led0 {
+					mux {
+						function = "phy4_led0";
+						groups = "gpio36";
+					};
 				};
 
-				swp4_led1: swp4-led1 {
-					function = "phy4_led1";
-					groups = "gpio15";
+				swp4_led1: switch_port-4-led1 {
+					mux {
+						function = "phy4_led1";
+						groups = "gpio37";
+					};
 				};
-			};
-
-			pwm: pwm {
-				compatible = "airoha,en7581-pwm";
-
-				#pwm-cells = <3>;
 			};
 		};
 
 		timer_hpt: timer@1fbf0400 {
-			compatible = "econet,en7528-timer";
+			compatible = "econet,en751627-timer";
 			reg = <0x1fbf0400 0x14>,
 			      <0x1fbe0000 0x14>;
 
@@ -273,16 +233,16 @@
 			clocks = <&hpt_clock>;
 		};
 
-		spi0: spi@1fa10000 {
-			compatible = "econet,en7580-spi";
+		spi: spi@1fa10000 {
+			compatible = "airoha,en7523-spi";
 			reg = <0x1fa10000 0x140>,
 			      <0x1fa11000 0x160>;
-			reg-names = "ctrl", "nfi";
 
-			clocks = <&scuclk EN7580_CLK_SPI>;
+			clocks = <&scuclk EN751627_CLK_SPI>;
 			clock-names = "spi";
 
-			airoha,scu = <&scuclk>;
+			airoha,scu = <&scuclk>, <&chip_scu>;
+			airoha,scu-names = "scuclk", "chip-scu";
 
 			#address-cells = <1>;
 			#size-cells = <0>;
@@ -292,18 +252,10 @@
 			compatible = "econet,en751221-wdt";
 			reg = <0x1fbf0100 0x3c>;
 
-			clocks = <&scuclk EN7580_CLK_BUS>;
+			clocks = <&scuclk EN751627_CLK_BUS>;
 			clock-names = "bus";
 
 			interrupts = <GIC_SHARED 9 IRQ_TYPE_LEVEL_HIGH>;
-		};
-
-		dramc: memory-controller@1fb24000 {
-			compatible = "econet,en7580-dramc";
-			reg = <0x1fb24000 0x1000>,
-			      <0x1fb28000 0x1000>;
-			reg-names = "dramc", "ddrphy";
-			airoha,chip-scu = <&chip_scu>;
 		};
 
 		crypto@1fb70000 {
@@ -326,98 +278,19 @@
 			status = "disabled";
 		};
 
-		efuse: efuse@1fa40b00 {
-			compatible = "econet,en7580-efuse";
-			reg = <0x1fa40b00 0x3c>;
-			read-only;
-
-			nvmem-layout {
-				compatible = "fixed-layout";
-				#address-cells = <1>;
-				#size-cells = <1>;
-
-				usb0_tx_imp: usb3-tx-imp@6 {
-					reg = <0x6 0x2>;
-					bits = <4 5>;
-				};
-
-				usb0_rx_imp: usb3-rx-imp@7,1 {
-					reg = <0x7 0x1>;
-					bits = <1 5>;
-				};
-
-				usb0_u3_intr: usb3-intr@7,6 {
-					reg = <0x7 0x2>;
-					bits = <6 6>;
-				};
-
-				usb1_tx_imp: usb3-tx-imp@8 {
-					reg = <0x8 0x2>;
-					bits = <4 5>;
-				};
-
-				usb1_rx_imp: usb3-rx-imp@9,1 {
-					reg = <0x9 0x1>;
-					bits = <1 5>;
-				};
-
-				usb1_u3_intr: usb3-intr@9,6 {
-					reg = <0x9 0x2>;
-					bits = <6 6>;
-				};
-
-				usb0_u2_intr: usb2-intr@35 {
-					reg = <0x35 0x2>;
-					bits = <7 5>;
-				};
-
-				usb1_u2_intr: usb2-intr@36 {
-					reg = <0x36 0x2>;
-					bits = <4 5>;
-				};
-			};
-		};
-
-		usb_phy: usb_phy0: usb-phy@1fa80000 {
-			compatible = "econet,en7580-usb-phy";
-			reg = <0x1fa80000 0x1000>;
+		usb_phy: usb-phy@1fa80000 {
+			compatible = "econet,en751627-usb-phy";
+			reg = <0x1fa80000 0x1400>;
 			#phy-cells = <1>;
-			nvmem-cells = <&usb0_u2_intr>, <&usb0_u3_intr>,
-				      <&usb0_tx_imp>, <&usb0_rx_imp>;
-			nvmem-cell-names = "u2-intr", "u3-intr", "tx-imp", "rx-imp";
 		};
 
-		usb_phy1: usb-phy@1fa90000 {
-			compatible = "econet,en7580-usb-phy";
-			reg = <0x1fa90000 0x1000>;
-			#phy-cells = <1>;
-			nvmem-cells = <&usb1_u2_intr>, <&usb1_u3_intr>,
-				      <&usb1_tx_imp>, <&usb1_rx_imp>;
-			nvmem-cell-names = "u2-intr", "u3-intr", "tx-imp", "rx-imp";
-		};
-
-		usb: usb0: usb@1fb90000 {
-			compatible = "econet,en7580-xhci";
-			reg = <0x1fb90000 0x4000>,
-			      <0x1fa84700 0x100>;
+		usb: usb@1fb90000 {
+			compatible = "econet,en751627-xhci";
+			reg = <0x1fb90000 0x3e00>,
+			      <0x1fb93e00 0x100>;
 			reg-names = "mac", "ippc";
 			interrupts = <GIC_SHARED 17 IRQ_TYPE_LEVEL_HIGH>;
-			interrupt-names = "host";
 			phys = <&usb_phy PHY_TYPE_USB2>, <&usb_phy PHY_TYPE_USB3>;
-			phy-names = "usb2-phy", "usb3-phy";
-			usb3-lpm-capable;
-			status = "disabled";
-		};
-
-		usb1: usb@1fba0000 {
-			compatible = "econet,en7580-xhci";
-			reg = <0x1fba0000 0x4000>,
-			      <0x1fa94700 0x100>;
-			reg-names = "mac", "ippc";
-			interrupts = <GIC_SHARED 48 IRQ_TYPE_LEVEL_HIGH>;
-			interrupt-names = "host";
-			phys = <&usb_phy1 PHY_TYPE_USB2>, <&usb_phy1 PHY_TYPE_USB3>;
-			phy-names = "usb2-phy", "usb3-phy";
 			usb3-lpm-capable;
 			status = "disabled";
 		};
@@ -441,16 +314,7 @@
 		uart2: serial@1fbf0300 {
 			compatible = "airoha,en7523-uart";
 			reg = <0x1fbf0300 0x30>;
-			reg-io-width = <4>;
-			reg-shift = <2>;
-
 			interrupts = <GIC_SHARED 16 IRQ_TYPE_LEVEL_HIGH>;
-
-			/*
-			 * Keep the XYD configuration programmed by the bootloader.
-			 * 1.8432 MHz gives the standard 115200 baud 8250 divisor.
-			 */
-			clock-frequency = <1843200>;
 
 			pinctrl-names = "default";
 			pinctrl-0 = <&uart2_pins>;
@@ -461,56 +325,10 @@
 		uart3: serial@1fbe1000 {
 			compatible = "airoha,en7523-uart";
 			reg = <0x1fbe1000 0x30>;
-			reg-io-width = <4>;
-			reg-shift = <2>;
-
 			interrupts = <GIC_SHARED 38 IRQ_TYPE_LEVEL_HIGH>;
-
-			/*
-			 * Keep the XYD configuration programmed by the bootloader.
-			 */
-			clock-frequency = <1843200>;
 
 			pinctrl-names = "default";
 			pinctrl-0 = <&uart3_pins>;
-
-			status = "disabled";
-		};
-
-		uart4: serial@1fbf0600 {
-			compatible = "airoha,en7523-uart";
-			reg = <0x1fbf0600 0x30>;
-			reg-io-width = <4>;
-			reg-shift = <2>;
-
-			interrupts = <GIC_SHARED 45 IRQ_TYPE_LEVEL_HIGH>;
-
-			/*
-			 * Keep the XYD configuration programmed by the bootloader.
-			 */
-			clock-frequency = <1843200>;
-
-			pinctrl-names = "default";
-			pinctrl-0 = <&uart4_pins>;
-
-			status = "disabled";
-		};
-
-		uart5: serial@1fbf0700 {
-			compatible = "airoha,en7523-uart";
-			reg = <0x1fbf0700 0x30>;
-			reg-io-width = <4>;
-			reg-shift = <2>;
-
-			interrupts = <GIC_SHARED 46 IRQ_TYPE_LEVEL_HIGH>;
-
-			/*
-			 * Keep the XYD configuration programmed by the bootloader.
-			 */
-			clock-frequency = <1843200>;
-
-			pinctrl-names = "default";
-			pinctrl-0 = <&uart5_pins>;
 
 			status = "disabled";
 		};
@@ -521,7 +339,7 @@
 		};
 
 		pcie0: pcie@1fb81000 {
-			compatible = "econet,en7528-pcie";
+			compatible = "econet,en751627-pcie";
 			device_type = "pci";
 			reg = <0x1fb81000 0x1000>;
 			reg-names = "port0";
@@ -530,7 +348,7 @@
 			#size-cells = <2>;
 			interrupts = <GIC_SHARED 23 IRQ_TYPE_LEVEL_HIGH>;
 			interrupt-names = "pcie_irq";
-			clocks = <&scuclk EN7580_CLK_PCIE>;
+			clocks = <&scuclk EN751627_CLK_PCIE>;
 			clock-names = "sys_ck0";
 			phys = <&pcie_phy0>;
 			phy-names = "pcie-phy0";
@@ -561,7 +379,7 @@
 		};
 
 		pcie1: pcie@1fb83000 {
-			compatible = "econet,en7528-pcie";
+			compatible = "econet,en751627-pcie";
 			device_type = "pci";
 			reg = <0x1fb83000 0x1000>;
 			reg-names = "port1";
@@ -570,7 +388,7 @@
 			#size-cells = <2>;
 			interrupts = <GIC_SHARED 24 IRQ_TYPE_LEVEL_HIGH>;
 			interrupt-names = "pcie_irq";
-			clocks = <&scuclk EN7580_CLK_PCIE>;
+			clocks = <&scuclk EN751627_CLK_PCIE>;
 			clock-names = "sys_ck1";
 			phys = <&pcie_phy1>;
 			phy-names = "pcie-phy1";
@@ -601,85 +419,78 @@
 		};
 
 		gdma: gdma@1fb30000 {
-			compatible = "econet,en7580-gdma";
+			compatible = "econet,en751627-gdma";
 			reg = <0x1fb30000 0x1000>;
 
 			interrupts = <GIC_SHARED 14 IRQ_TYPE_LEVEL_HIGH>;
 		};
 
-		hsdma: dma-controller@1fa01800 {
-			compatible = "econet,en7580-hsdma";
-			reg = <0x1fa01800 0x300>;
-
-			interrupts = <GIC_SHARED 47 IRQ_TYPE_LEVEL_HIGH>;
-
-			#dma-cells = <1>;
-			dma-channels = <2>;
-			dma-requests = <2>;
-		};
-
-		xsi_pcs: pcs@1fa04000 {
-			compatible = "airoha,en7580-pcs";
-			reg = <0x1fa04000 0x200>,
-			      <0x1faf6000 0x1000>,
-			      <0x1faf7900 0x1000>;
-			reg-names = "mac", "pma", "pcs";
-			airoha,scu = <&scuclk>;
-			airoha,chip-scu = <&chip_scu>;
-			#pcs-cells = <0>;
-			status = "disabled";
-		};
-
 		xpon_phy: phy@1faf0000 {
-			compatible = "airoha,en7580-xpon-phy";
-			reg = <0x1faf0000 0x2000>;
+			compatible = "airoha,en751627-xpon-phy";
+			reg = <0x1faf0000 0x600>;
 
 			pinctrl-names = "default";
 			pinctrl-0 = <&pon_pinctrl>;
 
-			tx-disable-gpios = <&pinctrl 38 GPIO_ACTIVE_HIGH>;
-
-			resets = <&scuclk EN7580_XPON_PHY_RST>;
+			resets = <&scuclk EN751627_XPON_PHY_RST>;
 			reset-names = "phy";
 
 			interrupts = <GIC_SHARED 27 IRQ_TYPE_LEVEL_HIGH>;
 			interrupt-names = "phy";
-
 			airoha,scu = <&scuclk>;
-
 			#phy-cells = <0>;
+
 			status = "disabled";
 		};
 
 		xpon: xmac@1fb60000 {
-			compatible = "airoha,en7580-xpon";
+			compatible = "airoha,en751627-xpon";
 
-			reg = <0x1fb60000 0x10000>;
-			reg-names = "mac";
+			reg = <0x1fb60000 0x10000>,
+			      <0x1fa2ff24 0x4>;
+			reg-names = "mac", "tx-off";
 
 			interrupts = <GIC_SHARED 26 IRQ_TYPE_LEVEL_HIGH>,
-			             <GIC_SHARED 18 IRQ_TYPE_LEVEL_HIGH>;
+				     <GIC_SHARED 18 IRQ_TYPE_LEVEL_HIGH>;
 			interrupt-names = "mac", "dying-gasp";
 
-			resets = <&scuclk EN7580_XPON_MAC_RST>;
+			resets = <&scuclk EN751627_XPON_MAC_RST>;
 			reset-names = "mac";
-
 			phys = <&xpon_phy>;
 			phy-names = "xpon";
-
 			ethernet = <&gdm2>;
-
 			airoha,scu = <&scuclk>;
 
 			status = "disabled";
 		};
 
-		/* <GIC_SHARED 51 IRQ_TYPE_LEVEL_HIGH> => WIFI Offload Engine 0 */
+		xdsl: dsl@1f900000 {
+			compatible = "econet,en751627-xdsl";
+			reg = <0x1f900000 0x10000>,
+			      <0x1fb62000 0x200>;
+			reg-names = "dmt", "ptm";
+
+			interrupts = <GIC_SHARED 19 IRQ_TYPE_LEVEL_HIGH>;
+			interrupt-names = "dmt";
+
+			resets = <&scuclk EN751627_DMT_RST>,
+				 <&scuclk EN751627_PTM_MAC_RST>;
+			reset-names = "dmt", "ptm";
+
+			ethernet = <&gdm2>;
+			airoha,scu = <&scuclk>;
+
+			status = "disabled";
+		};
+
 		/* <GIC_SHARED 53 IRQ_TYPE_LEVEL_HIGH> => WIFI DMA 0 port 0 */
 		/* <GIC_SHARED 54 IRQ_TYPE_LEVEL_HIGH> => WIFI DMA 0 port 1 */
 		/* <GIC_SHARED 55 IRQ_TYPE_LEVEL_HIGH> => WIFI DMA 0 for WOE */
+		/* <GIC_SHARED 56 IRQ_TYPE_LEVEL_HIGH> => WIFI DMA 1 port 0 */
+		/* <GIC_SHARED 56 IRQ_TYPE_LEVEL_HIGH> => WIFI DMA 1 port 1 */
+		/* <GIC_SHARED 58 IRQ_TYPE_LEVEL_HIGH> => WIFI DMA 1 for WOE */
 		wed0: wed@1fa02000 {
-			compatible = "econet,en7580-wed", "syscon";
+			compatible = "econet,en751627-wed", "syscon";
 			reg = <0x1fa02000 0xb00>,
 			      <0x1fa06000 0x400>;
 			reg-names = "wed", "wdma";
@@ -687,12 +498,8 @@
 			airoha,scu = <&scuclk>;
 		};
 
-		/* <GIC_SHARED 52 IRQ_TYPE_LEVEL_HIGH> => WIFI Offload Engine 1 */
-		/* <GIC_SHARED 56 IRQ_TYPE_LEVEL_HIGH> => WIFI DMA 1 port 0 */
-		/* <GIC_SHARED 56 IRQ_TYPE_LEVEL_HIGH> => WIFI DMA 1 port 1 */
-		/* <GIC_SHARED 58 IRQ_TYPE_LEVEL_HIGH> => WIFI DMA 1 for WOE */
 		wed1: wed@1fa03000 {
-			compatible = "econet,en7580-wed", "syscon";
+			compatible = "econet,en751627-wed", "syscon";
 			reg = <0x1fa03000 0xb00>,
 			      <0x1fa06400 0x400>;
 			reg-names = "wed", "wdma";
@@ -701,32 +508,30 @@
 		};
 
 		eth: ethernet@1fb50000 {
-			compatible = "econet,en7580-eth";
+			compatible = "econet,en751627-eth";
 			status = "disabled";
 			reg = <0x1fb50000 0x2600>,
-			      <0x1fb54000 0x2000>,
-			      <0x1fb56000 0x2000>,
-			      <0x1fbf9000 0x1000>;
+			      <0x1fb54000 0x1000>,
+			      <0x1fb55000 0x1000>,
+			      <0x1fa40000 0x8000>;
 			reg-names = "fe", "qdma0", "qdma1", "gdmp";
 
-			resets = <&scuclk EN7580_FE_RST>,
-				 <&scuclk EN7580_FE_QDMA1_RST>,
-				 <&scuclk EN7580_FE_QDMA2_RST>,
-				 <&scuclk EN7580_GDMP_RST>;
+			resets = <&scuclk EN751627_FE_RST>,
+				 <&scuclk EN751627_FE_QDMA1_RST>,
+				 <&scuclk EN751627_FE_QDMA2_RST>,
+				 <&scuclk EN751627_GDMP_RST>;
 			reset-names = "fe", "pdma", "qdma", "gdmp";
 
-			interrupts = <GIC_SHARED 21 IRQ_TYPE_LEVEL_HIGH>, /* QDMA LAN0 */
-			             <GIC_SHARED 22 IRQ_TYPE_LEVEL_HIGH>, /* QDMA WAN0 */
-			             <GIC_SHARED 39 IRQ_TYPE_LEVEL_HIGH>, /* QDMA LAN1 */
-			             <GIC_SHARED 40 IRQ_TYPE_LEVEL_HIGH>, /* QDMA LAN2 */
-			             <GIC_SHARED 41 IRQ_TYPE_LEVEL_HIGH>, /* QDMA LAN3 */
-			             <GIC_SHARED 42 IRQ_TYPE_LEVEL_HIGH>, /* QDMA WAN1 */
-			             <GIC_SHARED 43 IRQ_TYPE_LEVEL_HIGH>, /* QDMA WAN2 */
-			             <GIC_SHARED 44 IRQ_TYPE_LEVEL_HIGH>, /* QDMA WAN3 */
-			             <GIC_SHARED 33 IRQ_TYPE_LEVEL_HIGH>; /* Frame Error */
-			interrupt-names = "lan0", "wan0",
-			                  "lan1", "lan2", "lan3",
-			                  "wan1", "wan2", "wan3", "fe-error";
+			airoha,wed = <&wed0>, <&wed1>;
+			interrupts = <GIC_SHARED 21 IRQ_TYPE_LEVEL_HIGH>,  /* QDMA LAN0 */
+				     <GIC_SHARED 22 IRQ_TYPE_LEVEL_HIGH>,  /* QDMA WAN0 */
+				     <GIC_SHARED 39 IRQ_TYPE_LEVEL_HIGH>,  /* QDMA LAN1 */
+				     <GIC_SHARED 40 IRQ_TYPE_LEVEL_HIGH>,  /* QDMA LAN2 */
+				     <GIC_SHARED 41 IRQ_TYPE_LEVEL_HIGH>,  /* QDMA LAN3 */
+				     <GIC_SHARED 42 IRQ_TYPE_LEVEL_HIGH>,  /* QDMA WAN1 */
+				     <GIC_SHARED 43 IRQ_TYPE_LEVEL_HIGH>,  /* QDMA WAN2 */
+				     <GIC_SHARED 44 IRQ_TYPE_LEVEL_HIGH>,  /* QDMA WAN3 */
+				     <GIC_SHARED 33 IRQ_TYPE_LEVEL_HIGH>;  /* Frame Error */
 
 			#address-cells = <1>;
 			#size-cells = <0>;
@@ -751,21 +556,12 @@
 
 				status = "disabled";
 			};
-
-			gdm3: ethernet@3 {
-				compatible = "econet,eth-mac";
-				reg = <3>;
-
-				pcs-handle = <&xsi_pcs>;
-
-				status = "disabled";
-			};
 		};
 
 		switch: switch@1fb58000 {
-			compatible = "airoha,en7580-switch", "econet,en7580-switch";
+			compatible = "econet,en751627-switch";
 			reg = <0x1fb58000 0x8000>;
-			resets = <&scuclk EN7580_GSW_RST>;
+			resets = <&scuclk EN751627_GSW_RST>;
 
 			interrupt-controller;
 			#interrupt-cells = <1>;

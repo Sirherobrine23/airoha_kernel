@@ -101,6 +101,7 @@ static const struct airoha_wed_soc_data en7523_wed_data = {
 
 static const struct of_device_id airoha_wed_of_match[] = {
 	{ .compatible = "econet,en751221-wed", .data = &en751221_wed_data },
+	{ .compatible = "econet,en751627-wed", .data = &en7528_wed_data },
 	{ .compatible = "econet,en7528-wed", .data = &en7528_wed_data },
 	{ .compatible = "airoha,en7523-wed", .data = &en7523_wed_data },
 	{ /* sentinel */ }

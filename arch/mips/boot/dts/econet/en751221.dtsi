@@ -314,6 +314,13 @@
 		};
 	};
 
+	gdma: gdma@1fb30000 {
+		compatible = "econet,en751627-gdma";
+		reg = <0x1fb30000 0x1000>;
+
+		interrupts = <GIC_SHARED 14 IRQ_TYPE_LEVEL_HIGH>;
+	};
+
 	xpon_phy: phy@1faf0000 {
 		compatible = "econet,en751221-xpon-phy";
 		// reg = <0x1faf0000 0x5000>;
@@ -349,6 +356,26 @@
 
 		phys = <&xpon_phy>;
 		phy-names = "xpon";
+
+		ethernet = <&gdm2>;
+		airoha,scu = <&scuclk>;
+
+		status = "disabled";
+	};
+
+	xdsl: dsl@1f900000 {
+		compatible = "econet,en751221-xdsl";
+		reg = <0x1f900000 0x10000>,
+		      <0x1fb62000 0x200>;
+		reg-names = "dmt", "ptm";
+
+		interrupt-parent = <&intc>;
+		interrupts = <19>;
+		interrupt-names = "dmt";
+
+		resets = <&scuclk EN751221_DMT_RST>,
+			 <&scuclk EN751221_PTM_MAC_RST>;
+		reset-names = "dmt", "ptm";
 
 		ethernet = <&gdm2>;
 		airoha,scu = <&scuclk>;

@@ -1186,6 +1186,7 @@ static const struct airoha_pinctrl_match_data pinctrl_match_data = {
 };
 
 static const struct of_device_id airoha_pinctrl_of_match[] = {
+	{ .compatible = "econet,en751627-pinctrl", .data = &pinctrl_match_data },
 	{ .compatible = "econet,en7528-pinctrl", .data = &pinctrl_match_data },
 	{ /* sentinel */ }
 };

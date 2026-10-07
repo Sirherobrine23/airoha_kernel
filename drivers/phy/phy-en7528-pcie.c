@@ -133,6 +133,8 @@ static int en7528_pcie_phy_probe(struct platform_device *pdev)
 }
 
 static const struct of_device_id en7528_pcie_phy_ids[] = {
+	{ .compatible = "econet,en751627-pcie-phy0", .data = en7528_phy_port0 },
+	{ .compatible = "econet,en751627-pcie-phy1", .data = en7528_phy_port1 },
 	{ .compatible = "econet,en7528-pcie-phy0", .data = en7528_phy_port0 },
 	{ .compatible = "econet,en7528-pcie-phy1", .data = en7528_phy_port1 },
 	{ .compatible = "econet,en751221-pcie-phy0", .data = en7528_phy_port0 },
