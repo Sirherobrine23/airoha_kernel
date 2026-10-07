@@ -1,0 +1,89 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/net/econet,en751221-xdsl.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: EcoNet EN7512 and EN7516 xDSL frontend
+
+maintainers:
+  - Matheus Sampaio Queiroga <srherobrine20@gmail.com>
+
+description: |
+  The EN751221 and EN751627 SoC families contain a host-controlled DMT engine
+  for ADSL and VDSL. EN751221 uses the A60928 analog frontend and EN751627 uses
+  A10627. Packet-mode traffic is connected to the frame engine through GDM2.
+
+  This binding describes the DMT control window (including its TPSTC area),
+  the PTM-TC MAC and their integration with the Ethernet datapath. The GDMA
+  engine is a separate SoC device, even though the line engine uses one of its
+  channels. The eFuse calibration bank is also a separate block and must not
+  be included in the DMT register resource.
+
+properties:
+  compatible:
+    enum:
+      - econet,en751221-xdsl
+      - econet,en751627-xdsl
+
+  reg:
+    items:
+      - description: DMT control and DSP register window
+      - description: PTM-TC MAC registers
+
+  reg-names:
+    items:
+      - const: dmt
+      - const: ptm
+
+  interrupts:
+    maxItems: 1
+
+  interrupt-names:
+    items:
+      - const: dmt
+
+  resets:
+    maxItems: 2
+
+  reset-names:
+    items:
+      - const: dmt
+      - const: ptm
+
+  ethernet:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: Phandle to the frame-engine GDM2 netdev used by PTM.
+
+  airoha,scu:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: Phandle to the system-control register block and WAN mux.
+
+required:
+  - compatible
+  - reg
+  - reg-names
+  - interrupts
+  - interrupt-names
+  - resets
+  - reset-names
+  - ethernet
+  - airoha,scu
+
+additionalProperties: false
+
+examples:
+  - |
+    dsl@1f900000 {
+        compatible = "econet,en751221-xdsl";
+        reg = <0x1f900000 0x10000>,
+              <0x1fb62000 0x200>;
+        reg-names = "dmt", "ptm";
+        interrupt-parent = <&intc>;
+        interrupts = <19>;
+        interrupt-names = "dmt";
+        resets = <&scuclk 39>, <&scuclk 6>;
+        reset-names = "dmt", "ptm";
+        ethernet = <&gdm2>;
+        airoha,scu = <&scuclk>;
+    };

@@ -4238,6 +4238,31 @@ static void airoha_gdm_xpon_stop(struct airoha_gdm_dev *dev)
 	mutex_unlock(&dev->xpon_lock);
 }
 
+static int airoha_gdm_xdsl_start(struct airoha_gdm_dev *dev)
+{
+	int ret = 0;
+
+	mutex_lock(&dev->xdsl_lock);
+	if (dev->xdsl_ops && !dev->xdsl_started) {
+		ret = dev->xdsl_ops->start(dev->xdsl_priv);
+		if (!ret)
+			dev->xdsl_started = true;
+	}
+	mutex_unlock(&dev->xdsl_lock);
+
+	return ret;
+}
+
+static void airoha_gdm_xdsl_stop(struct airoha_gdm_dev *dev)
+{
+	mutex_lock(&dev->xdsl_lock);
+	if (dev->xdsl_ops && dev->xdsl_started) {
+		dev->xdsl_started = false;
+		dev->xdsl_ops->stop(dev->xdsl_priv);
+	}
+	mutex_unlock(&dev->xdsl_lock);
+}
+
 static int econet_set_xpon_mode(struct net_device *netdev,
 				enum airoha_xpon_mode mode)
 {
@@ -4342,7 +4367,7 @@ static int econet_register_xpon(struct net_device *netdev,
 		return ret;
 
 	mutex_lock(&port->xpon_lock);
-	if (port->xpon_ops) {
+	if (port->xpon_ops || port->xdsl_ops) {
 		ret = -EBUSY;
 		goto out_unlock;
 	}
@@ -4431,6 +4456,111 @@ static void econet_xpon_update_link(struct net_device *netdev,
 	spin_lock_irqsave(&port->xpon_state_lock, flags);
 	port->xpon_link = new_state;
 	spin_unlock_irqrestore(&port->xpon_state_lock, flags);
+
+	if (new_state.link && netif_running(netdev))
+		netif_carrier_on(netdev);
+	else
+		netif_carrier_off(netdev);
+}
+
+static void econet_unregister_xdsl(struct net_device *netdev,
+				   const struct airoha_xdsl_link_ops *ops,
+				   void *priv);
+
+static int econet_register_xdsl(struct net_device *netdev,
+				const struct airoha_xdsl_link_ops *ops,
+				void *priv)
+{
+	struct airoha_gdm_dev *port;
+	unsigned long flags;
+	int ret;
+
+	if (!ops || !ops->start || !ops->stop)
+		return -EINVAL;
+
+	ret = econet_validate_xpon_gdm2(netdev, &port);
+	if (ret)
+		return ret;
+
+	/* A GDM2 can be owned by one optical or copper WAN frontend. */
+	mutex_lock(&port->xpon_lock);
+	mutex_lock(&port->xdsl_lock);
+	if (port->xdsl_ops || port->xpon_ops) {
+		ret = -EBUSY;
+		goto out_unlock;
+	}
+
+	port->xdsl_ops = ops;
+	port->xdsl_priv = priv;
+	port->flags |= AIROHA_PRIV_F_XDSL_MANAGED;
+	spin_lock_irqsave(&port->xdsl_state_lock, flags);
+	memset(&port->xdsl_link, 0, sizeof(port->xdsl_link));
+	spin_unlock_irqrestore(&port->xdsl_state_lock, flags);
+	netif_carrier_off(netdev);
+
+out_unlock:
+	mutex_unlock(&port->xdsl_lock);
+	mutex_unlock(&port->xpon_lock);
+	if (ret)
+		return ret;
+
+	if (netif_running(netdev)) {
+		ret = airoha_gdm_xdsl_start(port);
+		if (ret)
+			econet_unregister_xdsl(netdev, ops, priv);
+
+		return ret;
+	}
+
+	return 0;
+}
+
+static void econet_unregister_xdsl(struct net_device *netdev,
+				   const struct airoha_xdsl_link_ops *ops,
+				   void *priv)
+{
+	struct airoha_gdm_dev *port;
+	unsigned long flags;
+
+	if (econet_validate_xpon_gdm2(netdev, &port))
+		return;
+	if (READ_ONCE(port->xdsl_ops) != ops ||
+	    READ_ONCE(port->xdsl_priv) != priv)
+		return;
+
+	airoha_gdm_xdsl_stop(port);
+
+	mutex_lock(&port->xdsl_lock);
+	if (port->xdsl_ops == ops && port->xdsl_priv == priv) {
+		port->xdsl_ops = NULL;
+		port->xdsl_priv = NULL;
+		port->flags &= ~AIROHA_PRIV_F_XDSL_MANAGED;
+	}
+	mutex_unlock(&port->xdsl_lock);
+
+	spin_lock_irqsave(&port->xdsl_state_lock, flags);
+	memset(&port->xdsl_link, 0, sizeof(port->xdsl_link));
+	spin_unlock_irqrestore(&port->xdsl_state_lock, flags);
+	netif_carrier_off(netdev);
+}
+
+static void econet_xdsl_update_link(struct net_device *netdev,
+				    const struct airoha_xdsl_link_state *state)
+{
+	struct airoha_xdsl_link_state new_state;
+	struct airoha_gdm_dev *port;
+	unsigned long flags;
+
+	if (!state || econet_validate_xpon_gdm2(netdev, &port))
+		return;
+	if (!(READ_ONCE(port->flags) & AIROHA_PRIV_F_XDSL_MANAGED))
+		return;
+
+	new_state = *state;
+	new_state.valid = true;
+	spin_lock_irqsave(&port->xdsl_state_lock, flags);
+	port->xdsl_link = new_state;
+	spin_unlock_irqrestore(&port->xdsl_state_lock, flags);
 
 	if (new_state.link && netif_running(netdev))
 		netif_carrier_on(netdev);
@@ -5535,7 +5665,7 @@ static int airoha_xpon_register_link(struct net_device *netdev,
 		return ret;
 
 	mutex_lock(&dev->xpon_lock);
-	if (dev->xpon_ops) {
+	if (dev->xpon_ops || dev->xdsl_ops) {
 		ret = -EBUSY;
 		goto out;
 	}
@@ -6955,19 +7085,19 @@ static int airoha_dev_open(struct net_device *netdev)
 	}
 
 	/* Keep fixed-link and real PHY configurations working, but allow an
-	 * xPON-managed GDM2 to run without either. In the latter case the xPON
-	 * provider owns carrier, speed and duplex.
+	 * provider-managed GDM2 to run without either. In that case the xPON or
+	 * xDSL provider owns carrier, speed and duplex.
 	 */
 	err = airoha_gdm_phylink_connect(&dev->common,
-					 dev->flags & AIROHA_PRIV_F_XPON_MANAGED);
+					 dev->flags & AIROHA_PRIV_F_WAN_MANAGED);
 	if (err) {
 		netdev_err(netdev, "could not attach PHY: %d\n", err);
 		return err;
 	}
 	if (!dev->common.phylink_started &&
-	    (dev->flags & AIROHA_PRIV_F_XPON_MANAGED))
+	    (dev->flags & AIROHA_PRIV_F_WAN_MANAGED))
 		netdev_dbg(netdev,
-			   "no PHY or fixed-link, using xPON link state\n");
+			   "no PHY or fixed-link, using WAN frontend link state\n");
 
 	if (dev->flags & AIROHA_PRIV_F_XPON_MANAGED) {
 		unsigned long flags;
@@ -6977,6 +7107,19 @@ static int airoha_dev_open(struct net_device *netdev)
 		spin_lock_irqsave(&dev->xpon_state_lock, flags);
 		link = dev->xpon_link.valid && dev->xpon_link.link;
 		spin_unlock_irqrestore(&dev->xpon_state_lock, flags);
+
+		if (link)
+			netif_carrier_on(netdev);
+		else
+			netif_carrier_off(netdev);
+	}
+	if (dev->flags & AIROHA_PRIV_F_XDSL_MANAGED) {
+		unsigned long flags;
+		bool link;
+
+		spin_lock_irqsave(&dev->xdsl_state_lock, flags);
+		link = dev->xdsl_link.valid && dev->xdsl_link.link;
+		spin_unlock_irqrestore(&dev->xdsl_state_lock, flags);
 
 		if (link)
 			netif_carrier_on(netdev);
@@ -7071,6 +7214,12 @@ static int airoha_dev_open(struct net_device *netdev)
 		airoha_dev_stop(netdev);
 		return err;
 	}
+	err = airoha_gdm_xdsl_start(dev);
+	if (err) {
+		netdev_err(netdev, "failed to start xDSL provider: %d\n", err);
+		airoha_dev_stop(netdev);
+		return err;
+	}
 
 	return 0;
 }
@@ -7085,6 +7234,7 @@ static int airoha_dev_stop(struct net_device *netdev)
 	if (!--port->stats_users)
 		cancel_delayed_work_sync(&port->stats_work);
 
+	airoha_gdm_xdsl_stop(dev);
 	airoha_gdm_xpon_stop(dev);
 	netif_tx_disable(netdev);
 	qdma = airoha_qdma_deref(dev);
@@ -8100,36 +8250,61 @@ airoha_ethtool_get_link_ksettings(struct net_device *netdev,
 				  struct ethtool_link_ksettings *cmd)
 {
 	struct airoha_gdm_dev *dev = netdev_priv(netdev);
-	struct airoha_xpon_link_state state;
+	u32 managed = READ_ONCE(dev->flags) & AIROHA_PRIV_F_WAN_MANAGED;
+	u32 speed = SPEED_UNKNOWN;
+	u8 duplex = DUPLEX_UNKNOWN;
+	u8 port = PORT_OTHER;
+	bool valid = false;
 	unsigned long flags;
 
-	if (!(READ_ONCE(dev->flags) & AIROHA_PRIV_F_XPON_MANAGED))
+	if (!managed)
 		return phylink_ethtool_ksettings_get(dev->common.phylink, cmd);
 
-	spin_lock_irqsave(&dev->xpon_state_lock, flags);
-	state = dev->xpon_link;
-	spin_unlock_irqrestore(&dev->xpon_state_lock, flags);
+	if (managed & AIROHA_PRIV_F_XDSL_MANAGED) {
+		struct airoha_xdsl_link_state state;
+
+		spin_lock_irqsave(&dev->xdsl_state_lock, flags);
+		state = dev->xdsl_link;
+		spin_unlock_irqrestore(&dev->xdsl_state_lock, flags);
+		valid = state.valid;
+		speed = state.speed;
+		duplex = state.duplex;
+		port = state.port;
+	} else {
+		struct airoha_xpon_link_state state;
+
+		spin_lock_irqsave(&dev->xpon_state_lock, flags);
+		state = dev->xpon_link;
+		spin_unlock_irqrestore(&dev->xpon_state_lock, flags);
+		valid = state.valid;
+		speed = state.speed;
+		duplex = state.duplex;
+		port = state.port;
+	}
 
 	/*
 	 * A legacy fixed-link can still provide settings before the xPON
 	 * provider publishes its first state. PHY-less ports are reported
 	 * directly from the provider and do not depend on phylink.
 	 */
-	if (!state.valid && dev->common.phylink_started)
+	if (!valid && dev->common.phylink_started)
 		return phylink_ethtool_ksettings_get(dev->common.phylink, cmd);
 
 	ethtool_link_ksettings_zero_link_mode(cmd, supported);
 	ethtool_link_ksettings_zero_link_mode(cmd, advertising);
 	ethtool_link_ksettings_zero_link_mode(cmd, lp_advertising);
-	linkmode_set_bit(ETHTOOL_LINK_MODE_FIBRE_BIT,
-			 cmd->link_modes.supported);
-	linkmode_set_bit(ETHTOOL_LINK_MODE_FIBRE_BIT,
-			 cmd->link_modes.advertising);
+	if (managed & AIROHA_PRIV_F_XPON_MANAGED) {
+		linkmode_set_bit(ETHTOOL_LINK_MODE_FIBRE_BIT,
+				 cmd->link_modes.supported);
+		linkmode_set_bit(ETHTOOL_LINK_MODE_FIBRE_BIT,
+				 cmd->link_modes.advertising);
+	}
 
-	cmd->base.speed = state.valid ? state.speed : SPEED_UNKNOWN;
-	cmd->base.duplex = state.valid ? state.duplex : DUPLEX_UNKNOWN;
+	cmd->base.speed = valid ? speed : SPEED_UNKNOWN;
+	cmd->base.duplex = valid ? duplex : DUPLEX_UNKNOWN;
 	cmd->base.autoneg = AUTONEG_DISABLE;
-	cmd->base.port = state.valid ? state.port : PORT_FIBRE;
+	cmd->base.port = valid ? port :
+		(managed & AIROHA_PRIV_F_XPON_MANAGED ? PORT_FIBRE : PORT_OTHER);
 	cmd->base.phy_address = 0xff;
 
 	return 0;
@@ -8141,7 +8316,7 @@ airoha_ethtool_set_link_ksettings(struct net_device *netdev,
 {
 	struct airoha_gdm_dev *dev = netdev_priv(netdev);
 
-	if (READ_ONCE(dev->flags) & AIROHA_PRIV_F_XPON_MANAGED)
+	if (READ_ONCE(dev->flags) & AIROHA_PRIV_F_WAN_MANAGED)
 		return -EOPNOTSUPP;
 
 	return phylink_ethtool_ksettings_set(dev->common.phylink, cmd);
@@ -8151,7 +8326,7 @@ static int airoha_ethtool_nway_reset(struct net_device *netdev)
 {
 	struct airoha_gdm_dev *dev = netdev_priv(netdev);
 
-	if (READ_ONCE(dev->flags) & AIROHA_PRIV_F_XPON_MANAGED)
+	if (READ_ONCE(dev->flags) & AIROHA_PRIV_F_WAN_MANAGED)
 		return -EOPNOTSUPP;
 
 	return phylink_ethtool_nway_reset(dev->common.phylink);
@@ -9390,6 +9565,8 @@ static int airoha_alloc_gdm_device(struct airoha_eth *eth,
 	mutex_init(&dev->xpon_lock);
 	spin_lock_init(&dev->xpon_state_lock);
 	spin_lock_init(&dev->xpon_service_lock);
+	mutex_init(&dev->xdsl_lock);
+	spin_lock_init(&dev->xdsl_state_lock);
 
 	if (econet) {
 		/* The legacy view places fwd_cfg 0x100 bytes after its base.
@@ -9410,7 +9587,6 @@ static int airoha_alloc_gdm_device(struct airoha_eth *eth,
 	/* Disable same features cause Offload and another issues for xDSL and xPON MACs */
 	if (index == 2 && of_property_present(np, "phy-mode") &&
 	    of_property_match_string(np, "phy-mode", "internal")) {
-		dev->flags |= AIROHA_PRIV_F_XPON_MANAGED;
 		netdev->features |= NETIF_F_GRO_HW;
 
 		/* Keep the validated xPON RX GRO path but do TX segmentation in SW. */
@@ -10643,8 +10819,32 @@ int airoha_eth_xpon_retire_channel(struct net_device *netdev,
 }
 EXPORT_SYMBOL_GPL(airoha_eth_xpon_retire_channel);
 
+int airoha_eth_register_xdsl(struct net_device *netdev,
+			     const struct airoha_xdsl_link_ops *ops,
+			     void *priv)
+{
+	return econet_register_xdsl(netdev, ops, priv);
+}
+EXPORT_SYMBOL_GPL(airoha_eth_register_xdsl);
+
+void airoha_eth_unregister_xdsl(struct net_device *netdev,
+				const struct airoha_xdsl_link_ops *ops,
+				void *priv)
+{
+	econet_unregister_xdsl(netdev, ops, priv);
+}
+EXPORT_SYMBOL_GPL(airoha_eth_unregister_xdsl);
+
+void airoha_eth_xdsl_update_link(struct net_device *netdev,
+				 const struct airoha_xdsl_link_state *state)
+{
+	econet_xdsl_update_link(netdev, state);
+}
+EXPORT_SYMBOL_GPL(airoha_eth_xdsl_update_link);
+
 static const struct of_device_id airoha_eth_of_match[] = {
 	{ .compatible = "econet,en751221-eth", .data = &econet_en751221_soc_data },
+	{ .compatible = "econet,en751627-eth", .data = &econet_en7528_soc_data },
 	{ .compatible = "econet,en7528-eth", .data = &econet_en7528_soc_data },
 	{ .compatible = "econet,en7580-eth", .data = &econet_en7580_soc_data },
 	{ .compatible = "airoha,en7523-eth", .data = &airoha_en7523_soc_data },

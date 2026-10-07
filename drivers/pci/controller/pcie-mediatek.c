@@ -1407,6 +1407,7 @@ static const struct of_device_id mtk_pcie_ids[] = {
 	{ .compatible = "mediatek,mt2712-pcie", .data = &mtk_pcie_soc_mt2712 },
 	{ .compatible = "mediatek,mt7622-pcie", .data = &mtk_pcie_soc_mt7622 },
 	{ .compatible = "mediatek,mt7629-pcie", .data = &mtk_pcie_soc_mt7629 },
+	{ .compatible = "econet,en751627-pcie", .data = &mtk_pcie_soc_en7528 },
 	{ .compatible = "econet,en7528-pcie", .data = &mtk_pcie_soc_en7528 },
 	{},
 };

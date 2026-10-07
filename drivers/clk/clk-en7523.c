@@ -2083,6 +2083,7 @@ static const struct of_device_id of_match_clk_en7523[] = {
 	{ .compatible = "airoha,en7581-scu", .data = &en7581_data },
 	{ .compatible = "airoha,an7583-scu", .data = &an7583_data },
 	{ .compatible = "econet,en751221-scu", .data = &en751221_data },
+	{ .compatible = "econet,en751627-scu", .data = &en7528_data },
 	{ .compatible = "econet,en7528-scu", .data = &en7528_data },
 	{ .compatible = "econet,en7580-scu", .data = &en7580_data },
 	{ /* sentinel */ }

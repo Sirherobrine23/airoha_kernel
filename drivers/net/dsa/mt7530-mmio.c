@@ -34,6 +34,8 @@ static const struct of_device_id mt7988_of_match[] = {
 	{ .compatible = "airoha,an7583-switch", .data = &mt753x_table[ID_AN7583], },
 	{ .compatible = "airoha,en7581-switch", .data = &mt753x_table[ID_EN7581], },
 	{ .compatible = "econet,en751221-switch", .data = &mt753x_table[ID_EN751221], },
+	{ .compatible = "airoha,en751627-switch", .data = &mt753x_table[ID_EN7528], },
+	{ .compatible = "econet,en751627-switch", .data = &mt753x_table[ID_EN7528], },
 	{ .compatible = "econet,en7528-switch", .data = &mt753x_table[ID_EN7528], },
 	{ .compatible = "econet,en7580-switch", .data = &mt753x_table[ID_EN7528], },
 	{ .compatible = "mediatek,mt7988-switch", .data = &mt753x_table[ID_MT7988], },

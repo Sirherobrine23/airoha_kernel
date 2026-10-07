@@ -4,7 +4,7 @@
 $id: http://devicetree.org/schemas/usb/econet,en7528-xhci.yaml#
 $schema: http://devicetree.org/meta-schemas/core.yaml#
 
-title: EcoNet EN7528 and EN7580 USB3 xHCI host controllers
+title: EcoNet EN7516, EN7528 and EN7580 USB3 xHCI host controllers
 
 maintainers:
   - Matheus Sampaio Queiroga <srherobrine20@gmail.com>
@@ -20,6 +20,7 @@ description:
 properties:
   compatible:
     enum:
+      - econet,en751627-xhci
       - econet,en7528-xhci
       - econet,en7580-xhci
 

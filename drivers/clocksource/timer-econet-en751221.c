@@ -305,4 +305,5 @@ err_unmap:
 }
 
 TIMER_OF_DECLARE(econet_en751221_timer, "econet,en751221-timer", timer_init);
+TIMER_OF_DECLARE(econet_en751627_timer, "econet,en751627-timer", timer_init);
 TIMER_OF_DECLARE(econet_en7528_timer, "econet,en7528-timer", timer_init);

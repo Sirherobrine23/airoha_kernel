@@ -20,6 +20,8 @@ properties:
           - enum:
               - smartfiber,xp8421-b
           - const: econet,en751221
+      - description: EcoNet EN7516/EN7527 family SoC
+        const: econet,en751627
 
 additionalProperties: true
 

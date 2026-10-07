@@ -93,6 +93,10 @@ properties:
         const: econet,en751221-switch
 
       - description:
+          Built-in switch of the EcoNet EN7516/EN7527 family
+        const: econet,en751627-switch
+
+      - description:
           Built-in switch of the MT7988 SoC
         const: mediatek,mt7988-switch
 
