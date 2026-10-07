@@ -1,0 +1,52 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/nvmem/econet,en7580-efuse.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: EcoNet EN7580 eFuse shadow
+
+maintainers:
+  - Matheus Sampaio Queiroga <srherobrine20@gmail.com>
+
+description:
+  The EN7580 exposes a byte-addressed eFuse shadow containing package and
+  factory calibration data. This is the region read by the vendor
+  package-info parser. Only read access to the shadow is supported.
+
+allOf:
+  - $ref: nvmem.yaml#
+
+properties:
+  compatible:
+    const: econet,en7580-efuse
+
+  reg:
+    maxItems: 1
+
+  read-only: true
+
+required:
+  - compatible
+  - reg
+
+unevaluatedProperties: false
+
+examples:
+  - |
+    efuse@1fa40b00 {
+        compatible = "econet,en7580-efuse";
+        reg = <0x1fa40b00 0x3c>;
+        read-only;
+
+        nvmem-layout {
+            compatible = "fixed-layout";
+            #address-cells = <1>;
+            #size-cells = <1>;
+
+            usb3-tx-imp@6 {
+                reg = <0x6 0x2>;
+                bits = <4 5>;
+            };
+        };
+    };

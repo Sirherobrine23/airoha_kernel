@@ -8876,11 +8876,16 @@ L:	linux-mips@vger.kernel.org
 S:	Maintained
 F:	Documentation/devicetree/bindings/interrupt-controller/econet,en751221-intc.yaml
 F:	Documentation/devicetree/bindings/mips/econet.yaml
+F:	Documentation/devicetree/bindings/nvmem/econet,en7580-efuse.yaml
+F:	Documentation/devicetree/bindings/phy/econet,en7528-usb-phy.yaml
 F:	Documentation/devicetree/bindings/timer/econet,en751221-timer.yaml
+F:	Documentation/devicetree/bindings/usb/econet,en7528-xhci.yaml
 F:	arch/mips/boot/dts/econet/
 F:	arch/mips/econet/
 F:	drivers/clocksource/timer-econet-en751221.c
 F:	drivers/irqchip/irq-econet-en751221.c
+F:	drivers/nvmem/econet-efuse.c
+F:	drivers/phy/phy-en7528-usb.c
 F:	include/dt-bindings/clock/econet,en751221-scu.h
 F:	include/dt-bindings/clock/econet,en7528-scu.h
 F:	include/dt-bindings/clock/econet,en7580-scu.h

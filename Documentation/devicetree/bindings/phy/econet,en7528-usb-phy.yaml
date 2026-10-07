@@ -1,0 +1,61 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/phy/econet,en7528-usb-phy.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: EcoNet EN7528 and EN7580 USB PHYs
+
+maintainers:
+  - Matheus Sampaio Queiroga <srherobrine20@gmail.com>
+
+description:
+  EN7528 has two USB2 PHYs sharing a frequency meter and one USB3 PHY.
+  EN7580 has one USB2 PHY, one USB3 PHY and an independent frequency meter
+  for each of its two host controllers. PHY_TYPE_USB2 and PHY_TYPE_USB3
+  select the PHY type. EN7580 factory trims may be supplied through NVMEM.
+
+properties:
+  compatible:
+    enum:
+      - econet,en7528-usb-phy
+      - econet,en7580-usb-phy
+
+  reg:
+    maxItems: 1
+
+  "#phy-cells":
+    const: 1
+
+  nvmem-cells:
+    items:
+      - description: USB2 internal current calibration
+      - description: USB3 external current calibration
+      - description: USB3 transmitter impedance calibration
+      - description: USB3 receiver impedance calibration
+
+  nvmem-cell-names:
+    items:
+      - const: u2-intr
+      - const: u3-intr
+      - const: tx-imp
+      - const: rx-imp
+
+dependencies:
+  nvmem-cells: [nvmem-cell-names]
+  nvmem-cell-names: [nvmem-cells]
+
+required:
+  - compatible
+  - reg
+  - "#phy-cells"
+
+additionalProperties: false
+
+examples:
+  - |
+    usb-phy@1fa80000 {
+        compatible = "econet,en7580-usb-phy";
+        reg = <0x1fa80000 0x1000>;
+        #phy-cells = <1>;
+    };
