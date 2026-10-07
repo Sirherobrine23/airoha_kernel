@@ -194,6 +194,41 @@ static ssize_t agent_operational_show(struct device *dev,
 }
 static DEVICE_ATTR_RO(agent_operational);
 
+/*
+ * Calls in progress, kept up to date by the voice application. An ONU-G
+ * Reboot that may not interrupt a call is refused while it is non-zero.
+ */
+static ssize_t voice_calls_show(struct device *dev,
+				struct device_attribute *attr, char *buf)
+{
+	struct omci_device *odev = omci_dev_from_dev(dev);
+	u8 value;
+
+	mutex_lock(&odev->agent.lock);
+	value = odev->agent.voice_calls;
+	mutex_unlock(&odev->agent.lock);
+	return sysfs_emit(buf, "%u\n", value);
+}
+
+static ssize_t voice_calls_store(struct device *dev,
+				 struct device_attribute *attr,
+				 const char *buf, size_t count)
+{
+	struct omci_device *odev = omci_dev_from_dev(dev);
+	u8 value;
+	int ret;
+
+	ret = kstrtou8(buf, 0, &value);
+	if (ret)
+		return ret;
+
+	mutex_lock(&odev->agent.lock);
+	odev->agent.voice_calls = value;
+	mutex_unlock(&odev->agent.lock);
+	return count;
+}
+static DEVICE_ATTR_RW(voice_calls);
+
 #define OMCI_CONFIG_U8_ATTR_RW(_name, _key) \
 static ssize_t _name##_show(struct device *dev, \
 			    struct device_attribute *attr, char *buf) \
@@ -253,6 +288,7 @@ OMCI_CONFIG_BOOL_ATTR_RW(agent_enabled, OMCI_CONFIG_AGENT_ENABLED);
 OMCI_CONFIG_BOOL_ATTR_RW(agent_permissive, OMCI_CONFIG_AGENT_PERMISSIVE);
 OMCI_CONFIG_BOOL_ATTR_RW(agent_fake_omci, OMCI_CONFIG_AGENT_FAKE_OMCI);
 OMCI_CONFIG_BOOL_ATTR_RW(agent_dying_gasp, OMCI_CONFIG_AGENT_DYING_GASP);
+OMCI_CONFIG_BOOL_ATTR_RW(agent_reboot, OMCI_CONFIG_AGENT_REBOOT);
 
 static ssize_t omci_sysfs_string_show(struct omci_device *odev, u16 key,
 				      char *buf)
@@ -650,6 +686,8 @@ static struct attribute *omci_attrs[] = {
 	&dev_attr_agent_permissive.attr,
 	&dev_attr_agent_fake_omci.attr,
 	&dev_attr_agent_dying_gasp.attr,
+	&dev_attr_agent_reboot.attr,
+	&dev_attr_voice_calls.attr,
 	&dev_attr_serial_number.attr,
 	&dev_attr_vendor_id.attr,
 	&dev_attr_password.attr,
