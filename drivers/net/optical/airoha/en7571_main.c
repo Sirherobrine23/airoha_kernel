@@ -444,8 +444,8 @@ static const struct airoha_lddla_ops en7571_ops = {
 	.part_number = "EN7571-LDDLA",
 	.serial = "EN7571SN00000001",
 	.date_code = "260609",
-	.protocols = BIT(OPTICAL_FRONTEND_PROTO_EPON) |
-		     BIT(OPTICAL_FRONTEND_PROTO_GPON),
+	.protocols = OPTICAL_FRONTEND_PROTO_EPON |
+		     OPTICAL_FRONTEND_PROTO_GPON,
 	.thresholds = &airoha_lddla_default_thresholds,
 	.bob_size_min = AIROHA_LDDLA_BOB_MIN_SIZE,
 	.bob_size_max = AIROHA_LDDLA_BOB_MAX_SIZE,

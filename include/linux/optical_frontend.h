@@ -52,13 +52,13 @@ struct optical_frontend;
 
 enum optical_frontend_protocol {
 	OPTICAL_FRONTEND_PROTO_UNSPEC,
-	OPTICAL_FRONTEND_PROTO_ETHERNET,
-	OPTICAL_FRONTEND_PROTO_EPON,
-	OPTICAL_FRONTEND_PROTO_XEPON,
-	OPTICAL_FRONTEND_PROTO_GPON,
-	OPTICAL_FRONTEND_PROTO_XGPON,
-	OPTICAL_FRONTEND_PROTO_XGSPON,
-	OPTICAL_FRONTEND_PROTO_NGPON2,
+	OPTICAL_FRONTEND_PROTO_ETHERNET =	BIT(1),
+	OPTICAL_FRONTEND_PROTO_EPON =		BIT(2),
+	OPTICAL_FRONTEND_PROTO_XEPON =		BIT(3),
+	OPTICAL_FRONTEND_PROTO_GPON =		BIT(4),
+	OPTICAL_FRONTEND_PROTO_XGPON =		BIT(5),
+	OPTICAL_FRONTEND_PROTO_XGSPON =		BIT(6),
+	OPTICAL_FRONTEND_PROTO_NGPON2 =		BIT(7),
 };
 
 #define OPTICAL_FRONTEND_MODE_BURST_TX	BIT(0)
@@ -161,7 +161,7 @@ struct optical_frontend_thresholds {
  * @serial: optional component serial number
  * @date_code: optional SFF-style date code
  * @capabilities: OPTICAL_FRONTEND_CAP_* bitmap
- * @protocols: BIT(OPTICAL_FRONTEND_PROTO_*) bitmap
+ * @protocols: OPTICAL_FRONTEND_PROTO_* bitmap
  * @thresholds: optional normalized alarm thresholds
  * @telemetry_cache_ms: core telemetry cache lifetime; zero disables caching
  * @groups: optional provider-specific sysfs groups on the frontend class device

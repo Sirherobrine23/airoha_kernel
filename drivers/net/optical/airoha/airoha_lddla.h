@@ -141,7 +141,7 @@ airoha_lddla_default_thresholds;
  * @part_number: SFP MSA vendor part-number string.
  * @serial: SFP MSA vendor serial-number string.
  * @date_code: SFP MSA date code (6 chars).
- * @protocols: BIT(OPTICAL_FRONTEND_PROTO_*) bitmap supported by this chip.
+ * @protocols: OPTICAL_FRONTEND_PROTO_* bitmap supported by this chip.
  * @thresholds: normalized alarm thresholds for this chip/firmware family.
  * @bob_format: calibration layout; defaults to the EN7570/EN7571 word table.
  * @bob_size_min: minimum BOB/calibration image size in bytes.

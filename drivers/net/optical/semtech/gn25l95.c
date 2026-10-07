@@ -188,8 +188,8 @@ static const struct gn25l95_chip_data gn25l95_data = {
 				OPTICAL_FRONTEND_CAP_RX_LOS |
 				OPTICAL_FRONTEND_CAP_BURST_TX |
 				OPTICAL_FRONTEND_CAP_APD,
-		.protocols = BIT(OPTICAL_FRONTEND_PROTO_EPON) |
-			     BIT(OPTICAL_FRONTEND_PROTO_GPON),
+		.protocols = OPTICAL_FRONTEND_PROTO_EPON |
+			     OPTICAL_FRONTEND_PROTO_GPON,
 		.thresholds = &gn25l95_thresholds,
 		.telemetry_cache_ms = 100,
 	},
@@ -219,8 +219,8 @@ static const struct gn25l95_chip_data gn25l98_data = {
 				OPTICAL_FRONTEND_CAP_RX_LOS |
 				OPTICAL_FRONTEND_CAP_BURST_TX |
 				OPTICAL_FRONTEND_CAP_APD,
-		.protocols = BIT(OPTICAL_FRONTEND_PROTO_EPON) |
-			     BIT(OPTICAL_FRONTEND_PROTO_GPON),
+		.protocols = OPTICAL_FRONTEND_PROTO_EPON |
+			     OPTICAL_FRONTEND_PROTO_GPON,
 		.thresholds = &gn25l95_thresholds,
 		.telemetry_cache_ms = 100,
 	},
