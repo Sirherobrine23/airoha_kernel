@@ -20,6 +20,7 @@ properties:
   compatible:
     enum:
       - econet,en751221-eth
+      - econet,en751627-eth
       - econet,en7528-eth
 
   reg:

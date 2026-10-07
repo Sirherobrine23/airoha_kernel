@@ -19,9 +19,7 @@ properties:
   compatible:
     oneOf:
       - const: econet,en751221-timer
-      - items:
-          - const: econet,en751627-timer
-          - const: econet,en751221-timer
+      - const: econet,en751627-timer
 
   reg:
     minItems: 1
@@ -63,7 +61,7 @@ additionalProperties: false
 examples:
   - |
     timer@1fbf0400 {
-        compatible = "econet,en751627-timer", "econet,en751221-timer";
+        compatible = "econet,en751627-timer";
         reg = <0x1fbf0400 0x100>, <0x1fbe0000 0x100>;
         interrupt-parent = <&intc>;
         interrupts = <30>;

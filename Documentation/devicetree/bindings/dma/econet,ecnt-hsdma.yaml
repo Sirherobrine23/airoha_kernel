@@ -1,0 +1,61 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/dma/econet,ecnt-hsdma.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: EcoNet high-speed DMA controller
+
+maintainers:
+  - Matheus Sampaio Queiroga <srherobrine20@gmail.com>
+
+description: |
+  The HSDMA controller found in EN7580 and later EcoNet/Airoha SoCs is a
+  ring-based memory-to-memory DMA engine with two physical channels.
+
+allOf:
+  - $ref: dma-controller.yaml#
+
+properties:
+  compatible:
+    const: econet,ecnt-hsdma
+
+  reg:
+    maxItems: 1
+
+  interrupts:
+    maxItems: 1
+
+  "#dma-cells":
+    description: DMA channel number.
+    const: 1
+
+  dma-channels:
+    const: 2
+
+  dma-requests:
+    const: 2
+
+required:
+  - compatible
+  - reg
+  - interrupts
+  - "#dma-cells"
+  - dma-channels
+  - dma-requests
+
+unevaluatedProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/interrupt-controller/irq.h>
+    #include <dt-bindings/interrupt-controller/mips-gic.h>
+
+    dma-controller@1fa01800 {
+        compatible = "econet,ecnt-hsdma";
+        reg = <0x1fa01800 0x300>;
+        interrupts = <GIC_SHARED 47 IRQ_TYPE_LEVEL_HIGH>;
+        #dma-cells = <1>;
+        dma-channels = <2>;
+        dma-requests = <2>;
+    };

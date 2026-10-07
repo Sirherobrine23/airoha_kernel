@@ -937,7 +937,11 @@ enum airoha_priv_flags {
 	AIROHA_PRIV_F_WAN = BIT(0),
 	AIROHA_PRIV_F_QOS = BIT(1),
 	AIROHA_PRIV_F_XPON_MANAGED = BIT(2),
+	AIROHA_PRIV_F_XDSL_MANAGED = BIT(3),
 };
+
+#define AIROHA_PRIV_F_WAN_MANAGED	(AIROHA_PRIV_F_XPON_MANAGED | \
+					 AIROHA_PRIV_F_XDSL_MANAGED)
 
 #define AIROHA_XPON_OAM_RX_F_MIC_PRESENT	BIT(0)
 #define AIROHA_XPON_OAM_RX_F_MIC_VALID	BIT(1)
@@ -985,6 +989,38 @@ struct airoha_xpon_link_ops {
  */
 struct airoha_xpon_link_state {
 	enum airoha_xpon_mode mode;
+	bool valid;
+	bool link;
+	u32 speed;
+	u8 duplex;
+	u8 autoneg;
+	u8 port;
+	u64 rx_line_rate_bps;
+	u64 tx_line_rate_bps;
+};
+
+/**
+ * struct airoha_xdsl_link_ops - xDSL netdev lifecycle notifications
+ * @start: start the PTM frontend when the data netdev is opened
+ * @stop: stop the PTM frontend when the data netdev is closed
+ */
+struct airoha_xdsl_link_ops {
+	int (*start)(void *priv);
+	void (*stop)(void *priv);
+};
+
+/**
+ * struct airoha_xdsl_link_state - xDSL link state exposed by GDM2
+ * @valid: true after the frontend has published its first state
+ * @link: true while the line is in showtime and PTM is enabled
+ * @speed: ethtool-compatible nominal downstream speed
+ * @duplex: ethtool duplex mode
+ * @autoneg: ethtool autonegotiation mode
+ * @port: ethtool port type
+ * @rx_line_rate_bps: exact downstream line rate in bits per second
+ * @tx_line_rate_bps: exact upstream line rate in bits per second
+ */
+struct airoha_xdsl_link_state {
 	bool valid;
 	bool link;
 	u32 speed;
@@ -1061,6 +1097,15 @@ struct airoha_gdm_dev {
 	/* Protects the xPON state consumed by netdev and ethtool callbacks. */
 	spinlock_t xpon_state_lock;
 	struct airoha_xpon_link_state xpon_link;
+
+	/* Serializes xDSL registration and netdev lifecycle notifications. */
+	struct mutex xdsl_lock;
+	const struct airoha_xdsl_link_ops *xdsl_ops;
+	void *xdsl_priv;
+	bool xdsl_started;
+	/* Protects the xDSL state consumed by netdev and ethtool callbacks. */
+	spinlock_t xdsl_state_lock;
+	struct airoha_xdsl_link_state xdsl_link;
 
 	/* Protects GPON GEM/T-CONT service classification. */
 	spinlock_t xpon_service_lock;
@@ -1412,6 +1457,14 @@ void airoha_eth_xpon_flush_services(struct net_device *netdev);
 void airoha_eth_xpon_retire_all(struct net_device *netdev);
 int airoha_eth_xpon_retire_channel(struct net_device *netdev,
 				   unsigned int channel);
+int airoha_eth_register_xdsl(struct net_device *netdev,
+			     const struct airoha_xdsl_link_ops *ops,
+			     void *priv);
+void airoha_eth_unregister_xdsl(struct net_device *netdev,
+				const struct airoha_xdsl_link_ops *ops,
+				void *priv);
+void airoha_eth_xdsl_update_link(struct net_device *netdev,
+				 const struct airoha_xdsl_link_state *state);
 int airoha_eth_set_xpon_mode(struct net_device *netdev,
 			      enum airoha_xpon_mode mode);
 int airoha_eth_set_xpon_datapath(struct net_device *netdev,

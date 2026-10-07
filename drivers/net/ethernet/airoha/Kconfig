@@ -94,4 +94,20 @@ config AIROHA_XPON_V1
 	  activation/PLOAM and uses the in-kernel OMCI agent; EPON includes
 	  IEEE 802.3 MPCP LLID registration and security support.
 
+config AIROHA_XDSL
+	tristate "EcoNet EN7512/EN7516 xDSL/PTM frontend"
+	depends on ECONET || COMPILE_TEST
+	depends on NET_AIROHA
+	depends on OF
+	help
+	  Build the initial xDSL frontend for the EcoNet EN751221 (EN7512)
+	  and EN751627 (EN7516) SoC families. The driver owns the DMT and PTM-TC
+	  resources and connects their reset, interrupt and netdev
+	  lifecycle to the GDM2 Ethernet datapath.
+
+	  The proprietary legacy module embeds the complete G.hs/ADSL/VDSL
+	  training and DSP implementation. Until a clean-room line engine is
+	  implemented, this driver keeps the DMT interrupts masked and carrier
+	  down after preparing the PTM datapath.
+
 endif # NET_VENDOR_AIROHA

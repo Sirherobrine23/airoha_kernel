@@ -726,8 +726,14 @@ static int airoha_rext_cal_sw(struct phy_device *phydev)
 			     FIELD_PREP(MTK_PHY_RG_BG_RASEL_MASK, zcal_ctrl >> 3));
 
 	if (airoha_is_9491(phydev)) {
-		const char *compat = airoha_is_en7580(phydev) ?
-			"econet,en7580-chip-scu" : "econet,en7528-chip-scu";
+		const char *compat;
+
+		if (airoha_is_en7580(phydev))
+			compat = "econet,en7580-chip-scu";
+		else if (of_machine_is_compatible("econet,en751627"))
+			compat = "econet,en751627-chip-scu";
+		else
+			compat = "econet,en7528-chip-scu";
 
 		chip_scu = syscon_regmap_lookup_by_compatible(compat);
 		if (!IS_ERR(chip_scu))

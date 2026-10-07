@@ -18,6 +18,7 @@ properties:
   compatible:
     enum:
       - airoha,en7523-xpon-phy
+      - airoha,en751627-xpon-phy
       - airoha,en7528-xpon-phy
       - econet,en751221-xpon-phy
 

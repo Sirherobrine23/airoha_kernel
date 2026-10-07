@@ -746,6 +746,7 @@ S:	Maintained
 F:	Documentation/devicetree/bindings/net/airoha,en7523-wed.yaml
 F:	Documentation/devicetree/bindings/net/airoha,en7581-eth.yaml
 F:	Documentation/devicetree/bindings/net/econet,en751221-eth.yaml
+F:	Documentation/devicetree/bindings/net/econet,en751221-xdsl.yaml
 F:	drivers/net/ethernet/airoha/
 F:	include/linux/soc/airoha/airoha_offload.h
 
@@ -8875,6 +8876,8 @@ M:	Caleb James DeLisle <cjd@cjdns.fr>
 L:	linux-mips@vger.kernel.org
 S:	Maintained
 F:	Documentation/devicetree/bindings/interrupt-controller/econet,en751221-intc.yaml
+F:	Documentation/devicetree/bindings/dma/econet,ecnt-gdma.yaml
+F:	Documentation/devicetree/bindings/dma/econet,ecnt-hsdma.yaml
 F:	Documentation/devicetree/bindings/mips/econet.yaml
 F:	Documentation/devicetree/bindings/nvmem/econet,en7580-efuse.yaml
 F:	Documentation/devicetree/bindings/phy/econet,en7528-usb-phy.yaml

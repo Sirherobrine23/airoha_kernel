@@ -4678,6 +4678,7 @@ static const struct airoha_xpon_match_data en7528_xpon_data = {
 
 static const struct of_device_id airoha_xpon_of_match[] = {
 	{ .compatible = "airoha,en7523-xpon", .data = &en7523_xpon_data },
+	{ .compatible = "airoha,en751627-xpon", .data = &en7528_xpon_data },
 	{ .compatible = "airoha,en7528-xpon", .data = &en7528_xpon_data },
 	{ .compatible = "econet,en751221-xpon", .data = &en751221_xpon_data },
 	{}

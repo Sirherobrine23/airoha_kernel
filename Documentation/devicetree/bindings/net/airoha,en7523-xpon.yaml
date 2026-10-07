@@ -24,6 +24,7 @@ properties:
     oneOf:
       - enum:
           - airoha,en7523-xpon
+          - airoha,en751627-xpon
           - airoha,en7528-xpon
           - econet,en751221-xpon
           - econet,en7521-xpon
@@ -164,6 +165,7 @@ allOf:
         compatible:
           enum:
             - airoha,en7523-xpon
+            - airoha,en751627-xpon
             - airoha,en7528-xpon
             - econet,en751221-xpon
             - econet,en7521-xpon
@@ -187,6 +189,7 @@ allOf:
         compatible:
           enum:
             - airoha,en7523-xpon
+            - airoha,en751627-xpon
             - airoha,en7528-xpon
             - airoha,en7523-gpon
             - airoha,en7523-epon
