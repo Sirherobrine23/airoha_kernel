@@ -96,6 +96,17 @@ config NVMEM_BRCM_NVRAM
 	  This driver provides support for Broadcom's NVRAM that can be accessed
 	  using I/O mapping.
 
+config NVMEM_ECONET_EFUSE
+	tristate "EcoNet EN7580 eFuse shadow support"
+	depends on ECONET || COMPILE_TEST
+	depends on OF && HAS_IOMEM
+	help
+	  Say Y here to expose the EN7580 eFuse shadow as read-only NVMEM.
+	  The shadow contains factory calibration values used by the USB PHYs.
+
+	  This driver can also be built as a module. If so, the module will
+	  be called nvmem-econet-efuse.
+
 config NVMEM_IMX_IIM
 	tristate "i.MX IC Identification Module support"
 	depends on ARCH_MXC || COMPILE_TEST
