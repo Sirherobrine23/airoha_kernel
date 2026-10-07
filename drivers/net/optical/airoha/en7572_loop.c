@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * EN7572 / AN8901 runtime control loops.
+ * EN7572 / EN7573 / AN8901 runtime control loops.
  *
  * The MD32 firmware runs the closed-loop laser control on its own; these are
  * the host-side assists the vendor driver layers on top:

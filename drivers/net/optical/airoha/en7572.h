@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Airoha EN7572 / AN8901 xPON LDDLA controller driver.
+ * Airoha EN7572 / EN7573 / AN8901 xPON LDDLA controller driver.
  *
  * Per-device state and internal API.  The shared transport-agnostic
  * scaffolding (hwmon, optical frontend, debugfs, module entry) lives in the
@@ -25,7 +25,7 @@
 #define EN7572_VERSION			1
 
 /*
- * Per-device state for one EN7572 / AN8901 LDDLA controller.  The shared
+ * Per-device state for one EN7572 / EN7573 / AN8901 controller. The shared
  * airoha_lddla object (hwmon / SFP / debugfs) must be the first member.  The
  * A0 (0x50) and A2 (0x51) pages are both reached over the embedded client's
  * I2C adapter using explicit slave addresses.
@@ -67,7 +67,7 @@ u16 en7572_word_rd(struct en7572_priv *priv, u8 dev, u16 reg);
 void en7572_byte_wr(struct en7572_priv *priv, u8 dev, u16 reg, u8 val);
 void en7572_word_wr(struct en7572_priv *priv, u8 dev, u16 reg, u16 val);
 u32 en7572_bit_rd(struct en7572_priv *priv, u16 reg, int start, int end);
-void en7572_bit_wr(struct en7572_priv *priv, u16 reg, int start, int end, u32 val);
+int en7572_bit_wr(struct en7572_priv *priv, u16 reg, int start, int end, u32 val);
 
 /* A2-page (mailbox/CSR) convenience wrappers. */
 static inline u8 en7572_a2_byte(struct en7572_priv *priv, u16 reg)
