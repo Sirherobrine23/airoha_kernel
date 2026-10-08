@@ -1,0 +1,60 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/dma/econet,hsdma.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Airoha/EcoNet high-speed DMA controller
+
+maintainers:
+  - Matheus Sampaio Queiroga <srherobrine20@gmail.com>
+
+description: |
+  The HSDMA controller has two independent transmit/receive ring pairs and
+  uses 32-byte little-endian descriptors with a 16-bit length field. The DMA
+  specifier selects physical channel 0 or 1. Only memory copies are supported;
+  this controller does not expose a slave peripheral request interface.
+
+allOf:
+  - $ref: dma-controller.yaml#
+
+properties:
+  compatible:
+    enum:
+      - econet,en7580-hsdma
+      - airoha,en7523-hsdma
+
+  reg:
+    maxItems: 1
+
+  interrupts:
+    maxItems: 1
+
+  resets:
+    maxItems: 1
+
+  '#dma-cells':
+    const: 1
+
+  dma-channels:
+    const: 2
+
+required:
+  - compatible
+  - reg
+  - interrupts
+  - '#dma-cells'
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/interrupt-controller/arm-gic.h>
+
+    dma-controller@1fa01800 {
+        compatible = "econet,en7523-hsdma";
+        reg = <0x1fa01800 0x300>;
+        interrupts = <GIC_SPI 63 IRQ_TYPE_LEVEL_HIGH>;
+        #dma-cells = <1>;
+        dma-channels = <2>;
+    };
