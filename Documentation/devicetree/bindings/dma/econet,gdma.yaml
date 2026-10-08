@@ -25,6 +25,7 @@ properties:
   compatible:
     enum:
       - econet,en751221-gdma
+      - econet,en751627-gdma
       - airoha,en7523-gdma
 
   reg:
@@ -55,7 +56,7 @@ examples:
     #include <dt-bindings/interrupt-controller/mips-gic.h>
 
     dma-controller@1fb30000 {
-        compatible = "econet,en7580-gdma";
+        compatible = "econet,en751627-gdma";
         reg = <0x1fb30000 0x1000>;
         interrupts = <GIC_SHARED 14 IRQ_TYPE_LEVEL_HIGH>;
         #dma-cells = <1>;

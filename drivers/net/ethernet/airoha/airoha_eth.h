@@ -1103,6 +1103,9 @@ struct airoha_gdm_dev {
 	const struct airoha_xdsl_link_ops *xdsl_ops;
 	void *xdsl_priv;
 	bool xdsl_started;
+	bool xdsl_tx_stopped;
+	u8 xdsl_tx_channel;
+	u8 xdsl_path_mask;
 	/* Protects the xDSL state consumed by netdev and ethtool callbacks. */
 	spinlock_t xdsl_state_lock;
 	struct airoha_xdsl_link_state xdsl_link;
@@ -1465,6 +1468,8 @@ void airoha_eth_unregister_xdsl(struct net_device *netdev,
 				void *priv);
 void airoha_eth_xdsl_update_link(struct net_device *netdev,
 				 const struct airoha_xdsl_link_state *state);
+int airoha_eth_xdsl_set_datapath(struct net_device *netdev, u8 path_mask,
+				 u8 tx_channel);
 int airoha_eth_set_xpon_mode(struct net_device *netdev,
 			      enum airoha_xpon_mode mode);
 int airoha_eth_set_xpon_datapath(struct net_device *netdev,

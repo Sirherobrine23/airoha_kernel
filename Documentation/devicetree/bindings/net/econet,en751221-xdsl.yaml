@@ -59,6 +59,18 @@ properties:
     $ref: /schemas/types.yaml#/definitions/phandle
     description: Phandle to the system-control register block and WAN mux.
 
+  dmas:
+    maxItems: 1
+    description: GDMA channel reserved for line-engine QAM table transfers.
+
+  dma-names:
+    items:
+      - const: qam
+
+dependencies:
+  dmas: [dma-names]
+  dma-names: [dmas]
+
 required:
   - compatible
   - reg
@@ -86,4 +98,6 @@ examples:
         reset-names = "dmt", "ptm";
         ethernet = <&gdm2>;
         airoha,scu = <&scuclk>;
+        dmas = <&gdma 0>;
+        dma-names = "qam";
     };

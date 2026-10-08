@@ -14,6 +14,7 @@ Contents:
    3com/vortex
    amazon/ena
    altera/altera_tse
+   airoha/xdsl
    amd/pds_core
    amd/pds_vdpa
    amd/pds_vfio_pci
