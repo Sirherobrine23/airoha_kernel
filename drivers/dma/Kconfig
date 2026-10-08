@@ -57,6 +57,30 @@ config DMA_OF
 	select DMA_ENGINE
 
 #devices
+config AIROHA_GDMA
+	tristate "Airoha/EcoNet general DMA controller"
+	depends on ARCH_AIROHA || ECONET || COMPILE_TEST
+	depends on OF
+	select DMA_ENGINE
+	select DMA_VIRTUAL_CHANNELS
+	help
+	  Enable DMA engine memory copies using the eight-channel GDMA
+	  controller on EN751221, EN751627, EN7528, EN7580 and EN7523.
+	  Completion is polled when no interrupt is described in Device Tree.
+	  Transfers to peripheral FIFOs are not supported by this driver.
+
+config AIROHA_HSDMA
+	tristate "Airoha/EcoNet high-speed DMA controller"
+	depends on ARCH_AIROHA || ECONET || COMPILE_TEST
+	depends on OF
+	select DMA_ENGINE
+	select DMA_VIRTUAL_CHANNELS
+	help
+	  Enable DMA engine memory copies using the two-channel high-speed
+	  DMA controller on EN7523 and EN7580. Each channel has independent
+	  transmit and receive descriptor rings.
+	  Transfers to peripheral FIFOs are not supported by this driver.
+
 config ALTERA_MSGDMA
 	tristate "Altera / Intel mSGDMA Engine"
 	depends on HAS_IOMEM

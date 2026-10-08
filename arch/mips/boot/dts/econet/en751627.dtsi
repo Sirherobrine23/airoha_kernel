@@ -418,11 +418,15 @@
 			};
 		};
 
-		gdma: gdma@1fb30000 {
-			compatible = "econet,en751627-gdma";
+		gdma: dma-controller@1fb30000 {
+			compatible = "econet,en751221-gdma";
 			reg = <0x1fb30000 0x1000>;
 
+			resets = <&scuclk EN751627_GDMA_RST>;
 			interrupts = <GIC_SHARED 14 IRQ_TYPE_LEVEL_HIGH>;
+
+			#dma-cells = <1>;
+			dma-channels = <8>;
 		};
 
 		xpon_phy: phy@1faf0000 {

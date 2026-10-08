@@ -737,6 +737,15 @@ S:	Supported
 F:	fs/aio.c
 F:	include/linux/*aio*.h
 
+AIROHA DMA DRIVERS
+M:	Matheus Sampaio Queiroga <srherobrine20@gmail.com>
+L:	dmaengine@vger.kernel.org
+S:	Maintained
+F:	Documentation/devicetree/bindings/dma/econet,gdma.yaml
+F:	Documentation/devicetree/bindings/dma/econet,hsdma.yaml
+F:	drivers/dma/airoha-gdma.c
+F:	drivers/dma/airoha-hsdma.c
+
 AIROHA ETHERNET DRIVER
 M:	Lorenzo Bianconi <lorenzo@kernel.org>
 L:	linux-arm-kernel@lists.infradead.org (moderated for non-subscribers)
