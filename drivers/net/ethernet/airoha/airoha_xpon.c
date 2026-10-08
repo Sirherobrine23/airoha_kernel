@@ -47,6 +47,7 @@
 
 #include "airoha_eth.h"
 #include "airoha_xpon.h"
+#include "airoha_xgspon.h"
 #include "airoha_gpon_omci.h"
 #include "airoha_regs.h"
 #include "airoha_ploam.h"
@@ -4341,6 +4342,8 @@ static int airoha_xpon_probe(struct platform_device *pdev)
 	data = device_get_match_data(&pdev->dev);
 	if (!data)
 		return -EINVAL;
+	if (data->version == econet_en7580)
+		return airoha_xgspon_probe(pdev);
 
 	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
 	if (!priv)
@@ -4577,6 +4580,13 @@ static void airoha_xpon_remove(struct platform_device *pdev)
 {
 	const struct airoha_xpon_link_ops *link_ops;
 	struct xpon_priv *priv;
+	const struct airoha_xpon_match_data *data;
+
+	data = device_get_match_data(&pdev->dev);
+	if (data->version == econet_en7580) {
+		airoha_xgspon_remove(pdev);
+		return;
+	}
 
 	priv = platform_get_drvdata(pdev);
 	if (!priv)
@@ -4676,7 +4686,13 @@ static const struct airoha_xpon_match_data en7528_xpon_data = {
 	.scu_dying_gasp_status = true,
 };
 
+/* The EN7580 10G engine has a separate register and activation backend. */
+static const struct airoha_xpon_match_data en7580_xpon_data = {
+	.version = econet_en7580,
+};
+
 static const struct of_device_id airoha_xpon_of_match[] = {
+	{ .compatible = "airoha,en7580-xpon", .data = &en7580_xpon_data },
 	{ .compatible = "airoha,en7523-xpon", .data = &en7523_xpon_data },
 	{ .compatible = "airoha,en751627-xpon", .data = &en7528_xpon_data },
 	{ .compatible = "airoha,en7528-xpon", .data = &en7528_xpon_data },

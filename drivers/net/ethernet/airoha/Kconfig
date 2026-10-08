@@ -94,6 +94,12 @@ config AIROHA_XPON_V1
 	  activation/PLOAM and uses the in-kernel OMCI agent; EPON includes
 	  IEEE 802.3 MPCP LLID registration and security support.
 
+	  EN7580 XGS-PON support currently prepares the 10G MAC in O1 and
+	  exposes its register status through debugfs. PHY/PMA initialization,
+	  authenticated PLOAM activation and the 10G datapath are not implemented
+	  yet; the driver keeps automatic upstream replies and MAC interrupts
+	  disabled and does not register an OMCI transport for this mode.
+
 config AIROHA_XDSL
 	tristate "EcoNet EN7512/EN7516 xDSL/PTM frontend"
 	depends on ECONET || COMPILE_TEST
