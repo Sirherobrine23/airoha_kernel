@@ -653,6 +653,8 @@ static int airoha_ppe_foe_entry_prepare(struct airoha_eth *eth,
 
 			if (!eth->ppe_host_ops->is_valid_gdm_dev(eth, dev))
 				return -EINVAL;
+			if (READ_ONCE(dev->flags) & AIROHA_PRIV_F_XDSL_MANAGED)
+				return -EOPNOTSUPP;
 
 			port = dev->port;
 			if (!port) {
@@ -3519,6 +3521,12 @@ static int airoha_ppe_v1_flow_set_output(struct airoha_foe_entry *entry,
 
 	gdm = airoha_gdm_common_from_netdev(odev);
 	if (!gdm || gdm->family != AIROHA_ETH_FAMILY_ECONET)
+		return -EOPNOTSUPP;
+	/* PTM FoE channel metadata and retrain invalidation are not implemented.
+	 * Keep traffic on the CPU QDMA path, which enforces the negotiated bearer.
+	 */
+	if (READ_ONCE(((struct airoha_gdm_dev *)gdm)->flags) &
+	    AIROHA_PRIV_F_XDSL_MANAGED)
 		return -EOPNOTSUPP;
 
 	/*

@@ -3878,6 +3878,8 @@ static int econet_validate_xpon_gdm2(struct net_device *netdev,
 
 	if (!netdev)
 		return -EINVAL;
+	if (!airoha_gdm_common_from_netdev(netdev))
+		return -EOPNOTSUPP;
 
 	port = netdev_priv(netdev);
 	if (!port->eth ||
@@ -3978,7 +3980,12 @@ static netdev_tx_t econet_qdma_xmit(struct sk_buff *skb, struct net_device *dev)
 	struct airoha_xpon_tx_info xpon_info;
 	union desc_msg msg = {0};
 	bool xpon = false;
+	bool xdsl = READ_ONCE(port->flags) & AIROHA_PRIV_F_XDSL_MANAGED;
 	u8 channel;
+
+	if (xdsl && (READ_ONCE(port->xdsl_tx_stopped) ||
+		     !netif_carrier_ok(dev)))
+		goto drop;
 
 	if ((READ_ONCE(port->flags) & AIROHA_PRIV_F_XPON_MANAGED)) {
 		if (READ_ONCE(port->xpon_tx_stopped))
@@ -4016,6 +4023,12 @@ static netdev_tx_t econet_qdma_xmit(struct sk_buff *skb, struct net_device *dev)
 		channel = xpon_info.tcont;
 		set_etx_queue(&msg.etx, xpon_info.queue);
 		set_etx_xpon_gem(&msg.etx, xpon_info.gem_port_id);
+	} else if (xdsl) {
+		/* PTM channel = line * 4 + bearer * 2 + preemption.
+		 * This frontend supports line 0 and non-preemptive TX only.
+		 */
+		channel = READ_ONCE(port->xdsl_tx_channel);
+		set_etx_queue(&msg.etx, qid % ECONET_NUM_QUEUES);
 	} else if (airoha_is(port->eth, econet_en751221)) {
 		/*
 		 * The EN751221 vendor LAN path does not map Linux flow/hash
@@ -4042,15 +4055,16 @@ static netdev_tx_t econet_qdma_xmit(struct sk_buff *skb, struct net_device *dev)
 
 	/*
 	 * Keep the EN751221 PWAN descriptor layout unchanged, but make sure
-	 * short GPON Ethernet data frames meet the minimum Ethernet payload
+	 * short GPON/PTM Ethernet data frames meet the minimum Ethernet payload
 	 * size before they enter QDMA/GDM2.  The control/OAM path has its own
 	 * framing and must not be padded here.
 	 *
 	 * skb_put_padto() consumes the skb on allocation failure, so do not
 	 * jump to the common drop label in that case.
 	 */
-	if (xpon && READ_ONCE(port->xpon_mode) == AIROHA_XPON_MODE_GPON &&
-	    !xpon_info.oam && skb->len < ETH_ZLEN) {
+	if ((xdsl || (xpon &&
+		      READ_ONCE(port->xpon_mode) == AIROHA_XPON_MODE_GPON &&
+		      !xpon_info.oam)) && skb->len < ETH_ZLEN) {
 		if (skb_put_padto(skb, ETH_ZLEN)) {
 			dev->stats.tx_dropped++;
 			return NETDEV_TX_OK;
@@ -4062,7 +4076,7 @@ static netdev_tx_t econet_qdma_xmit(struct sk_buff *skb, struct net_device *dev)
 	 * Airoha QDMA which can move it to descriptor metadata. The logical
 	 * port-mask/channel classification is nevertheless shared.
 	 */
-	if (!xpon && airoha_is(port->eth, econet_en751221)) {
+	if (!xpon && !xdsl && airoha_is(port->eth, econet_en751221)) {
 		airoha_qdma_skb_get_mtk_meta(skb, dev, AIROHA_MTK_TAG_IN_SKB,
 					     &skb_meta);
 		if (skb_meta.has_mtk_tag &&
@@ -4199,6 +4213,11 @@ int econet_rx_before_recv(struct airoha_eth *eth, struct sk_buff *skb,
 		return PTR_ERR(dev);
 
 	port = dev->common.netdev;
+	if ((READ_ONCE(dev->flags) & AIROHA_PRIV_F_XDSL_MANAGED) &&
+	    (READ_ONCE(dev->xdsl_tx_stopped) || !netif_carrier_ok(port))) {
+		port->stats.rx_dropped++;
+		return -ENETDOWN;
+	}
 
 	/*
 	 * EN7512/EN7521 keeps the MT7530 special tag in-band. The vendor
@@ -4493,6 +4512,8 @@ static int econet_register_xdsl(struct net_device *netdev,
 	port->xdsl_ops = ops;
 	port->xdsl_priv = priv;
 	port->flags |= AIROHA_PRIV_F_XDSL_MANAGED;
+	WRITE_ONCE(port->xdsl_tx_stopped, true);
+	port->xdsl_path_mask = GENMASK(3, 0);
 	spin_lock_irqsave(&port->xdsl_state_lock, flags);
 	memset(&port->xdsl_link, 0, sizeof(port->xdsl_link));
 	spin_unlock_irqrestore(&port->xdsl_state_lock, flags);
@@ -4558,6 +4579,8 @@ static void econet_xdsl_update_link(struct net_device *netdev,
 
 	new_state = *state;
 	new_state.valid = true;
+	if (READ_ONCE(port->xdsl_tx_stopped))
+		new_state.link = false;
 	spin_lock_irqsave(&port->xdsl_state_lock, flags);
 	port->xdsl_link = new_state;
 	spin_unlock_irqrestore(&port->xdsl_state_lock, flags);
@@ -10823,7 +10846,12 @@ int airoha_eth_register_xdsl(struct net_device *netdev,
 			     const struct airoha_xdsl_link_ops *ops,
 			     void *priv)
 {
-	return econet_register_xdsl(netdev, ops, priv);
+	int ret;
+
+	rtnl_lock();
+	ret = econet_register_xdsl(netdev, ops, priv);
+	rtnl_unlock();
+	return ret;
 }
 EXPORT_SYMBOL_GPL(airoha_eth_register_xdsl);
 
@@ -10831,9 +10859,64 @@ void airoha_eth_unregister_xdsl(struct net_device *netdev,
 				const struct airoha_xdsl_link_ops *ops,
 				void *priv)
 {
+	rtnl_lock();
 	econet_unregister_xdsl(netdev, ops, priv);
+	rtnl_unlock();
 }
 EXPORT_SYMBOL_GPL(airoha_eth_unregister_xdsl);
+
+/* Called in process context, serialized by the frontend's state mutex.
+ * Block new TX and drain network readers before touching channel assignments.
+ */
+int airoha_eth_xdsl_set_datapath(struct net_device *netdev, u8 path_mask,
+				 u8 tx_channel)
+{
+	struct airoha_gdm_dev *port;
+	u8 old_mask;
+	int ch, pass, ret;
+
+	ret = econet_validate_xpon_gdm2(netdev, &port);
+	if (ret)
+		return ret;
+	if (!(READ_ONCE(port->flags) & AIROHA_PRIV_F_XDSL_MANAGED))
+		return -ENODEV;
+	if (path_mask & ~GENMASK(3, 0))
+		return -EINVAL;
+	if (path_mask && ((tx_channel != 0 && tx_channel != 2) ||
+			  !(path_mask & BIT(tx_channel))))
+		return -EINVAL;
+
+	WRITE_ONCE(port->xdsl_tx_stopped, true);
+	netif_carrier_off(netdev);
+	synchronize_net();
+	airoha_fe_wr(port->eth, REG_CDM_HWF_CHN_EN(2), 0);
+	airoha_fe_wr(port->eth, REG_GDM_TXCHN_EN(AIROHA_GDM2_IDX), 0);
+	airoha_fe_wr(port->eth, REG_GDM_RXCHN_EN(AIROHA_GDM2_IDX), 0);
+	old_mask = port->xdsl_path_mask;
+
+	/* Retire both the PSE and the remaining QDMA packets before reuse. */
+	for (pass = 0; pass < 2; pass++)
+		for (ch = 0; ch < 4; ch++) {
+			if (!(old_mask & BIT(ch)))
+				continue;
+			ret = airoha_retire_channel(netdev, ch);
+			if (ret)
+				return ret;
+		}
+
+	port->xdsl_path_mask = 0;
+	if (!path_mask)
+		return 0;
+
+	WRITE_ONCE(port->xdsl_tx_channel, tx_channel);
+	airoha_fe_wr(port->eth, REG_GDM_RXCHN_EN(AIROHA_GDM2_IDX), path_mask);
+	airoha_fe_wr(port->eth, REG_GDM_TXCHN_EN(AIROHA_GDM2_IDX), path_mask);
+	airoha_fe_wr(port->eth, REG_CDM_HWF_CHN_EN(2), path_mask);
+	port->xdsl_path_mask = path_mask;
+	WRITE_ONCE(port->xdsl_tx_stopped, false);
+	return 0;
+}
+EXPORT_SYMBOL_GPL(airoha_eth_xdsl_set_datapath);
 
 void airoha_eth_xdsl_update_link(struct net_device *netdev,
 				 const struct airoha_xdsl_link_state *state)

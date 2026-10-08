@@ -419,7 +419,7 @@
 		};
 
 		gdma: dma-controller@1fb30000 {
-			compatible = "econet,en751221-gdma";
+			compatible = "econet,en751627-gdma";
 			reg = <0x1fb30000 0x1000>;
 
 			resets = <&scuclk EN751627_GDMA_RST>;
@@ -480,6 +480,8 @@
 			resets = <&scuclk EN751627_DMT_RST>,
 				 <&scuclk EN751627_PTM_MAC_RST>;
 			reset-names = "dmt", "ptm";
+			dmas = <&gdma 0>;
+			dma-names = "qam";
 
 			ethernet = <&gdm2>;
 			airoha,scu = <&scuclk>;

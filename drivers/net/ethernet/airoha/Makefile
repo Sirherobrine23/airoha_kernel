@@ -17,3 +17,4 @@ airoha-xpon-y := airoha_xpon.o airoha_ploam.o airoha_gpon_omci.o
 
 # EcoNet EN7512/EN7516 DMT/PTM frontend. The line engine is added separately.
 obj-$(CONFIG_AIROHA_XDSL) += airoha_xdsl.o
+obj-$(CONFIG_AIROHA_XDSL_KUNIT_TEST) += airoha_xdsl_test.o

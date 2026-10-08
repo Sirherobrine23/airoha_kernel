@@ -439,6 +439,7 @@ static const struct airoha_gdma_soc en7523_gdma = {
 
 static const struct of_device_id airoha_gdma_match[] = {
 	{ .compatible = "econet,en751221-gdma", .data = &en751221_gdma },
+	{ .compatible = "econet,en751627-gdma", .data = &en751221_gdma },
 	{ .compatible = "airoha,en7523-gdma", .data = &en7523_gdma },
 	{ }
 };

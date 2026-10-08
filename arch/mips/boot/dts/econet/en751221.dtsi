@@ -495,6 +495,16 @@
 		status = "disabled";
 	};
 
+	gdma: dma-controller@1fb30000 {
+		compatible = "econet,en751221-gdma";
+		reg = <0x1fb30000 0x2b0>;
+		resets = <&scuclk EN751221_GDMA_RST>;
+		/* The vendor DMT driver polls GDMA channel 0 for completion. */
+		#dma-cells = <1>;
+		dma-channels = <8>;
+		status = "disabled";
+	};
+
 	xdsl: dsl@1f900000 {
 		compatible = "econet,en751221-xdsl";
 		reg = <0x1f900000 0x10000>,
@@ -508,6 +518,8 @@
 		resets = <&scuclk EN751221_DMT_RST>,
 		         <&scuclk EN751221_PTM_MAC_RST>;
 		reset-names = "dmt", "ptm";
+		dmas = <&gdma 0>;
+		dma-names = "qam";
 
 		ethernet = <&gdm2>;
 		airoha,scu = <&scuclk>;
@@ -532,11 +544,10 @@
 		resets = <&scuclk EN751221_FE_RST>,
 		         <&scuclk EN751221_FE_QDMA1_RST>,
 		         <&scuclk EN751221_FE_QDMA2_RST>,
-		         <&scuclk EN751221_GDMA_RST>,
 		         <&scuclk EN751221_FE_UNZIP_RST>,
 		         <&scuclk EN751221_GDMP_RST>;
 		reset-names = "fe", "pdma", "qdma", /* rename to pdma, qdma */
-		              "gdma", "fe-unzip", "gdmp";
+			      "fe-unzip", "gdmp";
 
 		#address-cells = <1>;
 		#size-cells = <0>;

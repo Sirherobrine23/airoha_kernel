@@ -99,15 +99,30 @@ config AIROHA_XDSL
 	depends on ECONET || COMPILE_TEST
 	depends on NET_AIROHA
 	depends on OF
+	depends on MFD_SYSCON && RESET_CONTROLLER
+	depends on DMADEVICES
+	select DMA_ENGINE
 	help
-	  Build the initial xDSL frontend for the EcoNet EN751221 (EN7512)
+	  Build the xDSL frontend for the EcoNet EN751221 (EN7512)
 	  and EN751627 (EN7516) SoC families. The driver owns the DMT and PTM-TC
 	  resources and connects their reset, interrupt and netdev
 	  lifecycle to the GDM2 Ethernet datapath.
 
 	  The proprietary legacy module embeds the complete G.hs/ADSL/VDSL
 	  training and DSP implementation. Until a clean-room line engine is
-	  implemented, this driver keeps the DMT interrupts masked and carrier
-	  down after preparing the PTM datapath.
+	  implemented and registered, opening the netdev fails with
+	  EOPNOTSUPP. Carrier and PTM channels are enabled only after a line
+	  engine reports valid PTM showtime. ATM and bonding are not supported.
+	  Enable AIROHA_GDMA for device trees that specify the QAM DMA channel.
+
+config AIROHA_XDSL_KUNIT_TEST
+	tristate "KUnit tests for Airoha xDSL line notifications" if !KUNIT_ALL_TESTS
+	depends on KUNIT
+	default KUNIT_ALL_TESTS
+	help
+	  Test PTM bearer/path mapping and validation of line-engine events.
+	  Cover missing rates, unsupported ATM transport, invalid bearer
+	  selections and duplicate reports that should not flap carrier.
+	  These tests do not emulate a PHY or require xDSL hardware.
 
 endif # NET_VENDOR_AIROHA
