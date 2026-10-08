@@ -60,7 +60,7 @@ static ssize_t mode_available_show(struct device *dev,
 	ssize_t len = 0;
 	int mode;
 
-	for (mode = 0; mode < __XPON_MODE_MAX; mode++) {
+	for (mode = XPON_MODE_GPON; mode <= XPON_MODE_MAX; mode <<= 1) {
 		if (!(xpon->modes & XPON_MODE_CAP(mode)))
 			continue;
 		len += sysfs_emit_at(buf, len, "%s%s", len ? " " : "",

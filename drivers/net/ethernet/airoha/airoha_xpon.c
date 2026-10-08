@@ -2,7 +2,7 @@
 /*
  * Airoha/EcoNet xPON MAC driver
  *
- * Unified GPON/EPON driver for the shared EN751221/EN7523 xPON MAC complex.
+ * Unified GPON/EPON driver with staged EN7580 XGS-PON MAC support.
  * The mode-specific protocol engines remain separate inside this file,
  * while probe/remove, DT matching and FE/GDM2 ownership are shared.
  *
@@ -16,6 +16,7 @@
 
 #include <linux/bitfield.h>
 #include <linux/bitmap.h>
+#include <linux/debugfs.h>
 #include <linux/delay.h>
 #include <linux/etherdevice.h>
 #include <linux/ethtool.h>
@@ -39,6 +40,7 @@
 #include <linux/regmap.h>
 #include <linux/reset.h>
 #include <linux/sched.h>
+#include <linux/seq_file.h>
 #include <linux/sfp.h>
 #include <linux/timer.h>
 #include <linux/unaligned.h>
@@ -47,7 +49,6 @@
 
 #include "airoha_eth.h"
 #include "airoha_xpon.h"
-#include "airoha_xgspon.h"
 #include "airoha_gpon_omci.h"
 #include "airoha_regs.h"
 #include "airoha_ploam.h"
@@ -163,6 +164,8 @@ static const char *airoha_xpon_mode_name(enum airoha_xpon_mode mode)
 		return "GPON";
 	case AIROHA_XPON_MODE_EPON:
 		return "EPON";
+	case AIROHA_XPON_MODE_XGSPON:
+		return "XGS-PON";
 	default:
 		return "unknown";
 	}
@@ -175,6 +178,8 @@ static enum xpon_mode airoha_xpon_core_mode(enum airoha_xpon_mode mode)
 		return XPON_MODE_GPON;
 	case AIROHA_XPON_MODE_EPON:
 		return XPON_MODE_EPON;
+	case AIROHA_XPON_MODE_XGSPON:
+		return XPON_MODE_XGSPON;
 	default:
 		return XPON_MODE_GPON;
 	}
@@ -258,8 +263,19 @@ static int airoha_xpon_select_wan(struct regmap *scu,
 {
 	u32 value;
 
-	value = mode == AIROHA_XPON_MODE_GPON ?
-		XPON_SCU_WAN_MODE_GPON : XPON_SCU_WAN_MODE_EPON;
+	switch (mode) {
+	case AIROHA_XPON_MODE_GPON:
+		value = XPON_SCU_WAN_MODE_GPON;
+		break;
+	case AIROHA_XPON_MODE_EPON:
+		value = XPON_SCU_WAN_MODE_EPON;
+		break;
+	case AIROHA_XPON_MODE_XGSPON:
+		value = XPON_SCU_WAN_MODE_XGSPON;
+		break;
+	default:
+		return -EINVAL;
+	}
 
 	return regmap_update_bits(scu, XPON_SCU_WAN_CONF,
 				  data->wan_mode_mask, value);
@@ -4320,6 +4336,268 @@ static void airoha_xpon_unregister_gpon_omci(struct xpon_priv *priv)
 	airoha_gpon_omci_unregister(&priv->omci);
 }
 
+static bool airoha_xpon_is_xgspon(const struct xpon_priv *priv)
+{
+	return priv->mode == AIROHA_XPON_MODE_XGSPON;
+}
+
+static int airoha_xpon_register_core(struct xpon_priv *priv)
+{
+	struct xpon_device_desc desc = {};
+	int ret;
+
+	desc.netdev = priv->gdm_dev;
+	desc.optical = priv->frontend ?
+		optical_frontend_get_device(priv->frontend) : NULL;
+	desc.modes = airoha_xpon_is_xgspon(priv) ? XPON_MODE_XGSPON :
+		     XPON_MODE_GPON | XPON_MODE_EPON;
+	desc.modes &= priv->match_data->xpon_mode_comp;
+	desc.mode = airoha_xpon_core_mode(priv->mode);
+	desc.priv = priv;
+	priv->xpon = xpon_device_register(priv->dev, &desc);
+	if (IS_ERR(priv->xpon)) {
+		ret = PTR_ERR(priv->xpon);
+		priv->xpon = NULL;
+		return dev_err_probe(priv->dev, ret,
+				     "failed to register generic xPON device\n");
+	}
+
+	return 0;
+}
+
+static u32 airoha_xgspon_read(struct xpon_priv *pon, u32 reg)
+{
+	return readl(pon->xgspon_reg + reg);
+}
+
+static void airoha_xgspon_write(struct xpon_priv *pon, u32 reg, u32 value)
+{
+	writel(value, pon->xgspon_reg + reg);
+}
+
+static void airoha_xgspon_quiesce(struct xpon_priv *pon)
+{
+	airoha_xgspon_write(pon, EN7580_XGSPON_INT_ENABLE, 0);
+	/* Disable automatic serial-number and registration responses. */
+	airoha_xgspon_write(pon, EN7580_XGSPON_PLOAMU_CTRL,
+			    EN7580_XGSPON_PLOAMU_SW_CTRL);
+	airoha_xgspon_write(pon, EN7580_XGSPON_DYING_GASP_CTRL, 0);
+	airoha_xgspon_write(pon, EN7580_XGSPON_US_PROF_VLD, 0);
+	airoha_xgspon_write(pon, EN7580_XGSPON_ONU_ID,
+			    XGSPON_PLOAM_ONU_ID_UNASSIGNED);
+	airoha_xgspon_write(pon, EN7580_XGSPON_ACTIVATION_ST,
+			    EN7580_XGSPON_STATE_O1);
+	airoha_xgspon_write(pon, EN7580_XGSPON_MBI_MPI_STOP,
+			    EN7580_XGSPON_STOP_MASK);
+	/* Flush the posted writes before reset or resource teardown. */
+	airoha_xgspon_read(pon, EN7580_XGSPON_MBI_MPI_STOP);
+}
+
+static void airoha_xgspon_reset(void *data)
+{
+	struct xpon_priv *pon = data;
+	int ret;
+
+	if (pon->xgspon_accessible) {
+		airoha_xgspon_quiesce(pon);
+		airoha_xgspon_write(pon, EN7580_XGSPON_SW_RST, 0);
+		airoha_xgspon_read(pon, EN7580_XGSPON_SW_RST);
+	}
+	pon->xgspon_accessible = false;
+	ret = reset_control_assert(pon->mac_reset);
+	if (ret)
+		dev_warn(pon->dev, "failed to hold XGS-PON MAC reset: %d\n", ret);
+}
+
+static int airoha_xgspon_wait(struct xpon_priv *pon, u32 reg,
+			      u32 mask, unsigned int timeout_us)
+{
+	u32 value;
+
+	return readl_poll_timeout_atomic(pon->xgspon_reg + reg, value,
+					(value & mask) == mask, 1, timeout_us);
+}
+
+static int airoha_xgspon_init_tables(struct xpon_priv *pon)
+{
+	unsigned long deadline;
+	u32 command;
+	int i, ret;
+
+	/* All 32 T-CONTs use the indirect command interface on EN7580. */
+	for (i = 0; i < EN7580_XGSPON_TCONTS; i++) {
+		command = EN7580_XGSPON_TCONT_WRITE |
+			  FIELD_PREP(EN7580_XGSPON_TCONT_INDEX, i) |
+			  XGSPON_PLOAM_ONU_ID_UNASSIGNED;
+		airoha_xgspon_write(pon, EN7580_XGSPON_TCONT_ID_CFG, command);
+		ret = airoha_xgspon_wait(pon, EN7580_XGSPON_TCONT_ID_STS,
+					 EN7580_XGSPON_CMD_DONE,
+					EN7580_XGSPON_CMD_TIMEOUT_US);
+		if (ret)
+			return dev_err_probe(pon->dev, ret,
+					     "T-CONT %d clear timed out\n", i);
+	}
+
+	/* Follow gponDevResetGemInfo(), rather than the unused GEM_TBL_INIT. */
+	deadline = jiffies + msecs_to_jiffies(EN7580_XGSPON_GEM_TIMEOUT_MS);
+	for (i = 0; i < EN7580_XGSPON_GEM_IDS; i++) {
+		command = EN7580_XGSPON_GEM_WRITE |
+			  EN7580_XGSPON_GEM_UNICAST | i;
+		airoha_xgspon_write(pon, EN7580_XGSPON_GEM_PORT_CFG, command);
+		ret = airoha_xgspon_wait(pon, EN7580_XGSPON_GEM_PORT_STS,
+					 EN7580_XGSPON_CMD_DONE,
+					EN7580_XGSPON_CMD_TIMEOUT_US);
+		if (ret || time_after(jiffies, deadline))
+			return dev_err_probe(pon->dev, -ETIMEDOUT,
+					     "XGEM %d clear timed out\n", i);
+		if (!(i & 0xff))
+			cond_resched();
+	}
+
+	/* Start both tables together, as in gponDevGemMibTablesInit(). */
+	airoha_xgspon_write(pon, EN7580_XGSPON_MIB_TBL_CONFIG,
+			    EN7580_XGSPON_TABLE_START);
+	airoha_xgspon_write(pon, EN7580_XGSPON_GPIDX_TBL_INIT,
+			    EN7580_XGSPON_TABLE_START);
+	ret = airoha_xgspon_wait(pon, EN7580_XGSPON_MIB_TBL_CONFIG,
+				 EN7580_XGSPON_TABLE_DONE,
+				EN7580_XGSPON_TABLE_TIMEOUT_US);
+	if (ret)
+		return dev_err_probe(pon->dev, ret, "MIB table init timed out\n");
+	ret = airoha_xgspon_wait(pon, EN7580_XGSPON_GPIDX_TBL_INIT,
+				 EN7580_XGSPON_TABLE_DONE,
+				EN7580_XGSPON_TABLE_TIMEOUT_US);
+	if (ret)
+		return dev_err_probe(pon->dev, ret, "GPIDX table init timed out\n");
+
+	return 0;
+}
+
+static int airoha_xgspon_prepare(struct xpon_priv *pon)
+{
+	u32 value;
+	int ret;
+
+	airoha_xgspon_write(pon, EN7580_XGSPON_SW_RST, 0);
+	airoha_xgspon_read(pon, EN7580_XGSPON_SW_RST);
+	udelay(1);
+	airoha_xgspon_write(pon, EN7580_XGSPON_SW_RST, EN7580_XGSPON_RST_N);
+	ret = airoha_xgspon_wait(pon, EN7580_XGSPON_SW_RST,
+				 EN7580_XGSPON_RST_N,
+				EN7580_XGSPON_CMD_TIMEOUT_US);
+	if (ret)
+		return dev_err_probe(pon->dev, ret, "MAC reset release timed out\n");
+
+	airoha_xgspon_quiesce(pon);
+	/* Reject an inaccessible or incorrectly mapped MAC before table commands. */
+	if (airoha_xgspon_read(pon, EN7580_XGSPON_INT_ENABLE) ||
+	    airoha_xgspon_read(pon, EN7580_XGSPON_ONU_ID) !=
+	    XGSPON_PLOAM_ONU_ID_UNASSIGNED ||
+	    (airoha_xgspon_read(pon, EN7580_XGSPON_MBI_MPI_STOP) &
+	     EN7580_XGSPON_STOP_MASK) != EN7580_XGSPON_STOP_MASK ||
+	    !(airoha_xgspon_read(pon, EN7580_XGSPON_PLOAMU_CTRL) &
+	      EN7580_XGSPON_PLOAMU_SW_CTRL))
+		return dev_err_probe(pon->dev, -EIO, "MAC quiesce readback failed\n");
+	airoha_xgspon_write(pon, EN7580_XGSPON_INT_STATUS, U32_MAX);
+	airoha_xgspon_write(pon, EN7580_XGSPON_US_AES_KEY_CTRL, 0);
+	airoha_xgspon_write(pon, EN7580_XGSPON_DS_AES_KEY_VLD, 0);
+	airoha_xgspon_write(pon, EN7580_XGSPON_RSP_TIME,
+			    EN7580_XGSPON_RSP_TIME_DEFAULT);
+	value = airoha_xgspon_read(pon, EN7580_XGSPON_IDLE_GEM_CTRL);
+	value &= ~EN7580_XGSPON_IDLE_THRESHOLD;
+	value |= FIELD_PREP(EN7580_XGSPON_IDLE_THRESHOLD,
+			    EN7580_XGSPON_IDLE_DEFAULT);
+	airoha_xgspon_write(pon, EN7580_XGSPON_IDLE_GEM_CTRL, value);
+
+	return airoha_xgspon_init_tables(pon);
+}
+
+static int airoha_xgspon_status_show(struct seq_file *s, void *unused)
+{
+	struct xpon_priv *pon = s->private;
+
+	seq_puts(s, "stage: MAC prepared; PHY and activation unavailable\n");
+	seq_printf(s, "reset: %#x\nonu-id: %#x\nstate: %#x\n",
+		   airoha_xgspon_read(pon, EN7580_XGSPON_SW_RST),
+		   airoha_xgspon_read(pon, EN7580_XGSPON_ONU_ID),
+		   airoha_xgspon_read(pon, EN7580_XGSPON_ACTIVATION_ST));
+	seq_printf(s, "interrupt-enable: %#x\ninterrupt-status: %#x\n",
+		   airoha_xgspon_read(pon, EN7580_XGSPON_INT_ENABLE),
+		   airoha_xgspon_read(pon, EN7580_XGSPON_INT_STATUS));
+	seq_printf(s, "mbi-mpi-stop: %#x\nploamu-control: %#x\n",
+		   airoha_xgspon_read(pon, EN7580_XGSPON_MBI_MPI_STOP),
+		   airoha_xgspon_read(pon, EN7580_XGSPON_PLOAMU_CTRL));
+	seq_printf(s, "response-time: %#x\nidle-gem-control: %#x\n",
+		   airoha_xgspon_read(pon, EN7580_XGSPON_RSP_TIME),
+		   airoha_xgspon_read(pon, EN7580_XGSPON_IDLE_GEM_CTRL));
+	seq_printf(s, "mib-init: %#x\ngpidx-init: %#x\n",
+		   airoha_xgspon_read(pon, EN7580_XGSPON_MIB_TBL_CONFIG),
+		   airoha_xgspon_read(pon, EN7580_XGSPON_GPIDX_TBL_INIT));
+	seq_printf(s, "fifo-errors: %#x\ntx-errors: %#x\nrx-errors: %#x\n",
+		   airoha_xgspon_read(pon, EN7580_XGSPON_FIFO_ERR_STS),
+		   airoha_xgspon_read(pon, EN7580_XGSPON_TX_ERR_STS),
+		   airoha_xgspon_read(pon, EN7580_XGSPON_RX_ERR_STS));
+	/* Read FIFO occupancy only; do not consume PLOAM or expose keys. */
+	seq_printf(s, "ploamu-fifo: %#x\nploamd-fifo: %#x\n",
+		   airoha_xgspon_read(pon, EN7580_XGSPON_PLOAMU_FIFO_STS),
+		   airoha_xgspon_read(pon, EN7580_XGSPON_PLOAMD_FIFO_STS));
+	return 0;
+}
+DEFINE_SHOW_ATTRIBUTE(airoha_xgspon_status);
+
+static void airoha_xgspon_unregister(void *data)
+{
+	struct xpon_priv *pon = data;
+
+	debugfs_remove_recursive(pon->xgspon_debugfs);
+	xpon_device_unregister(pon->xpon);
+	dev_put(pon->gdm_dev);
+}
+
+static int airoha_xpon_init_xgspon(struct xpon_priv *priv)
+{
+	struct device *dev = priv->dev;
+	char *name;
+	int ret;
+
+	/* The devres actions own GDM2 from this point, including failures. */
+	ret = devm_add_action_or_reset(dev, airoha_xgspon_unregister, priv);
+	if (ret)
+		return ret;
+	ret = reset_control_assert(priv->mac_reset);
+	if (ret)
+		return ret;
+	ret = devm_add_action_or_reset(dev, airoha_xgspon_reset, priv);
+	if (ret)
+		return ret;
+	/* Select the 10G engine while the MAC is held in reset. */
+	ret = airoha_xpon_select_wan(priv->scu, priv->match_data, priv->mode);
+	if (ret)
+		return ret;
+	ret = reset_control_deassert(priv->mac_reset);
+	if (ret)
+		return ret;
+	priv->xgspon_accessible = true;
+	ret = airoha_xgspon_prepare(priv);
+	if (ret)
+		return ret;
+
+	ret = airoha_xpon_register_core(priv);
+	if (ret)
+		return ret;
+
+	name = devm_kasprintf(dev, GFP_KERNEL, "airoha-xgspon-%s", dev_name(dev));
+	if (name) {
+		priv->xgspon_debugfs = debugfs_create_dir(name, NULL);
+		if (!IS_ERR_OR_NULL(priv->xgspon_debugfs))
+			debugfs_create_file("status", 0444, priv->xgspon_debugfs,
+					    priv, &airoha_xgspon_status_fops);
+	}
+	dev_info(dev,
+		 "EN7580 XGS-PON MAC prepared in O1; PHY, activation and datapath are not enabled\n");
+	return 0;
+}
+
 static int airoha_xpon_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
@@ -4327,7 +4605,6 @@ static int airoha_xpon_probe(struct platform_device *pdev)
 	const struct airoha_xpon_link_ops *link_ops;
 	const struct sfp_upstream_ops *sfp_ops;
 	struct device_node *eth_node;
-	struct xpon_device_desc xpon_desc = {};
 	struct xpon_priv *priv;
 	struct resource *res;
 	int ret;
@@ -4335,15 +4612,13 @@ static int airoha_xpon_probe(struct platform_device *pdev)
 	data = device_get_match_data(&pdev->dev);
 	if (!data)
 		return -EINVAL;
-	if (data->version == econet_en7580)
-		return airoha_xgspon_probe(pdev);
 
 	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
 	if (!priv)
 		return -ENOMEM;
 	priv->dev = dev;
 	priv->match_data = data;
-	priv->mode = AIROHA_XPON_MODE_GPON;
+	priv->mode = data->default_mode;
 	INIT_DELAYED_WORK(&priv->phy_link_work,
 			  airoha_xpon_phy_link_work_fn);
 
@@ -4364,15 +4639,21 @@ static int airoha_xpon_probe(struct platform_device *pdev)
 				    "failed to get xPON MAC reset\n");
 		goto err_put_gdm;
 	}
+	if (!priv->mac_reset && airoha_xpon_is_xgspon(priv)) {
+		ret = dev_err_probe(dev, -EINVAL, "missing MAC reset\n");
+		goto err_put_gdm;
+	}
 	if (!priv->mac_reset)
 		dev_warn(dev,
 			 "missing xPON MAC reset; session restarts cannot clear all hardware state\n");
 
-	priv->phy = devm_phy_get(dev, "xpon");
-	if (IS_ERR(priv->phy)) {
-		ret = dev_err_probe(dev, PTR_ERR(priv->phy),
-				    "failed to get digital xPON PHY\n");
-		goto err_put_gdm;
+	if (!airoha_xpon_is_xgspon(priv)) {
+		priv->phy = devm_phy_get(dev, "xpon");
+		if (IS_ERR(priv->phy)) {
+			ret = dev_err_probe(dev, PTR_ERR(priv->phy),
+					    "failed to get digital xPON PHY\n");
+			goto err_put_gdm;
+		}
 	}
 
 	eth_node = of_parse_phandle(dev->of_node, "ethernet", 0);
@@ -4381,6 +4662,9 @@ static int airoha_xpon_probe(struct platform_device *pdev)
 		dev_info(dev, "%s datapath phandle: %pOF\n",
 			 airoha_xpon_mode_name(priv->mode), eth_node);
 		of_node_put(eth_node);
+	} else if (airoha_xpon_is_xgspon(priv)) {
+		ret = dev_err_probe(dev, -EINVAL, "missing GDM2 phandle\n");
+		goto err_put_gdm;
 	} else {
 		priv->gdm_dev = airoha_eth_get_xpon_netdev();
 		dev_info(dev, "%s datapath discovered automatically\n",
@@ -4395,7 +4679,7 @@ static int airoha_xpon_probe(struct platform_device *pdev)
 		 priv->gdm_dev->name);
 
 	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "mac");
-	if (!res)
+	if (!res && !airoha_xpon_is_xgspon(priv))
 		res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	if (!res) {
 		ret = dev_err_probe(dev, -EINVAL, "missing mac resource\n");
@@ -4409,16 +4693,23 @@ static int airoha_xpon_probe(struct platform_device *pdev)
 		goto err_put_gdm;
 	}
 
-	/*
-	 * All supported xPON MAC blocks expose GPON and EPON at fixed offsets.
-	 * Add a larger resource-size case here when XGSPON support lands.
-	 */
-	if (resource_size(res) < V1_XPON_REGION_SIZE) {
+	if (resource_size(res) < (airoha_xpon_is_xgspon(priv) ?
+				  XGSPON_REG_OFFSET + EN7580_XGSPON_SIZE :
+				  V1_XPON_REGION_SIZE)) {
 		ret = dev_err_probe(dev, -EINVAL,
 				    "unsupported xPON MAC resource size %#llx: %pR\n",
 				    (unsigned long long)resource_size(res),
 				    res);
 		goto err_put_gdm;
+	}
+
+	if (airoha_xpon_is_xgspon(priv)) {
+		priv->xgspon_reg = priv->base + XGSPON_REG_OFFSET;
+		ret = airoha_xpon_init_xgspon(priv);
+		if (ret)
+			return dev_err_probe(dev, ret, "failed to prepare XGS-PON MAC\n");
+		platform_set_drvdata(pdev, priv);
+		return 0;
 	}
 
 	/*
@@ -4435,7 +4726,6 @@ static int airoha_xpon_probe(struct platform_device *pdev)
 	}
 
 	priv->gpon_reg = priv->base + GPON_REG_OFFSET;
-	priv->xgspon_reg = priv->base + XGSGPON_REG_OFFSET;
 	priv->epon_reg = priv->base + EPON_REG_OFFSET;
 
 	res = platform_get_resource_byname(pdev, IORESOURCE_MEM,
@@ -4471,20 +4761,9 @@ static int airoha_xpon_probe(struct platform_device *pdev)
 		goto err_cleanup_mode;
 	}
 
-	xpon_desc.netdev = priv->gdm_dev;
-	xpon_desc.optical = priv->frontend ?
-		optical_frontend_get_device(priv->frontend) : NULL;
-	xpon_desc.modes = XPON_MODE_CAP(XPON_MODE_GPON) |
-			  XPON_MODE_CAP(XPON_MODE_EPON);
-	xpon_desc.mode = airoha_xpon_core_mode(priv->mode);
-	xpon_desc.priv = priv;
-	priv->xpon = xpon_device_register(dev, &xpon_desc);
-	if (IS_ERR(priv->xpon)) {
-		ret = dev_err_probe(dev, PTR_ERR(priv->xpon),
-				    "failed to register generic xPON device\n");
-		priv->xpon = NULL;
+	ret = airoha_xpon_register_core(priv);
+	if (ret)
 		goto err_cleanup_mode;
-	}
 
 	priv->sfp_bus = sfp_bus_find_fwnode(dev->fwnode);
 	if (IS_ERR(priv->sfp_bus)) {
@@ -4573,17 +4852,16 @@ static void airoha_xpon_remove(struct platform_device *pdev)
 {
 	const struct airoha_xpon_link_ops *link_ops;
 	struct xpon_priv *priv;
-	const struct airoha_xpon_match_data *data;
-
-	data = device_get_match_data(&pdev->dev);
-	if (data->version == econet_en7580) {
-		airoha_xgspon_remove(pdev);
-		return;
-	}
 
 	priv = platform_get_drvdata(pdev);
 	if (!priv)
 		return;
+	if (airoha_xpon_is_xgspon(priv)) {
+		/* Drain diagnostic readers before the devres reset action runs. */
+		debugfs_remove_recursive(priv->xgspon_debugfs);
+		priv->xgspon_debugfs = NULL;
+		return;
+	}
 
 	dev_info(priv->dev, "removing xPON mode %s\n",
 		 airoha_xpon_mode_name(priv->mode));
@@ -4671,6 +4949,8 @@ static const struct airoha_xpon_match_data en7528_xpon_data = {
 
 static const struct airoha_xpon_match_data en7580_xpon_data = {
 	.version = econet_en7580,
+	.default_mode = AIROHA_XPON_MODE_XGSPON,
+	.wan_mode_mask = EN7580_SCU_WAN_MODE_MASK,
 	.xpon_mode_comp = XPON_MODE_GPON |
 			  XPON_MODE_XGPON |
 			  XPON_MODE_XGSPON |

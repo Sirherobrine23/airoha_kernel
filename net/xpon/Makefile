@@ -2,6 +2,7 @@
 obj-$(CONFIG_XPON) += xpon.o
 xpon-y := core.o sysfs.o leds.o genl.o ploam_msg.o
 
+obj-$(CONFIG_XPON_MODE_KUNIT_TEST) += mode_test.o
 obj-$(CONFIG_XPON_PLOAM_KUNIT_TEST) += ploam_test.o
 
 obj-$(CONFIG_XPON_OMCI) += omci/

@@ -10,6 +10,16 @@ menuconfig XPON
 
 if XPON
 
+config XPON_MODE_KUNIT_TEST
+	tristate "xPON mode and capability tests" if !KUNIT_ALL_TESTS
+	depends on KUNIT
+	default KUNIT_ALL_TESTS
+	help
+	  Test mode validation, high capability bits, provider failures and
+	  sysfs mode reporting without optical hardware.
+	  These tests do not exercise optical activation or the MAC datapath.
+	  Say Y to run these tests at boot, or M to build a test module.
+
 config XPON_PLOAM_KUNIT_TEST
 	tristate "xPON PLOAM codec tests" if !KUNIT_ALL_TESTS
 	depends on KUNIT

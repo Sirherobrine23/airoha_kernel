@@ -20,7 +20,7 @@
 
 #define V1_XPON_REGION_SIZE		0x00010000
 #define GPON_REG_OFFSET			0x00004000
-#define XGSGPON_REG_OFFSET		0x00005000
+#define XGSPON_REG_OFFSET		0x00005000
 #define EPON_REG_OFFSET			0x00006000
 
 #define XPON_SCU_WAN_CONF		0x070
@@ -29,12 +29,16 @@
 #define EN751221_SCU_WAN_MODE_MASK	GENMASK(2, 0)
 #define XPON_SCU_WAN_MODE_GPON		0x00
 #define XPON_SCU_WAN_MODE_EPON		0x01
+#define XPON_SCU_WAN_MODE_XGSPON		0x0a
+#define EN7580_SCU_WAN_MODE_MASK		GENMASK(7, 0)
 #define XPON_SCU_DYING_GASP		0x084
 #define XPON_SCU_DYING_GASP_STATUS	BIT(16)
 
 struct airoha_xpon_match_data {
 	enum airoha_ids version;
-	enum airoha_xpon_mode xpon_mode_comp;
+	/* Hardware capabilities; only implemented modes are advertised. */
+	u32 xpon_mode_comp;
+	enum airoha_xpon_mode default_mode;
 	u32 wan_mode_mask;
 	u8 gpon_fine_delay;
 	u16 gpon_rsp_time_activation;
@@ -53,6 +57,60 @@ struct airoha_xpon_match_data {
 	bool scu_dying_gasp_status;
 };
 
+
+/* EN7580 xpon_10g offsets relative to the MAC window at 0x1fb65000. */
+#define EN7580_XGSPON_SIZE		0x1000
+#define EN7580_XGSPON_SW_RST		0x000
+#define EN7580_XGSPON_MBI_MPI_STOP		0x004
+#define EN7580_XGSPON_ONU_ID		0x014
+#define EN7580_XGSPON_INT_ENABLE		0x040
+#define EN7580_XGSPON_INT_STATUS		0x044
+#define EN7580_XGSPON_FIFO_ERR_STS		0x050
+#define EN7580_XGSPON_TX_ERR_STS		0x054
+#define EN7580_XGSPON_RX_ERR_STS		0x058
+#define EN7580_XGSPON_PLOAMU_CTRL		0x100
+#define EN7580_XGSPON_ACTIVATION_ST	0x104
+#define EN7580_XGSPON_RSP_TIME		0x108
+#define EN7580_XGSPON_US_PROF_VLD		0x11c
+#define EN7580_XGSPON_US_AES_KEY_CTRL	0x200
+#define EN7580_XGSPON_DS_AES_KEY_VLD	0x204
+#define EN7580_XGSPON_TCONT_ID_CFG		0x250
+#define EN7580_XGSPON_TCONT_ID_STS		0x254
+#define EN7580_XGSPON_GPIDX_TBL_INIT	0x260
+#define EN7580_XGSPON_GEM_PORT_CFG		0x274
+#define EN7580_XGSPON_GEM_PORT_STS		0x278
+#define EN7580_XGSPON_IDLE_GEM_CTRL	0x280
+#define EN7580_XGSPON_DYING_GASP_CTRL	0x284
+#define EN7580_XGSPON_PLOAMU_FIFO_STS	0x300
+#define EN7580_XGSPON_PLOAMD_FIFO_STS	0x308
+#define EN7580_XGSPON_MIB_TBL_CONFIG	0x504
+
+#define EN7580_XGSPON_RST_N		BIT(0)
+#define EN7580_XGSPON_MBI_RX_STOP		BIT(0)
+#define EN7580_XGSPON_MBI_TX_STOP		BIT(8)
+#define EN7580_XGSPON_MPI_RX_STOP		BIT(16)
+#define EN7580_XGSPON_MPI_TX_STOP		BIT(24)
+#define EN7580_XGSPON_STOP_MASK		(EN7580_XGSPON_MBI_RX_STOP | \
+					 EN7580_XGSPON_MBI_TX_STOP | \
+					 EN7580_XGSPON_MPI_RX_STOP | \
+					 EN7580_XGSPON_MPI_TX_STOP)
+#define EN7580_XGSPON_PLOAMU_SW_CTRL	BIT(0)
+#define EN7580_XGSPON_STATE_O1		1
+#define EN7580_XGSPON_TCONT_WRITE		BIT(31)
+#define EN7580_XGSPON_TCONT_INDEX		GENMASK(24, 20)
+#define EN7580_XGSPON_GEM_WRITE		BIT(31)
+#define EN7580_XGSPON_GEM_UNICAST		BIT(17)
+#define EN7580_XGSPON_CMD_DONE		BIT(31)
+#define EN7580_XGSPON_TABLE_START		BIT(0)
+#define EN7580_XGSPON_TABLE_DONE		BIT(8)
+#define EN7580_XGSPON_IDLE_THRESHOLD	GENMASK(15, 0)
+#define EN7580_XGSPON_TCONTS		32
+#define EN7580_XGSPON_GEM_IDS		65536
+#define EN7580_XGSPON_RSP_TIME_DEFAULT	0x1600
+#define EN7580_XGSPON_IDLE_DEFAULT	0x120
+#define EN7580_XGSPON_CMD_TIMEOUT_US	3000
+#define EN7580_XGSPON_TABLE_TIMEOUT_US	100000
+#define EN7580_XGSPON_GEM_TIMEOUT_MS	10000
 
 /* GPON MAC register layout and protocol constants. */
 #define GPON_ONU_ID		0x000
@@ -374,6 +432,8 @@ struct xpon_priv {
 	void __iomem		*epon_reg;
 	void __iomem		*xgspon_reg;
 	void __iomem		*epon_reset_reg;
+	struct dentry		*xgspon_debugfs;
+	bool			xgspon_accessible;
 	struct device		*dev;
 	struct regmap		*scu;
 	const struct airoha_xpon_match_data *match_data;

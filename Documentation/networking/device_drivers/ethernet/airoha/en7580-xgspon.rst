@@ -7,7 +7,10 @@ Current scope
 -------------
 
 The ``airoha-xpon`` module retains the existing GPON and EPON backends.
-Only ``airoha,en7580-xpon`` selects the new ``airoha_xgspon.c`` backend.
+Only ``airoha,en7580-xpon`` selects the staged XGS-PON engine inside
+``airoha_xpon.c``. All three engines share ``xpon_priv``, resource lookup
+and registration with the generic XPON core; register access and protocol
+initialization remain specific to each engine.
 It prepares the EN7580 10G MAC, clears stale table entries and registers
 an XGS-PON object with the generic XPON core. Registration stays DOWN and
 carrier stays false in that object. It does not register a GDM2 link
@@ -23,6 +26,22 @@ Register status is available with ``CONFIG_DEBUG_FS`` under
 ``/sys/kernel/debug/airoha-xgspon-<platform-device-name>/status``.
 This diagnostic reads status and FIFO occupancy without consuming PLOAM
 words or reading registration credentials and security keys.
+
+Mode representation
+-------------------
+
+The values in ``enum xpon_mode`` are individual bits, and capability masks
+combine those values directly. A current mode must contain exactly one
+known bit. The provider advertises only implemented modes: GPON and EPON
+for the legacy engines, and XGS-PON alone for this EN7580 preparation stage.
+The hardware capability bitmap does not enable unimplemented engines.
+
+Generic Netlink family ``xpon`` uses version 2. ``XPON_ATTR_MODE`` and
+``XPON_ATTR_AVAILABLE_MODES`` both carry native-endian ``u32`` values;
+the former is a single mode bit and the latter a capability bitmap.
+Requests must use version 2. Version 1 clients must update both the mode
+encoding and attribute width; an 8-bit value cannot represent 50G-PON,
+25G-EPON or 50G-EPON. The sysfs mode names remain unchanged.
 
 SDK evidence
 ------------
@@ -84,9 +103,9 @@ Preparation and teardown
 ------------------------
 
 Probe requires a named MAC region, an exclusive MAC reset, an SCU syscon
-and an explicit GDM2 phandle. It rejects modes other than XGS-PON before
-accessing the hardware. All fallible resource lookups precede hardware
-configuration.
+and an explicit GDM2 phandle. Match data supplies the initial XGS-PON
+mode; mode control belongs to the generic XPON core rather than device
+tree. All fallible resource lookups precede hardware configuration.
 
 The MAC is held in reset while WAN_SEL is changed to 0x0a. After reset
 release, probe pulses the local active-low MAC reset, masks interrupts,

@@ -9,7 +9,7 @@
 
 static const struct nla_policy xpon_genl_policy[XPON_ATTR_MAX + 1] = {
 	[XPON_ATTR_IFINDEX] = { .type = NLA_U32 },
-	[XPON_ATTR_MODE] = { .type = NLA_U8 },
+	[XPON_ATTR_MODE] = { .type = NLA_U32 },
 };
 
 static struct genl_family xpon_genl_family;
@@ -17,7 +17,7 @@ static struct genl_family xpon_genl_family;
 static int xpon_genl_put_state(struct sk_buff *msg, struct xpon_device *xpon)
 {
 	if (nla_put_u32(msg, XPON_ATTR_IFINDEX, xpon->netdev->ifindex) ||
-	    nla_put_u8(msg, XPON_ATTR_MODE, xpon->state.mode) ||
+	    nla_put_u32(msg, XPON_ATTR_MODE, xpon->state.mode) ||
 	    nla_put_u32(msg, XPON_ATTR_AVAILABLE_MODES, xpon->modes) ||
 	    nla_put_u8(msg, XPON_ATTR_REGISTRATION, xpon->state.registration) ||
 	    nla_put_u8(msg, XPON_ATTR_CARRIER, xpon->state.carrier) ||
@@ -35,6 +35,8 @@ static int xpon_genl_get(struct sk_buff *skb, struct genl_info *info)
 	void *hdr;
 	int ret;
 
+	if (info->genlhdr->version != XPON_GENL_VERSION)
+		return -EPROTONOSUPPORT;
 	if (!info->attrs[XPON_ATTR_IFINDEX])
 		return -EINVAL;
 
@@ -71,12 +73,16 @@ out:
 static int xpon_genl_set_mode(struct sk_buff *skb, struct genl_info *info)
 {
 	struct xpon_device *xpon;
-	u8 mode;
+	u32 mode;
 	int ret;
 
+	if (info->genlhdr->version != XPON_GENL_VERSION)
+		return -EPROTONOSUPPORT;
 	if (!info->attrs[XPON_ATTR_IFINDEX] || !info->attrs[XPON_ATTR_MODE])
 		return -EINVAL;
-	mode = nla_get_u8(info->attrs[XPON_ATTR_MODE]);
+	mode = nla_get_u32(info->attrs[XPON_ATTR_MODE]);
+	if (!xpon_mode_valid(mode))
+		return -EINVAL;
 
 	xpon = xpon_device_find_by_ifindex(
 		nla_get_u32(info->attrs[XPON_ATTR_IFINDEX]));

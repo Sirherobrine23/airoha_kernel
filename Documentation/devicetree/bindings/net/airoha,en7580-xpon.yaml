@@ -47,10 +47,6 @@ properties:
     $ref: /schemas/types.yaml#/definitions/phandle
     description: System controller containing the WAN mode selector.
 
-  airoha,pon-mode:
-    const: xgspon
-    default: xgspon
-
   ethernet:
     $ref: /schemas/types.yaml#/definitions/phandle
     description: GDM2 Ethernet datapath associated with this MAC.
@@ -108,7 +104,6 @@ examples:
         resets = <&scuclk EN7580_XPON_MAC_RST>;
         reset-names = "mac";
         airoha,scu = <&scuclk>;
-        airoha,pon-mode = "xgspon";
         ethernet = <&gdm2>;
     };
 ...

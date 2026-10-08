@@ -67,7 +67,8 @@ xpon_device_register(struct device *parent,
 	int ret;
 
 	if (!parent || !desc || !desc->netdev ||
-	    desc->mode >= __XPON_MODE_MAX ||
+	    !xpon_mode_valid(desc->mode) ||
+	    (desc->modes & ~((unsigned long)XPON_MODE_MASK)) ||
 	    !(desc->modes & XPON_MODE_CAP(desc->mode)))
 		return ERR_PTR(-EINVAL);
 
@@ -166,7 +167,7 @@ int xpon_device_set_mode(struct xpon_device *xpon, enum xpon_mode mode)
 	enum xpon_mode old_mode;
 	int ret = 0;
 
-	if (!xpon || mode >= __XPON_MODE_MAX)
+	if (!xpon || !xpon_mode_valid(mode))
 		return -EINVAL;
 	if (!(xpon->modes & XPON_MODE_CAP(mode)))
 		return -EOPNOTSUPP;
