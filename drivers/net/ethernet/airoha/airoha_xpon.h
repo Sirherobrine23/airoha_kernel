@@ -34,7 +34,7 @@
 
 struct airoha_xpon_match_data {
 	enum airoha_ids version;
-	bool mode_from_dt;
+	enum airoha_xpon_mode xpon_mode_comp;
 	u32 wan_mode_mask;
 	u8 gpon_fine_delay;
 	u16 gpon_rsp_time_activation;
@@ -431,7 +431,7 @@ struct xpon_priv {
 	 * losing the first ranging allocation while the ordered workqueue is
 	 * processing printk output or earlier PLOAM copies.
 	 */
-	struct ploam_msg	ploam_rx_queue[GPON_PLOAM_RX_QUEUE_LEN];
+	struct airoha_ploam_msg	ploam_rx_queue[GPON_PLOAM_RX_QUEUE_LEN];
 	u16			ploam_rx_head;
 	u16			ploam_rx_tail;
 	u32			ploam_rx_drops;

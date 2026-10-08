@@ -668,7 +668,7 @@ static void gpon_reset_activation_context(struct xpon_priv *priv)
 	u32 sn_cfg;
 
 	gpon_clear_bits(priv, GPON_GBL_CFG, GBL_CFG_US_FEC_EN);
-	gpon_write(priv, GPON_ONU_ID, PLOAM_ONU_UNASSIGNED);
+	gpon_write(priv, GPON_ONU_ID, GPON_PLOAM_ONU_UNASSIGNED);
 	gpon_write(priv, GPON_ACTIVATION_ST, GPON_O1_INITIAL);
 	gpon_write(priv, GPON_PRE_ASSIGNED_DLY, 0);
 	gpon_write(priv, GPON_EQD, 0);
@@ -1158,7 +1158,7 @@ static int gpon_wait_ploam_tx_space(struct xpon_priv *priv, u32 *available)
 	ret = readl_poll_timeout_atomic(priv->gpon_reg + GPON_PLOAMu_FIFO_STS,
 					status,
 					(status & PLOAMu_FIFO_AVAIL_MASK) >=
-					PLOAM_WORDS, 1,
+					AIROHA_GPON_PLOAM_WORDS, 1,
 					GPON_PLOAM_TX_TIMEOUT_US);
 	*available = status & PLOAMu_FIFO_AVAIL_MASK;
 
@@ -1166,14 +1166,14 @@ static int gpon_wait_ploam_tx_space(struct xpon_priv *priv, u32 *available)
 }
 
 static void gpon_hw_send_ploam(struct xpon_priv *priv,
-			       const struct ploam_msg *msg, int times)
+			       const struct airoha_ploam_msg *msg, int times)
 {
 	u8 onu_id = msg->value[0] >> 24;
 	u8 type = msg->value[0] >> 16;
 	bool ready, los;
 	int ret, t;
 
-	if (type != PLOAM_UP_DYING_GASP) {
+	if (type != GPON_PLOAM_UP_DYING_GASP) {
 		ret = airoha_xpon_phy_get_link_state(priv->phy, &ready, &los);
 		if (!ret && (!ready || los)) {
 			dev_dbg_ratelimited(priv->dev,
@@ -1183,7 +1183,7 @@ static void gpon_hw_send_ploam(struct xpon_priv *priv,
 		}
 	}
 
-	if (type != PLOAM_UP_REI)
+	if (type != GPON_PLOAM_UP_REI)
 		dev_dbg(priv->dev,
 			"PLOAM TX: onu=%u type=%#04x copies=%d words=%08x/%08x/%08x\n",
 			onu_id, type, times, msg->value[0], msg->value[1], msg->value[2]);
@@ -1196,7 +1196,7 @@ static void gpon_hw_send_ploam(struct xpon_priv *priv,
 		if (ret) {
 			dev_warn_ratelimited(priv->dev,
 					     "PLOAM TX FIFO timeout: avail=%u requested_words=%u copy=%d/%d\n",
-					     avail, PLOAM_WORDS, t + 1, times);
+					     avail, AIROHA_GPON_PLOAM_WORDS, t + 1, times);
 			break;
 		}
 
@@ -1213,7 +1213,7 @@ static void gpon_ploam_rx_queue_reset(struct xpon_priv *priv)
 }
 
 static bool gpon_ploam_rx_queue_push(struct xpon_priv *priv,
-				     const struct ploam_msg *msg)
+				     const struct airoha_ploam_msg *msg)
 {
 	u16 head = READ_ONCE(priv->ploam_rx_head);
 	u16 next = (head + 1) & GPON_PLOAM_RX_QUEUE_MASK;
@@ -1233,7 +1233,7 @@ static bool gpon_ploam_rx_queue_push(struct xpon_priv *priv,
 }
 
 static bool gpon_ploam_rx_queue_pop(struct xpon_priv *priv,
-				    struct ploam_msg *msg)
+				    struct airoha_ploam_msg *msg)
 {
 	u16 tail = READ_ONCE(priv->ploam_rx_tail);
 
@@ -1250,31 +1250,24 @@ static bool gpon_ploam_rx_queue_pop(struct xpon_priv *priv,
 }
 
 static void gpon_fastpath_assign_onu_id(struct xpon_priv *priv,
-					const struct ploam_msg *msg)
+					const struct airoha_ploam_msg *msg)
 {
-	u8 msg_sn[8];
+	struct gpon_ploam_msg decoded;
 	u8 onu_id;
 
-	if ((msg->value[0] >> 24) != PLOAM_ONU_BCAST ||
-	    ((msg->value[0] >> 16) & 0xff) != PLOAM_DOWN_ASSIGN_ONU_ID)
+	if ((msg->value[0] >> 24) != GPON_PLOAM_ONU_BCAST ||
+	    ((msg->value[0] >> 16) & 0xff) != GPON_PLOAM_DOWN_ASSIGN_ONU_ID)
 		return;
 
 	if ((gpon_read(priv, GPON_ACTIVATION_ST) & 0x7) !=
 	    GPON_O3_SERIAL_NUMBER)
 		return;
 
-	msg_sn[0] = msg->value[0];
-	msg_sn[1] = msg->value[1] >> 24;
-	msg_sn[2] = msg->value[1] >> 16;
-	msg_sn[3] = msg->value[1] >> 8;
-	msg_sn[4] = msg->value[1];
-	msg_sn[5] = msg->value[2] >> 24;
-	msg_sn[6] = msg->value[2] >> 16;
-	msg_sn[7] = msg->value[2] >> 8;
-	if (memcmp(msg_sn, priv->hw_sn, sizeof(msg_sn)))
+	airoha_ploam_decode(msg, &decoded);
+	if (memcmp(decoded.content + 1, priv->hw_sn, sizeof(priv->hw_sn)))
 		return;
 
-	onu_id = (msg->value[0] >> 8) & ONU_ID_MASK;
+	onu_id = decoded.content[0] & ONU_ID_MASK;
 
 	/*
 	 * Match the vendor ISR ordering. The OLT may issue the first ranging
@@ -1293,12 +1286,12 @@ static void gpon_drain_ploam_fifo_irq(struct xpon_priv *priv)
 	int budget = GPON_PLOAM_RX_QUEUE_LEN - 1;
 
 	while (budget--) {
-		struct ploam_msg msg;
+		struct airoha_ploam_msg msg;
 		u32 depth;
 
 		depth = gpon_read(priv, GPON_PLOAMd_FIFO_STS) &
 			PLOAMd_FIFO_USED_MASK;
-		if (depth < PLOAM_WORDS)
+		if (depth < AIROHA_GPON_PLOAM_WORDS)
 			break;
 
 		msg.value[0] = gpon_ploam_read_word(priv);
@@ -1312,7 +1305,7 @@ static void gpon_drain_ploam_fifo_irq(struct xpon_priv *priv)
 
 static void gpon_process_ploam_queue(struct xpon_priv *priv)
 {
-	struct ploam_msg msg;
+	struct airoha_ploam_msg msg;
 
 	while (gpon_ploam_rx_queue_pop(priv, &msg)) {
 		dev_dbg(priv->dev,
@@ -1327,8 +1320,8 @@ static void gpon_process_ploam_queue(struct xpon_priv *priv)
  * ploam_ops callbacks
  * -------------------------------------------------------------------- */
 
-static void gpon_cb_send_upstream(void *hw_priv, const struct ploam_msg *msg,
-				   int times)
+static void gpon_cb_send_upstream(void *hw_priv,
+				  const struct airoha_ploam_msg *msg, int times)
 {
 	gpon_hw_send_ploam(hw_priv, msg, times);
 }
@@ -1713,7 +1706,7 @@ static int gpon_cb_set_omci_gem(void *hw_priv, u16 gem_port_id, bool valid)
 		return ret;
 	}
 
-	if (onu_id == PLOAM_ONU_UNASSIGNED) {
+	if (onu_id == GPON_PLOAM_ONU_UNASSIGNED) {
 		dev_err(priv->dev,
 			"cannot enable GPON OMCC GEM %u without an ONU-ID\n",
 			gem_port_id);
@@ -2327,7 +2320,7 @@ static void gpon_cb_state_changed(void *hw_priv, enum gpon_state state)
 		 * Drop the ONU-ID, as the TO1 return to O2 does: the next
 		 * activation gets a new one from the OLT.
 		 */
-		gpon_write(priv, GPON_ONU_ID, PLOAM_ONU_UNASSIGNED);
+		gpon_write(priv, GPON_ONU_ID, GPON_PLOAM_ONU_UNASSIGNED);
 		break;
 	case GPON_O1_INITIAL:
 		cancel_delayed_work(&priv->to1_work);
@@ -2820,7 +2813,7 @@ static void gpon_to1_work_fn(struct work_struct *work)
 		dev_warn(priv->dev,
 			 "GPON TO1 expired in O%d (%u/%u), returning to O2\n",
 			 (int)st, priv->to1_failures, GPON_TO1_MAX_RETRIES);
-		gpon_write(priv, GPON_ONU_ID, PLOAM_ONU_UNASSIGNED);
+		gpon_write(priv, GPON_ONU_ID, GPON_PLOAM_ONU_UNASSIGNED);
 		ploam_reset(priv->ploam);
 		ploam_start(priv->ploam);
 		return;
@@ -4637,21 +4630,8 @@ static void airoha_xpon_remove(struct platform_device *pdev)
 	priv->gdm_dev = NULL;
 }
 
-
-static const struct airoha_xpon_match_data en7523_xpon_data = {
-	.version = airoha_en7523,
-	.mode_from_dt = true,
-	.wan_mode_mask = EN7523_SCU_WAN_MODE_MASK,
-	.gpon_fine_delay = DBG_DLY_FINE_INT_DEFAULT,
-	.gpon_rsp_time_activation = GPON_RSP_TIME_ACT_EN7523,
-	.gpon_idle_gem_threshold = GPON_IDLE_GEM_THLD_EN7523,
-	.en7523_gpon_defaults = true,
-	.gpon_reset_on_start = true,
-};
-
 static const struct airoha_xpon_match_data en751221_xpon_data = {
 	.version = econet_en751221,
-	.mode_from_dt = true,
 	.wan_mode_mask = EN751221_SCU_WAN_MODE_MASK,
 	.gpon_fine_delay = 0x1c,
 	.gpon_rsp_time_activation = GPON_RSP_TIME_ACT_EN751221,
@@ -4663,6 +4643,8 @@ static const struct airoha_xpon_match_data en751221_xpon_data = {
 	.gpon_rearm_tx_on_overhead = true,
 	.gpon_runtime_tgen = true,
 	.scu_dying_gasp_status = true,
+	.xpon_mode_comp = XPON_MODE_GPON |
+			  XPON_MODE_EPON,
 };
 
 /*
@@ -4671,7 +4653,6 @@ static const struct airoha_xpon_match_data en751221_xpon_data = {
  */
 static const struct airoha_xpon_match_data en7528_xpon_data = {
 	.version = econet_en7528,
-	.mode_from_dt = true,
 	.wan_mode_mask = EN7528_SCU_WAN_MODE_MASK,
 	.gpon_fine_delay = 0x1c,
 	.gpon_rsp_time_activation = GPON_RSP_TIME_ACT_EN7528,
@@ -4684,19 +4665,37 @@ static const struct airoha_xpon_match_data en7528_xpon_data = {
 	.gpon_runtime_tgen = true,
 	.gpon_has_mpi = true,
 	.scu_dying_gasp_status = true,
+	.xpon_mode_comp = XPON_MODE_GPON |
+			  XPON_MODE_EPON,
 };
 
-/* The EN7580 10G engine has a separate register and activation backend. */
 static const struct airoha_xpon_match_data en7580_xpon_data = {
 	.version = econet_en7580,
+	.xpon_mode_comp = XPON_MODE_GPON |
+			  XPON_MODE_XGPON |
+			  XPON_MODE_XGSPON |
+			  XPON_MODE_EPON |
+			  XPON_MODE_XEPON,
+};
+
+static const struct airoha_xpon_match_data en7523_xpon_data = {
+	.version = airoha_en7523,
+	.wan_mode_mask = EN7523_SCU_WAN_MODE_MASK,
+	.gpon_fine_delay = DBG_DLY_FINE_INT_DEFAULT,
+	.gpon_rsp_time_activation = GPON_RSP_TIME_ACT_EN7523,
+	.gpon_idle_gem_threshold = GPON_IDLE_GEM_THLD_EN7523,
+	.en7523_gpon_defaults = true,
+	.gpon_reset_on_start = true,
+	.xpon_mode_comp = XPON_MODE_GPON |
+			  XPON_MODE_EPON,
 };
 
 static const struct of_device_id airoha_xpon_of_match[] = {
-	{ .compatible = "airoha,en7580-xpon", .data = &en7580_xpon_data },
-	{ .compatible = "airoha,en7523-xpon", .data = &en7523_xpon_data },
+	{ .compatible = "econet,en751221-xpon", .data = &en751221_xpon_data },
 	{ .compatible = "airoha,en751627-xpon", .data = &en7528_xpon_data },
 	{ .compatible = "airoha,en7528-xpon", .data = &en7528_xpon_data },
-	{ .compatible = "econet,en751221-xpon", .data = &en751221_xpon_data },
+	{ .compatible = "airoha,en7580-xpon", .data = &en7580_xpon_data },
+	{ .compatible = "airoha,en7523-xpon", .data = &en7523_xpon_data },
 	{}
 };
 MODULE_DEVICE_TABLE(of, airoha_xpon_of_match);

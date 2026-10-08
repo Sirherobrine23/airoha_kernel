@@ -65,6 +65,9 @@ xpon_led_get_optional(struct xpon_device *xpon, char *name)
 
 int xpon_leds_register(struct xpon_device *xpon)
 {
+	if (!IS_REACHABLE(CONFIG_LEDS_CLASS))
+		return 0;
+
 	if (!xpon->pon_led) {
 		xpon->pon_led = xpon_led_get_optional(xpon, "pon");
 		if (IS_ERR(xpon->pon_led))
@@ -89,6 +92,9 @@ int xpon_leds_register(struct xpon_device *xpon)
 void xpon_leds_update(struct xpon_device *xpon,
 		      const struct xpon_state *state)
 {
+	if (!IS_REACHABLE(CONFIG_LEDS_CLASS))
+		return;
+
 	/*
 	 * Some receivers leave LOS deasserted with no fibre at all and only
 	 * drop signal detect.  Without a usable optical signal show LOS, or

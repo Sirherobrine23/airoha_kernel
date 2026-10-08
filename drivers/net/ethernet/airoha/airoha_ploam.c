@@ -48,7 +48,7 @@ struct ploam_priv {
 	u32			eqd;
 
 	/* EN7521 downstream PLOAM deduplication filter */
-	struct ploam_msg	dedup_prev;
+	struct airoha_ploam_msg	dedup_prev;
 	bool			dedup_prev_valid;
 	u32			dedup_same_cnt;
 };
@@ -62,33 +62,28 @@ struct ploam_priv {
  *   bytes 2-11: payload (content[0..9])
  * -------------------------------------------------------------------- */
 
-static void ploam_unpack(const struct ploam_msg *msg,
+static void ploam_unpack(const struct airoha_ploam_msg *msg,
 			 u8 *onu_id, u8 *type,
-			 u8 content[PLOAM_CONTENT_LEN])
+			 u8 content[GPON_PLOAM_CONTENT_LEN])
 {
-	*onu_id    = (msg->value[0] >> 24) & 0xFF;
-	*type      = (msg->value[0] >> 16) & 0xFF;
-	content[0] = (msg->value[0] >>  8) & 0xFF;
-	content[1] =  msg->value[0]        & 0xFF;
-	content[2] = (msg->value[1] >> 24) & 0xFF;
-	content[3] = (msg->value[1] >> 16) & 0xFF;
-	content[4] = (msg->value[1] >>  8) & 0xFF;
-	content[5] =  msg->value[1]        & 0xFF;
-	content[6] = (msg->value[2] >> 24) & 0xFF;
-	content[7] = (msg->value[2] >> 16) & 0xFF;
-	content[8] = (msg->value[2] >>  8) & 0xFF;
-	content[9] =  msg->value[2]        & 0xFF;
+	struct gpon_ploam_msg decoded;
+
+	airoha_ploam_decode(msg, &decoded);
+	*onu_id = decoded.onu_id;
+	*type = decoded.msg_id;
+	memcpy(content, decoded.content, GPON_PLOAM_CONTENT_LEN);
 }
 
-static void ploam_pack(struct ploam_msg *msg, u8 onu_id, u8 type,
-		       const u8 content[PLOAM_CONTENT_LEN])
+static void ploam_pack(struct airoha_ploam_msg *msg, u8 onu_id, u8 type,
+		       const u8 content[GPON_PLOAM_CONTENT_LEN])
 {
-	msg->value[0] = ((u32)onu_id     << 24) | ((u32)type      << 16) |
-			((u32)content[0] <<  8) | content[1];
-	msg->value[1] = ((u32)content[2] << 24) | ((u32)content[3] << 16) |
-			((u32)content[4] <<  8) | content[5];
-	msg->value[2] = ((u32)content[6] << 24) | ((u32)content[7] << 16) |
-			((u32)content[8] <<  8) | content[9];
+	struct gpon_ploam_msg decoded = {
+		.onu_id = onu_id,
+		.msg_id = type,
+	};
+
+	memcpy(decoded.content, content, GPON_PLOAM_CONTENT_LEN);
+	airoha_ploam_encode(msg, &decoded);
 }
 
 /* -----------------------------------------------------------------------
@@ -100,7 +95,7 @@ static void ploam_pack(struct ploam_msg *msg, u8 onu_id, u8 type,
  * -------------------------------------------------------------------- */
 
 static bool ploam_filter_suppress(struct ploam_priv *pp,
-				  const struct ploam_msg *msg, u8 type)
+				  const struct airoha_ploam_msg *msg, u8 type)
 {
 	bool same;
 
@@ -111,7 +106,7 @@ static bool ploam_filter_suppress(struct ploam_priv *pp,
 		return false;
 	}
 
-	if (type == PLOAM_DOWN_RANGING_TIME) {
+	if (type == GPON_PLOAM_DOWN_RANGING_TIME) {
 		/* Match the vendor seven-byte memcmp without depending on
 		 * struct layout or host endianness.
 		 */
@@ -141,9 +136,9 @@ static bool ploam_filter_suppress(struct ploam_priv *pp,
  * -------------------------------------------------------------------- */
 
 static void ploam_send(struct ploam_priv *pp, u8 type,
-		       const u8 content[PLOAM_CONTENT_LEN], int times)
+		       const u8 content[GPON_PLOAM_CONTENT_LEN], int times)
 {
-	struct ploam_msg msg;
+	struct airoha_ploam_msg msg;
 
 	ploam_pack(&msg, pp->onu_id, type, content);
 	pp->ops->send_upstream(pp->hw_priv, &msg, times);
@@ -151,29 +146,29 @@ static void ploam_send(struct ploam_priv *pp, u8 type,
 
 static void ploam_send_password(struct ploam_priv *pp)
 {
-	u8 content[PLOAM_CONTENT_LEN] = {};
+	u8 content[GPON_PLOAM_CONTENT_LEN] = {};
 
 	memcpy(content, pp->passwd, 10);
-	ploam_send(pp, PLOAM_UP_PASSWORD, content, PLOAM_REPEATED_MSG_REPS);
+	ploam_send(pp, GPON_PLOAM_UP_PASSWORD, content, PLOAM_REPEATED_MSG_REPS);
 }
 
 static void ploam_send_dying_gasp(struct ploam_priv *pp)
 {
-	u8 content[PLOAM_CONTENT_LEN] = {};
+	u8 content[GPON_PLOAM_CONTENT_LEN] = {};
 
-	ploam_send(pp, PLOAM_UP_DYING_GASP, content,
+	ploam_send(pp, GPON_PLOAM_UP_DYING_GASP, content,
 		   PLOAM_REPEATED_MSG_REPS);
 }
 
 static void ploam_send_rei(struct ploam_priv *pp, u32 bip_count)
 {
-	u8 content[PLOAM_CONTENT_LEN] = {};
+	u8 content[GPON_PLOAM_CONTENT_LEN] = {};
 
 	put_unaligned_be32(bip_count, &content[0]);
 	/* content[4] bits[3:0] = 4-bit sequence number */
 	content[4] = pp->rei_seq & 0x0F;
 	pp->rei_seq = (pp->rei_seq + 1) & 0x0F;
-	ploam_send(pp, PLOAM_UP_REI, content, 1);
+	ploam_send(pp, GPON_PLOAM_UP_REI, content, 1);
 }
 
 /* dm_id = downstream message type being acknowledged;
@@ -181,18 +176,18 @@ static void ploam_send_rei(struct ploam_priv *pp, u32 bip_count)
 static void ploam_send_ack(struct ploam_priv *pp, u8 dm_id,
 			   const u8 dm_bytes[9])
 {
-	u8 content[PLOAM_CONTENT_LEN] = {};
+	u8 content[GPON_PLOAM_CONTENT_LEN] = {};
 
 	content[0] = dm_id;
-	memcpy(&content[1], dm_bytes, 9 > (PLOAM_CONTENT_LEN - 1) ?
-	       (PLOAM_CONTENT_LEN - 1) : 9);
-	ploam_send(pp, PLOAM_UP_ACK, content, PLOAM_REPEATED_MSG_REPS);
+	memcpy(&content[1], dm_bytes, 9 > (GPON_PLOAM_CONTENT_LEN - 1) ?
+	       (GPON_PLOAM_CONTENT_LEN - 1) : 9);
+	ploam_send(pp, GPON_PLOAM_UP_ACK, content, PLOAM_REPEATED_MSG_REPS);
 }
 
 /* Helper: build the 9-byte dm_bytes from a received message's onu_id,
  * type and content[0..6] for use in Acknowledge */
 static void ploam_make_dm_bytes(u8 dm_bytes[9], u8 onu_id, u8 type,
-				const u8 content[PLOAM_CONTENT_LEN])
+				const u8 content[GPON_PLOAM_CONTENT_LEN])
 {
 	dm_bytes[0] = onu_id;
 	dm_bytes[1] = type;
@@ -201,7 +196,7 @@ static void ploam_make_dm_bytes(u8 dm_bytes[9], u8 onu_id, u8 type,
 
 static void ploam_send_encrypt_key(struct ploam_priv *pp)
 {
-	u8 content[PLOAM_CONTENT_LEN] = {};
+	u8 content[GPON_PLOAM_CONTENT_LEN] = {};
 	int i;
 
 	/* Two fragments of 8 key bytes each, as the Nokia/ALCL OLT expects:
@@ -212,7 +207,7 @@ static void ploam_send_encrypt_key(struct ploam_priv *pp)
 		content[0] = pp->key_idx;
 		content[1] = i;
 		memcpy(&content[2], pp->aes_key + i * 8, 8);
-		ploam_send(pp, PLOAM_UP_ENCRYPT_KEY, content,
+		ploam_send(pp, GPON_PLOAM_UP_ENCRYPT_KEY, content,
 			   PLOAM_REPEATED_MSG_REPS);
 	}
 }
@@ -247,16 +242,16 @@ static void ploam_set_state(struct ploam_priv *pp, enum gpon_state new_state)
  *   Bit-field positions follow the __BIG_ENDIAN layout in gpon_ploam_raw.h.
  * -------------------------------------------------------------------- */
 
-/* PLOAM_DOWN_UPSTREAM_OVERHEAD (0x01) — broadcast only */
+/* GPON_PLOAM_DOWN_UPSTREAM_OVERHEAD (0x01) — broadcast only */
 static void handle_upstream_overhead(struct ploam_priv *pp,
 				     u8 onu_id,
-				     const u8 c[PLOAM_CONTENT_LEN])
+				     const u8 c[GPON_PLOAM_CONTENT_LEN])
 {
 	u8 delim[3];
 	bool delay_mode;
 	u16 delay_time;
 
-	if (onu_id != PLOAM_ONU_BCAST)
+	if (onu_id != GPON_PLOAM_ONU_BCAST)
 		return;
 	if (pp->state != GPON_O2_STANDBY)
 		return;
@@ -277,12 +272,12 @@ static void handle_upstream_overhead(struct ploam_priv *pp,
 	ploam_set_state(pp, GPON_O3_SERIAL_NUMBER);
 }
 
-/* PLOAM_DOWN_ASSIGN_ONU_ID (0x03) — broadcast only */
+/* GPON_PLOAM_DOWN_ASSIGN_ONU_ID (0x03) — broadcast only */
 static void handle_assign_onu_id(struct ploam_priv *pp,
 				 u8 onu_id,
-				 const u8 c[PLOAM_CONTENT_LEN])
+				 const u8 c[GPON_PLOAM_CONTENT_LEN])
 {
-	if (onu_id != PLOAM_ONU_BCAST)
+	if (onu_id != GPON_PLOAM_ONU_BCAST)
 		return;
 	if (pp->state != GPON_O3_SERIAL_NUMBER)
 		return;
@@ -297,9 +292,9 @@ static void handle_assign_onu_id(struct ploam_priv *pp,
 	pp->ops->set_onu_id(pp->hw_priv, pp->onu_id);
 }
 
-/* PLOAM_DOWN_RANGING_TIME (0x04) — unicast */
+/* GPON_PLOAM_DOWN_RANGING_TIME (0x04) — unicast */
 static void handle_ranging_time(struct ploam_priv *pp,
-				const u8 c[PLOAM_CONTENT_LEN])
+				const u8 c[GPON_PLOAM_CONTENT_LEN])
 {
 	u32 new_eqd;
 	u8 eqd_type;
@@ -333,10 +328,10 @@ static void handle_ranging_time(struct ploam_priv *pp,
 	}
 }
 
-/* PLOAM_DOWN_DEACTIVATE_ONU_ID (0x05) — broadcast or unicast */
+/* GPON_PLOAM_DOWN_DEACTIVATE_ONU_ID (0x05) — broadcast or unicast */
 static void handle_deactivate_onu(struct ploam_priv *pp, u8 onu_id)
 {
-	if (onu_id != pp->onu_id && onu_id != PLOAM_ONU_BCAST)
+	if (onu_id != pp->onu_id && onu_id != GPON_PLOAM_ONU_BCAST)
 		return;
 	if (pp->state != GPON_O4_RANGING &&
 	    pp->state != GPON_O5_OPERATION &&
@@ -346,16 +341,16 @@ static void handle_deactivate_onu(struct ploam_priv *pp, u8 onu_id)
 	pp->ops->deactivate(pp->hw_priv);
 }
 
-/* PLOAM_DOWN_DISABLE_SN (0x06) — broadcast only */
+/* GPON_PLOAM_DOWN_DISABLE_SN (0x06) — broadcast only */
 static void handle_disable_sn(struct ploam_priv *pp,
-			       const u8 c[PLOAM_CONTENT_LEN])
+			       const u8 c[GPON_PLOAM_CONTENT_LEN])
 {
 	/* c[0]=mode, c[1..8]=SN */
 	u8 mode = c[0];
 
 	if (pp->state == GPON_O7_EMERGENCY_STOP) {
-		if (mode == PLOAM_DISABLE_PARTICIPATE_ALL ||
-		    (mode == PLOAM_DISABLE_PARTICIPATE &&
+		if (mode == GPON_PLOAM_DISABLE_PARTICIPATE_ALL ||
+		    (mode == GPON_PLOAM_DISABLE_PARTICIPATE &&
 		     memcmp(&c[1], pp->sn, 8) == 0)) {
 			pp->emergency_state = false;
 			/*
@@ -367,8 +362,8 @@ static void handle_disable_sn(struct ploam_priv *pp,
 			ploam_start(pp);
 		}
 	} else if (pp->state != GPON_O1_INITIAL) {
-		if (mode == PLOAM_DISABLE_DENIED_ALL ||
-		    (mode == PLOAM_DISABLE_DENIED &&
+		if (mode == GPON_PLOAM_DISABLE_DENIED_ALL ||
+		    (mode == GPON_PLOAM_DISABLE_DENIED &&
 		     memcmp(&c[1], pp->sn, 8) == 0)) {
 			pp->emergency_state = true;
 			ploam_set_state(pp, GPON_O7_EMERGENCY_STOP);
@@ -376,10 +371,10 @@ static void handle_disable_sn(struct ploam_priv *pp,
 	}
 }
 
-/* PLOAM_DOWN_ENCRYPTED_PORT_ID (0x08) — unicast */
+/* GPON_PLOAM_DOWN_ENCRYPTED_PORT_ID (0x08) — unicast */
 static void handle_encrypted_port_id(struct ploam_priv *pp,
 				      u8 onu_id, u8 type,
-				      const u8 c[PLOAM_CONTENT_LEN])
+				      const u8 c[GPON_PLOAM_CONTENT_LEN])
 {
 	u16 port_id;
 	u8 encrypt;
@@ -399,7 +394,7 @@ static void handle_encrypted_port_id(struct ploam_priv *pp,
 	ploam_send_ack(pp, type, dm_bytes);
 }
 
-/* PLOAM_DOWN_REQUEST_PASSWORD (0x09) — unicast */
+/* GPON_PLOAM_DOWN_REQUEST_PASSWORD (0x09) — unicast */
 static void handle_request_password(struct ploam_priv *pp, u8 onu_id)
 {
 	if (onu_id != pp->onu_id)
@@ -408,10 +403,10 @@ static void handle_request_password(struct ploam_priv *pp, u8 onu_id)
 		ploam_send_password(pp);
 }
 
-/* PLOAM_DOWN_ASSIGN_ALLOC_ID (0x0A) — unicast */
+/* GPON_PLOAM_DOWN_ASSIGN_ALLOC_ID (0x0A) — unicast */
 static void handle_assign_alloc_id(struct ploam_priv *pp,
 				    u8 onu_id, u8 type,
-				    const u8 c[PLOAM_CONTENT_LEN])
+				    const u8 c[GPON_PLOAM_CONTENT_LEN])
 {
 	u16 alloc_id;
 	bool allocate;
@@ -435,21 +430,21 @@ send_ack:
 	ploam_send_ack(pp, type, dm_bytes);
 }
 
-/* PLOAM_DOWN_POPUP (0x0C) — broadcast or unicast */
+/* GPON_PLOAM_DOWN_POPUP (0x0C) — broadcast or unicast */
 static void handle_popup(struct ploam_priv *pp, u8 onu_id)
 {
-	if (onu_id != pp->onu_id && onu_id != PLOAM_ONU_BCAST)
+	if (onu_id != pp->onu_id && onu_id != GPON_PLOAM_ONU_BCAST)
 		return;
 	if (pp->state != GPON_O6_POPUP)
 		return;
 
-	if (onu_id == PLOAM_ONU_BCAST)
+	if (onu_id == GPON_PLOAM_ONU_BCAST)
 		ploam_set_state(pp, GPON_O4_RANGING);
 	else
 		ploam_set_state(pp, GPON_O5_OPERATION);
 }
 
-/* PLOAM_DOWN_REQUEST_KEY (0x0D) — unicast */
+/* GPON_PLOAM_DOWN_REQUEST_KEY (0x0D) — unicast */
 static void handle_request_key(struct ploam_priv *pp, u8 onu_id)
 {
 	if (onu_id != pp->onu_id)
@@ -471,10 +466,10 @@ static void handle_request_key(struct ploam_priv *pp, u8 onu_id)
 	pp->key_idx ^= 1;
 }
 
-/* PLOAM_DOWN_CONFIGURE_PORT_ID (0x0E) — unicast */
+/* GPON_PLOAM_DOWN_CONFIGURE_PORT_ID (0x0E) — unicast */
 static void handle_configure_port_id(struct ploam_priv *pp,
 				      u8 onu_id, u8 type,
-				      const u8 c[PLOAM_CONTENT_LEN])
+				      const u8 c[GPON_PLOAM_CONTENT_LEN])
 {
 	u16 port_id;
 	bool activate;
@@ -502,16 +497,16 @@ send_ack:
 	ploam_send_ack(pp, type, dm_bytes);
 }
 
-/* PLOAM_DOWN_BER_INTERVAL (0x12) — broadcast or unicast */
+/* GPON_PLOAM_DOWN_BER_INTERVAL (0x12) — broadcast or unicast */
 static void handle_ber_interval(struct ploam_priv *pp,
 				u8 onu_id, u8 type,
-				const u8 c[PLOAM_CONTENT_LEN])
+				const u8 c[GPON_PLOAM_CONTENT_LEN])
 {
 	u32 interval_frames;
 	u32 interval_ms;
 	u8 dm_bytes[9];
 
-	if (onu_id != pp->onu_id && onu_id != PLOAM_ONU_BCAST)
+	if (onu_id != pp->onu_id && onu_id != GPON_PLOAM_ONU_BCAST)
 		return;
 	if (pp->state == GPON_O5_OPERATION) {
 		/* c[0..3] = interval in frames; convert to ms (125 µs/frame) */
@@ -525,10 +520,10 @@ static void handle_ber_interval(struct ploam_priv *pp,
 	ploam_send_ack(pp, type, dm_bytes);
 }
 
-/* PLOAM_DOWN_KEY_SWITCHING_TIME (0x13) — unicast */
+/* GPON_PLOAM_DOWN_KEY_SWITCHING_TIME (0x13) — unicast */
 static void handle_key_switching_time(struct ploam_priv *pp,
 				       u8 onu_id, u8 type,
-				       const u8 c[PLOAM_CONTENT_LEN])
+				       const u8 c[GPON_PLOAM_CONTENT_LEN])
 {
 	u32 superframe;
 	u8 dm_bytes[9];
@@ -544,12 +539,12 @@ static void handle_key_switching_time(struct ploam_priv *pp,
 	ploam_send_ack(pp, type, dm_bytes);
 }
 
-/* PLOAM_DOWN_EXTENDED_BURST_LEN (0x14) — broadcast only, O3 only */
+/* GPON_PLOAM_DOWN_EXTENDED_BURST_LEN (0x14) — broadcast only, O3 only */
 static void handle_extended_burst_length(struct ploam_priv *pp,
 					  u8 onu_id,
-					  const u8 c[PLOAM_CONTENT_LEN])
+					  const u8 c[GPON_PLOAM_CONTENT_LEN])
 {
-	if (onu_id != PLOAM_ONU_BCAST)
+	if (onu_id != GPON_PLOAM_ONU_BCAST)
 		return;
 	if (pp->state != GPON_O3_SERIAL_NUMBER)
 		return;
@@ -558,25 +553,25 @@ static void handle_extended_burst_length(struct ploam_priv *pp,
 	pp->ops->set_t3_preamble(pp->hw_priv, c[0], c[1]);
 }
 
-/* PLOAM_DOWN_SWIFT_POPUP (0x16) — broadcast only */
+/* GPON_PLOAM_DOWN_SWIFT_POPUP (0x16) — broadcast only */
 static void handle_swift_popup(struct ploam_priv *pp, u8 onu_id)
 {
-	if (onu_id != PLOAM_ONU_BCAST)
+	if (onu_id != GPON_PLOAM_ONU_BCAST)
 		return;
 	if (pp->state == GPON_O6_POPUP)
 		ploam_set_state(pp, GPON_O5_OPERATION);
 }
 
-/* PLOAM_DOWN_RANGING_ADJUSTMENT (0x17) — unicast or broadcast */
+/* GPON_PLOAM_DOWN_RANGING_ADJUSTMENT (0x17) — unicast or broadcast */
 static void handle_ranging_adjustment(struct ploam_priv *pp,
 				       u8 onu_id, u8 type,
-				       const u8 c[PLOAM_CONTENT_LEN])
+				       const u8 c[GPON_PLOAM_CONTENT_LEN])
 {
 	u32 eqd_offset;
 	u8 s_bit;
 	u8 dm_bytes[9];
 
-	if (onu_id != pp->onu_id && onu_id != PLOAM_ONU_BCAST)
+	if (onu_id != pp->onu_id && onu_id != GPON_PLOAM_ONU_BCAST)
 		return;
 	if (pp->state == GPON_O5_OPERATION) {
 		/* c[0] BE: bits[7:2]=resv, bit[1]=s_bit, bit[0]=resv */
@@ -610,7 +605,7 @@ struct ploam_priv *ploam_alloc(const struct ploam_ops *ops, void *hw_priv,
 	pp->ops     = ops;
 	pp->hw_priv = hw_priv;
 	pp->state   = GPON_O1_INITIAL;
-	pp->onu_id  = PLOAM_ONU_UNASSIGNED;
+	pp->onu_id  = GPON_PLOAM_ONU_UNASSIGNED;
 
 	memcpy(pp->sn, sn, sizeof(pp->sn));
 	memcpy(pp->passwd, passwd, sizeof(pp->passwd));
@@ -633,7 +628,7 @@ void ploam_set_identity(struct ploam_priv *pp, const u8 sn[8],
 void ploam_reset(struct ploam_priv *pp)
 {
 	pp->state                = GPON_O1_INITIAL;
-	pp->onu_id               = PLOAM_ONU_UNASSIGNED;
+	pp->onu_id               = GPON_PLOAM_ONU_UNASSIGNED;
 	pp->key_exchange_pending = false;
 	pp->rei_seq              = 0;
 	pp->eqd                  = 0;
@@ -657,15 +652,15 @@ void ploam_start(struct ploam_priv *pp)
 }
 
 void ploam_handle_downstream(struct ploam_priv *pp,
-			     const struct ploam_msg *msg)
+			     const struct airoha_ploam_msg *msg)
 {
 	u8 onu_id, type;
-	u8 content[PLOAM_CONTENT_LEN];
+	u8 content[GPON_PLOAM_CONTENT_LEN];
 
 	ploam_unpack(msg, &onu_id, &type, content);
 
 	/* Drop messages not addressed to us */
-	if (onu_id != PLOAM_ONU_BCAST && onu_id != pp->onu_id)
+	if (onu_id != GPON_PLOAM_ONU_BCAST && onu_id != pp->onu_id)
 		return;
 
 	/* EN7521 deduplication filter */
@@ -673,59 +668,59 @@ void ploam_handle_downstream(struct ploam_priv *pp,
 		return;
 
 	switch (type) {
-	case PLOAM_DOWN_UPSTREAM_OVERHEAD:
+	case GPON_PLOAM_DOWN_UPSTREAM_OVERHEAD:
 		handle_upstream_overhead(pp, onu_id, content);
 		break;
-	case PLOAM_DOWN_ASSIGN_ONU_ID:
+	case GPON_PLOAM_DOWN_ASSIGN_ONU_ID:
 		handle_assign_onu_id(pp, onu_id, content);
 		break;
-	case PLOAM_DOWN_RANGING_TIME:
+	case GPON_PLOAM_DOWN_RANGING_TIME:
 		handle_ranging_time(pp, content);
 		break;
-	case PLOAM_DOWN_DEACTIVATE_ONU_ID:
+	case GPON_PLOAM_DOWN_DEACTIVATE_ONU_ID:
 		handle_deactivate_onu(pp, onu_id);
 		break;
-	case PLOAM_DOWN_DISABLE_SN:
+	case GPON_PLOAM_DOWN_DISABLE_SN:
 		handle_disable_sn(pp, content);
 		break;
-	case PLOAM_DOWN_ENCRYPTED_PORT_ID:
+	case GPON_PLOAM_DOWN_ENCRYPTED_PORT_ID:
 		handle_encrypted_port_id(pp, onu_id, type, content);
 		break;
-	case PLOAM_DOWN_REQUEST_PASSWORD:
+	case GPON_PLOAM_DOWN_REQUEST_PASSWORD:
 		handle_request_password(pp, onu_id);
 		break;
-	case PLOAM_DOWN_ASSIGN_ALLOC_ID:
+	case GPON_PLOAM_DOWN_ASSIGN_ALLOC_ID:
 		handle_assign_alloc_id(pp, onu_id, type, content);
 		break;
-	case PLOAM_DOWN_POPUP:
+	case GPON_PLOAM_DOWN_POPUP:
 		handle_popup(pp, onu_id);
 		break;
-	case PLOAM_DOWN_REQUEST_KEY:
+	case GPON_PLOAM_DOWN_REQUEST_KEY:
 		handle_request_key(pp, onu_id);
 		break;
-	case PLOAM_DOWN_CONFIGURE_PORT_ID:
+	case GPON_PLOAM_DOWN_CONFIGURE_PORT_ID:
 		handle_configure_port_id(pp, onu_id, type, content);
 		break;
-	case PLOAM_DOWN_BER_INTERVAL:
+	case GPON_PLOAM_DOWN_BER_INTERVAL:
 		handle_ber_interval(pp, onu_id, type, content);
 		break;
-	case PLOAM_DOWN_KEY_SWITCHING_TIME:
+	case GPON_PLOAM_DOWN_KEY_SWITCHING_TIME:
 		handle_key_switching_time(pp, onu_id, type, content);
 		break;
-	case PLOAM_DOWN_EXTENDED_BURST_LEN:
+	case GPON_PLOAM_DOWN_EXTENDED_BURST_LEN:
 		handle_extended_burst_length(pp, onu_id, content);
 		break;
-	case PLOAM_DOWN_SWIFT_POPUP:
+	case GPON_PLOAM_DOWN_SWIFT_POPUP:
 		handle_swift_popup(pp, onu_id);
 		break;
-	case PLOAM_DOWN_RANGING_ADJUSTMENT:
+	case GPON_PLOAM_DOWN_RANGING_ADJUSTMENT:
 		handle_ranging_adjustment(pp, onu_id, type, content);
 		break;
-	case PLOAM_DOWN_PEE:
-	case PLOAM_DOWN_PST:
-	case PLOAM_DOWN_CHANGE_POWER_LEVEL:
-	case PLOAM_DOWN_PON_ID:
-	case PLOAM_DOWN_SLEEP_ALLOW:
+	case GPON_PLOAM_DOWN_PEE:
+	case GPON_PLOAM_DOWN_PST:
+	case GPON_PLOAM_DOWN_CHANGE_POWER_LEVEL:
+	case GPON_PLOAM_DOWN_PON_ID:
+	case GPON_PLOAM_DOWN_SLEEP_ALLOW:
 		/* Stub: message acknowledged by presence in handler table */
 		break;
 	default:

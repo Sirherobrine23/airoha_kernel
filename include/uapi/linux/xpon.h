@@ -6,9 +6,16 @@
 #define XPON_GENL_VERSION	1
 
 enum xpon_mode {
-	XPON_MODE_GPON,
-	XPON_MODE_EPON,
-	XPON_MODE_XGSPON,
+	XPON_MODE_GPON = BIT(1),	/* ITU-T G.984 (2.5Gbps RX / 1.2Gbps TX) */
+	XPON_MODE_EPON = BIT(2),	/* IEEE 802.3ah (1Gbps) */
+	XPON_MODE_XEPON = BIT(3),	/* IEEE 802.3av (10G) */
+	XPON_MODE_XGPON = BIT(4),	/* ITU-T G.987 (10Gbps RX / 2.5Gbps TX) */
+	XPON_MODE_XGSPON = BIT(5),	/* ITU-T G.9807.1 (10Gbps) */
+	XPON_MODE_NGPON2 = BIT(6),	/* ITU-T G.989 (10Gbps per channel) */
+	XPON_MODE_25GSPON = BIT(7),	/* 25GS-PON MSA specification (25Gbps) */
+	XPON_MODE_50GPON = BIT(8),	/* ITU-T G.9804 (50Gbps) */
+	XPON_MODE_25GEPON = BIT(9),	/* IEEE 802.3ca (25Gbps) */
+	XPON_MODE_50GEPON = BIT(10),	/* IEEE 802.3ca (50Gbps) */
 
 	__XPON_MODE_MAX,
 };

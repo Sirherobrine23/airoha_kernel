@@ -16,6 +16,7 @@
 #include <linux/sched.h>
 #include <linux/seq_file.h>
 #include <net/xpon.h>
+#include <net/xpon/ploam.h>
 
 #include "airoha_xgspon.h"
 
@@ -59,7 +60,7 @@ static void airoha_xgspon_quiesce(struct airoha_xgspon *pon)
 	airoha_xgspon_write(pon, EN7580_XGSPON_DYING_GASP_CTRL, 0);
 	airoha_xgspon_write(pon, EN7580_XGSPON_US_PROF_VLD, 0);
 	airoha_xgspon_write(pon, EN7580_XGSPON_ONU_ID,
-			    EN7580_XGSPON_ONU_UNASSIGNED);
+			    XGSPON_PLOAM_ONU_ID_UNASSIGNED);
 	airoha_xgspon_write(pon, EN7580_XGSPON_ACTIVATION_ST,
 			    EN7580_XGSPON_STATE_O1);
 	airoha_xgspon_write(pon, EN7580_XGSPON_MBI_MPI_STOP,
@@ -102,7 +103,7 @@ static int airoha_xgspon_init_tables(struct airoha_xgspon *pon)
 	for (i = 0; i < EN7580_XGSPON_TCONTS; i++) {
 		command = EN7580_XGSPON_TCONT_WRITE |
 			  FIELD_PREP(EN7580_XGSPON_TCONT_INDEX, i) |
-			  EN7580_XGSPON_ONU_UNASSIGNED;
+			  XGSPON_PLOAM_ONU_ID_UNASSIGNED;
 		airoha_xgspon_write(pon, EN7580_XGSPON_TCONT_ID_CFG, command);
 		ret = airoha_xgspon_wait(pon, EN7580_XGSPON_TCONT_ID_STS,
 					 EN7580_XGSPON_CMD_DONE,
@@ -166,7 +167,7 @@ static int airoha_xgspon_prepare(struct airoha_xgspon *pon)
 	/* Reject an inaccessible or incorrectly mapped MAC before table commands. */
 	if (airoha_xgspon_read(pon, EN7580_XGSPON_INT_ENABLE) ||
 	    airoha_xgspon_read(pon, EN7580_XGSPON_ONU_ID) !=
-	    EN7580_XGSPON_ONU_UNASSIGNED ||
+	    XGSPON_PLOAM_ONU_ID_UNASSIGNED ||
 	    (airoha_xgspon_read(pon, EN7580_XGSPON_MBI_MPI_STOP) &
 	     EN7580_XGSPON_STOP_MASK) != EN7580_XGSPON_STOP_MASK ||
 	    !(airoha_xgspon_read(pon, EN7580_XGSPON_PLOAMU_CTRL) &

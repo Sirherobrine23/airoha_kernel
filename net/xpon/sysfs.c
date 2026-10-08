@@ -16,8 +16,22 @@ static const char *xpon_mode_name(enum xpon_mode mode)
 		return "gpon";
 	case XPON_MODE_EPON:
 		return "epon";
+	case XPON_MODE_XEPON:
+		return "xepon";
+	case XPON_MODE_XGPON:
+		return "xgpon";
 	case XPON_MODE_XGSPON:
 		return "xgspon";
+	case XPON_MODE_NGPON2:
+		return "ngpon2";
+	case XPON_MODE_25GSPON:
+		return "25gspon";
+	case XPON_MODE_50GPON:
+		return "50gpon";
+	case XPON_MODE_25GEPON:
+		return "25gepon";
+	case XPON_MODE_50GEPON:
+		return "50gepon";
 	default:
 		return "unknown";
 	}
@@ -77,8 +91,22 @@ static ssize_t mode_current_store(struct device *dev,
 		mode = XPON_MODE_GPON;
 	else if (sysfs_streq(buf, "epon"))
 		mode = XPON_MODE_EPON;
+	else if (sysfs_streq(buf, "xepon"))
+		mode = XPON_MODE_XEPON;
+	else if (sysfs_streq(buf, "xgpon"))
+		mode = XPON_MODE_XGPON;
 	else if (sysfs_streq(buf, "xgspon"))
 		mode = XPON_MODE_XGSPON;
+	else if (sysfs_streq(buf, "ngpon2"))
+		mode = XPON_MODE_NGPON2;
+	else if (sysfs_streq(buf, "25gspon"))
+		mode = XPON_MODE_25GSPON;
+	else if (sysfs_streq(buf, "50gpon"))
+		mode = XPON_MODE_50GPON;
+	else if (sysfs_streq(buf, "25gepon"))
+		mode = XPON_MODE_25GEPON;
+	else if (sysfs_streq(buf, "50gepon"))
+		mode = XPON_MODE_50GEPON;
 	else
 		return -EINVAL;
 

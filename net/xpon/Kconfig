@@ -10,6 +10,16 @@ menuconfig XPON
 
 if XPON
 
+config XPON_PLOAM_KUNIT_TEST
+	tristate "xPON PLOAM codec tests" if !KUNIT_ALL_TESTS
+	depends on KUNIT
+	default KUNIT_ALL_TESTS
+	help
+	  Test GPON and XGS-PON PLOAM wire layouts, bounds and reserved fields
+	  without optical hardware. These tests do not validate activation or
+	  MAC-specific FIFO and message integrity handling.
+	  Say Y here to run these tests at boot, or M to build a test module.
+
 config XPON_OMCI
 	tristate "xPON OMCI agent"
 	default y
