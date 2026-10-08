@@ -753,6 +753,7 @@ L:	linux-mediatek@lists.infradead.org (moderated for non-subscribers)
 L:	netdev@vger.kernel.org
 S:	Maintained
 F:	Documentation/devicetree/bindings/net/airoha,en7523-wed.yaml
+F:	Documentation/devicetree/bindings/net/airoha,en7580-xpon.yaml
 F:	Documentation/devicetree/bindings/net/airoha,en7581-eth.yaml
 F:	Documentation/devicetree/bindings/net/econet,en751221-eth.yaml
 F:	Documentation/devicetree/bindings/net/econet,en751221-xdsl.yaml

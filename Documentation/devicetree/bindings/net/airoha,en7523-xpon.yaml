@@ -85,13 +85,6 @@ properties:
     description:
       Phandle to the SoC SCU syscon used to select GPON or EPON mode.
 
-  airoha,pon-mode:
-    description:
-      Protocol engine selected for a unified *-xpon compatible. The property
-      is optional and defaults to GPON. Legacy mode-specific compatibles do
-      not require it.
-    enum: [gpon, epon]
-
   airoha,gpon-serial-number:
     deprecated: true
     $ref: /schemas/types.yaml#/definitions/uint8-array
@@ -176,14 +169,10 @@ allOf:
         - phy-names
         - resets
         - reset-names
-      properties:
-        airoha,pon-mode: true
     else:
       required:
         - phys
         - phy-names
-      properties:
-        airoha,pon-mode: false
   - if:
       properties:
         compatible:
@@ -218,7 +207,6 @@ examples:
         resets = <&scuclk EN7523_XPON_MAC_RST>;
         reset-names = "mac";
         airoha,scu = <&scuclk>;
-        airoha,pon-mode = "gpon";
         airoha,gpon-serial-number = [49 4e 56 50 71 43 86 02];
         airoha,gpon-password = [30 30 31 34 34 35 31 38 33 30];
         phys = <&xpon_phy>;
