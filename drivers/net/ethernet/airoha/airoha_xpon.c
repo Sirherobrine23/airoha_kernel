@@ -287,9 +287,19 @@ static int airoha_xpon_phy_start(struct device *dev, struct phy *phy,
 {
 	int submode, ret;
 
-	submode = mode == AIROHA_XPON_MODE_GPON ?
-		  AIROHA_XPON_PHY_SUBMODE_GPON :
-		  AIROHA_XPON_PHY_SUBMODE_EPON;
+	switch (mode) {
+	case AIROHA_XPON_MODE_GPON:
+		submode = AIROHA_XPON_PHY_SUBMODE_GPON;
+		break;
+	case AIROHA_XPON_MODE_EPON:
+		submode = AIROHA_XPON_PHY_SUBMODE_EPON;
+		break;
+	case AIROHA_XPON_MODE_XGSPON:
+		submode = AIROHA_XPON_PHY_SUBMODE_XGSPON;
+		break;
+	default:
+		return -EOPNOTSUPP;
+	}
 
 	dev_info(dev, "initializing %s digital xPON PHY\n",
 		 airoha_xpon_mode_name(mode));
@@ -4516,7 +4526,9 @@ static int airoha_xgspon_status_show(struct seq_file *s, void *unused)
 {
 	struct xpon_priv *pon = s->private;
 
-	seq_puts(s, "stage: MAC prepared; PHY and activation unavailable\n");
+	seq_puts(s, "stage: MAC prepared; activation and datapath unavailable\n");
+	seq_printf(s, "phy-initialized: %u\nphy-powered: %u\n",
+		   pon->phy_initialized, pon->phy_powered);
 	seq_printf(s, "reset: %#x\nonu-id: %#x\nstate: %#x\n",
 		   airoha_xgspon_read(pon, EN7580_XGSPON_SW_RST),
 		   airoha_xgspon_read(pon, EN7580_XGSPON_ONU_ID),
@@ -4545,13 +4557,29 @@ static int airoha_xgspon_status_show(struct seq_file *s, void *unused)
 }
 DEFINE_SHOW_ATTRIBUTE(airoha_xgspon_status);
 
-static void airoha_xgspon_unregister(void *data)
+static void airoha_xgspon_debugfs_remove(void *data)
 {
 	struct xpon_priv *pon = data;
 
 	debugfs_remove_recursive(pon->xgspon_debugfs);
+	pon->xgspon_debugfs = NULL;
+}
+
+static void airoha_xgspon_unregister(void *data)
+{
+	struct xpon_priv *pon = data;
+
+	airoha_xgspon_debugfs_remove(pon);
 	xpon_device_unregister(pon->xpon);
 	dev_put(pon->gdm_dev);
+}
+
+static void airoha_xgspon_phy_stop(void *data)
+{
+	struct xpon_priv *pon = data;
+
+	airoha_xpon_phy_stop(pon->dev, pon->phy, pon->mode,
+			     &pon->phy_initialized, &pon->phy_powered);
 }
 
 static int airoha_xpon_init_xgspon(struct xpon_priv *priv)
@@ -4582,6 +4610,17 @@ static int airoha_xpon_init_xgspon(struct xpon_priv *priv)
 	if (ret)
 		return ret;
 
+	if (priv->phy) {
+		ret = devm_add_action_or_reset(dev, airoha_xgspon_phy_stop, priv);
+		if (ret)
+			return ret;
+		/* Exercise local PLL/RX startup without granting optical TX. */
+		ret = airoha_xpon_phy_start(dev, priv->phy, priv->mode,
+					    &priv->phy_initialized, &priv->phy_powered);
+		if (ret)
+			return ret;
+	}
+
 	ret = airoha_xpon_register_core(priv);
 	if (ret)
 		return ret;
@@ -4589,12 +4628,19 @@ static int airoha_xpon_init_xgspon(struct xpon_priv *priv)
 	name = devm_kasprintf(dev, GFP_KERNEL, "airoha-xgspon-%s", dev_name(dev));
 	if (name) {
 		priv->xgspon_debugfs = debugfs_create_dir(name, NULL);
-		if (!IS_ERR_OR_NULL(priv->xgspon_debugfs))
+		if (!IS_ERR_OR_NULL(priv->xgspon_debugfs)) {
 			debugfs_create_file("status", 0444, priv->xgspon_debugfs,
 					    priv, &airoha_xgspon_status_fops);
+			/* Remove diagnostics before stopping the PHY or resetting MAC. */
+			ret = devm_add_action_or_reset(dev, airoha_xgspon_debugfs_remove,
+						       priv);
+			if (ret)
+				dev_warn(dev, "failed to retain XGS-PON debugfs status\n");
+		}
 	}
 	dev_info(dev,
-		 "EN7580 XGS-PON MAC prepared in O1; PHY, activation and datapath are not enabled\n");
+		 "EN7580 XGS-PON MAC prepared in O1; PHY powered=%u, activation and datapath disabled\n",
+		 priv->phy_powered);
 	return 0;
 }
 
@@ -4647,13 +4693,14 @@ static int airoha_xpon_probe(struct platform_device *pdev)
 		dev_warn(dev,
 			 "missing xPON MAC reset; session restarts cannot clear all hardware state\n");
 
-	if (!airoha_xpon_is_xgspon(priv)) {
+	if (airoha_xpon_is_xgspon(priv))
+		priv->phy = devm_phy_optional_get(dev, "xpon");
+	else
 		priv->phy = devm_phy_get(dev, "xpon");
-		if (IS_ERR(priv->phy)) {
-			ret = dev_err_probe(dev, PTR_ERR(priv->phy),
-					    "failed to get digital xPON PHY\n");
-			goto err_put_gdm;
-		}
+	if (IS_ERR(priv->phy)) {
+		ret = dev_err_probe(dev, PTR_ERR(priv->phy),
+				    "failed to get digital xPON PHY\n");
+		goto err_put_gdm;
 	}
 
 	eth_node = of_parse_phandle(dev->of_node, "ethernet", 0);

@@ -2,15 +2,18 @@
 /* Airoha EN7580 XSI PCS and PMA. */
 
 #include <linux/bitfield.h>
+#include <linux/debugfs.h>
 #include <linux/delay.h>
 #include <linux/mfd/syscon.h>
 #include <linux/module.h>
+#include <linux/mutex.h>
 #include <linux/of.h>
 #include <linux/pcs/pcs-provider.h>
 #include <linux/phylink.h>
 #include <linux/platform_device.h>
 #include <linux/regmap.h>
 #include <linux/rtnetlink.h>
+#include <linux/seq_file.h>
 
 #include "pcs-airoha.h"
 
@@ -56,6 +59,9 @@ struct en7580_pcs {
 	struct regmap *chip_scu;
 	phy_interface_t interface;
 	bool configured;
+	/* Serialize PMA configuration against diagnostic register snapshots. */
+	struct mutex lock;
+	int last_config_error;
 };
 
 static struct en7580_pcs *to_en7580_pcs(struct phylink_pcs *pcs)
@@ -144,10 +150,9 @@ static void en7580_pcs_link_down(struct phylink_pcs *pcs)
 			EN7580_MAC_STOP | EN7580_MAC_TX_MASK);
 }
 
-static int en7580_pcs_config(struct phylink_pcs *pcs, unsigned int neg_mode,
-			     phy_interface_t interface,
-			     const unsigned long *advertising,
-			     bool permit_pause_to_mac)
+static int en7580_pcs_config_locked(struct phylink_pcs *pcs,
+				    unsigned int neg_mode,
+				    phy_interface_t interface)
 {
 	struct en7580_pcs *priv = to_en7580_pcs(pcs);
 	int mode, ret;
@@ -203,6 +208,21 @@ static int en7580_pcs_config(struct phylink_pcs *pcs, unsigned int neg_mode,
 	priv->configured = true;
 	dev_info(priv->dev, "XSI PCS configured for %s\n", phy_modes(interface));
 	return 0;
+}
+
+static int en7580_pcs_config(struct phylink_pcs *pcs, unsigned int neg_mode,
+			     phy_interface_t interface,
+			     const unsigned long *advertising,
+			     bool permit_pause_to_mac)
+{
+	struct en7580_pcs *priv = to_en7580_pcs(pcs);
+	int ret;
+
+	mutex_lock(&priv->lock);
+	ret = en7580_pcs_config_locked(pcs, neg_mode, interface);
+	priv->last_config_error = ret;
+	mutex_unlock(&priv->lock);
+	return ret;
 }
 
 static void en7580_pcs_get_state(struct phylink_pcs *pcs, unsigned int neg_mode,
@@ -289,6 +309,86 @@ static struct regmap *en7580_pcs_map(struct platform_device *pdev,
 	return devm_regmap_init_mmio(&pdev->dev, base, &config);
 }
 
+static int en7580_pcs_status_show(struct seq_file *s, void *unused)
+{
+	struct en7580_pcs *priv = s->private;
+	static const struct {
+		u16 reg;
+		const char *name;
+	} registers[] = {
+		{ 0x0004, "jcpll-ic" },
+		{ 0x0008, "jcpll-bias" },
+		{ 0x000c, "jcpll-sdm-order" },
+		{ 0x0010, "jcpll-reserve" },
+		{ 0x0200, "xfi-pll-power0" },
+		{ 0x0204, "xfi-pll-power1" },
+		{ 0x0760, "xfi-pll-status" },
+		{ 0x0800, "jcpll-power0" },
+		{ 0x0804, "jcpll-power1" },
+		{ 0x0868, "jcpll-da-rg-control" },
+		{ 0x0884, "xfi-tx-counter0" },
+		{ 0x0888, "xfi-tx-counter1" },
+		{ 0x088c, "xfi-tx-counter2" },
+		{ 0x090c, "pll-stable-counter" },
+		{ 0x0910, "pll-stop-counter" },
+		{ 0x0974, "rx-frequency-status" },
+		{ 0x0978, "pll-frequency-status" },
+		{ 0x0980, "jcpll-frequency-status" },
+	};
+	unsigned int i;
+	u32 value;
+	int ret;
+
+	mutex_lock(&priv->lock);
+	seq_printf(s, "configured: %u\ninterface: %s\nlast-config-error: %d\n",
+		   priv->configured, phy_modes(priv->interface),
+		   priv->last_config_error);
+	/* The register window is only sampled after PMA startup completed. */
+	if (!priv->configured)
+		goto out;
+	for (i = 0; i < ARRAY_SIZE(registers); i++) {
+		ret = regmap_read(priv->pma, registers[i].reg, &value);
+		if (ret)
+			seq_printf(s, "%04x %-22s error %d\n", registers[i].reg,
+				   registers[i].name, ret);
+		else
+			seq_printf(s, "%04x %-22s %#010x\n", registers[i].reg,
+				   registers[i].name, value);
+	}
+	ret = regmap_read(priv->digital, EN7580_XFI_STATUS, &value);
+	if (!ret)
+		seq_printf(s, "pcs-xfi-status: %#010x\n", value);
+	ret = regmap_read(priv->digital, EN7580_HSGMII_STATUS, &value);
+	if (!ret)
+		seq_printf(s, "pcs-hsgmii-status: %#010x\n", value);
+out:
+	mutex_unlock(&priv->lock);
+	return 0;
+}
+DEFINE_SHOW_ATTRIBUTE(en7580_pcs_status);
+
+static void en7580_pcs_debugfs_remove(void *data)
+{
+	debugfs_remove_recursive(data);
+}
+
+static void en7580_pcs_debugfs_init(struct en7580_pcs *priv)
+{
+	struct dentry *dir;
+	char *name;
+
+	name = devm_kasprintf(priv->dev, GFP_KERNEL, "airoha-xsi-pcs-%s",
+			      dev_name(priv->dev));
+	if (!name)
+		return;
+	dir = debugfs_create_dir(name, NULL);
+	if (IS_ERR_OR_NULL(dir))
+		return;
+	debugfs_create_file("status", 0444, dir, priv, &en7580_pcs_status_fops);
+	if (devm_add_action_or_reset(priv->dev, en7580_pcs_debugfs_remove, dir))
+		dev_warn(priv->dev, "failed to retain PCS debugfs status\n");
+}
+
 static int en7580_pcs_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
@@ -299,6 +399,7 @@ static int en7580_pcs_probe(struct platform_device *pdev)
 	if (!priv)
 		return -ENOMEM;
 	priv->dev = dev;
+	mutex_init(&priv->lock);
 
 	priv->mac = en7580_pcs_map(pdev, "mac");
 	if (IS_ERR(priv->mac))
@@ -343,6 +444,7 @@ static int en7580_pcs_probe(struct platform_device *pdev)
 	ret = fwnode_pcs_add_provider(dev_fwnode(dev), en7580_pcs_get, priv);
 	if (ret)
 		return dev_err_probe(dev, ret, "failed to register PCS provider\n");
+	en7580_pcs_debugfs_init(priv);
 
 	dev_info(dev, "EN7580 XSI PCS registered\n");
 	return 0;

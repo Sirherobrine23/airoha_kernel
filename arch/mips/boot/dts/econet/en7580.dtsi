@@ -650,7 +650,9 @@
 
 		xpon_phy: phy@1faf0000 {
 			compatible = "airoha,en7580-xpon-phy";
-			reg = <0x1faf0000 0x4000>;
+			reg = <0x1faf0000 0x1000>,
+			      <0x1faf3000 0x1000>;
+			reg-names = "pcs", "pma";
 
 			nvmem-cells = <&xpon_rx_imp>, <&xpon_txp_imp>, <&xpon_txn_imp>;
 			nvmem-cell-names = "rx-impedance", "txp-impedance", "txn-impedance";

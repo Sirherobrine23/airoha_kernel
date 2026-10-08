@@ -11,16 +11,23 @@ maintainers:
 
 description:
   The EN7580 has a 10G optical PCS and a PON PMA at offset 0x3000.
-  The register range must cover both blocks, without including the Ethernet
-  XFI PMA at offset 0x6000. Protocol selection is performed by the consumer.
+  These blocks use separate register ranges because the intervening window
+  at offset 0x2000 belongs to the PCIe PHY. The Ethernet XFI PMA at offset
+  0x6000 is also separate. Protocol selection is performed by the consumer.
 
 properties:
   compatible:
     const: airoha,en7580-xpon-phy
 
   reg:
-    maxItems: 1
-    description: Optical PCS and PON PMA registers (0x4000 bytes).
+    items:
+      - description: Optical PCS registers (0x1000 bytes).
+      - description: PON PMA registers (0x1000 bytes).
+
+  reg-names:
+    items:
+      - const: pcs
+      - const: pma
 
   interrupts:
     maxItems: 1
@@ -85,6 +92,7 @@ properties:
 required:
   - compatible
   - reg
+  - reg-names
   - resets
   - reset-names
   - airoha,scu
@@ -104,7 +112,8 @@ examples:
 
     phy@1faf0000 {
         compatible = "airoha,en7580-xpon-phy";
-        reg = <0x1faf0000 0x4000>;
+        reg = <0x1faf0000 0x1000>, <0x1faf3000 0x1000>;
+        reg-names = "pcs", "pma";
         resets = <&scuclk EN7580_XPON_PHY_RST>;
         reset-names = "phy";
         airoha,scu = <&scuclk>;

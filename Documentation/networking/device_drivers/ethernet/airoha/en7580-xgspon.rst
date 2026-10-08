@@ -148,8 +148,9 @@ Next implementation stages
 1. Connect the EN7580 generic PHY backend to the staged MAC activation
    lifecycle. The provider in ``drivers/phy/airoha/phy-airoha-xpon.c`` now
    implements XGS-PON calibration, PCS synchronization and polled LOS
-   recovery. Its 0x4000-byte resource includes the PON PMA at offset 0x3000
-   and excludes the XFI PMA. RX FEC is enabled during initialization;
+   recovery. Separate 0x1000-byte ``pcs`` and ``pma`` resources map
+   0x1faf0000 and 0x1faf3000. The intervening PCIe PHY at 0x1faf2000 and
+   the XFI PMA are excluded. RX FEC is enabled during initialization;
    upstream burst profiles and TX FEC selection remain MAC activation work.
    TX_DISABLE remains asserted until the consumer explicitly requests TX,
    and is reasserted whenever synchronization is lost. Power cycling clears

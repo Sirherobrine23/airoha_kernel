@@ -10,6 +10,7 @@
  */
 
 #include <linux/bitfield.h>
+#include <linux/debugfs.h>
 #include <linux/delay.h>
 #include <linux/gpio/consumer.h>
 #include <linux/iopoll.h>
@@ -24,6 +25,7 @@
 #include <linux/property.h>
 #include <linux/regmap.h>
 #include <linux/reset.h>
+#include <linux/seq_file.h>
 #include <linux/slab.h>
 #include <linux/workqueue.h>
 
@@ -157,7 +159,9 @@
 #define XPON_READY_RECOVERY_MS		5000
 
 /* EN7580 PCS and PON PMA; offsets are relative to 0x1faf0000. */
-#define EN7580_XPON_PHY_MIN_SIZE		0x4000
+#define EN7580_XPON_PHY_PCS_MIN_SIZE	0x1000
+#define EN7580_XPON_PHY_PMA_MIN_SIZE	0x1000
+#define EN7580_XPON_PHY_PMA_OFFSET		0x3000
 #define EN7580_PHY_RX_CTRL			0x0a04
 #define EN7580_PHY_PCS_RESET			0x0a0c
 #define EN7580_PHY_PCS_INT_ENABLE		0x0a14
@@ -228,6 +232,7 @@ struct airoha_xpon_phy {
 	struct device *dev;
 	const struct airoha_xpon_phy_soc_data *soc;
 	void __iomem *base;
+	void __iomem *pma_base;
 	struct regmap *scu;
 	struct gpio_desc *tx_disable_gpio;
 	struct gpio_desc *vcc_disable_gpio;
@@ -247,19 +252,27 @@ struct airoha_xpon_phy {
 	u8 rx_impedance;
 	u8 txp_impedance;
 	u8 txn_impedance;
+	u32 last_tx_pll_status;
+	int last_power_on_error;
+	bool last_tx_pll_valid;
 	/* Serializes the RX counter command register (latch/clear). */
 	spinlock_t counter_lock;
 };
 
 static u32 airoha_xpon_phy_read(struct airoha_xpon_phy *priv, u32 reg)
 {
+	if (priv->soc->has_xgspon && reg >= EN7580_XPON_PHY_PMA_OFFSET)
+		return readl(priv->pma_base + reg - EN7580_XPON_PHY_PMA_OFFSET);
 	return readl(priv->base + reg);
 }
 
 static void airoha_xpon_phy_write(struct airoha_xpon_phy *priv, u32 reg,
 				  u32 val)
 {
-	writel(val, priv->base + reg);
+	if (priv->soc->has_xgspon && reg >= EN7580_XPON_PHY_PMA_OFFSET)
+		writel(val, priv->pma_base + reg - EN7580_XPON_PHY_PMA_OFFSET);
+	else
+		writel(val, priv->base + reg);
 }
 
 static void airoha_xpon_phy_rmw(struct airoha_xpon_phy *priv, u32 reg,
@@ -971,7 +984,9 @@ static int en7580_phy_init(struct phy *phy)
 	struct airoha_xpon_phy *priv = phy_get_drvdata(phy);
 
 	/* Configuration and reset release are deferred to phy_power_on(). */
+	mutex_lock(&priv->xgspon_lock);
 	priv->initialized = true;
+	mutex_unlock(&priv->xgspon_lock);
 	return 0;
 }
 
@@ -981,7 +996,9 @@ static int en7580_phy_exit(struct phy *phy)
 	int ret;
 
 	ret = en7580_phy_power_off_priv(priv);
+	mutex_lock(&priv->xgspon_lock);
 	priv->initialized = false;
+	mutex_unlock(&priv->xgspon_lock);
 	return ret;
 }
 
@@ -1007,6 +1024,8 @@ static int en7580_phy_power_on(struct phy *phy)
 	if (!priv->initialized)
 		return -EINVAL;
 	mutex_lock(&priv->xgspon_lock);
+	priv->last_power_on_error = 0;
+	priv->last_tx_pll_valid = false;
 	airoha_xpon_phy_set_tx_gpio(priv, false);
 	priv->xgspon_tx_requested = false;
 	airoha_xpon_phy_set_vcc_enabled(priv, true);
@@ -1036,12 +1055,18 @@ static int en7580_phy_power_on(struct phy *phy)
 	airoha_xpon_phy_rmw(priv, EN7580_PHY_TX_CALIB1,
 			     GENMASK(25, 24) | BIT(16),
 			     (priv->txn_impedance << 24) | BIT(16));
-	/* The XFI/JCPLL clock domain is configured by its existing PCS owner. */
-	ret = readl_poll_timeout(priv->base + EN7580_PHY_TX_PLL_STATUS, value,
-				value & BIT(16), 100, 100000);
+	/*
+	 * The vendor also programs neighboring JCPLL/XFI fields. Those remain
+	 * outside this PHY's resource; their electrical clock relationship is
+	 * not established by the register overlap alone.
+	 */
+	ret = read_poll_timeout(airoha_xpon_phy_read, value, value & BIT(16),
+				100, 100000, false, priv, EN7580_PHY_TX_PLL_STATUS);
+	priv->last_tx_pll_status = value;
+	priv->last_tx_pll_valid = true;
 	if (ret) {
 		dev_err(priv->dev,
-			"XGS-PON TX PLL did not lock; check the XFI/JCPLL reference clock\n");
+			"XGS-PON TX PLL did not lock (status %#08x)\n", value);
 		goto err_power;
 	}
 	airoha_xpon_phy_rmw(priv, EN7580_PHY_PCS_DEBUG, BIT(0) | BIT(1), 0);
@@ -1076,6 +1101,7 @@ static int en7580_phy_power_on(struct phy *phy)
 	return 0;
 
 err_power:
+	priv->last_power_on_error = ret;
 	if (priv->xgspon_configured)
 		en7580_phy_quiesce(priv);
 	reset_control_assert(priv->reset);
@@ -1089,6 +1115,81 @@ err_power:
 static int en7580_phy_power_off(struct phy *phy)
 {
 	return en7580_phy_power_off_priv(phy_get_drvdata(phy));
+}
+
+static int en7580_phy_status_show(struct seq_file *s, void *unused)
+{
+	struct airoha_xpon_phy *priv = s->private;
+	static const struct {
+		u16 reg;
+		const char *name;
+	} registers[] = {
+		{ 0x312c, "rx-impedance" },
+		{ 0x3554, "txp-calibration" },
+		{ 0x3558, "txn-calibration" },
+		{ 0x3200, "tx-pll-power0" },
+		{ 0x3204, "tx-pll-power1" },
+		{ 0x3600, "pma-setting0" },
+		{ 0x3604, "pma-setting1" },
+		{ 0x3754, "pma-mode" },
+		{ 0x3760, "tx-pll-status" },
+		{ 0x37a0, "clock-setting" },
+		{ 0x37b0, "pma-reset" },
+		{ 0x3820, "rx-frequency-status" },
+		{ 0x38a0, "memory-clock" },
+		{ 0x0a04, "rx-sync-control" },
+		{ 0x0a0c, "pcs-reset" },
+		{ 0x0b1c, "rx-sync-state" },
+		{ 0x0b48, "signal-polarity" },
+		{ 0x0b4c, "signal-status" },
+		{ 0x0b54, "phya-ready" },
+	};
+	unsigned int i;
+
+	mutex_lock(&priv->xgspon_lock);
+	seq_printf(s, "initialized: %u\npowered: %u\nconfigured: %u\n",
+		   priv->initialized, priv->powered, priv->xgspon_configured);
+	seq_printf(s, "rx-calibrated: %u\nrx-parked: %u\ntx-requested: %u\n",
+		   priv->xgspon_calibrated, priv->xgspon_rx_parked,
+		   priv->xgspon_tx_requested);
+	seq_printf(s, "trim-rx: %u\ntrim-txp: %u\ntrim-txn: %u\n",
+		   priv->rx_impedance, priv->txp_impedance, priv->txn_impedance);
+	seq_printf(s, "last-power-on-error: %d\n", priv->last_power_on_error);
+	if (priv->last_tx_pll_valid)
+		seq_printf(s, "last-tx-pll-status: %#010x\n",
+			   priv->last_tx_pll_status);
+
+	/* Never read the optical register window while held in reset. */
+	if (priv->powered)
+		for (i = 0; i < ARRAY_SIZE(registers); i++)
+			seq_printf(s, "%04x %-22s %#010x\n", registers[i].reg,
+				   registers[i].name,
+				   airoha_xpon_phy_read(priv, registers[i].reg));
+	mutex_unlock(&priv->xgspon_lock);
+	return 0;
+}
+DEFINE_SHOW_ATTRIBUTE(en7580_phy_status);
+
+static void en7580_phy_debugfs_remove(void *data)
+{
+	debugfs_remove_recursive(data);
+}
+
+static void en7580_phy_debugfs_init(struct airoha_xpon_phy *priv)
+{
+	struct dentry *dir;
+	char *name;
+
+	name = devm_kasprintf(priv->dev, GFP_KERNEL, "airoha-xpon-phy-%s",
+			      dev_name(priv->dev));
+	if (!name)
+		return;
+	dir = debugfs_create_dir(name, NULL);
+	if (IS_ERR_OR_NULL(dir))
+		return;
+	debugfs_create_file("status", 0444, dir, priv, &en7580_phy_status_fops);
+	if (devm_add_action_or_reset(priv->dev, en7580_phy_debugfs_remove, dir))
+		dev_warn(priv->dev, "failed to retain PHY debugfs status\n");
 }
 
 static const struct phy_ops en7580_xgspon_phy_ops = {
@@ -1778,7 +1879,10 @@ static int airoha_xpon_phy_probe(struct platform_device *pdev)
 		return dev_err_probe(dev, PTR_ERR(priv->vcc_disable_gpio),
 				     "failed to get VCC disable GPIO\n");
 
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	if (soc->has_xgspon)
+		res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "pcs");
+	else
+		res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	if (!res)
 		return dev_err_probe(dev, -EINVAL,
 				     "missing xPON PHY register resource\n");
@@ -1790,6 +1894,21 @@ static int airoha_xpon_phy_probe(struct platform_device *pdev)
 	priv->base = devm_ioremap_resource(dev, res);
 	if (IS_ERR(priv->base))
 		return PTR_ERR(priv->base);
+	if (soc->has_xgspon) {
+		struct resource *pma_res;
+
+		/* Keep the intervening PCIe PHY window out of our reservation. */
+		pma_res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "pma");
+		if (!pma_res)
+			return dev_err_probe(dev, -EINVAL,
+					     "missing xPON PMA register resource\n");
+		if (resource_size(pma_res) < EN7580_XPON_PHY_PMA_MIN_SIZE)
+			return dev_err_probe(dev, -EINVAL,
+					     "xPON PMA resource %pR is too small\n", pma_res);
+		priv->pma_base = devm_ioremap_resource(dev, pma_res);
+		if (IS_ERR(priv->pma_base))
+			return PTR_ERR(priv->pma_base);
+	}
 
 	priv->scu = syscon_regmap_lookup_by_phandle(dev->of_node,
 						    "airoha,scu");
@@ -1832,6 +1951,8 @@ static int airoha_xpon_phy_probe(struct platform_device *pdev)
 	if (IS_ERR(provider))
 		return dev_err_probe(dev, PTR_ERR(provider),
 				     "failed to register xPON PHY provider\n");
+	if (soc->has_xgspon)
+		en7580_phy_debugfs_init(priv);
 
 	dev_info(dev, "%s xPON PHY registered at %pR\n", soc->name, res);
 	return 0;
@@ -1869,7 +1990,7 @@ static const struct airoha_xpon_phy_soc_data airoha_en7528_xpon_phy_data = {
 
 static const struct airoha_xpon_phy_soc_data airoha_en7580_xpon_phy_data = {
 	.name = "EN7580",
-	.min_size = EN7580_XPON_PHY_MIN_SIZE,
+	.min_size = EN7580_XPON_PHY_PCS_MIN_SIZE,
 	.has_xgspon = true,
 	.ops = &en7580_xgspon_phy_ops,
 };
