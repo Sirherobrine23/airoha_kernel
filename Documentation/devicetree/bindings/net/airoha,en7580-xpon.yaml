@@ -1,0 +1,114 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/net/airoha,en7580-xpon.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Airoha EN7580 XGS-PON MAC
+
+maintainers:
+  - Matheus Sampaio Queiroga <srherobrine20@gmail.com>
+
+description: |
+  The MIPS EN7580 contains a 10G PON MAC engine at offset 0x5000 in the
+  shared xPON region at 0x1fb60000. Its register layout, PLOAM format and
+  activation protocol differ from the older GPON engine at offset 0x4000.
+  The EN7580 WAN selector uses 0x0a for XGS-PON. This compatible describes
+  only EN7580; it is not a fallback for AN7581 or AN7583.
+
+properties:
+  compatible:
+    const: airoha,en7580-xpon
+
+  reg:
+    maxItems: 1
+    description: Shared xPON register region, including the entire 10G MAC.
+
+  reg-names:
+    const: mac
+
+  interrupts:
+    minItems: 1
+    maxItems: 2
+
+  interrupt-names:
+    minItems: 1
+    items:
+      - const: mac
+      - const: dying-gasp
+
+  resets:
+    maxItems: 1
+
+  reset-names:
+    const: mac
+
+  airoha,scu:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: System controller containing the WAN mode selector.
+
+  airoha,pon-mode:
+    const: xgspon
+    default: xgspon
+
+  ethernet:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: GDM2 Ethernet datapath associated with this MAC.
+
+  phys:
+    maxItems: 1
+    description: Digital PON PHY used for optical link operation.
+
+  phy-names:
+    const: xpon
+
+  sfp:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: Pluggable optical module or cage.
+
+  optical-frontends:
+    $ref: /schemas/types.yaml#/definitions/phandle-array
+    maxItems: 1
+
+  optical-frontend-names:
+    items:
+      - const: pon
+
+required:
+  - compatible
+  - reg
+  - reg-names
+  - resets
+  - reset-names
+  - airoha,scu
+  - ethernet
+
+dependencies:
+  interrupts: [interrupt-names]
+  interrupt-names: [interrupts]
+  phys: [phy-names]
+  phy-names: [phys]
+  optical-frontends: [optical-frontend-names]
+  optical-frontend-names: [optical-frontends]
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/interrupt-controller/mips-gic.h>
+    #include <dt-bindings/reset/econet,en7580-scu.h>
+
+    xmac@1fb60000 {
+        compatible = "airoha,en7580-xpon";
+        reg = <0x1fb60000 0x10000>;
+        reg-names = "mac";
+        interrupts = <GIC_SHARED 26 IRQ_TYPE_LEVEL_HIGH>,
+                     <GIC_SHARED 18 IRQ_TYPE_LEVEL_HIGH>;
+        interrupt-names = "mac", "dying-gasp";
+        resets = <&scuclk EN7580_XPON_MAC_RST>;
+        reset-names = "mac";
+        airoha,scu = <&scuclk>;
+        airoha,pon-mode = "xgspon";
+        ethernet = <&gdm2>;
+    };
+...
