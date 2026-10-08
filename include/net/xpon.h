@@ -3,6 +3,7 @@
 #define _NET_XPON_H
 
 #include <linux/bitops.h>
+#include <linux/log2.h>
 #include <linux/types.h>
 #include <linux/netdevice.h>
 #include <uapi/linux/xpon.h>
@@ -13,7 +14,13 @@ struct net_device;
 struct notifier_block;
 struct xpon_device;
 
-#define XPON_MODE_CAP(_mode)	BIT(_mode)
+#define XPON_MODE_CAP(_mode)	((unsigned long)(_mode))
+
+static inline bool xpon_mode_valid(u32 mode)
+{
+	return mode >= XPON_MODE_GPON && mode <= XPON_MODE_MAX &&
+	       is_power_of_2(mode);
+}
 
 #define XPON_STATE_F_SIGNAL	BIT(0)
 #define XPON_STATE_F_LOS	BIT(1)

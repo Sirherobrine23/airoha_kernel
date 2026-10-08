@@ -30,6 +30,7 @@ Contents:
    page_pool
    phy
    sfp-phylink
+   xpon-ploam
    alias
    bridge
    snmp_counter

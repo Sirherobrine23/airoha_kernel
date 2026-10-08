@@ -11,7 +11,7 @@
 
 static const struct nla_policy xpon_genl_policy[XPON_ATTR_MAX + 1] = {
 	[XPON_ATTR_IFINDEX] = { .type = NLA_U32 },
-	[XPON_ATTR_MODE] = NLA_POLICY_MAX(NLA_U8, XPON_MODE_MAX),
+	[XPON_ATTR_MODE] = { .type = NLA_U32 },
 	[XPON_ATTR_ID] = { .type = NLA_U32 },
 	[XPON_ATTR_TYPE] = NLA_POLICY_MAX(NLA_U8, XPON_ENDPOINT_LLID),
 	[XPON_ATTR_WIRE_ID] = { .type = NLA_U16 },
@@ -46,7 +46,7 @@ static int xpon_genl_put_state(struct sk_buff *msg, struct xpon_device *xpon)
 	if (xpon->oam)
 		caps |= XPON_CAP_OAM;
 	if (nla_put_u32(msg, XPON_ATTR_IFINDEX, xpon->netdev->ifindex) ||
-	    nla_put_u8(msg, XPON_ATTR_MODE, state.mode) ||
+	    nla_put_u32(msg, XPON_ATTR_MODE, state.mode) ||
 	    nla_put_u32(msg, XPON_ATTR_AVAILABLE_MODES, xpon->modes) ||
 	    nla_put_u8(msg, XPON_ATTR_REGISTRATION, state.registration) ||
 	    nla_put_u8(msg, XPON_ATTR_CARRIER, state.carrier) ||
@@ -140,6 +140,8 @@ static int xpon_genl_doit(struct sk_buff *skb, struct genl_info *info)
 	void *hdr;
 	int ret = 0;
 
+	if (info->genlhdr->version != XPON_GENL_VERSION)
+		return -EPROTONOSUPPORT;
 	if (!net_eq(genl_info_net(info), &init_net))
 		return -EOPNOTSUPP;
 	if (!a[XPON_ATTR_IFINDEX])
@@ -154,7 +156,7 @@ static int xpon_genl_doit(struct sk_buff *skb, struct genl_info *info)
 	case XPON_CMD_SET_MODE:
 		ret = a[XPON_ATTR_MODE] ?
 			      xpon_device_set_mode(
-				      xpon, nla_get_u8(a[XPON_ATTR_MODE])) :
+				      xpon, nla_get_u32(a[XPON_ATTR_MODE])) :
 			      -EINVAL;
 		goto out;
 	case XPON_CMD_LINK_SET:
@@ -298,6 +300,8 @@ static int xpon_genl_dump(struct sk_buff *msg, struct netlink_callback *cb)
 	void *hdr;
 	int ret = 0;
 
+	if (info->genlhdr->version != XPON_GENL_VERSION)
+		return -EPROTONOSUPPORT;
 	if (!net_eq(genl_info_net(info), &init_net))
 		return -EOPNOTSUPP;
 	if (!info->attrs[XPON_ATTR_IFINDEX])

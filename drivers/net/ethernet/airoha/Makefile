@@ -11,7 +11,7 @@ airoha-eth-$(CONFIG_NET_AIROHA_WHNAT) += airoha_whnat.o
 
 obj-$(CONFIG_NET_AIROHA_NPU) += airoha_npu.o
 
-# Airoha/EcoNet shared GPON + EPON MAC complex.
+# Airoha/EcoNet shared GPON, EPON and XGS-PON MAC complex.
 obj-$(CONFIG_AIROHA_XPON_V1) += airoha-xpon.o
 airoha-xpon-y := airoha_xpon.o airoha_ploam.o airoha_gpon_omci.o
 

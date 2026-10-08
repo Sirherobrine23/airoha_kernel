@@ -3,7 +3,7 @@
 #define _UAPI_LINUX_XPON_H
 
 #define XPON_GENL_NAME		"xpon"
-#define XPON_GENL_VERSION	1
+#define XPON_GENL_VERSION	2
 
 /* An OAM frame includes the Ethernet header, but excludes the FCS. */
 #define XPON_OAM_FRAME_MAX	1514
@@ -29,14 +29,23 @@ enum xpon_link_state {
 #define XPON_CAP_REPORT		(1U << 2)
 #define XPON_CAP_LINK_ADMIN	(1U << 3)
 
+/* Each mode is a single bit; capability masks combine these values. */
 enum xpon_mode {
-	XPON_MODE_GPON,
-	XPON_MODE_EPON,
-	XPON_MODE_XGSPON,
+	XPON_MODE_GPON = (1U << 1),	/* ITU-T G.984 (2.5Gbps RX / 1.2Gbps TX) */
+	XPON_MODE_EPON = (1U << 2),	/* IEEE 802.3ah (1Gbps) */
+	XPON_MODE_XEPON = (1U << 3),	/* IEEE 802.3av (10G) */
+	XPON_MODE_XGPON = (1U << 4),	/* ITU-T G.987 (10Gbps RX / 2.5Gbps TX) */
+	XPON_MODE_XGSPON = (1U << 5),	/* ITU-T G.9807.1 (10Gbps) */
+	XPON_MODE_NGPON2 = (1U << 6),	/* ITU-T G.989 (10Gbps per channel) */
+	XPON_MODE_25GSPON = (1U << 7),	/* 25GS-PON MSA specification (25Gbps) */
+	XPON_MODE_50GPON = (1U << 8),	/* ITU-T G.9804 (50Gbps) */
+	XPON_MODE_25GEPON = (1U << 9),	/* IEEE 802.3ca (25Gbps) */
+	XPON_MODE_50GEPON = (1U << 10),	/* IEEE 802.3ca (50Gbps) */
 
 	__XPON_MODE_MAX,
 };
 #define XPON_MODE_MAX (__XPON_MODE_MAX - 1)
+#define XPON_MODE_MASK ((XPON_MODE_MAX << 1) - XPON_MODE_GPON)
 
 enum xpon_registration_state {
 	XPON_REGISTRATION_DOWN,
@@ -72,8 +81,8 @@ enum xpon_cmd {
 enum xpon_attr {
 	XPON_ATTR_UNSPEC,
 	XPON_ATTR_IFINDEX,
-	XPON_ATTR_MODE,
-	XPON_ATTR_AVAILABLE_MODES,
+	XPON_ATTR_MODE,		/* u32, one enum xpon_mode bit */
+	XPON_ATTR_AVAILABLE_MODES, /* u32, enum xpon_mode bitmap */
 	XPON_ATTR_REGISTRATION,
 	XPON_ATTR_CARRIER,
 	XPON_ATTR_SIGNAL_DETECT,

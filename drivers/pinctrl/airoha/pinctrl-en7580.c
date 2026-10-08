@@ -243,7 +243,12 @@ static const struct pinctrl_pin_desc pinctrl_pins[] = {
 	PINCTRL_PIN(57, "spi_miso"),
 };
 
-static const int pon_pins[] = { 36, 37, 38, 39, 40, 41 };
+/*
+ * GPIO38 (TX_DISABLE) and GPIO39 remain software-controlled outputs with
+ * PON_MODE enabled, as in the vendor frontend setup.  They must not share
+ * the PON mux ownership or clear PON_MODE when requested as GPIOs.
+ */
+static const int pon_pins[] = { 36, 37, 40, 41 };
 static const int sipo_pins[] = { 22, 23 };
 static const int sipo_rclk_pins[] = { 21, 22, 23 };
 static const int uart2_pins[] = { 20, 21 };
@@ -1049,12 +1054,7 @@ static const struct airoha_pinctrl_gpio_mux gpio_muxes[] = {
 	EN7580_GPIO_MUX(37, AIROHA_FUNC_MUX,
 			EN7580_REG_GPIO_PON_MODE,
 			GPIO_PON_MODE_MASK),
-	EN7580_GPIO_MUX(38, AIROHA_FUNC_MUX,
-			EN7580_REG_GPIO_PON_MODE,
-			GPIO_PON_MODE_MASK),
-	EN7580_GPIO_MUX(39, AIROHA_FUNC_MUX,
-			EN7580_REG_GPIO_PON_MODE,
-			GPIO_PON_MODE_MASK),
+	/* GPIO38/39 can be used without disabling the other PON pads. */
 	EN7580_GPIO_MUX(40, AIROHA_FUNC_MUX,
 			EN7580_REG_GPIO_PON_MODE,
 			GPIO_PON_MODE_MASK),
