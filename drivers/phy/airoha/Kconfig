@@ -32,6 +32,8 @@ config PHY_AIROHA_XPON
 	  Enable the digital GPON/EPON PHY found in Airoha EN7523-family and
 	  EcoNet EN751221 SoCs. The driver programs the common xPON receiver,
 	  selects the protocol mode and runs the SoC-specific PHY bring-up.
+	  EN7580 uses a separate XGS-PON PCS/PMA calibration and LOS recovery
+	  sequence, with optional impedance trims from NVMEM.
 
 config PHY_AIROHA_AN7583_USB
 	tristate "Airoha AN7583 USB PHY Driver"

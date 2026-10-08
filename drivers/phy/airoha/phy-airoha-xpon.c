@@ -5,13 +5,17 @@
  * EN7523 and EN751221 share the digital GPON/EPON register block at
  * 0x1faf0000.  The EN7523 generation also integrates the PMA/SerDes
  * controls used by the EN7571 optical front end, while EN751221 uses the
- * older SoC-specific PHY bring-up sequence.
+ * older SoC-specific PHY bring-up sequence. EN7580 has a separate 10G
+ * PCS/PMA backend for XGS-PON.
  */
 
 #include <linux/bitfield.h>
 #include <linux/delay.h>
 #include <linux/gpio/consumer.h>
+#include <linux/iopoll.h>
 #include <linux/mfd/syscon.h>
+#include <linux/mutex.h>
+#include <linux/nvmem-consumer.h>
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/phy/phy.h>
@@ -20,6 +24,7 @@
 #include <linux/property.h>
 #include <linux/regmap.h>
 #include <linux/reset.h>
+#include <linux/slab.h>
 #include <linux/workqueue.h>
 
 #define ECONET_XPON_PHY_MIN_SIZE		0x0600
@@ -151,6 +156,58 @@
 #define XPON_GPON_DELIMITER_DEFAULT	0xaaab5983
 #define XPON_READY_RECOVERY_MS		5000
 
+/* EN7580 PCS and PON PMA; offsets are relative to 0x1faf0000. */
+#define EN7580_XPON_PHY_MIN_SIZE		0x4000
+#define EN7580_PHY_RX_CTRL			0x0a04
+#define EN7580_PHY_PCS_RESET			0x0a0c
+#define EN7580_PHY_PCS_INT_ENABLE		0x0a14
+#define EN7580_PHY_PCS_DEBUG			0x0a84
+#define EN7580_PHY_PCS_SYNC			0x0b1c
+#define EN7580_PHY_PHYA_INT_ENABLE		0x0b44
+#define EN7580_PHY_SFP_LEVEL			0x0b48
+#define EN7580_PHY_SFP_STATUS			0x0b4c
+#define EN7580_PHY_PHYA_READY			0x0b54
+#define EN7580_PHY_RX_IMPEDANCE			0x312c
+#define EN7580_PHY_TX_FIR			0x3148
+#define EN7580_PHY_EYE_INDEX2			0x3308
+#define EN7580_PHY_EYE_COUNT0			0x3330
+#define EN7580_PHY_EYE_COUNT1			0x3334
+#define EN7580_PHY_EQ_CTRL0			0x3370
+#define EN7580_PHY_PI_CAL			0x3430
+#define EN7580_PHY_RX_DEBUG			0x349c
+#define EN7580_PHY_EYE_READY			0x3538
+#define EN7580_PHY_EYE_DONE			0x3548
+#define EN7580_PHY_EYE_WIDTH			0x354c
+#define EN7580_PHY_TX_CALIB0			0x3554
+#define EN7580_PHY_TX_CALIB1			0x3558
+#define EN7580_PHY_PMA_SETTING0			0x3600
+#define EN7580_PHY_PMA_INT_ENABLE0		0x3610
+#define EN7580_PHY_PMA_INT_ENABLE1		0x3614
+#define EN7580_PHY_RX_FORCE0			0x3630
+#define EN7580_PHY_RX_DISB0			0x363c
+#define EN7580_PHY_RX_DISB2			0x3644
+#define EN7580_PHY_RX_FORCE3			0x3648
+#define EN7580_PHY_RX_DISB3			0x3658
+#define EN7580_PHY_RX_FORCE9			0x366c
+#define EN7580_PHY_RX_DISB7			0x3674
+#define EN7580_PHY_RX_DISB8			0x3678
+#define EN7580_PHY_PMA_MODE			0x3754
+#define EN7580_PHY_TX_PLL_STATUS		0x3760
+#define EN7580_PHY_PMA_RESET			0x37b0
+#define EN7580_PHY_TX_DELAY			0x37b8
+#define EN7580_PHY_RX_FREQ_STATUS		0x3820
+#define EN7580_PHY_MEM_CLK			0x38a0
+#define EN7580_PHY_DELAY			0xffff
+#define EN7580_PHY_EYE_VALID		(BIT(16) | BIT(24))
+
+struct en7580_phy_step {
+	u16 reg;
+	u32 mask;
+	u32 value;
+};
+
+#include "phy-airoha-en7580-seq.h"
+
 struct airoha_xpon_phy;
 
 struct airoha_xpon_phy_soc_data {
@@ -162,6 +219,8 @@ struct airoha_xpon_phy_soc_data {
 	bool has_integrated_pma;
 	bool manages_fw_ready;
 	bool has_gpon_bip;
+	bool has_xgspon;
+	const struct phy_ops *ops;
 	int (*configure)(struct airoha_xpon_phy *priv);
 };
 
@@ -179,6 +238,15 @@ struct airoha_xpon_phy {
 	bool initialized;
 	bool powered;
 	bool ready_reported;
+	/* Serializes the EN7580 calibration, LOS recovery and TX requests. */
+	struct mutex xgspon_lock;
+	bool xgspon_configured;
+	bool xgspon_calibrated;
+	bool xgspon_rx_parked;
+	bool xgspon_tx_requested;
+	u8 rx_impedance;
+	u8 txp_impedance;
+	u8 txn_impedance;
 	/* Serializes the RX counter command register (latch/clear). */
 	spinlock_t counter_lock;
 };
@@ -218,6 +286,13 @@ static bool airoha_xpon_phy_fw_ready(struct airoha_xpon_phy *priv)
 
 static bool airoha_xpon_phy_ready(struct airoha_xpon_phy *priv)
 {
+	if (priv->soc->has_xgspon)
+		return priv->xgspon_calibrated && !priv->xgspon_rx_parked &&
+			(airoha_xpon_phy_read(priv, EN7580_PHY_PHYA_READY) & BIT(0)) &&
+			(airoha_xpon_phy_read(priv, EN7580_PHY_RX_FREQ_STATUS) & BIT(0)) &&
+			(airoha_xpon_phy_read(priv, EN7580_PHY_TX_PLL_STATUS) & BIT(16)) &&
+			(airoha_xpon_phy_read(priv, EN7580_PHY_PCS_SYNC) & BIT(1));
+
 	return airoha_xpon_phy_state(priv) == XPON_PHYSTA1_READY;
 }
 
@@ -229,6 +304,9 @@ static u32 airoha_xpon_phy_rx_sync(struct airoha_xpon_phy *priv)
 
 static bool airoha_xpon_phy_los(struct airoha_xpon_phy *priv)
 {
+	if (priv->soc->has_xgspon)
+		return airoha_xpon_phy_read(priv, EN7580_PHY_SFP_STATUS) & BIT(0);
+
 	return airoha_xpon_phy_read(priv, XPON_TRANS_STATUS) &
 		XPON_TRANS_STATUS_LOS;
 }
@@ -244,14 +322,19 @@ int airoha_xpon_phy_get_link_state(struct phy *phy, bool *ready, bool *los)
 	if (!priv)
 		return -ENODEV;
 
+	if (priv->soc->has_xgspon)
+		mutex_lock(&priv->xgspon_lock);
 	if (!READ_ONCE(priv->powered)) {
 		*ready = false;
 		*los = true;
-		return 0;
+	} else {
+		*los = airoha_xpon_phy_los(priv);
+		*ready = airoha_xpon_phy_ready(priv);
+		if (priv->soc->has_xgspon)
+			*ready &= !*los;
 	}
-
-	*ready = airoha_xpon_phy_ready(priv);
-	*los = airoha_xpon_phy_los(priv);
+	if (priv->soc->has_xgspon)
+		mutex_unlock(&priv->xgspon_lock);
 
 	return 0;
 }
@@ -603,7 +686,21 @@ int airoha_xpon_phy_set_tx_enable(struct phy *phy, bool enable)
 	if (!priv)
 		return -ENODEV;
 
-	airoha_xpon_phy_set_tx_gpio(priv, enable);
+	if (priv->soc->has_xgspon) {
+		mutex_lock(&priv->xgspon_lock);
+		if (enable && !priv->powered) {
+			mutex_unlock(&priv->xgspon_lock);
+			return -EAGAIN;
+		}
+		/* A request survives LOS, but only a synchronized RX permits TX. */
+		priv->xgspon_tx_requested = enable;
+		enable = enable && priv->powered &&
+			!airoha_xpon_phy_los(priv) && airoha_xpon_phy_ready(priv);
+		airoha_xpon_phy_set_tx_gpio(priv, enable);
+		mutex_unlock(&priv->xgspon_lock);
+	} else {
+		airoha_xpon_phy_set_tx_gpio(priv, enable);
+	}
 	return 0;
 }
 EXPORT_SYMBOL_GPL(airoha_xpon_phy_set_tx_enable);
@@ -616,6 +713,417 @@ airoha_xpon_phy_set_vcc_enabled(struct airoha_xpon_phy *priv, bool enable)
 
 	/* VCC_DISABLE follows the same logical-disable convention. */
 	gpiod_set_value_cansleep(priv->vcc_disable_gpio, !enable);
+}
+
+/* EN7580 XGS-PON uses its own PCS/PMA lifecycle and never the 1G registers. */
+static void en7580_phy_sequence(struct airoha_xpon_phy *priv,
+				const struct en7580_phy_step *seq, size_t count)
+{
+	size_t i;
+
+	for (i = 0; i < count; i++) {
+		if (seq[i].reg == EN7580_PHY_DELAY) {
+			if (seq[i].value < 10)
+				udelay(seq[i].value);
+			else
+				usleep_range(seq[i].value,
+					     seq[i].value + max(1U, seq[i].value / 10));
+			continue;
+		}
+		airoha_xpon_phy_rmw(priv, seq[i].reg, seq[i].mask, seq[i].value);
+	}
+	/* Complete all posted calibration/reset writes before proceeding. */
+	airoha_xpon_phy_read(priv, EN7580_PHY_PMA_RESET);
+}
+
+#define en7580_phy_run(priv, name) \
+	en7580_phy_sequence(priv, en7580_##name##_seq, \
+			    ARRAY_SIZE(en7580_##name##_seq))
+
+static void en7580_phy_pcs_reset(struct airoha_xpon_phy *priv)
+{
+	airoha_xpon_phy_write(priv, EN7580_PHY_PCS_RESET, 0);
+	airoha_xpon_phy_read(priv, EN7580_PHY_PCS_RESET);
+	usleep_range(1000, 1100);
+	airoha_xpon_phy_write(priv, EN7580_PHY_PCS_RESET, 3);
+	airoha_xpon_phy_read(priv, EN7580_PHY_PCS_RESET);
+	usleep_range(1000, 1100);
+}
+
+static void en7580_phy_mask_interrupts(struct airoha_xpon_phy *priv)
+{
+	airoha_xpon_phy_write(priv, EN7580_PHY_PCS_INT_ENABLE, 0);
+	airoha_xpon_phy_write(priv, EN7580_PHY_PHYA_INT_ENABLE, 0);
+	airoha_xpon_phy_write(priv, EN7580_PHY_PMA_INT_ENABLE0, 0);
+	airoha_xpon_phy_write(priv, EN7580_PHY_PMA_INT_ENABLE1, 0);
+}
+
+static void en7580_phy_quiesce(struct airoha_xpon_phy *priv)
+{
+	en7580_phy_mask_interrupts(priv);
+	airoha_xpon_phy_rmw(priv, EN7580_PHY_RX_CTRL, BIT(16), 0);
+	airoha_xpon_phy_write(priv, EN7580_PHY_PCS_RESET, 0);
+	airoha_xpon_phy_rmw(priv, EN7580_PHY_PMA_RESET, GENMASK(4, 0), 0);
+	airoha_xpon_phy_read(priv, EN7580_PHY_PMA_RESET);
+}
+
+static u32 en7580_phy_eye_status(struct airoha_xpon_phy *priv)
+{
+	/* Debug results are latched: refresh the latch on every poll. */
+	airoha_xpon_phy_rmw(priv, EN7580_PHY_RX_DEBUG, BIT(24), 0);
+	airoha_xpon_phy_rmw(priv, EN7580_PHY_RX_DEBUG, BIT(24), BIT(24));
+	return airoha_xpon_phy_read(priv, EN7580_PHY_EYE_DONE) &
+		airoha_xpon_phy_read(priv, EN7580_PHY_EYE_READY);
+}
+
+static void en7580_phy_eye_stop(struct airoha_xpon_phy *priv)
+{
+	airoha_xpon_phy_rmw(priv, EN7580_PHY_RX_FORCE9, BIT(8), BIT(8));
+	airoha_xpon_phy_rmw(priv, EN7580_PHY_RX_DISB8, BIT(16), 0);
+	airoha_xpon_phy_rmw(priv, EN7580_PHY_RX_FORCE9, BIT(16), 0);
+	airoha_xpon_phy_rmw(priv, EN7580_PHY_RX_DISB3, BIT(0), 0);
+	airoha_xpon_phy_rmw(priv, EN7580_PHY_RX_FORCE3, BIT(0), 0);
+}
+
+static int en7580_phy_eye_scan(struct airoha_xpon_phy *priv)
+{
+	u32 value, left, right, score, best_score = 0;
+	unsigned int peaking, best_peaking = 0;
+	int ret;
+
+	en7580_phy_run(priv, eye_setup);
+	airoha_xpon_phy_rmw(priv, EN7580_PHY_EQ_CTRL0, GENMASK(7, 0), 0x80);
+	airoha_xpon_phy_rmw(priv, EN7580_PHY_PI_CAL, GENMASK(10, 8), 4 << 8);
+	airoha_xpon_phy_rmw(priv, EN7580_PHY_RX_DISB0, BIT(0), 0);
+	airoha_xpon_phy_rmw(priv, EN7580_PHY_RX_FORCE0, GENMASK(1, 0), 1);
+
+	/* SDK EO_Scan(0, 10, 0, 7, 0): choose the widest horizontal eye. */
+	for (peaking = 0; peaking < 8; peaking++) {
+		if (airoha_xpon_phy_los(priv)) {
+			ret = -ENOLINK;
+			goto err_stop;
+		}
+		airoha_xpon_phy_rmw(priv, EN7580_PHY_RX_DISB0, BIT(8), 0);
+		airoha_xpon_phy_rmw(priv, EN7580_PHY_RX_FORCE0, GENMASK(10, 8),
+				     peaking << 8);
+		en7580_phy_run(priv, eye_cal);
+
+		airoha_xpon_phy_rmw(priv, EN7580_PHY_EYE_COUNT0,
+				     GENMASK(9, 0), 0xa);
+		airoha_xpon_phy_rmw(priv, EN7580_PHY_EYE_INDEX2,
+				     GENMASK(19, 0), 0x44c);
+		airoha_xpon_phy_rmw(priv, EN7580_PHY_RX_DISB8, BIT(8), 0);
+		airoha_xpon_phy_rmw(priv, EN7580_PHY_RX_FORCE9, BIT(8), BIT(8));
+		airoha_xpon_phy_rmw(priv, EN7580_PHY_RX_FORCE9, BIT(8), 0);
+		airoha_xpon_phy_rmw(priv, EN7580_PHY_RX_DISB8, BIT(16), 0);
+		airoha_xpon_phy_rmw(priv, EN7580_PHY_RX_FORCE9, BIT(16), 0);
+		airoha_xpon_phy_rmw(priv, EN7580_PHY_RX_FORCE9, BIT(16), BIT(16));
+		usleep_range(5500, 6000);
+		airoha_xpon_phy_rmw(priv, EN7580_PHY_RX_DISB2,
+				     BIT(8) | BIT(24), BIT(8) | BIT(24));
+		airoha_xpon_phy_rmw(priv, EN7580_PHY_EYE_COUNT1, BIT(8), BIT(8));
+		airoha_xpon_phy_rmw(priv, EN7580_PHY_RX_DISB7, BIT(24), BIT(24));
+		airoha_xpon_phy_rmw(priv, EN7580_PHY_EYE_COUNT1, BIT(0), BIT(0));
+		ret = read_poll_timeout(en7580_phy_eye_status, value,
+					(value & EN7580_PHY_EYE_VALID) == EN7580_PHY_EYE_VALID,
+					100, 10000, false, priv);
+		if (airoha_xpon_phy_los(priv)) {
+			ret = -ENOLINK;
+			goto err_stop;
+		}
+
+		if (ret)
+			goto err_stop;
+
+		value = airoha_xpon_phy_read(priv, EN7580_PHY_EYE_WIDTH);
+		left = FIELD_GET(GENMASK(26, 16), value);
+		right = FIELD_GET(GENMASK(10, 0), value);
+		score = left > right ? left - right : right - left;
+		if (score > best_score) {
+			best_score = score;
+			best_peaking = peaking;
+		}
+		en7580_phy_eye_stop(priv);
+	}
+
+	if (!best_score) {
+		ret = -EIO;
+		goto err_stop;
+	}
+
+	airoha_xpon_phy_rmw(priv, EN7580_PHY_RX_DISB0, BIT(0) | BIT(8), 0);
+	airoha_xpon_phy_rmw(priv, EN7580_PHY_RX_FORCE0,
+			     GENMASK(1, 0) | GENMASK(10, 8),
+			     1 | (best_peaking << 8));
+	dev_dbg(priv->dev, "XGS-PON eye width=%u peaking=%u\n",
+		best_score, best_peaking);
+	return 0;
+
+err_stop:
+	en7580_phy_eye_stop(priv);
+	return ret;
+}
+
+static int en7580_phy_connect(struct airoha_xpon_phy *priv)
+{
+	int ret;
+
+	airoha_xpon_phy_set_tx_gpio(priv, false);
+	if (!priv->xgspon_calibrated) {
+		/* Re-run the complete RX calibration after an interrupted eye scan. */
+		en7580_phy_run(priv, rx_cal);
+		airoha_xpon_phy_rmw(priv, EN7580_PHY_RX_FORCE0,
+				     BIT(24) | BIT(16), BIT(24) | BIT(16));
+		usleep_range(200, 250);
+		ret = en7580_phy_eye_scan(priv);
+		if (ret)
+			return ret;
+		en7580_phy_run(priv, rx_finish);
+		airoha_xpon_phy_rmw(priv, EN7580_PHY_RX_IMPEDANCE,
+				     GENMASK(26, 25), priv->rx_impedance << 25);
+		priv->xgspon_calibrated = true;
+	} else {
+		en7580_phy_run(priv, rx_connect);
+	}
+	/* Normal PMA data, with loopback and BIST paths disabled. */
+	airoha_xpon_phy_rmw(priv, EN7580_PHY_PMA_MODE, BIT(16) | BIT(8), 0);
+	en7580_phy_pcs_reset(priv);
+	airoha_xpon_phy_rmw(priv, EN7580_PHY_RX_CTRL, BIT(16), BIT(16));
+	usleep_range(8000, 9000);
+	return 0;
+}
+
+static void en7580_phy_ready_work(struct work_struct *work)
+{
+	struct airoha_xpon_phy *priv =
+		container_of(to_delayed_work(work), struct airoha_xpon_phy, ready_work);
+	bool ready, los;
+	int ret;
+
+	mutex_lock(&priv->xgspon_lock);
+	if (!priv->powered)
+		goto out;
+	los = airoha_xpon_phy_los(priv);
+	ready = !los && airoha_xpon_phy_ready(priv);
+	if (los) {
+		airoha_xpon_phy_set_tx_gpio(priv, false);
+		if (!priv->xgspon_rx_parked) {
+			en7580_phy_run(priv, rx_disconnect);
+			airoha_xpon_phy_rmw(priv, EN7580_PHY_RX_CTRL, BIT(16), 0);
+			priv->xgspon_rx_parked = true;
+		}
+	} else if (priv->xgspon_rx_parked || !ready) {
+		ret = en7580_phy_connect(priv);
+		if (ret) {
+			dev_warn_ratelimited(priv->dev,
+					     "XGS-PON RX recovery failed: %d\n", ret);
+			en7580_phy_run(priv, rx_disconnect);
+			airoha_xpon_phy_rmw(priv, EN7580_PHY_RX_CTRL, BIT(16), 0);
+			priv->xgspon_rx_parked = true;
+		} else {
+			priv->xgspon_rx_parked = false;
+		}
+	}
+	ready = !airoha_xpon_phy_los(priv) && airoha_xpon_phy_ready(priv);
+	if (ready != priv->ready_reported) {
+		priv->ready_reported = ready;
+		dev_info(priv->dev, "XGS-PON receiver %s\n", ready ? "ready" : "not ready");
+	}
+	airoha_xpon_phy_set_tx_gpio(priv, ready && priv->xgspon_tx_requested);
+	mod_delayed_work(system_wq, &priv->ready_work, msecs_to_jiffies(1000));
+out:
+	mutex_unlock(&priv->xgspon_lock);
+}
+
+static int en7580_phy_power_off_priv(struct airoha_xpon_phy *priv)
+{
+	int ret;
+
+	mutex_lock(&priv->xgspon_lock);
+	WRITE_ONCE(priv->powered, false);
+	priv->xgspon_tx_requested = false;
+	airoha_xpon_phy_set_tx_gpio(priv, false);
+	mutex_unlock(&priv->xgspon_lock);
+	cancel_delayed_work_sync(&priv->ready_work);
+	mutex_lock(&priv->xgspon_lock);
+	if (priv->xgspon_configured)
+		en7580_phy_quiesce(priv);
+	ret = reset_control_assert(priv->reset);
+	priv->xgspon_configured = false;
+	priv->xgspon_calibrated = false;
+	priv->ready_reported = false;
+	airoha_xpon_phy_set_vcc_enabled(priv, false);
+	mutex_unlock(&priv->xgspon_lock);
+	return ret;
+}
+
+static void en7580_phy_shutdown(void *data)
+{
+	struct airoha_xpon_phy *priv = data;
+	int ret = en7580_phy_power_off_priv(priv);
+
+	if (ret)
+		dev_warn(priv->dev, "failed to hold XGS-PON PHY reset: %d\n", ret);
+}
+
+static int en7580_phy_init(struct phy *phy)
+{
+	struct airoha_xpon_phy *priv = phy_get_drvdata(phy);
+
+	/* Configuration and reset release are deferred to phy_power_on(). */
+	priv->initialized = true;
+	return 0;
+}
+
+static int en7580_phy_exit(struct phy *phy)
+{
+	struct airoha_xpon_phy *priv = phy_get_drvdata(phy);
+	int ret;
+
+	ret = en7580_phy_power_off_priv(priv);
+	priv->initialized = false;
+	return ret;
+}
+
+static int en7580_phy_set_mode(struct phy *phy, enum phy_mode mode, int submode)
+{
+	struct airoha_xpon_phy *priv = phy_get_drvdata(phy);
+
+	if (mode != PHY_MODE_ETHERNET || submode != AIROHA_XPON_PHY_SUBMODE_XGSPON)
+		return -EOPNOTSUPP;
+	/* Live changes are owned by the MAC/core and require a stopped PHY. */
+	if (priv->powered)
+		return -EBUSY;
+	priv->submode = submode;
+	return 0;
+}
+
+static int en7580_phy_power_on(struct phy *phy)
+{
+	struct airoha_xpon_phy *priv = phy_get_drvdata(phy);
+	u32 value;
+	int ret;
+
+	if (!priv->initialized)
+		return -EINVAL;
+	mutex_lock(&priv->xgspon_lock);
+	airoha_xpon_phy_set_tx_gpio(priv, false);
+	priv->xgspon_tx_requested = false;
+	airoha_xpon_phy_set_vcc_enabled(priv, true);
+	ret = reset_control_assert(priv->reset);
+	if (ret)
+		goto err_power;
+	ret = regmap_update_bits(priv->scu, EN7523_SCU_WAN_CONF,
+				 EN7523_SCU_WAN_MODE_MASK, 0x0a);
+	if (ret)
+		goto err_power;
+	ret = reset_control_deassert(priv->reset);
+	if (ret)
+		goto err_power;
+	usleep_range(1000, 1100);
+	ret = regmap_clear_bits(priv->scu, ECONET_SCU_PHY_CTRL1,
+				ECONET_SCU_PHY_CTRL1_DIS);
+	if (ret)
+		goto err_power;
+	en7580_phy_run(priv, init);
+	priv->xgspon_configured = true;
+	en7580_phy_mask_interrupts(priv);
+	airoha_xpon_phy_rmw(priv, EN7580_PHY_RX_CTRL, BIT(16), 0);
+	airoha_xpon_phy_write(priv, EN7580_PHY_PCS_RESET, 0);
+	airoha_xpon_phy_rmw(priv, EN7580_PHY_TX_CALIB0,
+			     GENMASK(25, 24) | BIT(16),
+			     (priv->txp_impedance << 24) | BIT(16));
+	airoha_xpon_phy_rmw(priv, EN7580_PHY_TX_CALIB1,
+			     GENMASK(25, 24) | BIT(16),
+			     (priv->txn_impedance << 24) | BIT(16));
+	/* The XFI/JCPLL clock domain is configured by its existing PCS owner. */
+	ret = readl_poll_timeout(priv->base + EN7580_PHY_TX_PLL_STATUS, value,
+				value & BIT(16), 100, 100000);
+	if (ret) {
+		dev_err(priv->dev,
+			"XGS-PON TX PLL did not lock; check the XFI/JCPLL reference clock\n");
+		goto err_power;
+	}
+	airoha_xpon_phy_rmw(priv, EN7580_PHY_PCS_DEBUG, BIT(0) | BIT(1), 0);
+	airoha_xpon_phy_write(priv, EN7580_PHY_TX_FIR, 0xc11a5c20);
+	airoha_xpon_phy_rmw(priv, EN7580_PHY_MEM_CLK, GENMASK(1, 0), 3);
+	airoha_xpon_phy_rmw(priv, EN7580_PHY_TX_DELAY, GENMASK(30, 28), BIT(28));
+	/* Map the existing board polarity properties onto the 10G status inputs. */
+	value = !(priv->trans_invert & XPON_SETTING_RX_SD_INV) * BIT(0) |
+		!!(priv->trans_invert & XPON_SETTING_TX_SD_INV) * BIT(1) |
+		!!(priv->trans_invert & XPON_SETTING_TX_FAULT_INV) * BIT(2);
+	airoha_xpon_phy_rmw(priv, EN7580_PHY_SFP_LEVEL, GENMASK(2, 0), value);
+	value = !!(priv->trans_invert & XPON_SETTING_BURST_EN_INV) * BIT(8) |
+		!!(priv->trans_invert & XPON_SETTING_TX_FAULT_INV) * BIT(24);
+	airoha_xpon_phy_rmw(priv, EN7580_PHY_PMA_SETTING0, BIT(8) | BIT(24), value);
+
+	priv->xgspon_calibrated = false;
+	priv->xgspon_rx_parked = true;
+	if (!airoha_xpon_phy_los(priv)) {
+		ret = en7580_phy_connect(priv);
+		if (ret && ret != -ENOLINK)
+			goto err_power;
+		if (ret)
+			en7580_phy_run(priv, rx_disconnect);
+		priv->xgspon_rx_parked = !!ret;
+	}
+	/* No light is a link condition; wait with TX_DISABLE asserted. */
+	WRITE_ONCE(priv->powered, true);
+	priv->ready_reported = false;
+	mod_delayed_work(system_wq, &priv->ready_work, msecs_to_jiffies(1000));
+	mutex_unlock(&priv->xgspon_lock);
+	dev_info(priv->dev, "EN7580 XGS-PON PHY powered; optical TX remains disabled\n");
+	return 0;
+
+err_power:
+	if (priv->xgspon_configured)
+		en7580_phy_quiesce(priv);
+	reset_control_assert(priv->reset);
+	priv->xgspon_configured = false;
+	priv->xgspon_calibrated = false;
+	airoha_xpon_phy_set_vcc_enabled(priv, false);
+	mutex_unlock(&priv->xgspon_lock);
+	return ret;
+}
+
+static int en7580_phy_power_off(struct phy *phy)
+{
+	return en7580_phy_power_off_priv(phy_get_drvdata(phy));
+}
+
+static const struct phy_ops en7580_xgspon_phy_ops = {
+	.init = en7580_phy_init,
+	.exit = en7580_phy_exit,
+	.set_mode = en7580_phy_set_mode,
+	.power_on = en7580_phy_power_on,
+	.power_off = en7580_phy_power_off,
+	.owner = THIS_MODULE,
+};
+
+static int en7580_phy_read_impedance(struct device *dev, const char *name, u8 *val)
+{
+	struct nvmem_cell *cell;
+	u8 *data;
+	size_t len;
+
+	/* Missing/unprogrammed trims use the SDK's impedance level 2. */
+	*val = 2;
+	if (device_property_match_string(dev, "nvmem-cell-names", name) < 0)
+		return 0;
+	cell = devm_nvmem_cell_get(dev, name);
+	if (IS_ERR(cell))
+		return PTR_ERR(cell);
+	data = nvmem_cell_read(cell, &len);
+	if (IS_ERR(data))
+		return PTR_ERR(data);
+	if (len != 1) {
+		kfree(data);
+		return -EINVAL;
+	}
+	if (*data > 0 && *data <= 3)
+		*val = *data;
+	kfree(data);
+	return 0;
 }
 
 static int airoha_xpon_phy_reset(struct phy *phy)
@@ -1233,6 +1741,7 @@ static int airoha_xpon_phy_probe(struct platform_device *pdev)
 	struct airoha_xpon_phy *priv;
 	struct resource *res;
 	struct phy *phy;
+	int ret;
 
 	soc = device_get_match_data(dev);
 	if (!soc)
@@ -1244,10 +1753,13 @@ static int airoha_xpon_phy_probe(struct platform_device *pdev)
 
 	priv->dev = dev;
 	priv->soc = soc;
-	priv->submode = AIROHA_XPON_PHY_SUBMODE_GPON;
+	priv->submode = soc->has_xgspon ? AIROHA_XPON_PHY_SUBMODE_XGSPON :
+		AIROHA_XPON_PHY_SUBMODE_GPON;
 	priv->trans_invert = airoha_xpon_phy_trans_invert(dev);
 	spin_lock_init(&priv->counter_lock);
-	INIT_DELAYED_WORK(&priv->ready_work, airoha_xpon_phy_ready_work);
+	mutex_init(&priv->xgspon_lock);
+	INIT_DELAYED_WORK(&priv->ready_work, soc->has_xgspon ?
+			  en7580_phy_ready_work : airoha_xpon_phy_ready_work);
 
 	/*
 	 * These signals are part of the xPON PHY electrical interface, not of
@@ -1290,7 +1802,25 @@ static int airoha_xpon_phy_probe(struct platform_device *pdev)
 		return dev_err_probe(dev, PTR_ERR(priv->reset),
 				     "failed to get xPON PHY reset\n");
 
-	phy = devm_phy_create(dev, NULL, &airoha_xpon_phy_ops);
+	if (soc->has_xgspon) {
+		ret = en7580_phy_read_impedance(dev, "rx-impedance", &priv->rx_impedance);
+		if (ret)
+			return dev_err_probe(dev, ret, "failed to read RX impedance trim\n");
+		ret = en7580_phy_read_impedance(dev, "txp-impedance", &priv->txp_impedance);
+		if (ret)
+			return dev_err_probe(dev, ret, "failed to read TXP impedance trim\n");
+		ret = en7580_phy_read_impedance(dev, "txn-impedance", &priv->txn_impedance);
+		if (ret)
+			return dev_err_probe(dev, ret, "failed to read TXN impedance trim\n");
+		ret = reset_control_assert(priv->reset);
+		if (ret)
+			return dev_err_probe(dev, ret, "failed to hold PHY reset\n");
+		ret = devm_add_action_or_reset(dev, en7580_phy_shutdown, priv);
+		if (ret)
+			return ret;
+	}
+
+	phy = devm_phy_create(dev, NULL, soc->ops ?: &airoha_xpon_phy_ops);
 	if (IS_ERR(phy))
 		return dev_err_probe(dev, PTR_ERR(phy),
 				     "failed to create xPON PHY\n");
@@ -1337,7 +1867,18 @@ static const struct airoha_xpon_phy_soc_data airoha_en7528_xpon_phy_data = {
 	.configure = airoha_en7528_xpon_phy_configure,
 };
 
+static const struct airoha_xpon_phy_soc_data airoha_en7580_xpon_phy_data = {
+	.name = "EN7580",
+	.min_size = EN7580_XPON_PHY_MIN_SIZE,
+	.has_xgspon = true,
+	.ops = &en7580_xgspon_phy_ops,
+};
+
 static const struct of_device_id airoha_xpon_phy_of_match[] = {
+	{
+		.compatible = "airoha,en7580-xpon-phy",
+		.data = &airoha_en7580_xpon_phy_data,
+	},
 	{
 		.compatible = "econet,en751221-xpon-phy",
 		.data = &econet_en751221_xpon_phy_data,
@@ -1358,8 +1899,17 @@ static const struct of_device_id airoha_xpon_phy_of_match[] = {
 };
 MODULE_DEVICE_TABLE(of, airoha_xpon_phy_of_match);
 
+static void airoha_xpon_phy_shutdown(struct platform_device *pdev)
+{
+	struct airoha_xpon_phy *priv = platform_get_drvdata(pdev);
+
+	if (priv->soc->has_xgspon)
+		en7580_phy_shutdown(priv);
+}
+
 static struct platform_driver airoha_xpon_phy_driver = {
 	.probe = airoha_xpon_phy_probe,
+	.shutdown = airoha_xpon_phy_shutdown,
 	.driver = {
 		.name = "airoha-xpon-phy",
 		.of_match_table = airoha_xpon_phy_of_match,

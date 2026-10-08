@@ -12,6 +12,7 @@ struct phy;
 enum airoha_xpon_phy_submode {
 	AIROHA_XPON_PHY_SUBMODE_GPON = 0,
 	AIROHA_XPON_PHY_SUBMODE_EPON = 1,
+	AIROHA_XPON_PHY_SUBMODE_XGSPON = 2,
 };
 
 /*
@@ -24,6 +25,7 @@ enum airoha_xpon_phy_gpon_oper_state {
 	AIROHA_XPON_PHY_GPON_OPER_OPERATION = 3,
 };
 
+/* EN7580 link-state reads serialize with calibration and may sleep. */
 int airoha_xpon_phy_get_link_state(struct phy *phy, bool *ready, bool *los);
 /* EN751221: latch, read and clear the BIP error counter; atomic-safe. */
 int airoha_xpon_phy_take_gpon_bip(struct phy *phy, u32 *count);
@@ -42,6 +44,7 @@ int airoha_xpon_phy_set_gpon_extended_preamble(struct phy *phy,
 int airoha_xpon_phy_set_gpon_oper_state(
 	struct phy *phy, enum airoha_xpon_phy_gpon_oper_state state);
 int airoha_xpon_phy_set_gpon_bit_delay(struct phy *phy, u8 delay);
+/* EN7580 queues TX requests while unsynchronized and clears them on power-off. */
 int airoha_xpon_phy_set_tx_enable(struct phy *phy, bool enable);
 int airoha_xpon_phy_set_tx_calibration_mode(struct phy *phy, bool enable);
 

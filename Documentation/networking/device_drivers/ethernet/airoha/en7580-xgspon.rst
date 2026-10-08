@@ -145,12 +145,24 @@ behavior on an EN7580 board.
 Next implementation stages
 --------------------------
 
-1. Implement the EN7580 generic PHY/PMA backend with its own mode data,
-   calibration, LOS/CDR/FEC state and TX_DISABLE ownership. The existing
-   PHY DT resource is only 0x2000 bytes; ``en7580_reg.h`` places the PON
-   PMA at offset 0x3000 and includes registers beyond that address.
-   Determine the full PON resource extent before extending the binding;
-   the later XFI PMA must not be accidentally included or reset.
+1. Connect the EN7580 generic PHY backend to the staged MAC activation
+   lifecycle. The provider in ``drivers/phy/airoha/phy-airoha-xpon.c`` now
+   implements XGS-PON calibration, PCS synchronization and polled LOS
+   recovery. Its 0x4000-byte resource includes the PON PMA at offset 0x3000
+   and excludes the XFI PMA. RX FEC is enabled during initialization;
+   upstream burst profiles and TX FEC selection remain MAC activation work.
+   TX_DISABLE remains asserted until the consumer explicitly requests TX,
+   and is reasserted whenever synchronization is lost. Power cycling clears
+   the request. The three optional NVMEM trims correspond to eFuse bits
+   90-95; absent or unprogrammed values use impedance level 2.
+
+   The SDK also touches the XFI/JCPLL reference-clock domain. Those writes
+   are excluded from the PON sequences because that domain currently belongs
+   to the XSI PCS driver. A bounded TX PLL lock check rejects power-on if
+   the required clock is unavailable. Standalone PON cold boot still needs
+   shared reference-clock ownership between the two drivers, rather than
+   depending on prior Ethernet initialization. Do not enable the board PHY
+   node until that clock lifecycle and the optical sequence are validated.
 2. Add G.9807.1 PLOAM framing, FIFO conversion and MIC handling. The
    downstream FIFO includes an extra word carrying the hardware MIC
    result. Preserve that result through the IRQ-to-worker handoff.
