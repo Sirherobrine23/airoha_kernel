@@ -1628,6 +1628,17 @@ config SYSFS_SYSCALL
 
 	  If unsure say N here.
 
+config KALLSYMS_UNCOMPRESSED
+	bool "Keep kallsyms uncompressed"
+	depends on KALLSYMS
+	help
+		Normally kallsyms contains compressed symbols (using a token table),
+		reducing the uncompressed kernel image size. Keeping the symbol table
+		uncompressed significantly improves the size of this part in compressed
+		kernel images.
+
+		Say N unless you need compressed kernel images to be small.
+
 config HAVE_PCSPKR_PLATFORM
 	bool
 
