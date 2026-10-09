@@ -206,6 +206,11 @@ static void airoha_xpon_update_netdev_link(struct xpon_priv *priv, bool link)
 		state.rx_line_rate_bps = 1000000000ULL;
 		state.tx_line_rate_bps = 1000000000ULL;
 		break;
+	case AIROHA_XPON_MODE_XGSPON:
+		state.speed = SPEED_10000;
+		state.rx_line_rate_bps = 9953280000ULL;
+		state.tx_line_rate_bps = 9953280000ULL;
+		break;
 	default:
 		return;
 	}
@@ -4559,6 +4564,37 @@ static int airoha_xgspon_status_show(struct seq_file *s, void *unused)
 }
 DEFINE_SHOW_ATTRIBUTE(airoha_xgspon_status);
 
+static int airoha_xgspon_link_start(void *data)
+{
+	struct xpon_priv *pon = data;
+
+	if (!pon->xgspon_accessible)
+		return -ENODEV;
+
+	/* Opening GDM2 does not activate the ONU or release optical TX. */
+	airoha_xpon_update_netdev_link(pon, false);
+	return 0;
+}
+
+static void airoha_xgspon_link_stop(void *data)
+{
+	struct xpon_priv *pon = data;
+
+	airoha_xpon_update_netdev_link(pon, false);
+}
+
+static const struct airoha_xpon_link_ops airoha_xgspon_link_ops = {
+	.start = airoha_xgspon_link_start,
+	.stop = airoha_xgspon_link_stop,
+};
+
+static void airoha_xgspon_link_unregister(void *data)
+{
+	struct xpon_priv *pon = data;
+
+	airoha_eth_unregister_xpon(pon->gdm_dev, &airoha_xgspon_link_ops, pon);
+}
+
 static void airoha_xgspon_debugfs_remove(void *data)
 {
 	struct xpon_priv *pon = data;
@@ -4629,6 +4665,16 @@ static int airoha_xpon_init_xgspon(struct xpon_priv *priv)
 	if (ret)
 		return ret;
 
+	ret = airoha_eth_register_xpon(priv->gdm_dev, priv->mode,
+				       &airoha_xgspon_link_ops, priv);
+	if (ret)
+		return dev_err_probe(dev, ret, "failed to register XGS-PON link provider\n");
+	/* Detach GDM2 while the MAC, PHY and generic xPON device still exist. */
+	ret = devm_add_action_or_reset(dev, airoha_xgspon_link_unregister, priv);
+	if (ret)
+		return ret;
+	airoha_xpon_update_netdev_link(priv, false);
+
 	name = devm_kasprintf(dev, GFP_KERNEL, "airoha-xgspon-%s", dev_name(dev));
 	if (name) {
 		priv->xgspon_debugfs = debugfs_create_dir(name, NULL);
@@ -4643,7 +4689,7 @@ static int airoha_xpon_init_xgspon(struct xpon_priv *priv)
 		}
 	}
 	dev_info(dev,
-		 "EN7580 XGS-PON MAC prepared in O1; PHY powered=%u, activation and datapath disabled\n",
+		 "EN7580 XGS-PON MAC prepared in O1; GDM2 managed, PHY powered=%u, activation and datapath disabled\n",
 		 priv->phy_powered);
 	return 0;
 }
