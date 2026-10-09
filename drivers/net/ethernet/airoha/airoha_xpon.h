@@ -434,6 +434,7 @@ struct xpon_priv {
 	void __iomem		*epon_reset_reg;
 	struct dentry		*xgspon_debugfs;
 	bool			xgspon_accessible;
+	struct omci_device	*xgspon_omci;
 	struct device		*dev;
 	struct regmap		*scu;
 	const struct airoha_xpon_match_data *match_data;

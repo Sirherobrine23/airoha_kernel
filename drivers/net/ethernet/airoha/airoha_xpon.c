@@ -2128,29 +2128,12 @@ int airoha_gpon_omci_hw_set_uni(void *hw_priv, u16 entity_id, bool enable)
 	return 0;
 }
 
-int airoha_gpon_omci_hw_get_telemetry(void *hw_priv,
-				      struct omci_telemetry *telemetry)
+static int
+airoha_xpon_get_optical_telemetry(struct xpon_priv *priv,
+				  struct omci_telemetry *telemetry)
 {
 	struct optical_frontend_telemetry optical = {};
-	struct xpon_priv *priv = hw_priv;
-	bool downstream_fec, upstream_fec;
 	int ret;
-
-	if (!telemetry)
-		return -EINVAL;
-
-	memset(telemetry, 0, sizeof(*telemetry));
-	ret = airoha_xpon_phy_get_gpon_fec_status(priv->phy,
-						  &downstream_fec,
-						  &upstream_fec);
-	if (!ret) {
-		telemetry->downstream_fec = downstream_fec ?
-			OMCI_FEC_STATUS_UP : OMCI_FEC_STATUS_DOWN;
-		telemetry->upstream_fec = upstream_fec ?
-			OMCI_FEC_STATUS_UP : OMCI_FEC_STATUS_DOWN;
-		telemetry->valid |= OMCI_TELEMETRY_F_FEC_DOWNSTREAM |
-				    OMCI_TELEMETRY_F_FEC_UPSTREAM;
-	}
 
 	if (!priv->frontend)
 		return telemetry->valid ? 0 : -ENODATA;
@@ -2185,6 +2168,32 @@ int airoha_gpon_omci_hw_get_telemetry(void *hw_priv,
 	}
 
 	return 0;
+}
+
+int airoha_gpon_omci_hw_get_telemetry(void *hw_priv,
+				      struct omci_telemetry *telemetry)
+{
+	struct xpon_priv *priv = hw_priv;
+	bool downstream_fec, upstream_fec;
+	int ret;
+
+	if (!telemetry)
+		return -EINVAL;
+
+	memset(telemetry, 0, sizeof(*telemetry));
+	ret = airoha_xpon_phy_get_gpon_fec_status(priv->phy,
+						  &downstream_fec,
+						  &upstream_fec);
+	if (!ret) {
+		telemetry->downstream_fec = downstream_fec ?
+			OMCI_FEC_STATUS_UP : OMCI_FEC_STATUS_DOWN;
+		telemetry->upstream_fec = upstream_fec ?
+			OMCI_FEC_STATUS_UP : OMCI_FEC_STATUS_DOWN;
+		telemetry->valid |= OMCI_TELEMETRY_F_FEC_DOWNSTREAM |
+				    OMCI_TELEMETRY_F_FEC_UPSTREAM;
+	}
+
+	return airoha_xpon_get_optical_telemetry(priv, telemetry);
 }
 
 /* Forward declaration needed by gpon_disable */
@@ -4620,6 +4629,87 @@ static void airoha_xgspon_phy_stop(void *data)
 			     &pon->phy_initialized, &pon->phy_powered);
 }
 
+static int airoha_xgspon_omci_start(struct omci_device *odev)
+{
+	/* Activation and the EN7580 OMCC datapath are not implemented yet. */
+	return -EOPNOTSUPP;
+}
+
+static int airoha_xgspon_omci_xmit(struct omci_device *odev,
+				   struct sk_buff *skb, u16 gem_port_id)
+{
+	/* An error leaves skb ownership with the OMCI core. */
+	return -EOPNOTSUPP;
+}
+
+static int
+airoha_xgspon_omci_get_telemetry(struct omci_device *odev,
+				 struct omci_telemetry *telemetry)
+{
+	struct xpon_priv *pon = omci_device_priv(odev);
+
+	memset(telemetry, 0, sizeof(*telemetry));
+	return airoha_xpon_get_optical_telemetry(pon, telemetry);
+}
+
+static const struct omci_device_ops airoha_xgspon_omci_ops = {
+	.start = airoha_xgspon_omci_start,
+	.xmit = airoha_xgspon_omci_xmit,
+	.get_telemetry = airoha_xgspon_omci_get_telemetry,
+};
+
+static void airoha_xgspon_omci_unregister(void *data)
+{
+	struct xpon_priv *pon = data;
+
+	omci_device_unregister(pon->xgspon_omci);
+	pon->xgspon_omci = NULL;
+}
+
+static int airoha_xgspon_omci_register(struct xpon_priv *pon)
+{
+	u32 capabilities = pon->frontend ? OMCI_CAP_TELEMETRY : 0;
+	struct omci_device *odev;
+	int ret;
+
+	ret = omci_identity_load(pon->dev, &pon->identity);
+	if (ret)
+		return ret;
+
+	odev = omci_device_register(pon->xpon, capabilities,
+				    &airoha_xgspon_omci_ops, pon);
+	if (IS_ERR(odev))
+		return PTR_ERR(odev);
+
+	pon->xgspon_omci = odev;
+	omci_device_set_identity_info(odev, &pon->identity);
+	omci_device_set_onu_id(odev, XGSPON_PLOAM_ONU_ID_UNASSIGNED);
+	omci_device_set_state(odev, EN7580_XGSPON_STATE_O1);
+	/* Keep OMCC stopped until XGS-PON activation and transport exist. */
+	return devm_add_action_or_reset(pon->dev,
+					airoha_xgspon_omci_unregister, pon);
+}
+
+static void airoha_xgspon_phy_link_work(struct work_struct *work)
+{
+	struct xpon_priv *pon = container_of(to_delayed_work(work),
+					     struct xpon_priv, phy_link_work);
+	bool ready, los;
+
+	if (!airoha_xpon_phy_get_link_state(pon->phy, &ready, &los))
+		xpon_device_report_optical(pon->xpon, ready, los);
+
+	schedule_delayed_work(&pon->phy_link_work,
+			      msecs_to_jiffies(XPON_LINK_POLL_MS));
+}
+
+static void airoha_xgspon_phy_link_stop(void *data)
+{
+	struct xpon_priv *pon = data;
+
+	cancel_delayed_work_sync(&pon->phy_link_work);
+}
+
 static int airoha_xpon_init_xgspon(struct xpon_priv *priv)
 {
 	struct device *dev = priv->dev;
@@ -4674,6 +4764,20 @@ static int airoha_xpon_init_xgspon(struct xpon_priv *priv)
 	if (ret)
 		return ret;
 	airoha_xpon_update_netdev_link(priv, false);
+
+	ret = airoha_xgspon_omci_register(priv);
+	if (ret)
+		return dev_err_probe(dev, ret, "failed to register XGS-PON OMCI device\n");
+
+	if (priv->phy) {
+		INIT_DELAYED_WORK(&priv->phy_link_work,
+				  airoha_xgspon_phy_link_work);
+		ret = devm_add_action_or_reset(dev,
+					       airoha_xgspon_phy_link_stop, priv);
+		if (ret)
+			return ret;
+		schedule_delayed_work(&priv->phy_link_work, 0);
+	}
 
 	name = devm_kasprintf(dev, GFP_KERNEL, "airoha-xgspon-%s", dev_name(dev));
 	if (name) {
@@ -4801,6 +4905,12 @@ static int airoha_xpon_probe(struct platform_device *pdev)
 	}
 
 	if (airoha_xpon_is_xgspon(priv)) {
+		priv->frontend = devm_optical_frontend_get_optional(dev, "pon");
+		if (IS_ERR(priv->frontend)) {
+			ret = PTR_ERR(priv->frontend);
+			priv->frontend = NULL;
+			goto err_put_gdm;
+		}
 		priv->xgspon_reg = priv->base + XGSPON_REG_OFFSET;
 		ret = airoha_xpon_init_xgspon(priv);
 		if (ret)
