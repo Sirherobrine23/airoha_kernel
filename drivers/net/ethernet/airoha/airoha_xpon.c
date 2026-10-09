@@ -4459,7 +4459,9 @@ static int airoha_xgspon_init_tables(struct xpon_priv *pon)
 					EN7580_XGSPON_CMD_TIMEOUT_US);
 		if (ret || time_after(jiffies, deadline))
 			return dev_err_probe(pon->dev, -ETIMEDOUT,
-					     "XGEM %d clear timed out\n", i);
+					     "XGEM %d clear timed out (cfg %#x, status %#x)\n", i,
+					     airoha_xgspon_read(pon, EN7580_XGSPON_GEM_PORT_CFG),
+					     airoha_xgspon_read(pon, EN7580_XGSPON_GEM_PORT_STS));
 		if (!(i & 0xff))
 			cond_resched();
 	}
@@ -4595,6 +4597,12 @@ static int airoha_xpon_init_xgspon(struct xpon_priv *priv)
 	ret = reset_control_assert(priv->mac_reset);
 	if (ret)
 		return ret;
+	if (priv->phy) {
+		/* Devres must reset the MAC before removing its PHY clocks. */
+		ret = devm_add_action_or_reset(dev, airoha_xgspon_phy_stop, priv);
+		if (ret)
+			return ret;
+	}
 	ret = devm_add_action_or_reset(dev, airoha_xgspon_reset, priv);
 	if (ret)
 		return ret;
@@ -4602,6 +4610,13 @@ static int airoha_xpon_init_xgspon(struct xpon_priv *priv)
 	ret = airoha_xpon_select_wan(priv->scu, priv->match_data, priv->mode);
 	if (ret)
 		return ret;
+	if (priv->phy) {
+		/* Start local PHY clocks before MAC commands, keeping optical TX off. */
+		ret = airoha_xpon_phy_start(dev, priv->phy, priv->mode,
+					    &priv->phy_initialized, &priv->phy_powered);
+		if (ret)
+			return ret;
+	}
 	ret = reset_control_deassert(priv->mac_reset);
 	if (ret)
 		return ret;
@@ -4609,17 +4624,6 @@ static int airoha_xpon_init_xgspon(struct xpon_priv *priv)
 	ret = airoha_xgspon_prepare(priv);
 	if (ret)
 		return ret;
-
-	if (priv->phy) {
-		ret = devm_add_action_or_reset(dev, airoha_xgspon_phy_stop, priv);
-		if (ret)
-			return ret;
-		/* Exercise local PLL/RX startup without granting optical TX. */
-		ret = airoha_xpon_phy_start(dev, priv->phy, priv->mode,
-					    &priv->phy_initialized, &priv->phy_powered);
-		if (ret)
-			return ret;
-	}
 
 	ret = airoha_xpon_register_core(priv);
 	if (ret)

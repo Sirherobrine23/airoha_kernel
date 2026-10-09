@@ -255,6 +255,11 @@ struct airoha_xpon_phy {
 	u32 last_tx_pll_status;
 	int last_power_on_error;
 	bool last_tx_pll_valid;
+	int last_rx_error;
+	u32 last_eye_done;
+	u32 last_eye_ready;
+	u8 last_eye_peaking;
+	bool last_eye_valid;
 	/* Serializes the RX counter command register (latch/clear). */
 	spinlock_t counter_lock;
 };
@@ -785,8 +790,10 @@ static u32 en7580_phy_eye_status(struct airoha_xpon_phy *priv)
 	/* Debug results are latched: refresh the latch on every poll. */
 	airoha_xpon_phy_rmw(priv, EN7580_PHY_RX_DEBUG, BIT(24), 0);
 	airoha_xpon_phy_rmw(priv, EN7580_PHY_RX_DEBUG, BIT(24), BIT(24));
-	return airoha_xpon_phy_read(priv, EN7580_PHY_EYE_DONE) &
-		airoha_xpon_phy_read(priv, EN7580_PHY_EYE_READY);
+	priv->last_eye_done = airoha_xpon_phy_read(priv, EN7580_PHY_EYE_DONE);
+	priv->last_eye_ready = airoha_xpon_phy_read(priv, EN7580_PHY_EYE_READY);
+	priv->last_eye_valid = true;
+	return priv->last_eye_done & priv->last_eye_ready;
 }
 
 static void en7580_phy_eye_stop(struct airoha_xpon_phy *priv)
@@ -804,6 +811,7 @@ static int en7580_phy_eye_scan(struct airoha_xpon_phy *priv)
 	unsigned int peaking, best_peaking = 0;
 	int ret;
 
+	priv->last_eye_valid = false;
 	en7580_phy_run(priv, eye_setup);
 	airoha_xpon_phy_rmw(priv, EN7580_PHY_EQ_CTRL0, GENMASK(7, 0), 0x80);
 	airoha_xpon_phy_rmw(priv, EN7580_PHY_PI_CAL, GENMASK(10, 8), 4 << 8);
@@ -816,6 +824,7 @@ static int en7580_phy_eye_scan(struct airoha_xpon_phy *priv)
 			ret = -ENOLINK;
 			goto err_stop;
 		}
+		priv->last_eye_peaking = peaking;
 		airoha_xpon_phy_rmw(priv, EN7580_PHY_RX_DISB0, BIT(8), 0);
 		airoha_xpon_phy_rmw(priv, EN7580_PHY_RX_FORCE0, GENMASK(10, 8),
 				     peaking << 8);
@@ -927,6 +936,7 @@ static void en7580_phy_ready_work(struct work_struct *work)
 		}
 	} else if (priv->xgspon_rx_parked || !ready) {
 		ret = en7580_phy_connect(priv);
+		priv->last_rx_error = ret;
 		if (ret) {
 			dev_warn_ratelimited(priv->dev,
 					     "XGS-PON RX recovery failed: %d\n", ret);
@@ -1026,6 +1036,8 @@ static int en7580_phy_power_on(struct phy *phy)
 	mutex_lock(&priv->xgspon_lock);
 	priv->last_power_on_error = 0;
 	priv->last_tx_pll_valid = false;
+	priv->last_rx_error = 0;
+	priv->last_eye_valid = false;
 	airoha_xpon_phy_set_tx_gpio(priv, false);
 	priv->xgspon_tx_requested = false;
 	airoha_xpon_phy_set_vcc_enabled(priv, true);
@@ -1084,15 +1096,11 @@ static int en7580_phy_power_on(struct phy *phy)
 
 	priv->xgspon_calibrated = false;
 	priv->xgspon_rx_parked = true;
-	if (!airoha_xpon_phy_los(priv)) {
-		ret = en7580_phy_connect(priv);
-		if (ret && ret != -ENOLINK)
-			goto err_power;
-		if (ret)
-			en7580_phy_run(priv, rx_disconnect);
-		priv->xgspon_rx_parked = !!ret;
-	}
-	/* No light is a link condition; wait with TX_DISABLE asserted. */
+	en7580_phy_run(priv, rx_disconnect);
+	/*
+	 * RX calibration depends on the optical signal, not PHY power validity.
+	 * Let the worker retry it while keeping local clocks on and TX disabled.
+	 */
 	WRITE_ONCE(priv->powered, true);
 	priv->ready_reported = false;
 	mod_delayed_work(system_wq, &priv->ready_work, msecs_to_jiffies(1000));
@@ -1155,9 +1163,13 @@ static int en7580_phy_status_show(struct seq_file *s, void *unused)
 	seq_printf(s, "trim-rx: %u\ntrim-txp: %u\ntrim-txn: %u\n",
 		   priv->rx_impedance, priv->txp_impedance, priv->txn_impedance);
 	seq_printf(s, "last-power-on-error: %d\n", priv->last_power_on_error);
+	seq_printf(s, "last-rx-error: %d\n", priv->last_rx_error);
 	if (priv->last_tx_pll_valid)
 		seq_printf(s, "last-tx-pll-status: %#010x\n",
 			   priv->last_tx_pll_status);
+	if (priv->last_eye_valid)
+		seq_printf(s, "last-eye-peaking: %u\nlast-eye-done: 0x%08x\nlast-eye-ready: 0x%08x\n",
+			   priv->last_eye_peaking, priv->last_eye_done, priv->last_eye_ready);
 
 	/* Never read the optical register window while held in reset. */
 	if (priv->powered)
