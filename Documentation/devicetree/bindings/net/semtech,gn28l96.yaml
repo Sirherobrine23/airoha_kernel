@@ -1,0 +1,82 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/net/semtech,gn28l96.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Semtech GN28L96 and GN28L98 10 Gbit/s optical frontends
+
+maintainers:
+  - Matheus Sampaio Queiroga <srherobrine20@gmail.com>
+
+description: |
+  The GN28L96 and GN28L98 integrate a burst-mode laser driver, limiting
+  amplifier and APD controller for 10 Gbit/s PON ONUs. The host interface
+  normally uses 7-bit I2C address 0x51 for A2 diagnostics and control.
+  The GN28L96 also supports external MCU mode with board-specific host
+  calibration. GN28L98 support currently covers only an already-configured
+  SFF-8472 diagnostics interface. Its vendor configuration registers and
+  MCU calibration sequence have not been validated against a datasheet.
+
+properties:
+  compatible:
+    enum:
+      - semtech,gn28l96
+      - semtech,gn28l98
+
+  reg:
+    maxItems: 1
+    description: I2C address of the A2 host interface, normally 0x51.
+
+  '#optical-frontend-cells':
+    const: 0
+
+  firmware-name:
+    $ref: /schemas/types.yaml#/definitions/string
+    description: |
+      Board-specific GN28L96 calibration image, used only in MCU mode.
+      The 1024-byte layout contains 256-byte A0 and A2 blocks followed by
+      128-byte tables 80, 81, 82 and 83. A 1408-byte image appends tables
+      84, 85 and 86. The extended image is required if any LUT in those
+      tables is enabled. A0, live diagnostics, I2C addressing and access
+      permissions are not programmed. The driver defaults to
+      semtech/gn28l96-hwconfig.bin in MCU mode. Factory EEPROM mode does
+      not request firmware. GN25L95/GN25L98 images are incompatible.
+
+  semtech,password:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    description: |
+      Board-programmed password for access to GN28L96 vendor tables.
+      Written most significant byte first to A2 registers 0x7b through
+      0x7e. Omit when the required tables are already accessible.
+
+allOf:
+  - if:
+      properties:
+        compatible:
+          const: semtech,gn28l98
+    then:
+      properties:
+        firmware-name: false
+        semtech,password: false
+
+required:
+  - compatible
+  - reg
+  - '#optical-frontend-cells'
+
+additionalProperties: false
+
+examples:
+  - |
+    i2c {
+        #address-cells = <1>;
+        #size-cells = <0>;
+
+        optical-frontend@51 {
+            compatible = "semtech,gn28l96";
+            reg = <0x51>;
+            #optical-frontend-cells = <0>;
+            firmware-name = "semtech/board-gn28l96-hwconfig.bin";
+        };
+    };
