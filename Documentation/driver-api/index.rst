@@ -120,6 +120,7 @@ Subsystem-specific APIs
    nvdimm/index
    nvmem
    optical-frontend
+   semtech-gn28l9x
    parport-lowlevel
    phy/index
    pin-control
