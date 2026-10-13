@@ -9,8 +9,8 @@ Quantum C6500XK vendor firmware's unstripped ``xsi_phy.ko``. It is separate
 from the optical PON PHY and from the AN7581/AN7583 PCS implementations.
 
 The provider supports out-of-band 10GBASE-R, 5GBASE-R, 2500BASE-X and
-1000BASE-X. SGMII negotiation, USXGMII, interrupts and the vendor eye-scan/TDC
-recovery paths are not implemented. In particular, 1000BASE-X must not be
+1000BASE-X. SGMII negotiation, USXGMII, interrupts and TDC recovery paths
+are not implemented. In particular, 1000BASE-X must not be
 substituted for an AQR113C firmware profile that selects SGMII at 1 Gbit/s.
 The AQR113C firmware upload remains the responsibility of its PHY driver.
 
@@ -32,7 +32,8 @@ Recovery evidence
 -----------------
 
 The init table is the ``xsi_init(mode)`` path (235 operations). The start
-and calibration table is ``xsi_plug_reset(1, mode)`` (174 operations).
+and ready tables contain the recovered ``xsi_plug_reset(1, mode)`` path
+(174 operations), split to insert the adaptive eye scan before RX ready.
 Vendor modes 0, 1, 4 and 5 select 10G, 5G, 2.5G and 1G respectively.
 There are 21 mode-dependent values across these 409 operations. The rest
 share the same register, mask and value. Repeated writes are retained and
@@ -53,12 +54,47 @@ The firmware boot log reports successful XFI initialization and later
 ``LineRate 2500 PhyMode 4``. This demonstrates the vendor path, not the
 operation of this new driver on hardware.
 
+Adaptive RX equalization
+------------------------
+
+The XGZ030 v1 GPL contains preprocessed C sources in
+``sdk/en7580/linux-4.4.115/en7580_xsi_pma.i``. Its
+``XFI_EO_Scan(mode, 0, 7, 0)`` path calibrates each of the eight LEQ peaking
+settings with gain fixed at 1 and retains the largest horizontal eye
+opening. The driver runs that scan between the start and ready tables,
+while the PCS reset and MAC traffic gates are still held.
+
+The eye setup, calibration strobes and measurement times follow the GPL:
+10 ms for 10G/5G, 110 ms for 2.5G and 55 ms for 1G per point, plus 1 ms
+for PI calibration. These waits sleep rather than busy-wait. The scan
+requires completed horizontal and vertical measurements before accepting
+a score and reproduces the CDR tracking restart when HEO is not ready.
+Equal scores keep the first best setting, as in the vendor scan.
+
+If no completed measurement has a positive opening, the initial gain and
+peaking are restored. This permits initial configuration without a signal,
+rather than selecting a setting from stale eye data. Register access
+errors abort configuration with traffic gated and PCS reset still held.
+The scan runs on initial configuration and interface changes, not on
+every link-status poll. Continuous tracking and interrupt recovery remain
+separate work.
+
 Validation and testing
 ----------------------
 
 All 409 register/mask/value and delay operations for each of the four
 modes were compared against an independent Unicorn MIPS32 little-endian
 emulation of the original ELF code. The traces matched exactly.
+
+The adaptive scan's register writes and delays were compared against the
+GPL C implementation with a simulated register backend in all four modes.
+The checks cover score ties, both eye-window directions, incomplete and
+absent measurements, zero openings and register access failures. The
+original 409 sequence operations remain unchanged.
+
+The PCS with adaptive equalization also compiled as a MIPS32 little-endian
+object with GCC 12.2.0 against Linux 6.18.55. This does not replace a full
+kernel build or hardware validation of the new scan.
 
 The PCS object was compiled against this kernel with an x86_64 compile-test
 configuration. The Ethernet object also compiled with its pre-existing

@@ -40,6 +40,23 @@
 #define EN7580_SEQ_DELAY			0xffff
 #define EN7580_SEQ_SCU			BIT(15)
 
+#define EN7580_PMA_RX_EQ			0x630
+#define EN7580_RX_EQ_GAIN			GENMASK(1, 0)
+#define EN7580_RX_EQ_PEAKING		GENMASK(10, 8)
+#define EN7580_PMA_RX_EQ_CTRL		0x63c
+#define EN7580_RX_EQ_GAIN_AUTO		BIT(0)
+#define EN7580_RX_EQ_PEAKING_AUTO		BIT(8)
+#define EN7580_PMA_EYE_LATCH		0x49c
+#define EN7580_EYE_LATCH			BIT(24)
+#define EN7580_PMA_EYE_DONE		0x548
+#define EN7580_EYE_DONE			(BIT(16) | BIT(24))
+#define EN7580_PMA_EYE_READY		0x538
+#define EN7580_EYE_HREADY			BIT(16)
+#define EN7580_EYE_VREADY			BIT(24)
+#define EN7580_PMA_EYE_WINDOW		0x54c
+#define EN7580_EYE_LEFT			GENMASK(26, 16)
+#define EN7580_EYE_RIGHT			GENMASK(10, 0)
+
 struct en7580_pcs_step {
 	u16 reg;
 	u32 mask;
@@ -135,6 +152,118 @@ static int en7580_pcs_digital_reset(struct en7580_pcs *priv, int mode,
 	return regmap_write_bits(priv->digital, ctrl, second, release ? second : 0);
 }
 
+static int en7580_pcs_eye_score(struct en7580_pcs *priv, unsigned int *score)
+{
+	u32 done, ready, window;
+	int ret;
+
+	*score = 0;
+	ret = regmap_write_bits(priv->pma, EN7580_PMA_EYE_LATCH,
+				EN7580_EYE_LATCH, 0);
+	if (ret)
+		return ret;
+	ret = regmap_write_bits(priv->pma, EN7580_PMA_EYE_LATCH,
+				EN7580_EYE_LATCH, EN7580_EYE_LATCH);
+	if (ret)
+		return ret;
+	ret = regmap_read(priv->pma, EN7580_PMA_EYE_DONE, &done);
+	if (ret)
+		return ret;
+	ret = regmap_read(priv->pma, EN7580_PMA_EYE_READY, &ready);
+	if (ret)
+		return ret;
+
+	/* readout_EO() restarts CDR tracking when the horizontal eye is not ready. */
+	if (!(ready & EN7580_EYE_HREADY))
+		return en7580_pcs_sequence(priv, en7580_pcs_eye_cdr_seq,
+					   ARRAY_SIZE(en7580_pcs_eye_cdr_seq), 0);
+
+	/* Do not select an equalizer setting from stale or incomplete results. */
+	if ((done & EN7580_EYE_DONE) != EN7580_EYE_DONE ||
+	    !(ready & EN7580_EYE_VREADY))
+		return 0;
+
+	ret = regmap_read(priv->pma, EN7580_PMA_EYE_WINDOW, &window);
+	if (ret)
+		return ret;
+	*score = abs((int)FIELD_GET(EN7580_EYE_RIGHT, window) -
+		     (int)FIELD_GET(EN7580_EYE_LEFT, window));
+	return 0;
+}
+
+static int en7580_pcs_eye_scan(struct en7580_pcs *priv, unsigned int mode)
+{
+	u32 original, best = 0, score, peaking;
+	u32 best_score = 0;
+	int ret, err;
+
+	ret = regmap_read(priv->pma, EN7580_PMA_RX_EQ, &original);
+	if (ret)
+		return ret;
+	ret = en7580_pcs_sequence(priv, en7580_pcs_eye_setup_seq,
+				  ARRAY_SIZE(en7580_pcs_eye_setup_seq), mode);
+	if (ret)
+		return ret;
+	ret = regmap_write_bits(priv->pma, EN7580_PMA_RX_EQ_CTRL,
+				EN7580_RX_EQ_GAIN_AUTO, 0);
+	if (ret)
+		return ret;
+	ret = regmap_write_bits(priv->pma, EN7580_PMA_RX_EQ,
+				EN7580_RX_EQ_GAIN, FIELD_PREP(EN7580_RX_EQ_GAIN, 1));
+	if (ret)
+		return ret;
+
+	/* XFI_EO_Scan(): sweep peaking 0..7 with LEQ gain fixed at 1. */
+	for (peaking = 0; peaking <= FIELD_MAX(EN7580_RX_EQ_PEAKING); peaking++) {
+		ret = regmap_write_bits(priv->pma, EN7580_PMA_RX_EQ_CTRL,
+					EN7580_RX_EQ_PEAKING_AUTO, 0);
+		if (ret)
+			return ret;
+		ret = regmap_write_bits(priv->pma, EN7580_PMA_RX_EQ,
+					EN7580_RX_EQ_PEAKING,
+					FIELD_PREP(EN7580_RX_EQ_PEAKING, peaking));
+		if (ret)
+			return ret;
+		ret = en7580_pcs_sequence(priv, en7580_pcs_eye_cal_seq,
+					  ARRAY_SIZE(en7580_pcs_eye_cal_seq), mode);
+		if (ret)
+			return ret;
+		ret = en7580_pcs_sequence(priv, en7580_pcs_eye_measure_seq,
+					  ARRAY_SIZE(en7580_pcs_eye_measure_seq), mode);
+		if (!ret)
+			ret = en7580_pcs_eye_score(priv, &score);
+		/* Stop measurement even if a status read failed. */
+		err = en7580_pcs_sequence(priv, en7580_pcs_eye_stop_seq,
+					  ARRAY_SIZE(en7580_pcs_eye_stop_seq), mode);
+		if (ret || err)
+			return ret ?: err;
+		if (score > best_score) {
+			best_score = score;
+			best = peaking;
+		}
+	}
+
+	ret = regmap_write_bits(priv->pma, EN7580_PMA_RX_EQ_CTRL,
+				EN7580_RX_EQ_GAIN_AUTO, 0);
+	if (ret)
+		return ret;
+	ret = regmap_write_bits(priv->pma, EN7580_PMA_RX_EQ_CTRL,
+				EN7580_RX_EQ_PEAKING_AUTO, 0);
+	if (ret)
+		return ret;
+	/* A disconnected lane need not produce a usable eye during initial setup. */
+	if (!best_score)
+		return regmap_write_bits(priv->pma, EN7580_PMA_RX_EQ,
+					 EN7580_RX_EQ_GAIN | EN7580_RX_EQ_PEAKING,
+					 original);
+
+	dev_dbg(priv->dev, "RX eye peaking %u, horizontal opening %u\n",
+		best, best_score);
+	return regmap_write_bits(priv->pma, EN7580_PMA_RX_EQ,
+				 EN7580_RX_EQ_PEAKING,
+				 FIELD_PREP(EN7580_RX_EQ_PEAKING, best));
+}
+
 static unsigned int en7580_pcs_inband_caps(struct phylink_pcs *pcs,
 					 phy_interface_t interface)
 {
@@ -188,6 +317,14 @@ static int en7580_pcs_config_locked(struct phylink_pcs *pcs,
 
 	ret = en7580_pcs_sequence(priv, en7580_pcs_start_seq,
 				 ARRAY_SIZE(en7580_pcs_start_seq), mode);
+	if (ret)
+		return ret;
+
+	ret = en7580_pcs_eye_scan(priv, mode);
+	if (ret)
+		return ret;
+	ret = en7580_pcs_sequence(priv, en7580_pcs_ready_seq,
+				  ARRAY_SIZE(en7580_pcs_ready_seq), mode);
 	if (ret)
 		return ret;
 
