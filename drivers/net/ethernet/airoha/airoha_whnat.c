@@ -52,7 +52,13 @@ static int counter_get(char *buf, const struct kernel_param *kp)
 	return sysfs_emit(buf, "%u\n", (unsigned int)atomic_read(kp->arg));
 }
 
+static int counter_set(const char *val, const struct kernel_param *kp)
+{
+	return -EPERM;
+}
+
 static const struct kernel_param_ops counter_ops = {
+	.set = counter_set,
 	.get = counter_get,
 };
 
