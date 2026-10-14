@@ -63,6 +63,7 @@ config NET_AIROHA_SOC_WED
 config NET_AIROHA_WHNAT
 	bool "EcoNet EN751221 WHNAT (PPE offload for WiFi without WED)"
 	depends on NET_AIROHA && (ECONET || COMPILE_TEST)
+	select CFG80211_HEADERS
 	help
 	  Let the EN751221 PPE forward NAT flows from and to WiFi netdevs
 	  whose radios have no WED support (MT7603, MT76x2), like the vendor

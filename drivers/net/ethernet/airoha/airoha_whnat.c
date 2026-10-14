@@ -22,11 +22,14 @@
  */
 
 #include <linux/etherdevice.h>
+#include <linux/if_arp.h>
 #include <linux/if_vlan.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/rcupdate.h>
 #include <linux/unaligned.h>
+#include <net/cfg80211.h>
+#include <net/dsa.h>
 #include <net/sch_generic.h>
 
 #include "airoha_eth.h"
@@ -36,6 +39,18 @@ static struct net_device __rcu *vifs[AIROHA_WHNAT_VIFS];
 static struct airoha_ppe __rcu *active_ppe;
 static struct airoha_qdma __rcu *active_qdma;
 static DEFINE_MUTEX(vif_lock);
+static bool notifier_registered;
+
+static bool whnat_auto_vifs;
+module_param(whnat_auto_vifs, bool, 0444);
+MODULE_PARM_DESC(whnat_auto_vifs, "Manage WiFi slots through netdevice events");
+
+static int airoha_whnat_netdev_event(struct notifier_block *nb,
+				     unsigned long event, void *ptr);
+
+static struct notifier_block airoha_whnat_netdev_notifier = {
+	.notifier_call = airoha_whnat_netdev_event,
+};
 
 static bool whnat_enable = true;
 module_param(whnat_enable, bool, 0644);
@@ -80,7 +95,17 @@ void airoha_whnat_complete(void)
 
 void airoha_whnat_set_ppe(struct airoha_ppe *ppe)
 {
+	int err;
+
 	rcu_assign_pointer(active_ppe, ppe);
+	if (!whnat_auto_vifs)
+		return;
+
+	err = register_netdevice_notifier(&airoha_whnat_netdev_notifier);
+	if (err)
+		pr_warn("airoha: WHNAT netdevice notifier failed: %d\n", err);
+	else
+		notifier_registered = true;
 }
 
 /* Free a slot. The caller holds vif_lock. */
@@ -116,6 +141,13 @@ void airoha_whnat_clear_ppe(struct airoha_ppe *ppe)
 
 	RCU_INIT_POINTER(active_ppe, NULL);
 	synchronize_net();
+	if (notifier_registered) {
+		unregister_netdevice_notifier(&airoha_whnat_netdev_notifier);
+		notifier_registered = false;
+	}
+	/* Preserve legacy slots across rebind only for a built-in driver. */
+	if (!whnat_auto_vifs && !IS_MODULE(CONFIG_NET_AIROHA))
+		return;
 
 	/* The PPE flushes its flows itself; only drop the netdev references. */
 	mutex_lock(&vif_lock);
@@ -139,7 +171,7 @@ void airoha_whnat_clear_qdma(struct airoha_qdma *qdma)
 }
 
 /* Give a WiFi netdev a slot; the slot index tags its frames in the PPE. */
-int en75_whnat_register_vif(struct net_device *dev)
+static int airoha_whnat_register_vif(struct net_device *dev)
 {
 	int i, idx = -ENOSPC;
 
@@ -169,9 +201,18 @@ out:
 
 	return idx;
 }
+
+int en75_whnat_register_vif(struct net_device *dev)
+{
+	/* In automatic mode only NETDEV_UP may publish a slot. */
+	if (whnat_auto_vifs)
+		return airoha_whnat_vif_index(dev);
+
+	return airoha_whnat_register_vif(dev);
+}
 EXPORT_SYMBOL_GPL(en75_whnat_register_vif);
 
-void en75_whnat_unregister_vif(struct net_device *dev)
+static void airoha_whnat_unregister_vif(struct net_device *dev)
 {
 	int i;
 
@@ -185,7 +226,52 @@ void en75_whnat_unregister_vif(struct net_device *dev)
 	}
 	mutex_unlock(&vif_lock);
 }
+
+void en75_whnat_unregister_vif(struct net_device *dev)
+{
+	if (!whnat_auto_vifs)
+		airoha_whnat_unregister_vif(dev);
+}
 EXPORT_SYMBOL_GPL(en75_whnat_unregister_vif);
+
+static bool airoha_whnat_eligible(struct net_device *dev)
+{
+	struct wireless_dev *wdev = dev->ieee80211_ptr;
+
+	/* Native airoha netdevs have no wireless_dev. */
+	if (!wdev || dev->type != ARPHRD_ETHER ||
+	    netdev_uses_dsa(dev) || dsa_user_dev_check(dev))
+		return false;
+
+	return wdev->iftype == NL80211_IFTYPE_AP ||
+	       wdev->iftype == NL80211_IFTYPE_AP_VLAN ||
+	       wdev->iftype == NL80211_IFTYPE_STATION;
+}
+
+static int airoha_whnat_netdev_event(struct notifier_block *nb,
+				     unsigned long event, void *ptr)
+{
+	struct net_device *dev = netdev_notifier_info_to_dev(ptr);
+	int idx;
+
+	switch (event) {
+	case NETDEV_UP:
+		if (!airoha_whnat_eligible(dev))
+			break;
+		idx = airoha_whnat_register_vif(dev);
+		if (idx < 0)
+			netdev_warn(dev, "WHNAT slot unavailable: %d\n", idx);
+		break;
+	case NETDEV_GOING_DOWN:
+	case NETDEV_UNREGISTER:
+		airoha_whnat_unregister_vif(dev);
+		break;
+	default:
+		break;
+	}
+
+	return NOTIFY_DONE;
+}
 
 int airoha_whnat_vif_index(struct net_device *dev)
 {
