@@ -2650,6 +2650,10 @@ static struct mmc_blk_data *mmc_blk_alloc_req(struct mmc_card *card,
 	if (area_type == MMC_BLK_DATA_AREA_MAIN)
 		dev_set_drvdata(&card->dev, md);
 	disk_fwnode = mmc_blk_get_partitions_node(parent, subname);
+	if (!disk_fwnode)
+		disk_fwnode = device_get_named_child_node(subname ? md->parent->parent :
+							  md->parent,
+							  subname ? subname : "block");
 	ret = add_disk_fwnode(md->parent, md->disk, mmc_disk_attr_groups,
 			      disk_fwnode);
 	if (ret)
