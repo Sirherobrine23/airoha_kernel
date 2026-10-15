@@ -39,6 +39,12 @@ properties:
       - const: dramc
       - const: ddrphy
 
+  airoha,scu:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description:
+      Phandle to the system-controller syscon containing the bootloader's
+      detected DRAM capacity at offset 0x284.
+
   airoha,chip-scu:
     $ref: /schemas/types.yaml#/definitions/phandle
     description:
@@ -56,15 +62,15 @@ allOf:
       properties:
         compatible:
           contains:
-            const: airoha,en7523-dramc
+            enum:
+              - airoha,en7523-dramc
+              - econet,en7580-dramc
     then:
       properties:
         reg:
           minItems: 2
         reg-names:
           minItems: 2
-      required:
-        - airoha,chip-scu
     else:
       properties:
         reg:
@@ -85,6 +91,20 @@ allOf:
     else:
       properties:
         airoha,chip-scu: false
+
+  - if:
+      properties:
+        compatible:
+          contains:
+            enum:
+              - econet,en751221-dramc
+              - econet,en7528-dramc
+    then:
+      required:
+        - airoha,scu
+    else:
+      properties:
+        airoha,scu: false
 
 additionalProperties: false
 

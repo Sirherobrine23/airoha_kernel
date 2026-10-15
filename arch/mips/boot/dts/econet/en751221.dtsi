@@ -103,6 +103,13 @@
 
 
 
+	dramc: memory-controller@1fb20000 {
+		compatible = "econet,en751221-dramc";
+		reg = <0x1fb20000 0x1000>;
+		reg-names = "dramc";
+		airoha,scu = <&scuclk>;
+	};
+
 	chip_scu: syscon@1fa20000 {
 		compatible = "airoha,chip-scu", "syscon";
 		reg = <0x1fa20000 0x400>;

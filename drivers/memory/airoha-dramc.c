@@ -41,6 +41,14 @@
 #define EN751221_DRAMC_DDR3_EN		BIT(7)
 #define EN751221_DRAMC_LPDDR2		0x1e0
 #define EN751221_DRAMC_LPDDR2_EN	BIT(28)
+#define ECONET_SCU_REG_SAVE_INFO		0x284
+#define EN751221_SCU_DRAM_SIZE		GENMASK(11, 0)
+#define EN7528_SCU_DRAM_SIZE		GENMASK(27, 20)
+#define ECONET_DRAMC_MEMPLL0		0x600
+#define ECONET_DRAMC_MEMPLL6		0x618
+#define EN7528_MEMPLL0_CONFIG		0x0403f7f7
+#define EN7528_MEMPLL_FEEDBACK		GENMASK(10, 4)
+
 #define EN751221_DRAMC_RKCFG		0x110
 #define EN751221_DRAMC_RKSIZE		GENMASK(26, 24)
 #define EN751221_DRAMC_RKMODE		GENMASK(2, 0)
@@ -49,6 +57,14 @@
 #define EN7523_DRAMC_RKSIZE		GENMASK(18, 16)
 #define EN7523_DRAMC_RKMODE		GENMASK(7, 4)
 #define EN7523_DRAMC_THREE_RANKS	BIT(8)
+
+#define EN7580_DRAMC_DDRCONF0		0x000
+#define EN7580_DRAMC_DDR4_EN		BIT(30)
+#define EN7580_DRAMC_DDR3_EN		BIT(29)
+#define EN7580_DRAMC_DDR2_EN		BIT(28)
+#define EN7580_DRAMC_LPDDR4_EN		BIT(26)
+#define EN7580_DRAMC_LPDDR3_EN		BIT(25)
+#define EN7580_DRAMC_LPDDR2_EN		BIT(24)
 
 #define AN75XX_DRAMC_SHU_STATUS		0x0e4
 #define AN75XX_DRAMC_SHU_LEVEL		GENMASK(2, 1)
@@ -108,6 +124,9 @@ struct airoha_dramc_soc_data {
 	u8 channel_count;
 	u8 xtal_mhz;
 	bool has_mr4;
+	bool big_endian;
+	u8 saved_size_shift;
+	u32 saved_size_mask;
 	bool needs_chip_scu;
 	bool has_separate_ddrphy;
 	u16 rank_config_offset;
@@ -115,6 +134,7 @@ struct airoha_dramc_soc_data {
 	u32 rank_mode_mask;
 	u32 rank_size_mask;
 	u32 three_rank_mask;
+	s64 (*size)(struct airoha_dramc *dramc);
 	int (*data_rate)(struct airoha_dramc *dramc);
 	enum airoha_dram_type (*dram_type)(struct airoha_dramc *dramc);
 };
@@ -123,6 +143,7 @@ struct airoha_dramc {
 	void __iomem *base;
 	void __iomem *ddrphy;
 	struct regmap *chip_scu;
+	struct regmap *scu;
 	const struct airoha_dramc_soc_data *soc;
 	u64 rank_size[AIROHA_MAX_RANKS];
 	u32 mode_register[AIROHA_MAX_MODE_REGISTERS];
@@ -165,6 +186,34 @@ static u64 airoha_dramc_size(struct airoha_dramc *dramc)
 	return BIT_ULL(boundary) * rank_count;
 }
 
+/* Legacy MIPS DRAMC registers follow the SoC byte order. */
+static u32 econet_dramc_read(struct airoha_dramc *dramc, unsigned int offset)
+{
+	if (dramc->soc->big_endian)
+		return ioread32be(dramc->base + offset);
+
+	return readl(dramc->base + offset);
+}
+
+static s64 econet_dramc_size(struct airoha_dramc *dramc)
+{
+	u32 val, size;
+	int ret;
+
+	ret = regmap_read(dramc->scu, ECONET_SCU_REG_SAVE_INFO, &val);
+	if (ret)
+		return ret;
+
+	/* EN751221 stores MiB; EN7528 stores units of 16 MiB. */
+	size = (val & dramc->soc->saved_size_mask) >>
+	       __ffs(dramc->soc->saved_size_mask);
+	size <<= dramc->soc->saved_size_shift;
+	if (!size)
+		return -ENODATA;
+
+	return (s64)size << 20;
+}
+
 /**
  * en751221_dramc_type() - read the configured EN751221 DRAM protocol
  * @dramc: DRAM controller state
@@ -174,15 +223,15 @@ static u64 airoha_dramc_size(struct airoha_dramc *dramc)
  */
 static enum airoha_dram_type en751221_dramc_type(struct airoha_dramc *dramc)
 {
-	if (readl(dramc->base + EN751221_DRAMC_LPDDR2) &
+	if (econet_dramc_read(dramc, EN751221_DRAMC_LPDDR2) &
 	    EN751221_DRAMC_LPDDR2_EN)
 		return AIROHA_DRAM_LPDDR2;
 
-	if (readl(dramc->base + EN751221_DRAMC_PADCTL4) &
+	if (econet_dramc_read(dramc, EN751221_DRAMC_PADCTL4) &
 	    EN751221_DRAMC_DDR3_EN)
 		return AIROHA_DRAM_DDR3;
 
-	if (readl(dramc->base + EN751221_DRAMC_DDR2CTL) &
+	if (econet_dramc_read(dramc, EN751221_DRAMC_DDR2CTL) &
 	    EN751221_DRAMC_DDR2_EN)
 		return AIROHA_DRAM_DDR2;
 
@@ -190,24 +239,21 @@ static enum airoha_dram_type en751221_dramc_type(struct airoha_dramc *dramc)
 }
 
 /**
- * en751221_dramc_data_rate() - return the EN751221 DRAM data rate
+ * en751221_dramc_data_rate() - decode the vendor EN751221 PLL profiles
  * @dramc: DRAM controller state
  *
- * The EN7521/EN7526 programming guide specifies DDR2 at 800 MT/s and DDR3 at
- * 1066 MT/s. LPDDR2 uses the DDR2 controller operating point.
- *
- * Return: current data rate in MT/s, or -EINVAL for an unknown protocol.
+ * Return: configured data rate in MT/s, or -EOPNOTSUPP for an unknown profile.
  */
 static int en751221_dramc_data_rate(struct airoha_dramc *dramc)
 {
-	switch (en751221_dramc_type(dramc)) {
-	case AIROHA_DRAM_DDR3:
+	/* The vendor bootloader uses the same MEMPLL6 byte for its speed log. */
+	switch (econet_dramc_read(dramc, ECONET_DRAMC_MEMPLL6) & 0xff) {
+	case 0xaa:
 		return 1066;
-	case AIROHA_DRAM_DDR2:
-	case AIROHA_DRAM_LPDDR2:
+	case 0x8a:
 		return 800;
 	default:
-		return -EINVAL;
+		return -EOPNOTSUPP;
 	}
 }
 
@@ -262,25 +308,60 @@ static enum airoha_dram_type en7523_dramc_type(struct airoha_dramc *dramc)
 }
 
 /**
- * en7528_dramc_data_rate() - return the EN7528 fixed DDR data rate
+ * en7528_dramc_data_rate() - decode the EN7528 integer PLL profile
  * @dramc: DRAM controller state
  *
- * Return: DDR3-1333 data rate in MT/s.
+ * Return: configured data rate in MT/s, or -EOPNOTSUPP for other PLL modes.
  */
 static int en7528_dramc_data_rate(struct airoha_dramc *dramc)
 {
-	return 1333;
+	u32 pll0, pll6, feedback;
+
+	pll0 = econet_dramc_read(dramc, ECONET_DRAMC_MEMPLL0);
+	pll6 = econet_dramc_read(dramc, ECONET_DRAMC_MEMPLL6);
+
+	/* mempll_init_int() normalizes either crystal to a 100 MT/s step. */
+	switch (pll0 & EN7528_MEMPLL0_CONFIG) {
+	case 0x131:
+	case 0x181:
+		break;
+	default:
+		return -EOPNOTSUPP;
+	}
+	if ((pll6 & ~EN7528_MEMPLL_FEEDBACK & 0xffff) != 0x80a)
+		return -EOPNOTSUPP;
+
+	feedback = FIELD_GET(EN7528_MEMPLL_FEEDBACK, pll6);
+	if (!feedback)
+		return -ENODATA;
+
+	return feedback * 100;
 }
 
 /**
- * en7580_dramc_data_rate() - return the EN7580 fixed DDR data rate
+ * en7580_dramc_type() - read the configured EN7580 DRAM protocol
  * @dramc: DRAM controller state
  *
- * Return: DDR3-1866 data rate in MT/s.
+ * Return: configured DRAM type, or AIROHA_DRAM_UNKNOWN.
  */
-static int en7580_dramc_data_rate(struct airoha_dramc *dramc)
+static enum airoha_dram_type en7580_dramc_type(struct airoha_dramc *dramc)
 {
-	return 1866;
+	u32 val = readl(dramc->base + EN7580_DRAMC_DDRCONF0);
+
+	if (val & EN7580_DRAMC_DDR4_EN)
+		return AIROHA_DRAM_DDR4;
+	if (val & EN7580_DRAMC_DDR3_EN)
+		return AIROHA_DRAM_DDR3;
+	if (val & EN7580_DRAMC_DDR2_EN)
+		return AIROHA_DRAM_DDR2;
+	if (val & EN7580_DRAMC_LPDDR4_EN)
+		return AIROHA_DRAM_LPDDR4;
+	if (val & EN7580_DRAMC_LPDDR3_EN)
+		return AIROHA_DRAM_LPDDR3;
+	if (val & EN7580_DRAMC_LPDDR2_EN)
+		return AIROHA_DRAM_LPDDR2;
+
+	return AIROHA_DRAM_UNKNOWN;
 }
 
 /**
@@ -410,7 +491,12 @@ static ssize_t frequency_show(struct device *dev,
 			      struct device_attribute *attr, char *buf)
 {
 	struct airoha_dramc *dramc = dev_get_drvdata(dev);
-	int rate = dramc->soc->data_rate(dramc);
+	int rate;
+
+	if (!dramc->soc->data_rate)
+		return -EOPNOTSUPP;
+
+	rate = dramc->soc->data_rate(dramc);
 
 	if (rate < 0)
 		return rate;
@@ -431,7 +517,12 @@ static ssize_t dram_data_rate_show(struct device *dev,
 				   struct device_attribute *attr, char *buf)
 {
 	struct airoha_dramc *dramc = dev_get_drvdata(dev);
-	int rate = dramc->soc->data_rate(dramc);
+	int rate;
+
+	if (!dramc->soc->data_rate)
+		return -EOPNOTSUPP;
+
+	rate = dramc->soc->data_rate(dramc);
 
 	if (rate < 0)
 		return rate;
@@ -491,7 +582,16 @@ static ssize_t dram_size_show(struct device *dev,
 {
 	struct airoha_dramc *dramc = dev_get_drvdata(dev);
 
-	return sysfs_emit(buf, "%llu\n", airoha_dramc_size(dramc));
+	s64 size;
+
+	if (dramc->soc->size)
+		size = dramc->soc->size(dramc);
+	else
+		size = airoha_dramc_size(dramc);
+	if (size < 0)
+		return size;
+
+	return sysfs_emit(buf, "%llu\n", (u64)size);
 }
 static DEVICE_ATTR_RO(dram_size);
 
@@ -627,6 +727,9 @@ static umode_t airoha_dramc_attr_is_visible(struct kobject *kobj,
 	struct device *dev = kobj_to_dev(kobj);
 	struct airoha_dramc *dramc = dev_get_drvdata(dev);
 
+	if ((attr == &dev_attr_frequency.attr ||
+	     attr == &dev_attr_dram_data_rate.attr) && !dramc->soc->data_rate)
+		return 0;
 	if ((attr == &dev_attr_rank_count.attr ||
 	     attr == &dev_attr_rank_sizes.attr) && !dramc->rank_count)
 		return 0;
@@ -696,12 +799,22 @@ static int airoha_dramc_probe(struct platform_device *pdev)
 					     "failed to get chip SCU regmap\n");
 	}
 
+	if (dramc->soc->saved_size_mask) {
+		dramc->scu = syscon_regmap_lookup_by_phandle(np, "airoha,scu");
+		if (IS_ERR(dramc->scu))
+			return dev_err_probe(dev, PTR_ERR(dramc->scu),
+					     "failed to get SCU regmap\n");
+	}
+
 	platform_set_drvdata(pdev, dramc);
 	return 0;
 }
 
 static const struct airoha_dramc_soc_data en751221_dramc_data = {
 	.channel_count = 1,
+	.saved_size_mask = EN751221_SCU_DRAM_SIZE,
+	.size = econet_dramc_size,
+	.big_endian = true,
 	.rank_config_offset = EN751221_DRAMC_RKCFG,
 	.rank_size_offset = EN751221_DRAMC_RKCFG,
 	.rank_mode_mask = EN751221_DRAMC_RKMODE,
@@ -725,23 +838,27 @@ static const struct airoha_dramc_soc_data en7523_dramc_data = {
 
 static const struct airoha_dramc_soc_data en7528_dramc_data = {
 	.channel_count = 1,
+	.saved_size_mask = EN7528_SCU_DRAM_SIZE,
+	.saved_size_shift = 4,
+	.size = econet_dramc_size,
 	.rank_config_offset = EN751221_DRAMC_RKCFG,
 	.rank_size_offset = EN751221_DRAMC_RKCFG,
 	.rank_mode_mask = EN751221_DRAMC_RKMODE,
 	.rank_size_mask = EN751221_DRAMC_RKSIZE,
 	.data_rate = en7528_dramc_data_rate,
-	.dram_type = en7523_dramc_type,
+	.dram_type = en751221_dramc_type,
 };
 
 static const struct airoha_dramc_soc_data en7580_dramc_data = {
 	.channel_count = 1,
+	.has_separate_ddrphy = true,
 	.rank_config_offset = EN7523_DRAMC_RKCFG,
 	.rank_size_offset = EN7523_DRAMC_RKCFG,
 	.rank_mode_mask = EN7523_DRAMC_RKMODE,
 	.rank_size_mask = EN7523_DRAMC_RKSIZE,
 	.three_rank_mask = EN7523_DRAMC_THREE_RANKS,
-	.data_rate = en7580_dramc_data_rate,
-	.dram_type = en7523_dramc_type,
+	.data_rate = NULL, /* EN7580 PLL rate decoding has not been validated yet. */
+	.dram_type = en7580_dramc_type,
 };
 
 static const struct airoha_dramc_soc_data an7552_an7583_dramc_data = {

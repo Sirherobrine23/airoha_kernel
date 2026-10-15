@@ -152,7 +152,6 @@
 				compatible = "econet,en7580-pinctrl";
 				airoha,chip-scu = <&chip_scu>;
 
-				interrupt-parent = <&gic>;
 				interrupts = <GIC_SHARED 10 IRQ_TYPE_LEVEL_HIGH>;
 
 				gpio-controller;
@@ -303,7 +302,6 @@
 			reg = <0x1fb24000 0x1000>,
 			      <0x1fb28000 0x1000>;
 			reg-names = "dramc", "ddrphy";
-			airoha,chip-scu = <&chip_scu>;
 		};
 
 		crypto@1fb70000 {
