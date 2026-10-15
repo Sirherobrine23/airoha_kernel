@@ -8,8 +8,6 @@ struct sk_buff;
 struct xpon_device;
 struct xpon_oam;
 
-#define XPON_OAM_MAX_LLID	8
-
 struct xpon_oam_ops {
 	int (*xmit)(struct xpon_oam *oam, struct sk_buff *skb, u8 llid_index);
 };

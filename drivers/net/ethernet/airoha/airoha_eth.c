@@ -62,6 +62,12 @@
 #include "airoha_wed.h"
 #include "airoha_whnat.h"
 
+static bool airoha_xpon_receive_data(struct airoha_gdm_dev *dev,
+				     struct sk_buff *skb, u8 channel,
+				     u16 wire_id);
+static bool econet_xpon_receive_data(struct airoha_eth *eth, u8 qdma_id,
+				     struct sk_buff *skb, union desc_msg *msg);
+
 static void econet_prepare_qdma_cfg(struct airoha_qdma_mips_cfg *cfg,
 				    const struct airoha_eth_soc_data *soc,
 				    int id);
@@ -461,6 +467,10 @@ static void econet_qdma_rx_process_one(struct econet_q_rx *q, u32 cpu_i,
 	 */
 	if (econet_rx_xpon_oam(q->qdma->qdma->eth,
 					q->qdma->qdma->id, skb, &desc.msg))
+		return;
+
+	if (econet_xpon_receive_data(q->qdma->qdma->eth,
+				     q->qdma->qdma->id, skb, &desc.msg))
 		return;
 
 	hash = get_erx_ppe_entry(&desc.msg.erx);
@@ -2598,6 +2608,22 @@ static int airoha_qdma_rx_process(struct airoha_queue *q, int budget)
 			}
 		}
 
+		if (airoha_is(eth, airoha_en7523) &&
+		    (READ_ONCE(dev->flags) & AIROHA_PRIV_F_XPON_MANAGED)) {
+			bool consumed;
+			u8 channel = FIELD_GET(EN7523_QDMA_ETH_RXMSG_CHAN_MASK, msg0);
+			u16 gem = FIELD_GET(EN7523_QDMA_ETH_RXMSG_GEM_MASK, msg0);
+
+			skb_push(q->skb, ETH_HLEN);
+			consumed = airoha_xpon_receive_data(dev, q->skb, channel, gem);
+			if (consumed) {
+				q->skb = NULL;
+				done++;
+				continue;
+			}
+			skb_pull(q->skb, ETH_HLEN);
+		}
+
 		if (netdev_uses_dsa(netdev)) {
 			struct airoha_gdm_port *port = dev->port;
 			u32 msg0, sptag, sport;
@@ -3969,7 +3995,8 @@ static int econet_xpon_classify(struct airoha_gdm_dev *port,
 					  true, pcp, info);
 }
 
-static netdev_tx_t econet_qdma_xmit(struct sk_buff *skb, struct net_device *dev)
+static netdev_tx_t __econet_qdma_xmit(struct sk_buff *skb, struct net_device *dev,
+				      const struct airoha_xpon_tx_info *provided)
 {
 	struct airoha_gdm_dev *port = netdev_priv(dev);
 	struct airoha_qdma_skb_meta skb_meta;
@@ -3980,7 +4007,10 @@ static netdev_tx_t econet_qdma_xmit(struct sk_buff *skb, struct net_device *dev)
 	bool xpon = false;
 	u8 channel;
 
-	if ((READ_ONCE(port->flags) & AIROHA_PRIV_F_XPON_MANAGED)) {
+	if (provided) {
+		xpon_info = *provided;
+		xpon = true;
+	} else if ((READ_ONCE(port->flags) & AIROHA_PRIV_F_XPON_MANAGED)) {
 		if (READ_ONCE(port->xpon_tx_stopped))
 			goto drop;
 
@@ -4188,6 +4218,11 @@ static bool econet_en751221_dsa_sport(u32 sport)
 	       sport < EN751221_DSA_SPORT_BASE + EN751221_DSA_NUM_PORTS;
 }
 
+static netdev_tx_t econet_qdma_xmit(struct sk_buff *skb, struct net_device *dev)
+{
+	return __econet_qdma_xmit(skb, dev, NULL);
+}
+
 int econet_rx_before_recv(struct airoha_eth *eth, struct sk_buff *skb,
 			  u8 sport)
 {
@@ -4211,6 +4246,22 @@ int econet_rx_before_recv(struct airoha_eth *eth, struct sk_buff *skb,
 	skb->protocol = eth_type_trans(skb, port);
 
 	return 0;
+}
+
+static bool airoha_xpon_receive_data(struct airoha_gdm_dev *dev,
+				     struct sk_buff *skb, u8 channel,
+				     u16 wire_id)
+{
+	const struct airoha_xpon_link_ops *ops;
+	bool consumed = false;
+
+	rcu_read_lock();
+	ops = READ_ONCE(dev->xpon_ops);
+	if (ops && ops->data_rx)
+		consumed = ops->data_rx(READ_ONCE(dev->xpon_priv), skb,
+					channel, wire_id);
+	rcu_read_unlock();
+	return consumed;
 }
 
 static int airoha_gdm_xpon_start(struct airoha_gdm_dev *dev)
@@ -4390,7 +4441,8 @@ static int econet_register_xpon(struct net_device *netdev,
 	ret = airoha_qdma_mips_set_xpon_irq(port->qdma, mode, true);
 	if (ret) {
 		port->flags &= ~AIROHA_PRIV_F_XPON_MANAGED;
-		port->xpon_ops = NULL;
+		WRITE_ONCE(port->xpon_ops, NULL);
+		synchronize_net();
 		port->xpon_priv = NULL;
 		goto out_unlock;
 	}
@@ -4426,7 +4478,8 @@ static void econet_unregister_xpon(struct net_device *netdev,
 
 	mutex_lock(&port->xpon_lock);
 	if (port->xpon_ops == ops && port->xpon_priv == priv) {
-		port->xpon_ops = NULL;
+		WRITE_ONCE(port->xpon_ops, NULL);
+		synchronize_net();
 		port->xpon_priv = NULL;
 		port->flags &= ~AIROHA_PRIV_F_XPON_MANAGED;
 	}
@@ -5166,6 +5219,26 @@ static void airoha_retire_all(struct net_device *netdev)
 	WRITE_ONCE(dev->xpon_tx_stopped, false);
 }
 
+static bool econet_xpon_receive_data(struct airoha_eth *eth, u8 qdma_id,
+				     struct sk_buff *skb, union desc_msg *msg)
+{
+	struct airoha_gdm_dev *port;
+	u32 raw = READ_ONCE(msg->raw[0]);
+
+	if (qdma_id != 1 ||
+	    !airoha_is(eth, econet_en751221, econet_en7528))
+		return false;
+	port = airoha_qdma_get_gdm_dev(eth,
+				       airoha_is(eth, econet_en7528) ?
+				       FIELD_GET(EN7528_ERX_SPORT_MASK, msg->erx.bitfield_0) :
+		get_erx_sport(&msg->erx));
+	if (IS_ERR(port) || !(READ_ONCE(port->flags) & AIROHA_PRIV_F_XPON_MANAGED))
+		return false;
+	return airoha_xpon_receive_data(port, skb,
+			FIELD_GET(ERX_XPON_CHANNEL_MASK, raw),
+			FIELD_GET(ERX_XPON_GEM_MASK, raw));
+}
+
 bool econet_rx_xpon_oam(struct airoha_eth *eth, u8 qdma_id,
 				 struct sk_buff *skb, union desc_msg *msg)
 {
@@ -5689,7 +5762,8 @@ static int airoha_xpon_register_link(struct net_device *netdev,
 		ret = airoha_qdma_mips_set_xpon_irq(dev->qdma, mode, true);
 		if (ret) {
 			dev->flags &= ~AIROHA_PRIV_F_XPON_MANAGED;
-			dev->xpon_ops = NULL;
+			WRITE_ONCE(dev->xpon_ops, NULL);
+			synchronize_net();
 			dev->xpon_priv = NULL;
 			goto out;
 		}
@@ -5722,7 +5796,8 @@ static void airoha_xpon_unregister_link(struct net_device *netdev,
 	airoha_gdm_xpon_stop(dev);
 	mutex_lock(&dev->xpon_lock);
 	if (dev->xpon_ops == ops && dev->xpon_priv == priv) {
-		dev->xpon_ops = NULL;
+		WRITE_ONCE(dev->xpon_ops, NULL);
+		synchronize_net();
 		dev->xpon_priv = NULL;
 	}
 	mutex_unlock(&dev->xpon_lock);
@@ -6457,17 +6532,17 @@ static int airoha_fe_init(struct airoha_eth *eth)
 	if (airoha_is(eth, econet_en7528)) {
 		airoha_fe_rmw(eth, REG_EN7528_PSE_FQFC_CFG, EN7528_PSE_FQ_MAX_MASK,
 			      FIELD_PREP(EN7528_PSE_FQ_MAX_MASK, EN7528_PSE_FQ_MAX));
-	
+
 		err = reset_control_assert(eth->rsts[0].rstc);
 		if (err)
 			return err;
-	
+
 		usleep_range(1000, 2000);
 		err = reset_control_deassert(eth->rsts[0].rstc);
 		if (err)
 			return err;
 		usleep_range(1000, 2000);
-	
+
 		/* Match fe_reg_setup() and fe_use_gdmp_sram() from the EN7528 SDK. */
 		airoha_fe_wr(eth, REG_EN7528_FE_MISC_CFG, 0x2);
 		airoha_fe_wr(eth, REG_EN7528_GDM2_TX_CHN_BUF,
@@ -8149,6 +8224,44 @@ static netdev_tx_t airoha_dev_xmit(struct sk_buff *skb,
 
 	return __airoha_dev_xmit(skb, netdev, NULL);
 }
+
+netdev_tx_t airoha_eth_xmit_xpon_data(struct net_device *netdev,
+				      struct sk_buff *skb, u8 channel,
+				      u16 gem_port_id, u8 queue)
+{
+	struct airoha_gdm_dev *dev = netdev_priv(netdev);
+	struct airoha_xpon_tx_info info = {
+		.tcont = channel,
+		.gem_port_id = gem_port_id,
+		.queue = queue,
+	};
+	struct net_device *upper = skb->dev;
+	u16 old_queue = skb_get_queue_mapping(skb);
+	struct netdev_queue *txq;
+	netdev_tx_t ret;
+
+	if (channel >= 32 || queue >= 8 || gem_port_id >= 4096 ||
+	    !(READ_ONCE(dev->flags) & AIROHA_PRIV_F_XPON_MANAGED) ||
+	    READ_ONCE(dev->xpon_tx_stopped)) {
+		dev_kfree_skb_any(skb);
+		return NETDEV_TX_OK;
+	}
+	skb->dev = netdev;
+	skb_set_queue_mapping(skb, queue % netdev->real_num_tx_queues);
+	txq = skb_get_tx_queue(netdev, skb);
+	__netif_tx_lock_bh(txq);
+	if (airoha_is(dev->eth, econet_en751221, econet_en7528))
+		ret = __econet_qdma_xmit(skb, netdev, &info);
+	else
+		ret = __airoha_dev_xmit(skb, netdev, &info);
+	__netif_tx_unlock_bh(txq);
+	if (ret == NETDEV_TX_BUSY) {
+		skb->dev = upper;
+		skb_set_queue_mapping(skb, old_queue);
+	}
+	return ret;
+}
+EXPORT_SYMBOL_GPL(airoha_eth_xmit_xpon_data);
 
 static int airoha_xpon_xmit_oam(struct net_device *netdev, struct sk_buff *skb,
 			     u8 channel, u16 gem_port_id)

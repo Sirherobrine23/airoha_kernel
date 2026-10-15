@@ -5,6 +5,8 @@
 
 #include "internal.h"
 
+#if IS_REACHABLE(CONFIG_LEDS_CLASS)
+
 enum {
 	XPON_LED_OFF,
 	XPON_LED_ON,
@@ -126,3 +128,14 @@ void xpon_leds_update(struct xpon_device *xpon,
 		break;
 	}
 }
+
+#else
+int xpon_leds_register(struct xpon_device *xpon)
+{
+	return 0;
+}
+
+void xpon_leds_update(struct xpon_device *xpon, const struct xpon_state *state)
+{
+}
+#endif

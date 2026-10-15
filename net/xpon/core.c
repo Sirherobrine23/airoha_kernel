@@ -8,15 +8,29 @@
  */
 
 #include <linux/err.h>
+#include <linux/etherdevice.h>
 #include <linux/module.h>
 #include <linux/netdevice.h>
 #include <linux/slab.h>
+#include <linux/rtnetlink.h>
+#include <net/net_namespace.h>
 #include <net/xpon.h>
 
 #include "internal.h"
 
 static LIST_HEAD(xpon_devices);
 static DEFINE_MUTEX(xpon_devices_lock);
+
+static void xpon_release(struct kref *ref)
+{
+	struct xpon_device *xpon = container_of(ref, struct xpon_device, ref);
+
+	xa_destroy(&xpon->endpoints);
+	xa_destroy(&xpon->rx_endpoints);
+	xa_destroy(&xpon->pending_endpoints);
+	kfree(xpon->links);
+	kfree(xpon);
+}
 
 static void xpon_notify_work(struct work_struct *work)
 {
@@ -40,6 +54,10 @@ static void xpon_notify_work(struct work_struct *work)
 	xpon->pending_events = 0;
 	spin_unlock_irqrestore(&xpon->state_lock, flags);
 
+	rtnl_lock();
+	if (!xpon->unregistering)
+		xpon_endpoints_update_carrier(xpon);
+	rtnl_unlock();
 	xpon_leds_update(xpon, &info.new);
 	xpon_sysfs_notify(xpon, changed);
 	xpon_genl_notify(xpon, changed);
@@ -76,6 +94,22 @@ xpon_device_register(struct device *parent,
 		return ERR_PTR(-ENOMEM);
 
 	INIT_LIST_HEAD(&xpon->list);
+	kref_init(&xpon->ref);
+	xa_init(&xpon->endpoints);
+	xa_init(&xpon->rx_endpoints);
+	xpon_endpoint_work_init(xpon);
+	xpon->max_links = desc->max_links;
+	xpon->max_endpoints = desc->max_endpoints;
+	xpon->max_queues = desc->max_queues;
+	xpon->report_sets = desc->report_sets;
+	if (desc->max_links) {
+		xpon->links = kcalloc(desc->max_links, sizeof(*xpon->links),
+				      GFP_KERNEL);
+		if (!xpon->links) {
+			xpon_device_put(xpon);
+			return ERR_PTR(-ENOMEM);
+		}
+	}
 	spin_lock_init(&xpon->state_lock);
 	mutex_init(&xpon->mode_lock);
 	INIT_WORK(&xpon->notify_work, xpon_notify_work);
@@ -95,15 +129,22 @@ xpon_device_register(struct device *parent,
 	xpon->state.valid = 0;
 	xpon->notify_old = xpon->state;
 
+	ret = xpon_unis_init(xpon);
+	if (ret) {
+		xpon_device_put(xpon);
+		return ERR_PTR(ret);
+	}
 	ret = xpon_leds_register(xpon);
 	if (ret) {
-		kfree(xpon);
+		xpon_unis_cleanup(xpon);
+		xpon_device_put(xpon);
 		return ERR_PTR(ret);
 	}
 	
 	ret = xpon_sysfs_register(xpon);
 	if (ret) {
-		kfree(xpon);
+		xpon_unis_cleanup(xpon);
+		xpon_device_put(xpon);
 		return ERR_PTR(ret);
 	}
 
@@ -122,12 +163,18 @@ void xpon_device_unregister(struct xpon_device *xpon)
 	if (!xpon)
 		return;
 
+	rtnl_lock();
+	WRITE_ONCE(xpon->unregistering, true);
 	mutex_lock(&xpon_devices_lock);
 	list_del_init(&xpon->list);
 	mutex_unlock(&xpon_devices_lock);
+	xpon_endpoints_cleanup(xpon);
+	rtnl_unlock();
 	cancel_work_sync(&xpon->notify_work);
+	xpon_endpoint_work_cleanup(xpon);
 	xpon_sysfs_unregister(xpon);
-	kfree(xpon);
+	xpon_unis_cleanup(xpon);
+	xpon_device_put(xpon);
 }
 EXPORT_SYMBOL_GPL(xpon_device_unregister);
 
@@ -176,7 +223,7 @@ int xpon_device_set_mode(struct xpon_device *xpon, enum xpon_mode mode)
 		ret = -EBUSY;
 		goto out;
 	}
-	if (netif_running(xpon->netdev)) {
+	if (netif_running(xpon->netdev) || !xa_empty(&xpon->endpoints)) {
 		ret = -EBUSY;
 		goto out;
 	}
@@ -185,6 +232,10 @@ int xpon_device_set_mode(struct xpon_device *xpon, enum xpon_mode mode)
 	if (old_mode == mode)
 		goto out;
 
+	if (!xpon->ops || !xpon->ops->set_mode) {
+		ret = -EOPNOTSUPP;
+		goto out;
+	}
 	xpon->mode_changing = true;
 	xpon_device_report_carrier(xpon, false);
 	xpon_device_report_registration(xpon, XPON_REGISTRATION_DOWN);
@@ -301,8 +352,9 @@ struct xpon_device *xpon_device_find_by_ifindex(u32 ifindex)
 
 	mutex_lock(&xpon_devices_lock);
 	list_for_each_entry(xpon, &xpon_devices, list) {
-		if (xpon->netdev->ifindex == ifindex) {
-			get_device(xpon->class_dev);
+		if (dev_net(xpon->netdev) == &init_net &&
+		    xpon->netdev->ifindex == ifindex) {
+			kref_get(&xpon->ref);
 			mutex_unlock(&xpon_devices_lock);
 			return xpon;
 		}
@@ -313,9 +365,67 @@ struct xpon_device *xpon_device_find_by_ifindex(u32 ifindex)
 
 void xpon_device_put(struct xpon_device *xpon)
 {
-	if (xpon && xpon->class_dev)
-		put_device(xpon->class_dev);
+	if (xpon)
+		kref_put(&xpon->ref, xpon_release);
 }
+
+int xpon_oam_transmit(struct xpon_device *xpon, u32 id, const void *frame,
+		      size_t len)
+{
+	const struct ethhdr *eth = frame;
+	struct sk_buff *skb;
+	bool registered;
+	int ret;
+
+	ASSERT_RTNL();
+	if (!xpon->oam || !xpon->ops || !xpon->ops->oam_xmit)
+		return -EOPNOTSUPP;
+	if (!id || id > xpon->max_links || len < ETH_HLEN + 4 ||
+	    len > XPON_OAM_FRAME_MAX || eth->h_proto != htons(ETH_P_SLOW) ||
+	    ((const u8 *)frame)[ETH_HLEN] != 3)
+		return -EINVAL;
+	spin_lock_bh(&xpon->state_lock);
+	registered = xpon->links[id - 1].state == XPON_LINK_REGISTERED;
+	spin_unlock_bh(&xpon->state_lock);
+	if (!registered)
+		return -ENOLINK;
+	skb = alloc_skb(max_t(size_t, len, ETH_ZLEN) + NET_SKB_PAD, GFP_KERNEL);
+	if (!skb)
+		return -ENOMEM;
+	skb_reserve(skb, NET_SKB_PAD);
+	skb_put_data(skb, frame, len);
+	if (len < ETH_ZLEN)
+		skb_put_zero(skb, ETH_ZLEN - len);
+	skb->dev = xpon->netdev;
+	skb_reset_mac_header(skb);
+	skb->protocol = htons(ETH_P_SLOW);
+	ret = xpon->ops->oam_xmit(xpon, skb, id);
+	if (ret) {
+		kfree_skb(skb);
+	} else {
+		spin_lock_bh(&xpon->state_lock);
+		xpon->links[id - 1].tx_oam++;
+		spin_unlock_bh(&xpon->state_lock);
+	}
+	return ret;
+}
+
+void xpon_link_report(struct xpon_device *xpon, u32 id, u16 llid, u8 state,
+		      bool enabled)
+{
+	unsigned long flags;
+
+	if (!xpon || !id || id > xpon->max_links)
+		return;
+	spin_lock_irqsave(&xpon->state_lock, flags);
+	xpon->links[id - 1].llid = llid;
+	xpon->links[id - 1].state = state;
+	xpon->links[id - 1].enabled = enabled;
+	xpon->pending_events |= XPON_EVENT_LLID;
+	spin_unlock_irqrestore(&xpon->state_lock, flags);
+	schedule_work(&xpon->notify_work);
+}
+EXPORT_SYMBOL_GPL(xpon_link_report);
 
 static int __init xpon_init(void)
 {

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-2.0-only
 menuconfig XPON
 	tristate "xPON subsystem"
-	depends on NET
+	depends on NETDEVICES
 	help
 	  Generic Passive Optical Network subsystem. It provides the common
 	  representation used by GPON, EPON and XGS-PON devices, including
@@ -22,9 +22,19 @@ config XPON_OAM
 	tristate "xPON IEEE 802.3ah OAM"
 	default y
 	help
-	  IEEE 802.3ah Ethernet OAM support for EPON links. The initial
-	  implementation provides the per-LLID OAM object and Information
-	  OAMPDU wire definitions. Event, variable and vendor extensions are
-	  added on top of this core.
+	  IEEE 802.3 Ethernet OAM transport for EPON links. Complete Ethernet
+	  frames are exposed through Generic Netlink with their local logical
+	  link identity. Discovery, authentication and organization-specific
+	  extensions are implemented by an OAM daemon in userspace.
 
 endif # XPON
+
+config XPON_KUNIT_TEST
+	bool "xPON management lifecycle tests" if !KUNIT_ALL_TESTS
+	depends on KUNIT=y && XPON=y
+	default KUNIT_ALL_TESTS
+	help
+	  Exercise endpoint capacity, duplicate wire identifiers, stable netdev
+	  identity, failed updates and removal using a hardware-free provider.
+	  No optical hardware or OLT is required. These tests verify the
+	  management object lifecycle independently of a protocol backend.

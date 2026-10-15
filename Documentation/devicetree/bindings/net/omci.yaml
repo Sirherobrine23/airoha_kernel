@@ -4,7 +4,7 @@
 $id: http://devicetree.org/schemas/net/omci.yaml#
 $schema: http://devicetree.org/meta-schemas/core.yaml#
 
-title: OMCI ONU identity data
+title: OMCI ONU identity
 
 maintainers:
   - Matheus Sampaio Queiroga <srherobrine20@gmail.com>
@@ -34,6 +34,22 @@ properties:
         - omci-vendor-id
         - omci-version
         - omci-equipment-id
+
+  omci-type:
+    $ref: /schemas/types.yaml#/definitions/string
+    enum: [hgu, sfu]
+    description: Initial ONU equipment personality. Defaults to HGU.
+
+  omci-ethernets:
+    $ref: /schemas/types.yaml#/definitions/phandle-array
+    minItems: 1
+    maxItems: 16
+    description: |
+      Ethernet subscriber interfaces, in stable UNI order starting at one.
+      Each entry references an Ethernet netdev node or a DSA user-port node.
+      CPU ports and switch interconnects are not UNIs. Interface names and
+      Linux ifindices do not define UNI numbering. This inventory is also
+      available to an EPON OAM manager through the generic xPON API.
 
   omci-serial-number:
     description: |
@@ -83,6 +99,15 @@ properties:
       - $ref: /schemas/types.yaml#/definitions/uint8-array
         minItems: 1
         maxItems: 20
+
+allOf:
+  - if:
+      required: [omci-type]
+      properties:
+        omci-type:
+          const: sfu
+    then:
+      required: [omci-ethernets]
 
 additionalProperties: true
 ...
