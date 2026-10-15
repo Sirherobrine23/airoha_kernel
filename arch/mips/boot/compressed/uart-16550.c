@@ -21,7 +21,11 @@
 #endif
 
 #ifdef CONFIG_ECONET
+#ifdef CONFIG_CPU_LITTLE_ENDIAN
+#define EN75_UART_BASE	0x1fbf0000
+#else
 #define EN75_UART_BASE	0x1fbf0003
+#endif
 #define PORT(offset)	(CKSEG1ADDR(EN75_UART_BASE) + (4 * (offset)))
 #endif
 

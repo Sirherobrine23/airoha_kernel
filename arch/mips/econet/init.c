@@ -16,11 +16,16 @@
 #include <asm/prom.h>
 #include <asm/smp-ops.h>
 #include <asm/reboot.h>
+#include <asm/mips-cps.h>
 
 #define CR_AHB_RSTCR		((void __iomem *)CKSEG1ADDR(0x1fb00040))
 #define RESET			BIT(31)
 
-#define UART_BASE		CKSEG1ADDR(0x1fbf0003)
+#ifdef CONFIG_CPU_LITTLE_ENDIAN
+#define UART_BASE		CKSEG1ADDR(0x1fbf0000)	/* LE: byte at offset 0 */
+#else
+#define UART_BASE		CKSEG1ADDR(0x1fbf0003)	/* BE: byte at offset 3 */
+#endif
 #define UART_REG_SHIFT		2
 
 static void hw_reset(char *command)
@@ -51,10 +56,17 @@ void __init plat_mem_setup(void)
 	early_init_dt_scan_memory();
 }
 
-/* 3. Overload __weak device_tree_init(), add SMP_UP ops */
+/* 3. Overload __weak device_tree_init(), register SMP ops */
 void __init device_tree_init(void)
 {
 	unflatten_and_copy_device_tree();
+
+	/* EN7528 dual-core: probe CM/CPC and register CPS SMP ops */
+	mips_cm_probe();
+	mips_cpc_probe();
+
+	if (!register_cps_smp_ops())
+		return;
 
 	register_up_smp_ops();
 }
