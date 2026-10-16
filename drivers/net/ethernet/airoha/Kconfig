@@ -70,9 +70,11 @@ config NET_AIROHA_WHNAT
 	  WHNAT driver: mt76 hands received frames to the PPE through the LAN
 	  QDMA, and the PPE returns frames of flows bound towards a WiFi
 	  interface to the CPU, which queues them straight to that interface.
-	  The mt76 side registers its interfaces through
-	  en75_whnat_register_vif(). Nothing changes until the whnat_enable
-	  module parameter is set.
+	  Netdevice events give the WiFi interfaces their slots, so mt76 only
+	  offers received frames through en75_whnat_upstream_early(). Setting
+	  the whnat_auto_vifs module parameter to 0 makes the slots come from
+	  en75_whnat_register_vif() calls instead. The offload is on whenever
+	  a PPE is active; clearing whnat_enable stops offering new frames.
 
 	  If unsure, say N.
 

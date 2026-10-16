@@ -15,10 +15,13 @@
  *   the vif index in its L2 tag. The PPE returns the rewritten frames with
  *   CRSN_22, and they are queued straight to the vif.
  *
- * mt76 registers the vif netdevs with en75_whnat_register_vif(), which gives
- * each one of the AIROHA_WHNAT_VIFS slots. The offload is on whenever it is
- * built and a PPE is active; clearing the whnat_enable module parameter hands
- * nothing more to the PPE.
+ * Each vif netdev holds one of the AIROHA_WHNAT_VIFS slots. By default
+ * netdevice events hand them out: a cfg80211 AP, AP VLAN or station netdev
+ * gets one when it comes up and loses it when it goes down, so mt76 only
+ * has to offer received frames. With the whnat_auto_vifs module parameter
+ * cleared, mt76 registers the vifs with en75_whnat_register_vif() instead.
+ * The offload is on whenever it is built and a PPE is active; clearing the
+ * whnat_enable module parameter hands nothing more to the PPE.
  */
 
 #include <linux/etherdevice.h>
@@ -41,7 +44,7 @@ static struct airoha_qdma __rcu *active_qdma;
 static DEFINE_MUTEX(vif_lock);
 static bool notifier_registered;
 
-static bool whnat_auto_vifs;
+static bool whnat_auto_vifs = true;
 module_param(whnat_auto_vifs, bool, 0444);
 MODULE_PARM_DESC(whnat_auto_vifs, "Manage WiFi slots through netdevice events");
 
