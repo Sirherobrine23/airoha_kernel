@@ -3927,7 +3927,7 @@ static int econet_xpon_lookup_service(struct airoha_gdm_dev *port,
 	for (i = 0; i < AIROHA_XPON_MAX_SERVICES; i++) {
 		const struct airoha_xpon_service_cfg *service;
 
-		service = &port->xpon_services[i];
+		service = &port->xpon_services.rules[i];
 		if (!service->valid)
 			continue;
 		if (service->default_service)
@@ -4766,61 +4766,61 @@ static int econet_xpon_get_tx_info(struct net_device *netdev, bool vlan_valid,
 					  pcp_valid, pcp, info);
 }
 
-/* Same rule from the classifier's point of view?  The cookie is not part of it. */
-static bool econet_xpon_rule_eq(const struct airoha_xpon_service_cfg *a,
-				const struct airoha_xpon_service_cfg *b)
+static void airoha_xpon_service_full(struct net_device *netdev,
+				     const struct airoha_xpon_service_table *table,
+				     const struct airoha_xpon_service_cfg *cfg)
 {
-	return a->gem_port_id == b->gem_port_id && a->tcont == b->tcont &&
-	       a->queue == b->queue &&
-	       a->vlan_valid == b->vlan_valid && a->vlan_id == b->vlan_id &&
-	       a->pcp_valid == b->pcp_valid && a->pcp == b->pcp &&
-	       a->default_service == b->default_service;
-}
-
-/* Slot currently referenced by @cookie, or -1. Caller holds the lock. */
-static int econet_xpon_find_cookie(struct airoha_gdm_dev *port, u32 cookie)
-{
-	int i, j;
+	unsigned int rules = 0, cookies = 0;
+	int i;
 
 	for (i = 0; i < AIROHA_XPON_MAX_SERVICES; i++) {
-		if (!port->xpon_services[i].valid)
-			continue;
-		for (j = 0; j < port->xpon_service_ncookies[i]; j++)
-			if (port->xpon_service_cookies[i][j] == cookie)
-				return i;
+		rules += table->rules[i].valid;
+		cookies += table->ncookies[i];
 	}
-	return -1;
+	if (net_ratelimit())
+		netdev_warn(netdev,
+			    "xPON classifier full: %u/%u rules, %u cookies; cookie %#x GEM %u channel %u queue %u VLAN %s%u PCP %s%u\n",
+			    rules, AIROHA_XPON_MAX_SERVICES, cookies, cfg->cookie,
+			    cfg->gem_port_id, cfg->tcont, cfg->queue,
+			    cfg->vlan_valid ? "" : "any/", cfg->vlan_id,
+			    cfg->pcp_valid ? "" : "any/", cfg->pcp);
 }
 
-/*
- * Drop @cookie from whichever rule holds it, freeing the slot once no cookie
- * references it any more.  Caller holds the lock.
- */
-static void econet_xpon_forget_cookie(struct airoha_gdm_dev *port, u32 cookie)
+static int airoha_xpon_add_service_locked(struct net_device *netdev,
+					  struct airoha_gdm_dev *port,
+					  const struct airoha_xpon_service_cfg *cfg)
 {
-	int i, j;
+	int ret;
 
-	i = econet_xpon_find_cookie(port, cookie);
-	if (i < 0)
-		return;
-	for (j = 0; j < port->xpon_service_ncookies[i]; j++) {
-		if (port->xpon_service_cookies[i][j] != cookie)
-			continue;
-		port->xpon_service_ncookies[i]--;
-		port->xpon_service_cookies[i][j] =
-			port->xpon_service_cookies[i][port->xpon_service_ncookies[i]];
-		break;
+	spin_lock_bh(&port->xpon_service_lock);
+	ret = airoha_xpon_store_service(&port->xpon_services, cfg);
+	if (ret == -ENOSPC)
+		airoha_xpon_service_full(netdev, &port->xpon_services, cfg);
+	spin_unlock_bh(&port->xpon_service_lock);
+	return ret;
+}
+
+static bool airoha_xpon_remove_service(struct airoha_gdm_dev *port,
+				       u32 cookie, u16 *gem_port_id)
+{
+	int i;
+
+	spin_lock_bh(&port->xpon_service_lock);
+	i = airoha_xpon_find_cookie(&port->xpon_services, cookie);
+	if (i >= 0) {
+		if (gem_port_id)
+			*gem_port_id = port->xpon_services.rules[i].gem_port_id;
+		airoha_xpon_forget_cookie(&port->xpon_services, cookie);
 	}
-	if (!port->xpon_service_ncookies[i])
-		memset(&port->xpon_services[i], 0,
-		       sizeof(port->xpon_services[i]));
+	spin_unlock_bh(&port->xpon_service_lock);
+	return i >= 0;
 }
 
 static int econet_xpon_add_service(struct net_device *netdev,
 				   const struct airoha_xpon_service_cfg *cfg)
 {
 	struct airoha_gdm_dev *port;
-	int empty = -1, i, ret;
+	int ret;
 
 	if (!cfg || cfg->gem_port_id > FIELD_MAX(ETX_XPON_GEM_MASK) ||
 	    cfg->tcont >= 32 || cfg->queue >= ECONET_NUM_QUEUES)
@@ -4828,76 +4828,17 @@ static int econet_xpon_add_service(struct net_device *netdev,
 	ret = econet_validate_xpon_gdm2(netdev, &port);
 	if (ret)
 		return ret;
-
-	spin_lock_bh(&port->xpon_service_lock);
-
-	/* A cookie may come back with a changed rule: detach it first. */
-	econet_xpon_forget_cookie(port, cfg->cookie);
-
-	/*
-	 * Share the slot when the very same rule is already installed.  Without
-	 * this the table fills with duplicates -- the OMCI agent stages one
-	 * service per UNI, so on a 4-LAN ONT every rule lands four or five
-	 * times and a real provisioning run exhausts all 256 slots (measured on
-	 * a Movistar AR line: 115 entries on GEM 257 alone, three of them byte
-	 * identical apart from the cookie), making the last services fail with
-	 * -ENOSPC.  Fewer entries also shortens the TX classifier scan.
-	 */
-	for (i = 0; i < AIROHA_XPON_MAX_SERVICES; i++) {
-		if (!port->xpon_services[i].valid ||
-		    !econet_xpon_rule_eq(&port->xpon_services[i], cfg) ||
-		    port->xpon_service_ncookies[i] >= AIROHA_XPON_SVC_MAX_COOKIES)
-			continue;
-		port->xpon_service_cookies[i][port->xpon_service_ncookies[i]++] =
-			cfg->cookie;
-		spin_unlock_bh(&port->xpon_service_lock);
-		return 0;
-	}
-
-	for (i = 0; i < AIROHA_XPON_MAX_SERVICES; i++) {
-		if (!port->xpon_services[i].valid) {
-			empty = i;
-			break;
-		}
-	}
-	if (empty < 0) {
-		spin_unlock_bh(&port->xpon_service_lock);
-		return -ENOSPC;
-	}
-	if (cfg->default_service)
-		for (i = 0; i < AIROHA_XPON_MAX_SERVICES; i++)
-			port->xpon_services[i].default_service = false;
-	port->xpon_services[empty] = *cfg;
-	port->xpon_services[empty].valid = true;
-	port->xpon_service_cookies[empty][0] = cfg->cookie;
-	port->xpon_service_ncookies[empty] = 1;
-	spin_unlock_bh(&port->xpon_service_lock);
-
-	return 0;
+	return airoha_xpon_add_service_locked(netdev, port, cfg);
 }
 
 static bool econet_xpon_del_service(struct net_device *netdev, u32 cookie,
 				    u16 *gem_port_id)
 {
 	struct airoha_gdm_dev *port;
-	bool found = false;
-	int i;
 
 	if (econet_validate_xpon_gdm2(netdev, &port))
 		return false;
-
-	spin_lock_bh(&port->xpon_service_lock);
-	i = econet_xpon_find_cookie(port, cookie);
-	if (i >= 0) {
-		if (gem_port_id)
-			*gem_port_id = port->xpon_services[i].gem_port_id;
-		/* Frees the slot only when this was the last cookie on it. */
-		econet_xpon_forget_cookie(port, cookie);
-		found = true;
-	}
-	spin_unlock_bh(&port->xpon_service_lock);
-
-	return found;
+	return airoha_xpon_remove_service(port, cookie, gem_port_id);
 }
 
 static bool econet_xpon_has_gem_service(struct net_device *netdev,
@@ -4912,8 +4853,8 @@ static bool econet_xpon_has_gem_service(struct net_device *netdev,
 
 	spin_lock_bh(&port->xpon_service_lock);
 	for (i = 0; i < AIROHA_XPON_MAX_SERVICES; i++)
-		if (port->xpon_services[i].valid &&
-		    port->xpon_services[i].gem_port_id == gem_port_id) {
+		if (port->xpon_services.rules[i].valid &&
+		    port->xpon_services.rules[i].gem_port_id == gem_port_id) {
 			found = true;
 			break;
 		}
@@ -4930,9 +4871,7 @@ static void econet_xpon_flush_services(struct net_device *netdev)
 		return;
 
 	spin_lock_bh(&port->xpon_service_lock);
-	memset(port->xpon_services, 0, sizeof(port->xpon_services));
-	memset(port->xpon_service_cookies, 0, sizeof(port->xpon_service_cookies));
-	memset(port->xpon_service_ncookies, 0, sizeof(port->xpon_service_ncookies));
+	memset(&port->xpon_services, 0, sizeof(port->xpon_services));
 	spin_unlock_bh(&port->xpon_service_lock);
 }
 
@@ -7788,7 +7727,7 @@ airoha_eth_xpon_lookup_service(struct airoha_gdm_dev *dev,
 	for (i = 0; i < AIROHA_XPON_MAX_SERVICES; i++) {
 		const struct airoha_xpon_service_cfg *service;
 
-		service = &dev->xpon_services[i];
+		service = &dev->xpon_services.rules[i];
 		if (!service->valid)
 			continue;
 		if (service->default_service)
@@ -7914,65 +7853,25 @@ static int airoha_xpon_add_service(struct net_device *netdev,
 				const struct airoha_xpon_service_cfg *cfg)
 {
 	struct airoha_gdm_dev *dev;
-	int empty = -1, i, ret;
+	int ret;
 
 	if (!cfg || cfg->gem_port_id > FIELD_MAX(QDMA_ETH_TXMSG_SP_TAG_MASK) ||
 	    cfg->tcont >= 32 || cfg->queue >= AIROHA_NUM_QOS_QUEUES)
 		return -EINVAL;
-
 	ret = airoha_validate_xpon_gdm2(netdev, &dev);
 	if (ret)
 		return ret;
-
-	spin_lock_bh(&dev->xpon_service_lock);
-	for (i = 0; i < AIROHA_XPON_MAX_SERVICES; i++) {
-		if (!dev->xpon_services[i].valid && empty < 0)
-			empty = i;
-		if (dev->xpon_services[i].valid &&
-		    dev->xpon_services[i].cookie == cfg->cookie) {
-			empty = i;
-			break;
-		}
-	}
-	if (empty < 0) {
-		spin_unlock_bh(&dev->xpon_service_lock);
-		return -ENOSPC;
-	}
-	if (cfg->default_service)
-		for (i = 0; i < AIROHA_XPON_MAX_SERVICES; i++)
-			dev->xpon_services[i].default_service = false;
-	dev->xpon_services[empty] = *cfg;
-	dev->xpon_services[empty].valid = true;
-	spin_unlock_bh(&dev->xpon_service_lock);
-
-	return 0;
+	return airoha_xpon_add_service_locked(netdev, dev, cfg);
 }
 
 static bool airoha_xpon_del_service(struct net_device *netdev, u32 cookie,
 				  u16 *gem_port_id)
 {
 	struct airoha_gdm_dev *dev;
-	bool found = false;
-	int i;
 
 	if (airoha_validate_xpon_gdm2(netdev, &dev))
 		return false;
-
-	spin_lock_bh(&dev->xpon_service_lock);
-	for (i = 0; i < AIROHA_XPON_MAX_SERVICES; i++) {
-		if (!dev->xpon_services[i].valid ||
-		    dev->xpon_services[i].cookie != cookie)
-			continue;
-		if (gem_port_id)
-			*gem_port_id = dev->xpon_services[i].gem_port_id;
-		memset(&dev->xpon_services[i], 0,
-		       sizeof(dev->xpon_services[i]));
-		found = true;
-		break;
-	}
-	spin_unlock_bh(&dev->xpon_service_lock);
-
-	return found;
+	return airoha_xpon_remove_service(dev, cookie, gem_port_id);
 }
 
 static bool airoha_xpon_has_gem_service(struct net_device *netdev,
@@ -7987,8 +7886,8 @@ static bool airoha_xpon_has_gem_service(struct net_device *netdev,
 
 	spin_lock_bh(&dev->xpon_service_lock);
 	for (i = 0; i < AIROHA_XPON_MAX_SERVICES; i++)
-		if (dev->xpon_services[i].valid &&
-		    dev->xpon_services[i].gem_port_id == gem_port_id) {
+		if (dev->xpon_services.rules[i].valid &&
+		    dev->xpon_services.rules[i].gem_port_id == gem_port_id) {
 			found = true;
 			break;
 		}
@@ -8005,7 +7904,7 @@ static void airoha_xpon_flush_services(struct net_device *netdev)
 		return;
 
 	spin_lock_bh(&dev->xpon_service_lock);
-	memset(dev->xpon_services, 0, sizeof(dev->xpon_services));
+	memset(&dev->xpon_services, 0, sizeof(dev->xpon_services));
 	spin_unlock_bh(&dev->xpon_service_lock);
 }
 
@@ -10904,6 +10803,54 @@ int airoha_eth_xpon_add_service(struct net_device *netdev,
 		ops->add_service(netdev, cfg) : -EOPNOTSUPP;
 }
 EXPORT_SYMBOL_GPL(airoha_eth_xpon_add_service);
+
+int airoha_eth_xpon_check_services(struct net_device *netdev,
+				   const struct airoha_xpon_service_cfg *configs,
+				   size_t count)
+{
+	const struct airoha_eth_xpon_ops *ops;
+	struct airoha_xpon_service_table *table;
+	struct airoha_gdm_dev *dev;
+	u32 max_gem;
+	size_t i;
+	int ret;
+
+	ops = airoha_eth_get_xpon_ops(netdev, NULL);
+	if (!ops || !ops->add_service)
+		return -EOPNOTSUPP;
+	if (ops->add_service == econet_xpon_add_service) {
+		ret = econet_validate_xpon_gdm2(netdev, &dev);
+		max_gem = FIELD_MAX(ETX_XPON_GEM_MASK);
+	} else {
+		ret = airoha_validate_xpon_gdm2(netdev, &dev);
+		max_gem = FIELD_MAX(QDMA_ETH_TXMSG_SP_TAG_MASK);
+	}
+	if (ret)
+		return ret;
+	if (count && !configs)
+		return -EINVAL;
+	table = kvzalloc(sizeof(*table), GFP_KERNEL);
+	if (!table)
+		return -ENOMEM;
+	for (i = 0; i < count; i++) {
+		const struct airoha_xpon_service_cfg *cfg = &configs[i];
+
+		if (cfg->gem_port_id > max_gem || cfg->tcont >= 32 ||
+		    cfg->queue >= AIROHA_NUM_QOS_QUEUES) {
+			ret = -EINVAL;
+			break;
+		}
+		ret = airoha_xpon_store_service(table, cfg);
+		if (ret) {
+			if (ret == -ENOSPC)
+				airoha_xpon_service_full(netdev, table, cfg);
+			break;
+		}
+	}
+	kvfree(table);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(airoha_eth_xpon_check_services);
 
 int airoha_eth_xpon_get_tx_info(struct net_device *netdev, bool vlan_valid,
 				u16 vlan_id, bool pcp_valid, u8 pcp,

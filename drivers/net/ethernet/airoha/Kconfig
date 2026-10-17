@@ -33,6 +33,16 @@ config NET_AIROHA
 	  PPE and phylink infrastructure are built as one driver so both
 	  generations follow the same lifecycle and common interfaces.
 
+config NET_AIROHA_KUNIT_TEST
+	bool "Airoha xPON service table tests" if !KUNIT_ALL_TESTS
+	depends on KUNIT=y && NET_AIROHA=y
+	default KUNIT_ALL_TESTS
+	help
+	  Test shared classifier rules, cookie lifetime, full-table updates
+	  and failed replacements without Ethernet or optical hardware.
+	  Include cookie bucket compaction after fragmented deletions.
+	  These tests do not validate QDMA descriptors or PON activation.
+
 config NET_AIROHA_PPE_DEBUGFS
 	bool
 	default y

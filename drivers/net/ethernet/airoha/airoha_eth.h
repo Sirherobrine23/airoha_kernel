@@ -1048,6 +1048,19 @@ struct airoha_xpon_service_cfg {
 	bool valid;
 };
 
+struct airoha_xpon_service_table {
+	struct airoha_xpon_service_cfg rules[AIROHA_XPON_MAX_SERVICES];
+	u32 cookies[AIROHA_XPON_MAX_SERVICES][AIROHA_XPON_SVC_MAX_COOKIES];
+	u8 ncookies[AIROHA_XPON_MAX_SERVICES];
+};
+
+int airoha_xpon_find_cookie(const struct airoha_xpon_service_table *table,
+			    u32 cookie);
+void airoha_xpon_forget_cookie(struct airoha_xpon_service_table *table,
+			       u32 cookie);
+int airoha_xpon_store_service(struct airoha_xpon_service_table *table,
+			      const struct airoha_xpon_service_cfg *cfg);
+
 netdev_tx_t airoha_eth_xmit_xpon_data(struct net_device *dev,
 				      struct sk_buff *skb, u8 channel,
 				      u16 gem_port_id, u8 queue);
@@ -1117,10 +1130,7 @@ struct airoha_gdm_dev {
 
 	/* Protects GPON GEM/T-CONT service classification. */
 	spinlock_t xpon_service_lock;
-	struct airoha_xpon_service_cfg xpon_services[AIROHA_XPON_MAX_SERVICES];
-	u32 xpon_service_cookies[AIROHA_XPON_MAX_SERVICES]
-				[AIROHA_XPON_SVC_MAX_COOKIES];
-	u8 xpon_service_ncookies[AIROHA_XPON_MAX_SERVICES];
+	struct airoha_xpon_service_table xpon_services;
 };
 
 struct airoha_gdm_port {
@@ -1454,6 +1464,9 @@ int airoha_eth_xmit_xpon_oam(struct net_device *netdev, struct sk_buff *skb,
 			     u8 channel, u16 gem_port_id);
 int airoha_eth_xpon_add_service(struct net_device *netdev,
 				const struct airoha_xpon_service_cfg *cfg);
+int airoha_eth_xpon_check_services(struct net_device *netdev,
+				   const struct airoha_xpon_service_cfg *configs,
+				   size_t count);
 int airoha_eth_xpon_get_tx_info(struct net_device *netdev, bool vlan_valid,
 				u16 vlan_id, bool pcp_valid, u8 pcp,
 				struct airoha_xpon_tx_info *info);

@@ -4,7 +4,8 @@
 #
 
 obj-$(CONFIG_NET_AIROHA) += airoha-eth.o
-airoha-eth-y := airoha_eth.o airoha_ppe.o
+airoha-eth-y := airoha_eth.o airoha_ppe.o airoha_xpon_service.o
+airoha-eth-$(CONFIG_NET_AIROHA_KUNIT_TEST) += airoha_xpon_service_test.o
 airoha-eth-$(CONFIG_NET_AIROHA_PPE_DEBUGFS) += airoha_ppe_debugfs.o
 airoha-eth-$(CONFIG_NET_AIROHA_SOC_WED) += airoha_wed.o airoha_wed_debugfs.o
 airoha-eth-$(CONFIG_NET_AIROHA_WHNAT) += airoha_whnat.o
