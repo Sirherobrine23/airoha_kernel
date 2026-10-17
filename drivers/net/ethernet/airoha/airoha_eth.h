@@ -1156,6 +1156,7 @@ struct airoha_gdm_port {
 #define AIROHA_PPE_CPU_REASON_FOE_UNHIT 0x0d
 #define AIROHA_PPE_CPU_REASON_HIT_UNBIND 0x0e
 #define AIROHA_PPE_CPU_REASON_HIT_UNBIND_RATE_REACHED 0x0f
+#define AIROHA_PPE_CPU_REASON_KEEPALIVE_DUP_OLD_HDR 0x15
 
 struct airoha_ppe_host_ops {
 	int (*get_fe_port)(struct airoha_gdm_dev *dev);

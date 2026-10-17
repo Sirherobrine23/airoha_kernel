@@ -469,6 +469,16 @@ static void econet_qdma_rx_process_one(struct econet_q_rx *q, u32 cpu_i,
 					q->qdma->qdma->id, skb, &desc.msg))
 		return;
 
+	/* The PPE has already forwarded the original packet. Do not route its
+	 * duplicate keepalive copy through the network stack a second time.
+	 */
+	if (airoha_is(q->qdma->qdma->eth, econet_en751221) &&
+	    get_erx_crsn(&desc.msg.erx) ==
+	    AIROHA_PPE_CPU_REASON_KEEPALIVE_DUP_OLD_HDR) {
+		dev_kfree_skb(skb);
+		return;
+	}
+
 	if (econet_xpon_receive_data(q->qdma->qdma->eth,
 				     q->qdma->qdma->id, skb, &desc.msg))
 		return;
