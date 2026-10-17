@@ -32,6 +32,19 @@ properties:
     description:
       The device exposes one optical frontend provider.
 
+  nvmem-cells:
+    maxItems: 1
+    description: |
+      BOSA calibration cell. On the Nokia GN25L98 this is a 128-byte
+      CRC-protected manufacturer parameter record used to derive the Semtech
+      register tables; a 640-byte already-calibrated image is also accepted.
+      GN25L95 uses its 2048-byte calibrated register image. An explicitly
+      supplied NVMEM cell takes precedence over firmware-name.
+
+  nvmem-cell-names:
+    items:
+      - const: calibration
+
   firmware-name:
     $ref: /schemas/types.yaml#/definitions/string
     description: |
@@ -40,14 +53,30 @@ properties:
       final calibrated image containing table 6, table 5, table 4, table 2 and
       table 0, each occupying 128 bytes. The table 6 block must contain the
       board-specific APD LUT in bytes 0x00..0x3f. GN25L98 calibration images
-      must not be reused on GN25L95 devices. If omitted, the driver requests
-      the chip-specific semtech/gn25l95-hwconfig.bin or
-      semtech/gn25l98-hwconfig.bin image.
+      must not be reused on GN25L95 devices. If no NVMEM calibration cell
+      is provided, the driver requests the chip-specific
+      semtech/gn25l95-hwconfig.bin or semtech/gn25l98-hwconfig.bin image.
+
+  nvmem-cells:
+    maxItems: 1
+    description: |
+      Optional board-specific, already formatted Semtech hwconfig image. The
+      cell must contain exactly 2048 bytes for GN25L95 or 640 bytes for
+      GN25L98. This is not the Nokia 2048-byte manufacturing/BOSA metadata
+      record. When supplied, NVMEM is used in preference to firmware-name.
+
+  nvmem-cell-names:
+    items:
+      - const: calibration
 
 required:
   - compatible
   - reg
   - '#optical-frontend-cells'
+
+dependencies:
+  nvmem-cells: [nvmem-cell-names]
+  nvmem-cell-names: [nvmem-cells]
 
 additionalProperties: false
 

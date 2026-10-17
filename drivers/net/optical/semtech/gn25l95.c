@@ -17,17 +17,21 @@
 #include <linux/bitops.h>
 #include <linux/debugfs.h>
 #include <linux/delay.h>
+#include <linux/errno.h>
 #include <linux/firmware.h>
 #include <linux/i2c.h>
 #include <linux/jiffies.h>
+#include <linux/math64.h>
 #include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
+#include <linux/nvmem-consumer.h>
 #include <linux/optical_frontend.h>
 #include <linux/property.h>
 #include <linux/regmap.h>
 #include <linux/seq_file.h>
 #include <linux/slab.h>
+#include <linux/string.h>
 #include <linux/unaligned.h>
 #include <linux/workqueue.h>
 
@@ -98,6 +102,7 @@
 #define GN25L98_HWCONFIG_TABLE4		0x100
 #define GN25L98_HWCONFIG_TABLE2		0x180
 #define GN25L98_HWCONFIG_TABLE0		0x200
+#define GN25L98_BOSA_RECORD_SIZE		0x80
 #define GN25L95_VENDOR_WRITE_DELAY_MS	10
 #define GN25L95_VENDOR_READ_DELAY_MS	1
 #define GN25L95_RESET_DELAY_MS		150
@@ -162,6 +167,7 @@ struct gn25l95_priv {
 	struct delayed_work tick_work;
 	struct dentry *debugfs;
 	const char *fw_name;
+	const char *cal_source;
 	u32 alarm;
 	u16 ddmi_temperature;
 	u16 ddmi_voltage;
@@ -442,7 +448,7 @@ static int gn25l95_program_hwconfig(struct gn25l95_priv *priv,
 	struct device *dev = priv->dev;
 	int ret;
 
-	if (size != GN25L95_HWCONFIG_SIZE)
+	if (size < GN25L95_HWCONFIG_SIZE)
 		return -EINVAL;
 
 	/*
@@ -624,7 +630,7 @@ static int gn25l98_program_hwconfig(struct gn25l95_priv *priv,
 	struct device *dev = priv->dev;
 	int ret;
 
-	if (size != GN25L98_HWCONFIG_SIZE)
+	if (size < GN25L98_HWCONFIG_SIZE)
 		return -EINVAL;
 
 	/*
@@ -859,42 +865,310 @@ static int gn25l98_verify_hwconfig(struct gn25l95_priv *priv, const u8 *data)
 	return 0;
 }
 
-static int gn25l95_load_hwconfig(struct gn25l95_priv *priv)
+/*
+ * The Nokia factory record is a 128-byte BOSA parameter block. Its CRC is
+ * CRC-16/Modbus, with initial value 0xffff and little-endian polynomial
+ * 0xa001. The checksum itself is stored big-endian at offsets 0x7e..0x7f.
+ */
+static u16 gn25l98_bosa_crc(const u8 *data)
+{
+	u16 crc = 0xffff;
+	int i, bit;
+
+	for (i = 0; i < GN25L98_BOSA_RECORD_SIZE - 2; i++) {
+		crc ^= data[i];
+		for (bit = 0; bit < 8; bit++)
+			crc = (crc >> 1) ^ ((crc & 1) ? 0xa001 : 0);
+	}
+
+	return crc;
+}
+
+/*
+ * Transform the factory parameters into the five calibrated GN25L98 pages.
+ * All scalar fields in the Nokia record and tables are big-endian, even when
+ * the host CPU is little-endian. Preserve the vendor integer arithmetic and
+ * program nothing if the parameters are inconsistent.
+ */
+static int gn25l98_prepare_bosa(const u8 *params, size_t size, u8 *config,
+				 size_t config_size)
+{
+	s64 level, dac;
+	s32 slope, mod_offset, bias_offset;
+	u32 voltage, apd_current, denominator;
+	u16 value;
+	int i, table;
+
+	if (size < GN25L98_BOSA_RECORD_SIZE ||
+	    config_size < GN25L98_HWCONFIG_SIZE)
+		return -EINVAL;
+
+	if (get_unaligned_be16(params) != 0x55aa ||
+	    gn25l98_bosa_crc(params) != get_unaligned_be16(params + 0x7e))
+		return -EBADMSG;
+
+	voltage = get_unaligned_be16(params + 0x74);
+	apd_current = get_unaligned_be16(params + 0x76);
+	denominator = voltage + apd_current;
+	if (!voltage || !apd_current || !denominator)
+		return -EINVAL;
+
+	mod_offset = (s16)get_unaligned_be16(params + 0x4d);
+	bias_offset = (s16)get_unaligned_be16(params + 0x4b);
+
+	/* Vendor GN25L98_chip_init() applies offsets to each DAC word. */
+	for (table = 0; table < 2; table++) {
+		u8 *dest = config + (table ? GN25L98_HWCONFIG_TABLE4 :
+					GN25L98_HWCONFIG_TABLE5);
+		s32 offset = table ? mod_offset : bias_offset;
+
+		for (i = 0; i < 0x80; i += 2) {
+			s32 adjusted = get_unaligned_be16(dest + i) + offset;
+
+			if (adjusted < 0 || adjusted > U16_MAX)
+				return -ERANGE;
+			put_unaligned_be16(adjusted, dest + i);
+		}
+	}
+
+	/* The vendor writes these per-board overrides into table 2. */
+	config[GN25L98_HWCONFIG_TABLE2 + 0x28] = params[0x1b];
+	config[GN25L98_HWCONFIG_TABLE2 + 0x25] = params[0x1c] * 16 + 3;
+	config[GN25L98_HWCONFIG_TABLE2 + 0x30] = params[0x35] & 0x3f;
+	memcpy(config + GN25L98_HWCONFIG_TABLE2 + 0x5e,
+	       params + 0x29, 10);
+	value = get_unaligned_be16(params + 0x27) - 0x35b3;
+	put_unaligned_be16(value, config + GN25L98_HWCONFIG_TABLE2 + 0x54);
+	config[GN25L98_HWCONFIG_TABLE2 + 0x3c] = params[0x33] ^ 0x80;
+	config[GN25L98_HWCONFIG_TABLE2 + 0x52] = params[0x36];
+	config[GN25L98_HWCONFIG_TABLE2 + 0x53] = params[0x37];
+	if (params[0x38])
+		config[GN25L98_HWCONFIG_TABLE2 + 0x19] = params[0x38];
+
+	/*
+	 * Rebuild table 6 APD DAC lookup. The two temperature slopes are
+	 * signed 32-bit parameters at offsets 0x1f and 0x23. The vendor uses
+	 * a breakpoint at table index 13 (the 0x1a byte boundary).
+	 */
+	for (i = 0; i < 32; i++) {
+		slope = (s32)get_unaligned_be32(params + (i < 13 ? 0x1f : 0x23));
+		level = (s64)get_unaligned_be16(params + 0x1d) +
+			(s64)(i - 13) * slope * 5 +
+			(s16)get_unaligned_be16(params + 0x49);
+
+		/* Bound intermediate arithmetic before applying fixed-point gain. */
+		if (level < -100000 || level > 100000)
+			return -ERANGE;
+		dac = div_s64(level * 0x1ff * apd_current, 0x4ed);
+		dac = div_s64(dac * 1000, denominator);
+		dac = div_s64(dac, 100);
+		dac = clamp_t(s64, dac, 0, 0x1ff);
+
+		put_unaligned_be16((u16)(dac << 7),
+				config + GN25L98_HWCONFIG_TABLE6 + i * 2);
+	}
+
+	return 0;
+}
+
+/*
+ * A BOSA record contains board offsets, not complete Semtech tables. An
+ * unambiguous packed image can carry the 128-byte record followed by the
+ * 640-byte base image in the same NVMEM cell. Longer vendor containers need
+ * an explicit byte offset; never infer the image position from size alone.
+ */
+static int gn25l98_validate_base_hwconfig(const u8 *data, size_t size)
+{
+	if (size < GN25L98_HWCONFIG_SIZE ||
+	    get_unaligned_be16(data) == 0x55aa ||
+	    !memchr_inv(data + GN25L98_HWCONFIG_TABLE6, 0x00, 0x40) ||
+	    !memchr_inv(data + GN25L98_HWCONFIG_TABLE6, 0xff, 0x40) ||
+	    !memchr_inv(data + GN25L98_HWCONFIG_TABLE5, 0x00, 0x80) ||
+	    !memchr_inv(data + GN25L98_HWCONFIG_TABLE4, 0x00, 0x80))
+		return -EINVAL;
+
+	return 0;
+}
+
+static int gn25l98_load_base_hwconfig(struct gn25l95_priv *priv,
+				     const u8 *calibration,
+				     size_t calibration_size, u8 **config)
 {
 	const struct firmware *fw;
-	size_t expected_size;
+	const char *fw_name;
+	u32 offset = GN25L98_BOSA_RECORD_SIZE;
+	bool embedded = false;
+	int ret;
+
+	if (device_property_present(priv->dev, "semtech,hwconfig-offset")) {
+		ret = device_property_read_u32(priv->dev,
+					       "semtech,hwconfig-offset", &offset);
+		if (ret)
+			return dev_err_probe(priv->dev, ret,
+					     "invalid GN25L98 hwconfig offset\n");
+		embedded = true;
+	} else if (calibration_size == GN25L98_BOSA_RECORD_SIZE +
+					GN25L98_HWCONFIG_SIZE) {
+		/* This exact length identifies the simple record + image format. */
+		embedded = true;
+	}
+
+	if (embedded) {
+		if (offset < GN25L98_BOSA_RECORD_SIZE ||
+		    offset > calibration_size ||
+		    calibration_size - offset < GN25L98_HWCONFIG_SIZE)
+			return dev_err_probe(priv->dev, -EINVAL,
+					     "GN25L98 hwconfig exceeds calibration NVMEM bounds\n");
+
+		ret = gn25l98_validate_base_hwconfig(calibration + offset,
+							calibration_size - offset);
+		if (ret)
+			return dev_err_probe(priv->dev, ret,
+					     "invalid GN25L98 hwconfig inside calibration NVMEM\n");
+
+		*config = kmemdup(calibration + offset, GN25L98_HWCONFIG_SIZE,
+				   GFP_KERNEL);
+		if (!*config)
+			return -ENOMEM;
+
+		dev_info(priv->dev,
+			 "GN25L98 base hwconfig loaded from calibration NVMEM at offset 0x%x\n",
+			 offset);
+		return 0;
+	}
+
+	/* The 128-byte record alone cannot reconstruct missing register tables. */
+	ret = device_property_read_string(priv->dev,
+					  "semtech,base-firmware-name", &fw_name);
+	if (ret)
+		return dev_err_probe(priv->dev, -ENODATA,
+				     "Nokia BOSA parameters require packed hwconfig or external base firmware\n");
+
+	ret = request_firmware_direct(&fw, fw_name, priv->dev);
+	if (ret)
+		return dev_err_probe(priv->dev, ret,
+				     "GN25L98 base firmware '%s' not found\n", fw_name);
+
+	ret = gn25l98_validate_base_hwconfig(fw->data, fw->size);
+	if (ret) {
+		dev_err(priv->dev, "invalid GN25L98 base firmware '%s'\n",
+			fw_name);
+		goto out_release;
+	}
+
+	*config = kmemdup(fw->data, GN25L98_HWCONFIG_SIZE, GFP_KERNEL);
+	ret = *config ? 0 : -ENOMEM;
+
+out_release:
+	release_firmware(fw);
+	return ret;
+}
+
+static int gn25l95_load_hwconfig(struct gn25l95_priv *priv)
+{
+	const struct firmware *fw = NULL;
+	struct nvmem_cell *cell;
+	u8 *nvmem = NULL, *prepared = NULL;
+	const u8 *data = NULL;
+	const char *source = NULL;
+	size_t expected_size, size;
 	int ret;
 
 	expected_size = priv->data->variant == GN25L9X_VARIANT_98 ?
 		GN25L98_HWCONFIG_SIZE : GN25L95_HWCONFIG_SIZE;
 
-	ret = request_firmware(&fw, priv->fw_name, priv->dev);
-	if (ret)
-		return dev_err_probe(priv->dev, ret,
-				     "calibration '%s' not found\n", priv->fw_name);
+	/* Use NVMEM when available, including non-DT NVMEM lookups. */
+	cell = nvmem_cell_get(priv->dev, "calibration");
+	if (IS_ERR(cell)) {
+		ret = PTR_ERR(cell);
+		/* No calibration cell: use the firmware image instead. */
+		if (ret != -ENOENT && ret != -ENODEV && ret != -EOPNOTSUPP)
+			return dev_err_probe(priv->dev, ret,
+					     "failed to get calibration NVMEM cell\n");
+	} else {
+		nvmem = nvmem_cell_read(cell, &size);
+		nvmem_cell_put(cell);
+		if (IS_ERR(nvmem))
+			return dev_err_probe(priv->dev, PTR_ERR(nvmem),
+					     "failed to read calibration NVMEM cell\n");
 
-	if (fw->size != expected_size) {
+		data = nvmem;
+		source = "NVMEM";
+
+		/* Nokia BOSA parameters occupy the first 128 bytes. */
+		if (priv->data->variant == GN25L9X_VARIANT_98 &&
+		    size >= GN25L98_BOSA_RECORD_SIZE &&
+		    get_unaligned_be16(data) == 0x55aa) {
+			ret = gn25l98_load_base_hwconfig(priv, data, size,
+							  &prepared);
+			if (ret)
+				goto out_release;
+			ret = gn25l98_prepare_bosa(data, size, prepared,
+						     expected_size);
+			if (ret) {
+				dev_err(priv->dev,
+					"invalid Nokia BOSA record in NVMEM: %d\n", ret);
+				goto out_release;
+			}
+			data = prepared;
+			size = expected_size;
+			source = "NVMEM BOSA + base hwconfig";
+		}
+	}
+
+	if (!data) {
+		ret = request_firmware_direct(&fw, priv->fw_name, priv->dev);
+		if (ret)
+			return dev_err_probe(priv->dev, ret,
+					     "calibration '%s' not found\n", priv->fw_name);
+		data = fw->data;
+		size = fw->size;
+		source = priv->fw_name;
+	}
+
+	if (size < expected_size) {
 		dev_err(priv->dev,
-			"calibration '%s' has invalid size %zu (expected %zu)\n",
-			priv->fw_name, fw->size, expected_size);
+			"BOSA calibration from %s has size %zu (need at least %zu)\n",
+			source, size, expected_size);
 		ret = -EINVAL;
 		goto out_release;
 	}
 
-	if (priv->data->variant == GN25L9X_VARIANT_98) {
-		ret = gn25l98_program_hwconfig(priv, fw->data, fw->size);
-		if (!ret)
-			ret = gn25l98_verify_hwconfig(priv, fw->data);
-	} else {
-		ret = gn25l95_program_hwconfig(priv, fw->data, fw->size);
-		if (!ret)
-			ret = gn25l95_verify_hwconfig(priv, fw->data);
+	if (get_unaligned_be16(data) == 0x55aa) {
+		dev_err(priv->dev,
+			"BOSA manufacturing record cannot be programmed directly\n");
+		ret = -EINVAL;
+		goto out_release;
 	}
-	if (!ret)
+
+	if (priv->data->variant == GN25L9X_VARIANT_98 &&
+	    (!memchr_inv(data + GN25L98_HWCONFIG_TABLE6, 0x00, 0x40) ||
+	     !memchr_inv(data + GN25L98_HWCONFIG_TABLE6, 0xff, 0x40))) {
+		dev_err(priv->dev, "GN25L98 APD LUT from %s is empty\n", source);
+		ret = -EINVAL;
+		goto out_release;
+	}
+
+	dev_info(priv->dev, "programming BOSA calibration from %s\n", source);
+	if (priv->data->variant == GN25L9X_VARIANT_98) {
+		ret = gn25l98_program_hwconfig(priv, data, size);
+		if (!ret)
+			ret = gn25l98_verify_hwconfig(priv, data);
+	} else {
+		ret = gn25l95_program_hwconfig(priv, data, size);
+		if (!ret)
+			ret = gn25l95_verify_hwconfig(priv, data);
+	}
+	if (!ret) {
 		priv->calibrated = true;
+		priv->cal_source = source;
+	}
 
 out_release:
-	release_firmware(fw);
+	kfree(prepared);
+	kfree(nvmem);
+	if (fw)
+		release_firmware(fw);
 	return ret;
 }
 
@@ -1632,9 +1906,8 @@ static int gn25l95_diag_show(struct seq_file *s, void *unused)
 		   priv->data->variant == GN28L9X_VARIANT_98 ? "unknown" :
 		   priv->eeprom_present ? "yes" : "no");
 	seq_printf(s, "calibrated:  %s\n", priv->calibrated ? "yes" : "no");
-	if (priv->fw_name &&
-	    (!priv->eeprom_present || priv->data->variant == GN25L9X_VARIANT_98))
-		seq_printf(s, "hwconfig:    %s\n", priv->fw_name);
+	if (priv->cal_source)
+		seq_printf(s, "cal source:  %s\n", priv->cal_source);
 	if (priv->data->variant == GN28L9X_VARIANT_98)
 		seq_puts(s, "support:     experimental, preconfigured SFF diagnostics only\n");
 	if (priv->native_a0)
@@ -1822,8 +2095,6 @@ static int gn25l95_probe(struct i2c_client *client)
 	load_hwconfig = !priv->eeprom_present ||
 		priv->data->variant == GN25L9X_VARIANT_98;
 	if (load_hwconfig) {
-		dev_info(dev, "loading board BOSA calibration from %s\n",
-			 priv->fw_name);
 		ret = gn25l95_load_hwconfig(priv);
 		if (ret)
 			return dev_err_probe(dev, ret, "error on loading hwconfig error code %d",
