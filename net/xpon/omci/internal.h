@@ -51,6 +51,9 @@ struct omci_service_state {
 	struct omci_service_config config;
 };
 
+int omci_agent_apply_services_locked(struct omci_device *odev,
+				     struct xarray *desired);
+
 struct omci_agent_config {
 	u8 serial_number[8];
 	u8 vendor_id[4];

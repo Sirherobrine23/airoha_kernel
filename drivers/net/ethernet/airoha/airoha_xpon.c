@@ -2025,6 +2025,65 @@ int airoha_gpon_omci_hw_set_gem_port(void *hw_priv, u16 entity_id,
 	return 0;
 }
 
+int airoha_gpon_omci_hw_validate_services(void *hw_priv,
+					  const struct omci_service_config *services,
+					  size_t count)
+{
+	struct xpon_priv *priv = hw_priv;
+	struct airoha_xpon_service_cfg *configs;
+	u16 schedulers[GPON_MAX_TCONT - 1];
+	bool by_alloc[GPON_MAX_TCONT - 1];
+	unsigned int nschedulers = 0, channel;
+	size_t i;
+	int ret = 0;
+
+	configs = kvmalloc_array(count, sizeof(*configs), GFP_KERNEL);
+	if (!configs && count)
+		return -ENOMEM;
+	for (i = 0; i < count; i++) {
+		const struct omci_service_config *service = &services[i];
+		bool alloc = service->alloc_id && service->alloc_id != 0xffff;
+		u16 scheduler = alloc ? service->alloc_id : service->tcont_entity_id;
+
+		if (service->multicast || service->vlan_treatment_valid ||
+		    service->direction == OMCI_GEM_PORT_DIRECTION_ANI_TO_UNI) {
+			ret = -EOPNOTSUPP;
+			goto out;
+		}
+		/* Only scheduler equality matters for counting distinct rules. */
+		for (channel = 0; channel < nschedulers; channel++)
+			if (schedulers[channel] == scheduler &&
+			    by_alloc[channel] == alloc)
+				break;
+		if (channel == nschedulers) {
+			if (nschedulers == ARRAY_SIZE(schedulers)) {
+				dev_warn(priv->dev,
+					 "GPON service preflight exceeds %zu data T-CONTs\n",
+					 ARRAY_SIZE(schedulers));
+				ret = -ENOSPC;
+				goto out;
+			}
+			schedulers[nschedulers] = scheduler;
+			by_alloc[nschedulers++] = alloc;
+		}
+		configs[i] = (struct airoha_xpon_service_cfg){
+			.cookie = service->cookie,
+			.gem_port_id = service->gem_port_id,
+			.vlan_id = service->vlan_id,
+			.tcont = channel + 1,
+			.queue = service->queue,
+			.pcp = service->pcp,
+			.vlan_valid = service->vlan_valid,
+			.pcp_valid = service->pcp_valid,
+			.default_service = service->default_service,
+		};
+	}
+	ret = airoha_eth_xpon_check_services(priv->gdm_dev, configs, count);
+out:
+	kvfree(configs);
+	return ret;
+}
+
 int airoha_gpon_omci_hw_replace_service(
 	void *hw_priv, const struct omci_service_config *service)
 {
@@ -2084,8 +2143,14 @@ int airoha_gpon_omci_hw_replace_service(
 		ret = gpon_tcont_entity_to_index(priv, service->tcont_entity_id,
 						 &tcont_index);
 	}
-	if (ret)
+	if (ret) {
+		if (ret == -ENOSPC)
+			dev_warn(priv->dev,
+				 "GPON T-CONT channels exhausted: entity %#x Alloc-ID %u GEM %u\n",
+				 service->tcont_entity_id, service->alloc_id,
+				 service->gem_port_id);
 		return ret;
+	}
 	cfg.tcont = tcont_index;
 
 	ret = airoha_eth_xpon_add_service(priv->gdm_dev, &cfg);

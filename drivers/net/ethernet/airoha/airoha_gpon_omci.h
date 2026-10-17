@@ -49,6 +49,9 @@ int airoha_gpon_omci_hw_set_gem_port(void *hw_priv, u16 entity_id,
 				     u16 gem_port_id, u16 tcont_entity_id,
 				     u8 direction, bool valid, bool encrypted);
 int airoha_gpon_omci_hw_set_uni(void *hw_priv, u16 entity_id, bool enable);
+int airoha_gpon_omci_hw_validate_services(void *hw_priv,
+					  const struct omci_service_config *services,
+					  size_t count);
 int airoha_gpon_omci_hw_replace_service(void *hw_priv,
 					const struct omci_service_config *service);
 int airoha_gpon_omci_hw_delete_service(void *hw_priv, u32 cookie);

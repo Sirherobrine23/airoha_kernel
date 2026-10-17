@@ -87,6 +87,16 @@ static int airoha_gpon_omci_set_uni(struct omci_device *odev,
 }
 
 static int
+airoha_gpon_omci_validate_services(struct omci_device *odev,
+				   const struct omci_service_config *services,
+				   size_t count)
+{
+	struct airoha_gpon_omci *omci = omci_device_priv(odev);
+
+	return airoha_gpon_omci_hw_validate_services(omci->hw_priv, services, count);
+}
+
+static int
 airoha_gpon_omci_replace_service(struct omci_device *odev,
 				 const struct omci_service_config *service)
 {
@@ -145,6 +155,7 @@ static const struct omci_device_ops airoha_gpon_omci_ops = {
 	.set_tcont = airoha_gpon_omci_set_tcont,
 	.set_gem_port = airoha_gpon_omci_set_gem_port,
 	.set_uni = airoha_gpon_omci_set_uni,
+	.validate_services = airoha_gpon_omci_validate_services,
 	.replace_service = airoha_gpon_omci_replace_service,
 	.delete_service = airoha_gpon_omci_delete_service,
 	.get_telemetry = airoha_gpon_omci_get_telemetry,

@@ -299,6 +299,7 @@ struct omci_ani_topology {
  * @set_tcont: configure a T-CONT mapping
  * @set_gem_port: configure a GEM port
  * @set_uni: enable or disable a UNI
+ * @validate_services: optional read-only validation of the complete desired set
  * @replace_service: atomically add or replace a normalized upstream service
  * @delete_service: remove a normalized upstream service by cookie
  * @get_telemetry: refresh PON FEC and optical telemetry
@@ -319,6 +320,9 @@ struct omci_device_ops {
 			    u16 gem_port_id, u16 tcont_entity_id,
 			    u8 direction, bool valid, bool encrypted);
 	int (*set_uni)(struct omci_device *odev, u16 entity_id, bool enable);
+	int (*validate_services)(struct omci_device *odev,
+				 const struct omci_service_config *services,
+				 size_t count);
 	int (*replace_service)(struct omci_device *odev,
 			       const struct omci_service_config *service);
 	int (*delete_service)(struct omci_device *odev, u32 cookie);

@@ -38,6 +38,16 @@ config XPON_OMCI
 	  XGS-PON providers. The protocol implementation is owned by the xPON
 	  subsystem and is attached to one xPON device.
 
+config XPON_OMCI_KUNIT_TEST
+	bool "OMCI service reconciliation tests" if !KUNIT_ALL_TESTS
+	depends on KUNIT=y && XPON_OMCI=y
+	default KUNIT_ALL_TESTS
+	help
+	  Test capacity validation, full-table reprovisioning, recovery after
+	  provider failures and replay after a GPON restart without an OLT.
+	  Use a fake provider with bounded capacity and injected failures.
+	  Optical activation and packet forwarding are not exercised.
+
 config XPON_OAM
 	tristate "xPON IEEE 802.3ah OAM"
 	default y
