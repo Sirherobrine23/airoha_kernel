@@ -110,6 +110,12 @@
 		airoha,scu = <&scuclk>;
 	};
 
+	efuse_id: syscon@1fbf8214 {
+		compatible = "econet,en751221-efuse-id", "syscon";
+		reg = <0x1fbf8214 0x4>;
+		native-endian;
+	};
+
 	chip_scu: syscon@1fa20000 {
 		compatible = "airoha,chip-scu", "syscon";
 		reg = <0x1fa20000 0x400>;
@@ -524,6 +530,8 @@
 
 		ethernet = <&gdm2>;
 		airoha,scu = <&scuclk>;
+		airoha,chip-scu = <&chip_scu>;
+		airoha,efuse-id = <&efuse_id>;
 
 		status = "disabled";
 	};

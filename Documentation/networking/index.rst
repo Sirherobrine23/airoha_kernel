@@ -31,6 +31,8 @@ Contents:
    phy
    sfp-phylink
    xpon-ploam
+   omci-access
+   airoha-dmt
    alias
    bridge
    snmp_counter

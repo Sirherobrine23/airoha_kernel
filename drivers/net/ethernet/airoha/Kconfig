@@ -43,6 +43,27 @@ config NET_AIROHA_KUNIT_TEST
 	  Include cookie bucket compaction after fragmented deletions.
 	  These tests do not validate QDMA descriptors or PON activation.
 
+config NET_AIROHA_PTM_KUNIT_TEST
+	bool "EcoNet PTM receive metadata tests" if !KUNIT_ALL_TESTS
+	depends on KUNIT=y
+	default KUNIT_ALL_TESTS
+	help
+	  Test EN7512/EN7516 PTM receive descriptor validation without
+	  hardware. Check error bits, unsupported control frames and the
+	  single-line, single-bearer path restriction. These tests do not
+	  validate DMA, DSL training or packet forwarding on a modem.
+
+config NET_AIROHA_DMT_KUNIT_TEST
+	bool "EcoNet DMT firmware data tests" if !KUNIT_ALL_TESTS
+	depends on KUNIT=y
+	select CRC32
+	default KUNIT_ALL_TESTS
+	help
+	  Test data-only AFE firmware parsing, register field validation and
+	  package decoding without DSL hardware. Does not validate AFE MMIO,
+	  analog calibration, reset timing or modem training.
+	  Both firmware formats can be exercised on UML or other KUnit hosts.
+
 config NET_AIROHA_PPE_DEBUGFS
 	bool
 	default y
@@ -118,6 +139,11 @@ config AIROHA_XDSL
 	depends on ECONET || COMPILE_TEST
 	depends on NET_AIROHA
 	depends on OF
+	depends on MFD_SYSCON
+	select CRC32
+	select FW_LOADER
+	select XPON
+	select XPON_OMCI
 	help
 	  Build the initial xDSL frontend for the EcoNet EN751221 (EN7512)
 	  and EN751627 (EN7516) SoC families. The driver owns the DMT and PTM-TC
@@ -125,8 +151,14 @@ config AIROHA_XDSL
 	  lifecycle to the GDM2 Ethernet datapath.
 
 	  The proprietary legacy module embeds the complete G.hs/ADSL/VDSL
-	  training and DSP implementation. Until a clean-room line engine is
+	  training and DSP implementation. Until a native line engine is
 	  implemented, this driver keeps the DMT interrupts masked and carrier
 	  down after preparing the PTM datapath.
+	  Validated AFE data is loaded with request_firmware. Experimental
+	  AFE register initialization requires afe_bringup=1 and is not
+	  equivalent to modem calibration or DSL training.
+	  Both SoCs use airoha_xdsl.c and expose their local line status through
+	  the OMCI access-management Netlink commands. An unavailable line
+	  engine is reported explicitly and retraining is not advertised.
 
 endif # NET_VENDOR_AIROHA

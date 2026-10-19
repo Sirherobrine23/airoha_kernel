@@ -67,6 +67,8 @@ static bool airoha_xpon_receive_data(struct airoha_gdm_dev *dev,
 				     u16 wire_id);
 static bool econet_xpon_receive_data(struct airoha_eth *eth, u8 qdma_id,
 				     struct sk_buff *skb, union desc_msg *msg);
+static bool econet_ptm_rx_drop(struct airoha_eth *eth, u8 qdma_id,
+			       struct sk_buff *skb, union desc_msg *msg);
 
 static void econet_prepare_qdma_cfg(struct airoha_qdma_mips_cfg *cfg,
 				    const struct airoha_eth_soc_data *soc,
@@ -459,6 +461,11 @@ static void econet_qdma_rx_process_one(struct econet_q_rx *q, u32 cpu_i,
 	__skb_put(skb, len);
 	skb_mark_for_recycle(skb);
 	skb->ip_summed = CHECKSUM_NONE;
+
+	/* PTM word 0 is neither an Ethernet special tag nor PON GEM metadata. */
+	if (econet_ptm_rx_drop(q->qdma->qdma->eth, q->qdma->qdma->id,
+			       skb, &desc.msg))
+		return;
 
 	/* EN751221 QDMA1 uses PWAN_FERxMsg_T for GPON/EPON OAM.  Word 0
 	 * carries OAM/channel/GEM metadata while words 1..3 retain the regular
@@ -4005,7 +4012,13 @@ static netdev_tx_t __econet_qdma_xmit(struct sk_buff *skb, struct net_device *de
 	struct airoha_xpon_tx_info xpon_info;
 	union desc_msg msg = {0};
 	bool xpon = false;
+	bool ptm = !provided &&
+		   (READ_ONCE(port->flags) & AIROHA_PRIV_F_XDSL_MANAGED);
 	u8 channel;
+
+	/* Carrier is published only for a negotiated, operational PTM bearer. */
+	if (ptm && !netif_carrier_ok(dev))
+		goto drop;
 
 	if (provided) {
 		xpon_info = *provided;
@@ -4046,6 +4059,14 @@ static netdev_tx_t __econet_qdma_xmit(struct sk_buff *skb, struct net_device *de
 		channel = xpon_info.tcont;
 		set_etx_queue(&msg.etx, xpon_info.queue);
 		set_etx_xpon_gem(&msg.etx, xpon_info.gem_port_id);
+	} else if (ptm) {
+		/* The PTM path is (line << 2) | (bearer << 1) | preemption,
+		 * not a Linux flow/hash queue. Until additional bearers are
+		 * provisioned, use line 0, bearer 0, non-preemptive traffic and
+		 * the vendor default QoS queue 0 on both EN7512 and EN7516.
+		 */
+		channel = 0;
+		set_etx_queue(&msg.etx, 0);
 	} else if (airoha_is(port->eth, econet_en751221)) {
 		/*
 		 * The EN751221 vendor LAN path does not map Linux flow/hash
@@ -4071,16 +4092,15 @@ static netdev_tx_t __econet_qdma_xmit(struct sk_buff *skb, struct net_device *de
 		goto drop;
 
 	/*
-	 * Keep the EN751221 PWAN descriptor layout unchanged, but make sure
-	 * short GPON Ethernet data frames meet the minimum Ethernet payload
-	 * size before they enter QDMA/GDM2.  The control/OAM path has its own
-	 * framing and must not be padded here.
+	 * GPON and PTM data frames must meet the minimum Ethernet frame
+	 * size before entering QDMA/GDM2. PON control/OAM has its own framing.
 	 *
 	 * skb_put_padto() consumes the skb on allocation failure, so do not
 	 * jump to the common drop label in that case.
 	 */
-	if (xpon && READ_ONCE(port->xpon_mode) == AIROHA_XPON_MODE_GPON &&
-	    !xpon_info.oam && skb->len < ETH_ZLEN) {
+	if ((ptm || (xpon &&
+		     READ_ONCE(port->xpon_mode) == AIROHA_XPON_MODE_GPON &&
+		     !xpon_info.oam)) && skb->len < ETH_ZLEN) {
 		if (skb_put_padto(skb, ETH_ZLEN)) {
 			dev->stats.tx_dropped++;
 			return NETDEV_TX_OK;
@@ -4092,7 +4112,7 @@ static netdev_tx_t __econet_qdma_xmit(struct sk_buff *skb, struct net_device *de
 	 * Airoha QDMA which can move it to descriptor metadata. The logical
 	 * port-mask/channel classification is nevertheless shared.
 	 */
-	if (!xpon && airoha_is(port->eth, econet_en751221)) {
+	if (!xpon && !ptm && airoha_is(port->eth, econet_en751221)) {
 		airoha_qdma_skb_get_mtk_meta(skb, dev, AIROHA_MTK_TAG_IN_SKB,
 					     &skb_meta);
 		if (skb_meta.has_mtk_tag &&
@@ -5156,6 +5176,38 @@ static void airoha_retire_all(struct net_device *netdev)
 		airoha_retire_drop(eth, netdev);
 
 	WRITE_ONCE(dev->xpon_tx_stopped, false);
+}
+
+static bool econet_ptm_rx_drop(struct airoha_eth *eth, u8 qdma_id,
+			       struct sk_buff *skb, union desc_msg *msg)
+{
+	struct airoha_gdm_dev *port;
+	struct net_device *dev;
+	u8 sport;
+
+	if (qdma_id != 1 ||
+	    !airoha_is(eth, econet_en751221, econet_en7528))
+		return false;
+
+	/* EN751627 uses en7528_soc_data in the Ethernet OF table. */
+	sport = airoha_is(eth, econet_en7528) ?
+		FIELD_GET(EN7528_ERX_SPORT_MASK, msg->erx.bitfield_0) :
+		get_erx_sport(&msg->erx);
+	if (sport != ETX_FPORT_GDM2)
+		return false;
+
+	port = airoha_eth_get_gdm_dev(eth, AIROHA_GDM2_IDX);
+	if (!port || !(READ_ONCE(port->flags) & AIROHA_PRIV_F_XDSL_MANAGED))
+		return false;
+
+	dev = port->common.netdev;
+	if (netif_running(dev) && netif_carrier_ok(dev) &&
+	    skb->len >= ETH_HLEN && econet_ptm_rx_supported(msg->raw[0]))
+		return false;
+
+	dev_core_stats_rx_dropped_inc(dev);
+	dev_kfree_skb_any(skb);
+	return true;
 }
 
 static bool econet_xpon_receive_data(struct airoha_eth *eth, u8 qdma_id,

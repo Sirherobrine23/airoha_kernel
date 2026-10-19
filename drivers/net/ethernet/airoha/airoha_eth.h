@@ -1840,6 +1840,26 @@ struct qdma_desc_erx {
 #define ERX_XPON_OAM BIT(11)
 #define ERX_XPON_GEM_MASK GENMASK(23, 12)
 
+/* EN7512/EN7516 PTM RX message word 0 (7510ptm.h, EN7512 layout). */
+#define ERX_PTM_CRC_ERROR BIT(0)
+#define ERX_PTM_RUNT BIT(1)
+#define ERX_PTM_LONG BIT(2)
+#define ERX_PTM_PATH_MASK GENMASK(10, 3)
+#define ERX_PTM_OAM BIT(11)
+#define ERX_PTM_BACP BIT(12)
+
+static inline bool econet_ptm_rx_supported(u32 word0)
+{
+	if (word0 & (ERX_PTM_CRC_ERROR | ERX_PTM_RUNT | ERX_PTM_LONG |
+		     ERX_PTM_OAM | ERX_PTM_BACP))
+		return false;
+
+	/* Only line 0 / bearer 0, with either preemption value, is exposed.
+	 * Additional bearers and bonding require explicit demultiplexing.
+	 */
+	return FIELD_GET(ERX_PTM_PATH_MASK, word0) <= 1;
+}
+
 #define ERX_UNKNOWN1_MASK GENMASK(31, 29)
 #define ERX_IP6 BIT(28)
 #define ERX_IP4 BIT(27)

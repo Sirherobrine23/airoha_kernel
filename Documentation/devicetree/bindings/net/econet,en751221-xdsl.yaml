@@ -59,6 +59,17 @@ properties:
     $ref: /schemas/types.yaml#/definitions/phandle
     description: Phandle to the system-control register block and WAN mux.
 
+  airoha,chip-scu:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: Chip SCU with package selection and AFE trim shadow words.
+
+  airoha,efuse-id:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: |
+      Read-only consumer of the syscon covering the single 32-bit
+      EFUSE_VERIFY_DATA0 shadow at physical address 0x1fbf8214.
+      Used with SCU identity to reject mismatched or non-DSL packages.
+
 required:
   - compatible
   - reg
@@ -69,6 +80,8 @@ required:
   - reset-names
   - ethernet
   - airoha,scu
+  - airoha,chip-scu
+  - airoha,efuse-id
 
 additionalProperties: false
 
@@ -86,4 +99,6 @@ examples:
         reset-names = "dmt", "ptm";
         ethernet = <&gdm2>;
         airoha,scu = <&scuclk>;
+        airoha,chip-scu = <&chip_scu>;
+        airoha,efuse-id = <&efuse_id>;
     };

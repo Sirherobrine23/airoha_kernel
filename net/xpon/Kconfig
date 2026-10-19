@@ -31,12 +31,25 @@ config XPON_PLOAM_KUNIT_TEST
 	  Say Y here to run these tests at boot, or M to build a test module.
 
 config XPON_OMCI
-	tristate "xPON OMCI agent"
+	tristate "xPON OMCI agent and access line management"
 	default y
 	help
 	  In-kernel ONU Management and Control Interface agent used by GPON and
 	  XGS-PON providers. The protocol implementation is owned by the xPON
-	  subsystem and is attached to one xPON device.
+	  subsystem and is attached to one xPON device. The same Netlink family
+	  also exposes local access line status for GPON, XG-PON, XGS-PON and
+	  xDSL. Local xDSL management does not require an optical device or
+	  create an OMCI transport over a copper line.
+
+config XPON_OMCI_ACCESS_KUNIT_TEST
+	bool "OMCI access line tests" if !KUNIT_ALL_TESTS
+	depends on KUNIT=y && XPON_OMCI=y
+	default KUNIT_ALL_TESTS
+	help
+	  Test line registration, removal, provider errors, PON mode reporting
+	  and retrain dispatch without DSL or optical hardware.
+	  Also verify 64-bit rate encoding and that removal waits for an
+	  in-flight management callback before releasing provider storage.
 
 config XPON_OMCI_KUNIT_TEST
 	bool "OMCI service reconciliation tests" if !KUNIT_ALL_TESTS
