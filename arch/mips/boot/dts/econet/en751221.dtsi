@@ -40,14 +40,14 @@
 			device_type = "cpu";
 			compatible = "mips,mips34Kc";
 			reg = <0>;
-			clocks = <&scuclk EN751221_CLK_CPU>;
+			clocks = <&scuclk EN7523_CLK_CPU>;
 		};
 
 		cpu1: cpu@1 {
 			device_type = "cpu";
 			compatible = "mips,mips34Kc";
 			reg = <1>;
-			clocks = <&scuclk EN751221_CLK_CPU>;
+			clocks = <&scuclk EN7523_CLK_CPU>;
 		};
 	};
 
@@ -342,19 +342,6 @@
 				};
 			};
 
-			/*
-			 * PCM/ZSI pin groups. Every PCM mux bit lives in
-			 * chip_scu + 0x0104 (REG_IOMUX_CONTROL1): pcm1
-			 * gpio 25-28 bit 13, pcm2 gpio 17-20 bit 14,
-			 * pcm_spi gpio 17-20 bit 12 (SPI2_MODE), pcm_spi_int
-			 * gpio 16 bit 11, pcm_spi_rst gpio 15 bit 10,
-			 * pcm_spi_cs4 gpio 22 bit 9, pcm_spi_cs3 gpio 16
-			 * bit 8. "pcm_spi" occupies the same four pins as
-			 * "pcm2", so a board using the multiplexed SLIC
-			 * control channel gives up the second PCM bus.
-			 * pcm_spi_int and pcm_spi_cs3 are both gpio 16 --
-			 * pick one.
-			 */
 			pcm1_pins: pcm1-pins {
 				mux {
 					function = "pcm";
@@ -369,7 +356,6 @@
 				};
 			};
 
-			/* PCM bus 2 pins carrying the multiplexed SLIC control channel */
 			pcm_spi_pins: pcm-spi-pins {
 				mux {
 					function = "pcm_spi";

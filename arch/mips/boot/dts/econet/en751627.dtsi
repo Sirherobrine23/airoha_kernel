@@ -48,14 +48,14 @@
 			device_type = "cpu";
 			compatible = "mips,mips1004Kc";
 			reg = <0>;
-			clocks = <&scuclk EN751627_CLK_CPU>;
+			clocks = <&scuclk EN7523_CLK_CPU>;
 		};
 
 		cpu@1 {
 			device_type = "cpu";
 			compatible = "mips,mips1004Kc";
 			reg = <1>;
-			clocks = <&scuclk EN751627_CLK_CPU>;
+			clocks = <&scuclk EN7523_CLK_CPU>;
 		};
 	};
 
@@ -242,7 +242,7 @@
 			clocks = <&hpt_clock>;
 		};
 
-		spi: spi@1fa10000 {
+		spi0: spi@1fa10000 {
 			compatible = "airoha,en7523-spi";
 			reg = <0x1fa10000 0x140>,
 			      <0x1fa11000 0x160>;
