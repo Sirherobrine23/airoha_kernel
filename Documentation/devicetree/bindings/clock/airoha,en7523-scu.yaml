@@ -38,6 +38,7 @@ properties:
     maxItems: 2
 
   reg-names:
+    minItems: 1
     items:
       - const: np-scu
       - const: mcucfg
@@ -45,6 +46,12 @@ properties:
   airoha,chip-scu:
     $ref: /schemas/types.yaml#/definitions/phandle
     description: Phandle to the SoC CHIP-SCU syscon.
+
+  airoha,scu-efuse:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: |
+      Phandle to the eFuse syscon at 0x1fbf8200. The register range must
+      cover the package identification words at offsets 0x14 and 0x18.
 
   "#clock-cells":
     description: Clock identifier from the matching SoC clock binding header.
@@ -68,9 +75,10 @@ allOf:
     then:
       properties:
         reg:
+          minItems: 1
           items:
             - description: NP-SCU registers
-            - description: MCUCFG registers used while switching the CPU PLL
+            - description: Optional MCUCFG registers used while switching the CPU PLL
       required:
         - reg-names
         - airoha,chip-scu
@@ -111,7 +119,9 @@ allOf:
       properties:
         reg:
           maxItems: 1
-        reg-names: false
+        reg-names:
+          items:
+            - const: np-scu
       required:
         - airoha,chip-scu
 
@@ -141,7 +151,7 @@ examples:
       #address-cells = <2>;
       #size-cells = <2>;
 
-      scuclk: clock-controller@1fb00000 {
+      scuclk_en7581: clock-controller@1fb00000 {
         compatible = "airoha,en7581-scu";
         reg = <0x0 0x1fb00000 0x0 0x970>;
         #clock-cells = <1>;
@@ -149,3 +159,24 @@ examples:
       };
     };
 
+
+  - |
+    chip_scu_en751221: syscon@1fa20000 {
+      compatible = "airoha,chip-scu", "syscon";
+      reg = <0x1fa20000 0x400>;
+    };
+
+    scu_efuse: syscon@1fbf8200 {
+      compatible = "airoha,scu-efuse", "syscon";
+      reg = <0x1fbf8200 0x1c>;
+    };
+
+    scuclk_en751221: system-controller@1fb00000 {
+      compatible = "econet,en751221-scu", "syscon";
+      reg = <0x1fb00000 0x1000>;
+      reg-names = "np-scu";
+      airoha,chip-scu = <&chip_scu_en751221>;
+      airoha,scu-efuse = <&scu_efuse>;
+      #clock-cells = <1>;
+      #reset-cells = <1>;
+    };

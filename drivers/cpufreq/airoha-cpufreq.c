@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0
 
+#include <linux/clk.h>
 #include <linux/cpufreq.h>
 #include <linux/module.h>
 #include <linux/of.h>
-#include <linux/of_address.h>
 #include <linux/platform_device.h>
 #include <linux/pm_domain.h>
 #include <linux/pm_runtime.h>
@@ -30,11 +30,6 @@ struct airoha_hw_clocks {
 struct airoha_hw_data {
 	const struct airoha_hw_clocks *clocks;
 	size_t clocks_size;
-	const char *scu_compatible;
-	unsigned int np_scu_reg_index;
-	enum airoha_pkg hir;
-	enum airoha_pkg_ids pkgid_base;
-	unsigned int pkgid_count;
 	bool use_pmdomain;
 };
 
@@ -60,63 +55,6 @@ static int airoha_cpufreq_config_clks_nop(struct device *dev,
 static const char * const airoha_cpufreq_clk_names[] = { "cpu", NULL };
 static const char * const airoha_cpufreq_pd_names[] = { "perf", NULL };
 
-static enum airoha_pkg_ids
-airoha_cpufreq_read_pkgid(struct device *dev,
-			  const struct airoha_hw_data *data)
-{
-	struct device_node *np;
-	void __iomem *np_scu;
-	unsigned int reg_index;
-	u32 hir, pkgid;
-
-	if (!data->scu_compatible || !data->pkgid_count)
-		return END_PACKAGE_ID;
-
-	/*
-	 * Newer device trees expose NP-SCU directly through airoha,scuclk.
-	 * Keep support for the legacy combined SCU node, where NP-SCU is
-	 * stored in the resource selected by np_scu_reg_index.
-	 */
-	np = of_find_compatible_node(NULL, NULL, "airoha,scuclk");
-	if (np) {
-		reg_index = 0;
-	} else {
-		np = of_find_compatible_node(NULL, NULL,
-					     data->scu_compatible);
-		if (!np) {
-			dev_warn(dev, "unable to find NP-SCU node\n");
-			return END_PACKAGE_ID;
-		}
-		reg_index = data->np_scu_reg_index;
-	}
-
-	np_scu = of_iomap(np, reg_index);
-	of_node_put(np);
-	if (!np_scu) {
-		dev_warn(dev, "unable to map NP-SCU register region\n");
-		return END_PACKAGE_ID;
-	}
-
-	hir = get_pkg_mem(np_scu);
-	if (hir != data->hir) {
-		dev_warn(dev, "unexpected SCU HIR 0x%x, expected 0x%x\n",
-			 hir, data->hir);
-		iounmap(np_scu);
-		return END_PACKAGE_ID;
-	}
-
-	pkgid = get_pkgid_mem(np_scu);
-	iounmap(np_scu);
-
-	if (pkgid >= data->pkgid_count) {
-		dev_warn(dev, "invalid package ID 0x%x from NP-SCU SCREG_WR1\n",
-			 pkgid);
-		return END_PACKAGE_ID;
-	}
-
-	return data->pkgid_base + pkgid;
-}
-
 static int airoha_cpufreq_probe(struct platform_device *pdev)
 {
 	struct platform_device *cpufreq_dt;
@@ -126,6 +64,7 @@ static int airoha_cpufreq_probe(struct platform_device *pdev)
 	enum airoha_pkg_ids pkgid = END_PACKAGE_ID;
 	struct device *dev = &pdev->dev;
 	struct device *cpu_dev;
+	struct clk *cpu_clk;
 	struct dev_pm_opp_config config = {
 		.clk_names = airoha_cpufreq_clk_names,
 	};
@@ -149,12 +88,19 @@ static int airoha_cpufreq_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	if (data->clocks_size) {
+		/* Wait for the clock provider before reading its cached ID. */
+		cpu_clk = clk_get(cpu_dev, "cpu");
+		if (IS_ERR(cpu_clk))
+			return dev_err_probe(dev, PTR_ERR(cpu_clk),
+					     "CPU clock is not available\n");
+		clk_put(cpu_clk);
+
 		/* Safe fallback: expose only the lowest frequency class. */
 		priv->supported_hw[0] = AIROHA_CPU_HW_C;
 		config.supported_hw = priv->supported_hw;
 		config.supported_hw_count = ARRAY_SIZE(priv->supported_hw);
 
-		pkgid = airoha_cpufreq_read_pkgid(dev, data);
+		pkgid = airoha_get_pkg_id(NULL);
 		if (pkgid != END_PACKAGE_ID) {
 			for (i = 0; i < data->clocks_size; i++) {
 				if (data->clocks[i].id != pkgid)
@@ -169,7 +115,7 @@ static int airoha_cpufreq_probe(struct platform_device *pdev)
 
 		if (pkgid_matched)
 			dev_info(dev, "package %s: maximum CPU frequency %s\n",
-				 airoha_pkg_id_name(pkgid),
+				 airoha_id_name(pkgid),
 				 clocks_values[priv->supported_hw[0]]);
 		else
 			dev_warn(dev,
@@ -304,11 +250,6 @@ static const struct airoha_hw_clocks airoha_en7523_hw_clocks[] = {
 static const struct airoha_hw_data airoha_en7523 = {
 	.clocks = airoha_en7523_hw_clocks,
 	.clocks_size = ARRAY_SIZE(airoha_en7523_hw_clocks),
-	.scu_compatible = "airoha,en7523-scu",
-	.np_scu_reg_index = 1,
-	.hir = EN7523_PKG,
-	.pkgid_base = EN7529DU,
-	.pkgid_count = EN7523DTM - EN7529DU + 1,
 };
 
 static const struct airoha_hw_data airoha_an7581 = {

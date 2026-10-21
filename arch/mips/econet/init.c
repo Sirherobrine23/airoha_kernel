@@ -18,13 +18,10 @@
 #include <asm/reboot.h>
 #include <asm/mips-cps.h>
 
-#include "linux/soc/airoha/pkgids.h"
+#include <linux/soc/airoha/pkgids.h>
 
 #define CR_AHB_RSTCR		((void __iomem *)CKSEG1ADDR(0x1fb00040))
 #define RESET			BIT(31)
-#define NP_SCU_BASE		((void __iomem *)CKSEG1ADDR(0x1fb00000))
-#define CHIP_SCU_BASE		((void __iomem *)CKSEG1ADDR(AIROHA_CHIP_SCU_BASE_PHYS))
-#define EFUSE_BASE		((void __iomem *)CKSEG1ADDR(AIROHA_EFUSE_BASE_PHYS))
 
 #ifdef CONFIG_CPU_LITTLE_ENDIAN
 #define UART_BASE		CKSEG1ADDR(0x1fbf0000)	/* LE: byte at offset 0 */
@@ -120,8 +117,7 @@ const char *get_system_type(void)
 	static char system_type[64];
 	const char *soc;
 
-	soc = airoha_soc_name_from_mips_mem(NP_SCU_BASE, CHIP_SCU_BASE,
-				     EFUSE_BASE);
+	soc = airoha_id_name(airoha_get_pkg_id(NULL));
 
 	snprintf(system_type, sizeof(system_type), "EcoNet %s", soc);
 	return system_type;

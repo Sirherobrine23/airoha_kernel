@@ -247,7 +247,9 @@
 		reg = <0x1fb00000 0x1000>,
 		      <0x1efbe000 0x800>;
 		reg-names = "np-scu", "mcucfg";
+
 		airoha,chip-scu = <&chip_scu>;
+
 		#clock-cells = <1>;
 		#reset-cells = <1>;
 	};

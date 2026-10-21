@@ -99,11 +99,18 @@
 			reg = <0x1fa20000 0x400>;
 		};
 
+		scu_efuse: syscon@1fbf8200 {
+			compatible = "airoha,scu-efuse", "syscon";
+			reg = <0x1fbf8200 0x1c>;
+		};
+
 		scuclk: system-controller@1fb00000 {
 			compatible = "econet,en751627-scu", "syscon";
 			reg = <0x1fb00000 0x1000>;
 
 			airoha,chip-scu = <&chip_scu>;
+			airoha,scu-efuse = <&scu_efuse>;
+
 			#clock-cells = <1>;
 			#reset-cells = <1>;
 		};

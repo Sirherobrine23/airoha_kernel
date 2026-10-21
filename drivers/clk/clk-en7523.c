@@ -6,6 +6,7 @@
 #include <linux/bitfield.h>
 #include <linux/bitops.h>
 #include <linux/delay.h>
+#include <linux/export.h>
 #include <linux/clk-provider.h>
 #include <linux/io.h>
 #include <linux/irqflags.h>
@@ -16,6 +17,7 @@
 #include <linux/property.h>
 #include <linux/regmap.h>
 #include <linux/reset-controller.h>
+#include <linux/soc/airoha/pkgids.h>
 #include <dt-bindings/clock/en7523-clk.h>
 #include <dt-bindings/clock/econet,en751221-scu.h>
 #include <dt-bindings/clock/econet,en7528-scu.h>
@@ -77,8 +79,6 @@
 #define   REG_RESET_CONTROL_PCIEHB	BIT(29)
 #define   REG_RESET_CONTROL_PCIE1	BIT(27)
 #define   REG_RESET_CONTROL_PCIE2	BIT(26)
-#define REG_HIR				0x064
-#define   REG_HIR_MASK			GENMASK(31, 16)
 #define REG_TRNG_BUS_CLK_GAT		0x1e4
 #define REG_TRNG_PER_CLK_GAT_1		0x1e8
 #define REG_TRNG_PER_CLK_GAT_2		0x1ec
@@ -135,24 +135,53 @@
 #define EN7580_REG_TOD_DIVIDER_ENABLE	0x1e4
 #define EN7580_MAX_CLKS			5
 
-enum en_hir {
-	HIR_UNKNOWN	= -1,
-	HIR_TC3169	= 0,
-	HIR_TC3182	= 1,
-	HIR_RT65168	= 2,
-	HIR_RT63165	= 3,
-	HIR_RT63365	= 4,
-	HIR_MT751020	= 5,
-	HIR_MT7505	= 6,
-	HIR_EN751221	= 7,
-	HIR_EN7526C	= 8,
-	HIR_EN751627	= 9,
-	HIR_EN7580	= 10,
-	HIR_EN7528	= 11,
-	HIR_EN7523	= 12,
-	HIR_EN7581	= 13,
-	HIR_MAX		= 14,
-};
+/* SCU PKG ID */
+#define AIROHA_NP_SCU_PDIDR		0x05c
+#define AIROHA_NP_SCU_HIR		0x064
+#define AIROHA_NP_SCU_SUBMODEL		0x0f8
+#define AIROHA_NP_SCU_SCREG_WR1		0x284
+#define AIROHA_CHIP_SCU_PACKAGE		0x174
+#define AIROHA_CHIP_SCU_CONFIG		0x1ec
+#define AIROHA_EFUSE_VERIFY_DATA0	0x014
+#define AIROHA_EFUSE_VERIFY_DATA1	0x018
+
+#define AIROHA_NP_SCU_HIR_MASK		GENMASK(31, 16)
+#define AIROHA_NP_SCU_PDIDR_MASK	GENMASK(15, 0)
+#define AIROHA_NP_SCU_PACKAGE_ID_MASK	GENMASK(3, 0)
+#define AIROHA_NP_SCU_PACKAGE_ID_EXT	BIT(7)
+#define AIROHA_NP_SCU_SUBMODEL_MASK	GENMASK(1, 0)
+
+/* EN7512/EN7521 and EN7526C/EN7522 eFuse encoding. */
+#define AIROHA_EFUSE_PKG_MASK		GENMASK(5, 0)
+#define AIROHA_EFUSE_PKG_IGNORE_BIT01	GENMASK(5, 2)
+#define AIROHA_EFUSE_REMARK_BIT		BIT(6)
+#define AIROHA_EFUSE_PKG_REMARK_SHIFT	7
+
+#define AIROHA_EFUSE_DDR3_BIT		BIT(23)
+#define AIROHA_EFUSE_DDR3_REMARK_BIT	BIT(24)
+
+/* EN7516/EN7527 eFuse encoding. */
+#define AIROHA_EFUSE_7516_PKG_MASK	GENMASK(19, 18)
+#define AIROHA_EFUSE_7516_REMARK_BIT	BIT(0)
+#define AIROHA_EFUSE_7516_REMARK_SHIFT	2
+
+#define AIROHA_EFUSE_EN7527H		0x00000
+#define AIROHA_EFUSE_EN7527G		0x00000
+#define AIROHA_EFUSE_EN7516G		0x80000
+#define AIROHA_EFUSE_EN7561G		0xc0000
+
+/* Additional package selectors used by the legacy vendor code. */
+#define AIROHA_EN751627_QFP_MASK	BIT(15)
+#define AIROHA_EN7526C_FP_MASK		BIT(10)
+#define AIROHA_EN7526C_FTC_BIT		BIT(9)
+#define AIROHA_EN7526C_FTC_REMARK_BIT	BIT(10)
+
+/* MT7510/MT7520 module-selection bits in EFUSE_VERIFY_DATA0. */
+#define AIROHA_MT751020_ENP_SEL		BIT(3)
+#define AIROHA_MT751020_ENP_LOW		BIT(1)
+#define AIROHA_MT751020_ENP_HIGH	BIT(5)
+#define AIROHA_MT751020_ENS_LOW		BIT(2)
+#define AIROHA_MT751020_ENS_HIGH	BIT(6)
 
 struct en_clk_desc {
 	int id;
@@ -205,10 +234,9 @@ struct en_rst_data {
 };
 
 struct econet_clk_soc_data {
-	const char *chip_scu_compatible;
 	u32 spi_base;
 	u32 spi_alt_base;
-	enum en_hir spi_alt_hir;
+	enum airoha_pkg spi_alt_hir;
 	u16 spi_div_reg;
 	u32 spi_div_mask;
 	u32 spi_div_default;
@@ -220,7 +248,10 @@ struct econet_clk_soc_data {
 	u32 shared_unzip_val;
 };
 
-struct en_clk_soc_data {
+struct airoha_clk_priv;
+
+struct airoha_clk_soc_data {
+	const char *old_chip_scu_compatible;
 	bool probe_child;
 	u32 num_clocks;
 	u32 num_base_clks;
@@ -231,9 +262,290 @@ struct en_clk_soc_data {
 	const struct econet_clk_soc_data *econet;
 	const struct clk_ops pcie_ops;
 	int (*hw_init)(struct platform_device *pdev,
-		       const struct en_clk_soc_data *soc_data,
+		       struct airoha_clk_priv *priv,
 		       struct clk_hw_onecell_data *clk_data);
 };
+
+struct airoha_clk_priv {
+	const struct airoha_clk_soc_data *soc_data;
+	enum airoha_id_source soc_source;
+	enum airoha_pkg soc_family;
+	enum airoha_pkg_ids soc_id;
+	struct regmap *scu_chip;
+	struct regmap *scu_np;
+	void __iomem *np_scu_base;
+	void __iomem *chip_scu_base;
+	void __iomem *efuse_base;
+	void __iomem *mcucfg;
+};
+
+static const struct of_device_id of_match_clk_en7523[];
+
+static enum airoha_pkg_ids
+airoha_pkg_id_from_range(u32 pkgid, enum airoha_pkg_ids first,
+			 enum airoha_pkg_ids last)
+{
+	u32 id;
+
+	if (pkgid > (u32)(last - first))
+		return END_PACKAGE_ID;
+
+	id = first + pkgid;
+	if (id >= ARRAY_SIZE(airoha_pkg_id_names) ||
+	    !airoha_pkg_id_names[id])
+		return END_PACKAGE_ID;
+
+	return id;
+}
+
+static enum airoha_pkg airoha_pkg_from_id(u32 id)
+{
+	switch (id) {
+	case AN7583_PKG:
+	case 0x7583:
+	case 0x9510:
+	case 0x7553:
+	case 0x7567:
+		return AN7583_PKG;
+	case AN7552_PKG:
+	case 0x7552:
+	case 0x7563:
+		return AN7552_PKG;
+	case EN7581_PKG:
+	case 0x7581:
+	case 0x7566:
+	case 0x7551:
+		return EN7581_PKG;
+	case EN7523_PKG:
+	case 0x7523:
+	case 0x7529:
+	case 0x7562:
+		return EN7523_PKG;
+	case EN7528_PKG:
+	case 0x7528:
+	case 0x7561:
+		return EN7528_PKG;
+	case EN7580_PKG:
+	case 0x7580:
+	case 0x7565:
+		return EN7580_PKG;
+	case EN751627_PKG:
+	case 0x7516:
+	case 0x7527:
+		return EN751627_PKG;
+	case EN7526C_PKG:
+	case 0x7522:
+		return EN7526C_PKG;
+	case EN751221_PKG:
+	case 0x7512:
+	case 0x7513:
+	case 0x7521:
+	case 0x7526:
+		return EN751221_PKG;
+	case MT751020_PKG:
+	case 0x7510:
+	case 0x7520:
+	case 0x7525:
+		return MT751020_PKG;
+	default:
+		return UNKNOWN_PKG;
+	}
+}
+
+static u32 airoha_efuse_pkg_value(u32 efuse_data0)
+{
+	if (efuse_data0 & AIROHA_EFUSE_REMARK_BIT)
+		return (efuse_data0 >> AIROHA_EFUSE_PKG_REMARK_SHIFT) &
+		       AIROHA_EFUSE_PKG_MASK;
+
+	return efuse_data0 & AIROHA_EFUSE_PKG_MASK;
+}
+
+static u32 airoha_efuse_7516_pkg_value(u32 efuse_data0)
+{
+	if (efuse_data0 & AIROHA_EFUSE_7516_REMARK_BIT)
+		return (efuse_data0 >> AIROHA_EFUSE_7516_REMARK_SHIFT) &
+		       AIROHA_EFUSE_7516_PKG_MASK;
+
+	return efuse_data0 & AIROHA_EFUSE_7516_PKG_MASK;
+}
+
+static bool airoha_efuse_is_ddr3(u32 efuse_data0)
+{
+	if (efuse_data0 & AIROHA_EFUSE_REMARK_BIT)
+		return !!(efuse_data0 & AIROHA_EFUSE_DDR3_REMARK_BIT);
+
+	return !!(efuse_data0 & AIROHA_EFUSE_DDR3_BIT);
+}
+
+static bool
+airoha_en7526c_is_ft_c(u32 efuse_data0, u32 efuse_data1)
+{
+	if (efuse_data0 & AIROHA_EFUSE_REMARK_BIT)
+		return !!(efuse_data1 & AIROHA_EN7526C_FTC_REMARK_BIT);
+
+	return !!(efuse_data1 & AIROHA_EN7526C_FTC_BIT);
+}
+
+static enum airoha_pkg_ids
+airoha_en751221_variant_id(u32 efuse_data0)
+{
+	switch (airoha_efuse_pkg_value(efuse_data0)) {
+	case EN7526F_EFUSE:
+		return EN7526F;
+	case EN7526D_EFUSE:
+		return EN7526D;
+	case EN7526G_EFUSE:
+		return EN7526G;
+	case EN7512_EFUSE:
+		return EN7512;
+	case EN7513_EFUSE:
+		return EN7513;
+	case EN7513G_EFUSE:
+		return EN7513G;
+	case EN7586_EFUSE:
+		return EN7586;
+	case EN7521F_EFUSE:
+		return EN7521F;
+	case EN7526FT_EFUSE:
+		return EN7526FT;
+	case EN7521G_EFUSE:
+		return EN7521G;
+	case EN7521S_EFUSE:
+		return EN7521S;
+	default:
+		return EN751221;
+	}
+}
+
+static enum airoha_pkg_ids
+airoha_en7526c_variant_id(u32 efuse_data0, u32 efuse_data1,
+			  u32 chip_scu_config)
+{
+	u32 pkg = airoha_efuse_pkg_value(efuse_data0) &
+		  AIROHA_EFUSE_PKG_IGNORE_BIT01;
+
+	/* The vendor macros make these refinements orthogonal to the base ID. */
+	if (airoha_en7526c_is_ft_c(efuse_data0, efuse_data1))
+		return EN7526FT_C;
+
+	switch (pkg) {
+	case EN7526F_EFUSE:
+		if (chip_scu_config & AIROHA_EN7526C_FP_MASK)
+			return EN7526FP;
+		return EN7526F;
+	case EN7521F_EFUSE:
+		if (airoha_efuse_is_ddr3(efuse_data0))
+			return EN7521FCUD;
+		return EN7521F;
+	case EN7521S_EFUSE:
+		return EN7521S;
+	default:
+		return END_PACKAGE_ID;
+	}
+}
+
+static enum airoha_pkg_ids
+airoha_en751627_variant_id(u32 efuse_data0, u32 chip_scu_package)
+{
+	switch (airoha_efuse_7516_pkg_value(efuse_data0)) {
+	case AIROHA_EFUSE_EN7527G:
+		if (chip_scu_package & AIROHA_EN751627_QFP_MASK)
+			return EN7527H;
+		return EN7527G;
+	case AIROHA_EFUSE_EN7516G:
+		return EN7516G;
+	case AIROHA_EFUSE_EN7561G:
+		return EN7561G;
+	default:
+		return EN751627;
+	}
+}
+
+static bool airoha_mt751020_is_enp(u32 efuse_data0)
+{
+	if (efuse_data0 & AIROHA_MT751020_ENP_SEL)
+		return !!(efuse_data0 & AIROHA_MT751020_ENP_HIGH);
+
+	return !!(efuse_data0 & AIROHA_MT751020_ENP_LOW);
+}
+
+static bool airoha_mt751020_is_ens(u32 efuse_data0)
+{
+	if (efuse_data0 & AIROHA_MT751020_ENP_SEL)
+		return !!(efuse_data0 & AIROHA_MT751020_ENS_HIGH);
+
+	return !!(efuse_data0 & AIROHA_MT751020_ENS_LOW);
+}
+
+static enum airoha_pkg_ids
+airoha_mt751020_variant_id(u32 submodel, u32 efuse_data0)
+{
+	bool enp = airoha_mt751020_is_enp(efuse_data0);
+	bool ens = airoha_mt751020_is_ens(efuse_data0);
+
+	switch (FIELD_GET(AIROHA_NP_SCU_SUBMODEL_MASK, submodel)) {
+	case 0:
+		return enp ? MT7510 : MT7511;
+	case 2:
+		if (ens)
+			return MT7520S;
+		return enp ? MT7520 : MT7525;
+	case 3:
+		return enp ? MT7520G : MT7525G;
+	default:
+		return END_PACKAGE_ID;
+	}
+}
+
+static enum airoha_pkg_ids
+airoha_pkgid_variant_id(enum airoha_pkg pkg, u32 pkgid)
+{
+	switch (airoha_pkg_from_id(pkg)) {
+	case AN7583_PKG:
+		return airoha_pkg_id_from_range(pkgid, AN7583GT, AN7583FF);
+	case AN7552_PKG:
+		return airoha_pkg_id_from_range(pkgid, AN7552CT, AN7563PT);
+	case EN7581_PKG:
+		return airoha_pkg_id_from_range(pkgid, AN7581GT, AN7581SIT);
+	case EN7523_PKG:
+		return airoha_pkg_id_from_range(pkgid, EN7529DU, EN7523DTM);
+	case EN7528_PKG:
+		switch (pkgid) {
+		case 0x0:
+			return EN7528HU;
+		case 0x1:
+			return EN7528DU;
+		case 0x2:
+			return EN7561DU;
+		case 0x3:
+			return EN7526FH_EN7528DU;
+		case 0x4:
+			return EN7561HU;
+		case 0x7:
+			return EN7521G_EN7528DU;
+		default:
+			return END_PACKAGE_ID;
+		}
+	case EN7580_PKG:
+		switch (pkgid) {
+		case 0x0:
+			return EN7580GT;
+		case 0x1:
+			return EN7580ST;
+		case 0x2:
+			return EN7580GAT;
+		case 0x3:
+			return EN7565;
+		case 0x4:
+			return EN7528GT_EN7580;
+		default:
+			return END_PACKAGE_ID;
+		}
+	default:
+		return END_PACKAGE_ID;
+	}
+}
 
 static const u32 gsw_base[] = { 400000000, 500000000 };
 static const u32 emi_base[] = { 333000000, 400000000 };
@@ -830,7 +1142,7 @@ static const u16 en751221_rst_map[] = {
 };
 
 static int register_resets(struct device *dev, struct regmap *map,
-				 const struct en_clk_soc_data *soc_data);
+				 const struct airoha_clk_soc_data *soc_data);
 
 static u32 en7523_get_base_rate(const struct en_clk_desc *desc, u32 val)
 {
@@ -917,7 +1229,7 @@ static void en7523_pci_unprepare(struct clk_hw *hw)
 static struct clk_hw *en7523_register_pcie_clk(struct device *dev,
 					       struct regmap *clk_map)
 {
-	const struct en_clk_soc_data *soc_data = device_get_match_data(dev);
+	const struct airoha_clk_soc_data *soc_data = device_get_match_data(dev);
 	struct clk_init_data init = {
 		.name = "pcie",
 		.ops = &soc_data->pcie_ops,
@@ -1376,7 +1688,7 @@ static struct clk_hw *en7523_register_cpu_clk(struct device *dev,
 }
 
 static int en75xx_register_clocks(struct device *dev,
-				  const struct en_clk_soc_data *soc_data,
+				  const struct airoha_clk_soc_data *soc_data,
 				  struct clk_hw_onecell_data *clk_data,
 				  struct regmap *map, struct regmap *clk_map)
 {
@@ -1453,80 +1765,22 @@ static void en7581_pci_disable(struct clk_hw *hw)
 	usleep_range(1000, 2000);
 }
 
-static const struct regmap_config en7523_clk_regmap_config = {
-	.reg_bits = 32,
-	.val_bits = 32,
-	.reg_stride = 4,
-};
-
 static int en7523_clk_hw_init(struct platform_device *pdev,
-			      const struct en_clk_soc_data *soc_data,
+			      struct airoha_clk_priv *priv,
 			      struct clk_hw_onecell_data *clk_data)
 {
+	const struct airoha_clk_soc_data *soc_data = priv->soc_data;
 	struct device *dev = &pdev->dev;
-	struct device_node *chip_scu_np;
-	void __iomem *chip_scu_base, *mcucfg = NULL, *np_base;
-	struct regmap *map, *clk_map;
+	struct regmap *map = priv->scu_chip, *clk_map = priv->scu_np;
 	struct clk_hw *hw;
-	bool split_layout;
 	int err;
-
-	split_layout = of_property_present(dev->of_node, "airoha,chip-scu");
-	if (split_layout) {
-		map = syscon_regmap_lookup_by_phandle(dev->of_node,
-						      "airoha,chip-scu");
-		if (IS_ERR(map))
-			return PTR_ERR(map);
-
-		chip_scu_np = of_parse_phandle(dev->of_node,
-						 "airoha,chip-scu", 0);
-		if (!chip_scu_np)
-			return -ENODEV;
-
-		chip_scu_base = of_iomap(chip_scu_np, 0);
-		of_node_put(chip_scu_np);
-		if (!chip_scu_base)
-			return -ENOMEM;
-
-		err = devm_add_action_or_reset(dev, en7523_cpu_iounmap,
-					       chip_scu_base);
-		if (err)
-			return err;
-
-		np_base = devm_platform_ioremap_resource_byname(pdev,
-							      "np-scu");
-		if (IS_ERR(np_base))
-			return PTR_ERR(np_base);
-
-		mcucfg = devm_platform_ioremap_resource_byname(pdev,
-							     "mcucfg");
-		if (IS_ERR(mcucfg))
-			return PTR_ERR(mcucfg);
-	} else {
-		chip_scu_base = devm_platform_ioremap_resource(pdev, 0);
-		if (IS_ERR(chip_scu_base))
-			return PTR_ERR(chip_scu_base);
-
-		map = devm_regmap_init_mmio(dev, chip_scu_base,
-					     &en7523_clk_regmap_config);
-		if (IS_ERR(map))
-			return PTR_ERR(map);
-
-		np_base = devm_platform_ioremap_resource(pdev, 1);
-		if (IS_ERR(np_base))
-			return PTR_ERR(np_base);
-	}
-
-	clk_map = devm_regmap_init_mmio(dev, np_base,
-				       &en7523_clk_regmap_config);
-	if (IS_ERR(clk_map))
-		return PTR_ERR(clk_map);
 
 	err = en75xx_register_clocks(dev, soc_data, clk_data, map, clk_map);
 	if (err)
 		return err;
 
-	hw = en7523_register_cpu_clk(dev, chip_scu_base, mcucfg);
+	hw = en7523_register_cpu_clk(dev, priv->chip_scu_base,
+				     priv->mcucfg);
 	if (IS_ERR(hw)) {
 		if (PTR_ERR(hw) != -EOPNOTSUPP)
 			return PTR_ERR(hw);
@@ -1632,7 +1886,7 @@ static const struct reset_control_ops en7581_reset_ops = {
 };
 
 static int register_resets(struct device *dev, struct regmap *map,
-				 const struct en_clk_soc_data *soc_data)
+				 const struct airoha_clk_soc_data *soc_data)
 {
 	struct en_rst_data *rst_data;
 	const u16 *rst_map = soc_data->rst_map;
@@ -1658,31 +1912,15 @@ static int register_resets(struct device *dev, struct regmap *map,
 }
 
 static int en7581_clk_hw_init(struct platform_device *pdev,
-			      const struct en_clk_soc_data *soc_data,
+			      struct airoha_clk_priv *priv,
 			      struct clk_hw_onecell_data *clk_data)
 {
+	const struct airoha_clk_soc_data *soc_data = priv->soc_data;
 	struct device *dev = &pdev->dev;
-	struct regmap *map, *clk_map;
-	void __iomem *base;
+	struct regmap *map = priv->scu_chip, *clk_map = priv->scu_np;
 	int err;
 
-	if (of_property_present(dev->of_node, "airoha,chip-scu"))
-		map = syscon_regmap_lookup_by_phandle(dev->of_node,
-						      "airoha,chip-scu");
-	else
-		map = syscon_regmap_lookup_by_compatible("airoha,en7581-chip-scu");
-	if (IS_ERR(map))
-		return PTR_ERR(map);
-
-	base = devm_platform_ioremap_resource(pdev, 0);
-	if (IS_ERR(base))
-		return PTR_ERR(base);
-
-	clk_map = devm_regmap_init_mmio(&pdev->dev, base, &en7523_clk_regmap_config);
-	if (IS_ERR(clk_map))
-		return PTR_ERR(clk_map);
-
-	err = en75xx_register_clocks(&pdev->dev, soc_data, clk_data, map, clk_map);
+	err = en75xx_register_clocks(dev, soc_data, clk_data, map, clk_map);
 	if (err)
 		return err;
 
@@ -1699,29 +1937,17 @@ static int en7581_clk_hw_init(struct platform_device *pdev,
 	regmap_set_bits(clk_map, REG_RST_CTRL1, BIT(29));
 	regmap_clear_bits(clk_map, REG_RST_CTRL1, BIT(29));
 
-	return register_resets(&pdev->dev, clk_map, soc_data);
+	return register_resets(dev, clk_map, soc_data);
 }
 
 static int an7583_clk_hw_init(struct platform_device *pdev,
-			      const struct en_clk_soc_data *soc_data,
+			      struct airoha_clk_priv *priv,
 			      struct clk_hw_onecell_data *clk_data)
 {
+	const struct airoha_clk_soc_data *soc_data = priv->soc_data;
 	struct device *dev = &pdev->dev;
-	struct regmap *map, *clk_map;
-	void __iomem *base;
+	struct regmap *map = priv->scu_chip, *clk_map = priv->scu_np;
 	int err;
-
-	map = syscon_regmap_lookup_by_phandle(dev->of_node, "airoha,chip-scu");
-	if (IS_ERR(map))
-		return PTR_ERR(map);
-
-	base = devm_platform_ioremap_resource(pdev, 0);
-	if (IS_ERR(base))
-		return PTR_ERR(base);
-
-	clk_map = devm_regmap_init_mmio(&pdev->dev, base, &en7523_clk_regmap_config);
-	if (IS_ERR(clk_map))
-		return PTR_ERR(clk_map);
 
 	err = en75xx_register_clocks(dev, soc_data, clk_data, map, clk_map);
 	if (err)
@@ -1737,26 +1963,6 @@ static int an7583_clk_hw_init(struct platform_device *pdev,
 	regmap_set_bits(map, REG_TRNG_PER_CLK_GAT_2_AN7581, REG_TRNG_PER2_EN);
 
 	return register_resets(dev, clk_map, soc_data);
-}
-
-static enum en_hir en751221_get_hw_id(struct regmap *clk_map)
-{
-	u32 val;
-	int err;
-
-	err = regmap_read(clk_map, REG_HIR, &val);
-	if (err) {
-		pr_warn("Unable to read EcoNet SoC HIR: %d\n", err);
-		return HIR_UNKNOWN;
-	}
-
-	val = FIELD_GET(REG_HIR_MASK, val);
-	if (val < HIR_MAX)
-		return (enum en_hir)val;
-
-	pr_warn("Unable to determine EcoNet SoC\n");
-
-	return HIR_UNKNOWN;
 }
 
 static int econet_register_fixed_rate(struct device *dev, int key,
@@ -1779,12 +1985,11 @@ static int econet_register_fixed_rate(struct device *dev, int key,
 }
 
 static int econet_register_clocks(struct device *dev,
-				  const struct en_clk_soc_data *soc_data,
+				  struct airoha_clk_priv *priv,
 				  struct clk_hw_onecell_data *clk_data,
 				  struct regmap *map, struct regmap *clk_map)
 {
-	const struct econet_clk_soc_data *data = soc_data->econet;
-	enum en_hir hid = en751221_get_hw_id(clk_map);
+	const struct econet_clk_soc_data *data = priv->soc_data->econet;
 	struct clk_hw *hw;
 	u32 rate, val;
 	int err;
@@ -1798,7 +2003,7 @@ static int econet_register_clocks(struct device *dev,
 
 	/* SPI */
 	rate = data->spi_base;
-	if (data->spi_alt_base && hid == data->spi_alt_hir)
+	if (data->spi_alt_base && priv->soc_family == data->spi_alt_hir)
 		rate = data->spi_alt_base;
 
 	err = regmap_read(map, data->spi_div_reg, &val);
@@ -1852,35 +2057,16 @@ static int econet_register_clocks(struct device *dev,
 }
 
 static int econet_clk_hw_init(struct platform_device *pdev,
-			      const struct en_clk_soc_data *soc_data,
+			      struct airoha_clk_priv *priv,
 			      struct clk_hw_onecell_data *clk_data)
 {
+	const struct airoha_clk_soc_data *soc_data = priv->soc_data;
 	const struct econet_clk_soc_data *data = soc_data->econet;
 	struct device *dev = &pdev->dev;
-	struct regmap *map, *clk_map;
-	void __iomem *base;
+	struct regmap *map = priv->scu_chip, *clk_map = priv->scu_np;
 	int err;
 
-	if (of_property_present(dev->of_node, "airoha,chip-scu"))
-		map = syscon_regmap_lookup_by_phandle(dev->of_node,
-						      "airoha,chip-scu");
-	else {
-		map = syscon_regmap_lookup_by_compatible("airoha,chip-scu");
-		if (IS_ERR(map))
-			map = syscon_regmap_lookup_by_compatible(data->chip_scu_compatible);
-	}
-	if (IS_ERR(map))
-		return PTR_ERR(map);
-
-	base = devm_platform_ioremap_resource(pdev, 0);
-	if (IS_ERR(base))
-		return PTR_ERR(base);
-
-	clk_map = devm_regmap_init_mmio(dev, base, &en7523_clk_regmap_config);
-	if (IS_ERR(clk_map))
-		return PTR_ERR(clk_map);
-
-	err = econet_register_clocks(dev, soc_data, clk_data, map, clk_map);
+	err = econet_register_clocks(dev, priv, clk_data, map, clk_map);
 	if (err)
 		return err;
 
@@ -1911,14 +2097,255 @@ static int econet_clk_hw_init(struct platform_device *pdev,
 	return register_resets(dev, clk_map, soc_data);
 }
 
+static void __iomem *airoha_clk_iomap(struct device *dev,
+				      struct device_node *np)
+{
+	void __iomem *base;
+	int err;
+
+	base = of_iomap(np, 0);
+	if (!base)
+		return ERR_PTR(-ENOMEM);
+
+	err = devm_add_action_or_reset(dev, en7523_cpu_iounmap, base);
+	if (err)
+		return ERR_PTR(err);
+
+	return base;
+}
+
+static const struct regmap_config airoha_clk_regmap_config = {
+	.reg_bits = 32,
+	.val_bits = 32,
+	.reg_stride = 4,
+};
+
+static int airoha_clk_map_resources(struct platform_device *pdev,
+				    struct airoha_clk_priv *priv)
+{
+	const struct airoha_clk_soc_data *soc_data = priv->soc_data;
+	struct device *dev = &pdev->dev;
+	struct device_node *np = dev->of_node, *chip_np, *efuse_np;
+	struct resource res;
+	int index, err = 0;
+
+	if (of_property_present(np, "airoha,chip-scu")) {
+		chip_np = of_parse_phandle(np, "airoha,chip-scu", 0);
+	} else {
+		chip_np = of_find_compatible_node(NULL, NULL,
+						  "airoha,chip-scu");
+		if (!chip_np)
+			chip_np = of_find_compatible_node(NULL, NULL,
+							  soc_data->old_chip_scu_compatible);
+	}
+	if (!chip_np)
+		return -ENODEV;
+
+	priv->scu_chip = syscon_node_to_regmap(chip_np);
+	if (IS_ERR(priv->scu_chip)) {
+		of_node_put(chip_np);
+		return PTR_ERR(priv->scu_chip);
+	}
+
+	priv->chip_scu_base = airoha_clk_iomap(dev, chip_np);
+	of_node_put(chip_np);
+	if (IS_ERR(priv->chip_scu_base))
+		return PTR_ERR(priv->chip_scu_base);
+
+	index = of_property_match_string(np, "reg-names", "np-scu");
+	if (index < 0)
+		index = 0;
+	priv->np_scu_base = devm_platform_ioremap_resource(pdev, index);
+	if (IS_ERR(priv->np_scu_base))
+		return PTR_ERR(priv->np_scu_base);
+
+	priv->scu_np = devm_regmap_init_mmio(dev, priv->np_scu_base,
+					     &airoha_clk_regmap_config);
+	if (IS_ERR(priv->scu_np))
+		return PTR_ERR(priv->scu_np);
+
+	/* MCUCFG is optional and only used for ARM CPU PLL. */
+	index = of_property_match_string(np, "reg-names", "mcucfg");
+	if (index >= 0) {
+		priv->mcucfg = devm_platform_ioremap_resource(pdev, index);
+		if (IS_ERR(priv->mcucfg))
+			return PTR_ERR(priv->mcucfg);
+	}
+
+	if (of_property_present(np, "airoha,scu-efuse")) {
+		efuse_np = of_parse_phandle(np, "airoha,scu-efuse", 0);
+		if (!efuse_np)
+			return -ENODEV;
+
+		err = of_address_to_resource(efuse_np, 0, &res);
+		if (!err && resource_size(&res) < AIROHA_EFUSE_VERIFY_DATA1 + sizeof(u32))
+			err = -EINVAL;
+		if (!err) {
+			priv->efuse_base = airoha_clk_iomap(dev, efuse_np);
+			if (IS_ERR(priv->efuse_base))
+				err = PTR_ERR(priv->efuse_base);
+		}
+		of_node_put(efuse_np);
+	}
+	return err;
+}
+
+static void airoha_clk_detect_soc(struct airoha_clk_priv *priv)
+{
+	void __iomem *np = priv->np_scu_base, *chip = priv->chip_scu_base;
+	enum airoha_pkg pkg;
+	u32 efuse0, efuse1, value, pkgid;
+
+	priv->soc_id = END_PACKAGE_ID;
+	priv->soc_source = ID_SOURCE_UNKNOWN;
+	value = readl(np + AIROHA_NP_SCU_HIR);
+	pkg = airoha_pkg_from_id(FIELD_GET(AIROHA_NP_SCU_HIR_MASK, value));
+	if (pkg == UNKNOWN_PKG) {
+		value = readl(np + AIROHA_NP_SCU_PDIDR);
+		pkg = airoha_pkg_from_id(FIELD_GET(AIROHA_NP_SCU_PDIDR_MASK, value));
+	}
+
+	priv->soc_family = pkg;
+
+	switch (pkg) {
+	case EN751221_PKG:
+	case EN7526C_PKG:
+	case EN751627_PKG:
+	case MT751020_PKG:
+		/* Never decode absent eFuse data as a valid zero-valued ID. */
+		if (!priv->efuse_base)
+			return;
+
+		efuse0 = readl(priv->efuse_base + AIROHA_EFUSE_VERIFY_DATA0);
+		priv->soc_source = FROM_EFUSE;
+		break;
+	default:
+		value = readl(np + AIROHA_NP_SCU_SCREG_WR1);
+		pkgid = FIELD_GET(AIROHA_NP_SCU_PACKAGE_ID_MASK, value);
+		if (value & AIROHA_NP_SCU_PACKAGE_ID_EXT)
+			pkgid |= BIT(4);
+		priv->soc_id = airoha_pkgid_variant_id(pkg, pkgid);
+		priv->soc_source = FROM_SCU;
+		goto out;
+	}
+
+	switch (pkg) {
+	case EN751221_PKG:
+		priv->soc_id = airoha_en751221_variant_id(efuse0);
+		break;
+	case EN7526C_PKG:
+		efuse1 = readl(priv->efuse_base + AIROHA_EFUSE_VERIFY_DATA1);
+		value = readl(chip + AIROHA_CHIP_SCU_CONFIG);
+		priv->soc_id = airoha_en7526c_variant_id(efuse0, efuse1, value);
+		break;
+	case EN751627_PKG:
+		value = readl(chip + AIROHA_CHIP_SCU_PACKAGE);
+		priv->soc_id = airoha_en751627_variant_id(efuse0, value);
+		break;
+	case MT751020_PKG:
+		value = readl(np + AIROHA_NP_SCU_SUBMODEL);
+		priv->soc_id = airoha_mt751020_variant_id(value, efuse0);
+		break;
+	default:
+		break;
+	}
+out:
+	if (priv->soc_id == END_PACKAGE_ID)
+		priv->soc_source = ID_SOURCE_UNKNOWN;
+}
+
+static enum airoha_pkg_ids
+airoha_clk_get_soc_id(struct device_node *np, enum airoha_id_source *source)
+{
+	enum airoha_pkg_ids id = END_PACKAGE_ID;
+	struct platform_device *pdev;
+	struct airoha_clk_priv *priv;
+
+	if (source)
+		*source = ID_SOURCE_UNKNOWN;
+
+	if (np) {
+		if (!of_match_node(of_match_clk_en7523, np))
+			return id;
+		of_node_get(np);
+	} else {
+		for_each_matching_node(np, of_match_clk_en7523) {
+			if (of_device_is_available(np))
+				break;
+		}
+	}
+	if (!np)
+		return id;
+
+	if (!of_device_is_available(np)) {
+		of_node_put(np);
+		return id;
+	}
+
+	pdev = of_find_device_by_node(np);
+	of_node_put(np);
+	if (!pdev)
+		return id;
+
+	/* Copy the immutable result while probe and teardown are excluded. */
+	device_lock(&pdev->dev);
+	priv = platform_get_drvdata(pdev);
+	if (priv) {
+		id = priv->soc_id;
+		if (source)
+			*source = priv->soc_source;
+	}
+	device_unlock(&pdev->dev);
+	put_device(&pdev->dev);
+
+	return id;
+}
+
+enum airoha_pkg_ids airoha_get_pkg_id(struct device_node *np)
+{
+	return airoha_clk_get_soc_id(np, NULL);
+}
+EXPORT_SYMBOL_GPL(airoha_get_pkg_id);
+
+enum airoha_id_source airoha_pkg_source(struct device_node *np)
+{
+	enum airoha_id_source source;
+
+	airoha_clk_get_soc_id(np, &source);
+
+	return source;
+}
+EXPORT_SYMBOL_GPL(airoha_pkg_source);
+
+const char *airoha_id_name(enum airoha_pkg_ids id)
+{
+	if (id >= ARRAY_SIZE(airoha_pkg_id_names) ||
+	    !airoha_pkg_id_names[id])
+		return "unknown";
+
+	return airoha_pkg_id_names[id];
+}
+EXPORT_SYMBOL_GPL(airoha_id_name);
+
 static int en7523_clk_probe(struct platform_device *pdev)
 {
-	const struct en_clk_soc_data *soc_data;
+	const struct airoha_clk_soc_data *soc_data;
 	struct clk_hw_onecell_data *clk_data;
+	struct airoha_clk_priv *priv;
 	struct device *dev = &pdev->dev;
 	int err;
 
 	soc_data = device_get_match_data(dev);
+	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
+	if (!priv)
+		return -ENOMEM;
+
+	priv->soc_data = soc_data;
+	err = airoha_clk_map_resources(pdev, priv);
+	if (err)
+		return dev_err_probe(dev, err, "Failed to map SCU resources\n");
+
+	airoha_clk_detect_soc(priv);
 
 	clk_data = devm_kzalloc(dev,
 				struct_size(clk_data, hws,
@@ -1928,12 +2355,11 @@ static int en7523_clk_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	clk_data->num = soc_data->num_clocks;
-	err = soc_data->hw_init(pdev, soc_data, clk_data);
+	err = soc_data->hw_init(pdev, priv, clk_data);
 	if (err)
 		return err;
 
-	err = of_clk_add_hw_provider(dev->of_node, of_clk_hw_onecell_get,
-				     clk_data);
+	err = devm_of_clk_add_hw_provider(dev, of_clk_hw_onecell_get, clk_data);
 	if (err)
 		return err;
 
@@ -1944,10 +2370,96 @@ static int en7523_clk_probe(struct platform_device *pdev)
 			return err;
 	}
 
+	platform_set_drvdata(pdev, priv);
 	return 0;
 }
 
-static const struct en_clk_soc_data en7523_data = {
+static const struct econet_clk_soc_data en751221_econet_data = {
+	.spi_base = EN751221_SPI_BASE,
+	.spi_alt_base = EN751221_SPI_BASE_EN7526C,
+	.spi_alt_hir = EN7526C_PKG,
+	.spi_div_reg = EN751221_REG_SPI_DIV,
+	.spi_div_mask = EN751221_REG_SPI_DIV_MASK,
+	.spi_div_default = EN751221_SPI_DIV_DEFAULT,
+	.xpon_tod_clk_reg = EN751221_REG_NP_PER_DOM_CLK_GAT_1,
+	.xpon_tod_clk_mask = EN751221_XPON_TOD_CLK_EN,
+	.xpon_tod_div_reg = EN751221_REG_TOD_DIVIDER_ENABLE,
+	.xpon_tod_div_mask = EN751221_XPON_TOD_DIV_EN,
+};
+
+static const struct econet_clk_soc_data en7528_econet_data = {
+	.spi_base = EN7528_SPI_BASE,
+	.spi_div_reg = EN7528_REG_SPI_DIV,
+	.spi_div_mask = EN7528_REG_SPI_DIV_MASK,
+	.spi_div_default = EN7528_SPI_DIV_DEFAULT,
+	.xpon_tod_clk_reg = EN7528_REG_NP_PER_DOM_CLK_GAT_1,
+	.xpon_tod_clk_mask = EN7528_XPON_TOD_CLK_EN,
+	.xpon_tod_div_reg = EN7528_REG_TOD_DIVIDER_ENABLE,
+	.xpon_tod_div_mask = EN7528_XPON_TOD_DIV_EN,
+	.shared_unzip_reg = EN7528_REG_SHARED_UNZIPMENT_SEL,
+	.shared_unzip_val = EN7528_SHARED_UNZIPMENT_FE,
+};
+
+static const struct econet_clk_soc_data en7580_econet_data = {
+	.spi_base = EN7580_SPI_BASE,
+	.spi_div_reg = EN7580_REG_SPI_DIV,
+	.spi_div_mask = EN751221_REG_SPI_DIV_MASK,
+	.spi_div_default = EN7580_SPI_DIV_DEFAULT,
+	.xpon_tod_clk_reg = EN7580_REG_NP_PER_DOM_CLK_GAT_1,
+	.xpon_tod_clk_mask = EN751221_XPON_TOD_CLK_EN,
+	.xpon_tod_div_reg = EN7580_REG_TOD_DIVIDER_ENABLE,
+	.xpon_tod_div_mask = EN751221_XPON_TOD_DIV_EN,
+};
+
+static const struct airoha_clk_soc_data en751221_data = {
+	.old_chip_scu_compatible = "econet,en751221-chip-scu",
+	.num_clocks = EN751221_MAX_CLKS,
+	.rst_map = en751221_rst_map,
+	.rst_ofs = en751221_rst_ofs,
+	.nr_resets = ARRAY_SIZE(en751221_rst_map),
+	.econet = &en751221_econet_data,
+	.pcie_ops = {
+		.is_enabled = en7523_pci_is_enabled,
+		.prepare = en7523_pci_prepare,
+		.unprepare = en7523_pci_unprepare,
+	},
+	.hw_init = econet_clk_hw_init,
+};
+
+static const struct airoha_clk_soc_data en7528_data = {
+	.old_chip_scu_compatible = "econet,en7528-chip-scu",
+	.num_clocks = EN7528_MAX_CLKS,
+	/* EN7528 keeps the EN751221 NP-SCU reset layout. */
+	.rst_map = en751221_rst_map,
+	.rst_ofs = en751221_rst_ofs,
+	.nr_resets = ARRAY_SIZE(en751221_rst_map),
+	.econet = &en7528_econet_data,
+	.pcie_ops = {
+		.is_enabled = en7523_pci_is_enabled,
+		.prepare = en7523_pci_prepare,
+		.unprepare = en7523_pci_unprepare,
+	},
+	.hw_init = econet_clk_hw_init,
+};
+
+static const struct airoha_clk_soc_data en7580_data = {
+	.old_chip_scu_compatible = "econet,en7580-chip-scu",
+	.num_clocks = EN7580_MAX_CLKS,
+	/* The MIPS EN7580 retains the legacy NP-SCU reset banks. */
+	.rst_map = en751221_rst_map,
+	.rst_ofs = en751221_rst_ofs,
+	.nr_resets = ARRAY_SIZE(en751221_rst_map),
+	.econet = &en7580_econet_data,
+	.pcie_ops = {
+		.is_enabled = en7523_pci_is_enabled,
+		.prepare = en7523_pci_prepare,
+		.unprepare = en7523_pci_unprepare,
+	},
+	.hw_init = econet_clk_hw_init,
+};
+
+static const struct airoha_clk_soc_data en7523_data = {
+	.old_chip_scu_compatible = "airoha,en7523-chip-scu",
 	.base_clks = en7523_base_clks,
 	.num_base_clks = ARRAY_SIZE(en7523_base_clks),
 	.num_clocks = EN7523_CLK_CPU + 1,
@@ -1962,7 +2474,8 @@ static const struct en_clk_soc_data en7523_data = {
 	.hw_init = en7523_clk_hw_init,
 };
 
-static const struct en_clk_soc_data en7581_data = {
+static const struct airoha_clk_soc_data en7581_data = {
+	.old_chip_scu_compatible = "airoha,en7581-chip-scu",
 	.base_clks = en7581_base_clks,
 	.num_base_clks = ARRAY_SIZE(en7581_base_clks),
 	/* We increment num_clocks by 1 to account for additional PCIe clock */
@@ -1978,7 +2491,8 @@ static const struct en_clk_soc_data en7581_data = {
 	.hw_init = en7581_clk_hw_init,
 };
 
-static const struct en_clk_soc_data an7583_data = {
+static const struct airoha_clk_soc_data an7583_data = {
+	.old_chip_scu_compatible = "airoha,an7583-chip-scu",
 	.probe_child = true,
 	.base_clks = an7583_base_clks,
 	.num_base_clks = ARRAY_SIZE(an7583_base_clks),
@@ -1993,90 +2507,6 @@ static const struct en_clk_soc_data an7583_data = {
 		.disable = en7581_pci_disable,
 	},
 	.hw_init = an7583_clk_hw_init,
-};
-
-static const struct econet_clk_soc_data en751221_econet_data = {
-	.chip_scu_compatible = "econet,en751221-chip-scu",
-	.spi_base = EN751221_SPI_BASE,
-	.spi_alt_base = EN751221_SPI_BASE_EN7526C,
-	.spi_alt_hir = HIR_EN7526C,
-	.spi_div_reg = EN751221_REG_SPI_DIV,
-	.spi_div_mask = EN751221_REG_SPI_DIV_MASK,
-	.spi_div_default = EN751221_SPI_DIV_DEFAULT,
-	.xpon_tod_clk_reg = EN751221_REG_NP_PER_DOM_CLK_GAT_1,
-	.xpon_tod_clk_mask = EN751221_XPON_TOD_CLK_EN,
-	.xpon_tod_div_reg = EN751221_REG_TOD_DIVIDER_ENABLE,
-	.xpon_tod_div_mask = EN751221_XPON_TOD_DIV_EN,
-};
-
-static const struct econet_clk_soc_data en7528_econet_data = {
-	.chip_scu_compatible = "econet,en7528-chip-scu",
-	.spi_base = EN7528_SPI_BASE,
-	.spi_div_reg = EN7528_REG_SPI_DIV,
-	.spi_div_mask = EN7528_REG_SPI_DIV_MASK,
-	.spi_div_default = EN7528_SPI_DIV_DEFAULT,
-	.xpon_tod_clk_reg = EN7528_REG_NP_PER_DOM_CLK_GAT_1,
-	.xpon_tod_clk_mask = EN7528_XPON_TOD_CLK_EN,
-	.xpon_tod_div_reg = EN7528_REG_TOD_DIVIDER_ENABLE,
-	.xpon_tod_div_mask = EN7528_XPON_TOD_DIV_EN,
-	.shared_unzip_reg = EN7528_REG_SHARED_UNZIPMENT_SEL,
-	.shared_unzip_val = EN7528_SHARED_UNZIPMENT_FE,
-};
-
-static const struct econet_clk_soc_data en7580_econet_data = {
-	.chip_scu_compatible = "econet,en7580-chip-scu",
-	.spi_base = EN7580_SPI_BASE,
-	.spi_div_reg = EN7580_REG_SPI_DIV,
-	.spi_div_mask = EN751221_REG_SPI_DIV_MASK,
-	.spi_div_default = EN7580_SPI_DIV_DEFAULT,
-	.xpon_tod_clk_reg = EN7580_REG_NP_PER_DOM_CLK_GAT_1,
-	.xpon_tod_clk_mask = EN751221_XPON_TOD_CLK_EN,
-	.xpon_tod_div_reg = EN7580_REG_TOD_DIVIDER_ENABLE,
-	.xpon_tod_div_mask = EN751221_XPON_TOD_DIV_EN,
-};
-
-static const struct en_clk_soc_data en751221_data = {
-	.num_clocks = EN751221_MAX_CLKS,
-	.rst_map = en751221_rst_map,
-	.rst_ofs = en751221_rst_ofs,
-	.nr_resets = ARRAY_SIZE(en751221_rst_map),
-	.econet = &en751221_econet_data,
-	.pcie_ops = {
-		.is_enabled = en7523_pci_is_enabled,
-		.prepare = en7523_pci_prepare,
-		.unprepare = en7523_pci_unprepare,
-	},
-	.hw_init = econet_clk_hw_init,
-};
-
-static const struct en_clk_soc_data en7528_data = {
-	.num_clocks = EN7528_MAX_CLKS,
-	/* EN7528 keeps the EN751221 NP-SCU reset layout. */
-	.rst_map = en751221_rst_map,
-	.rst_ofs = en751221_rst_ofs,
-	.nr_resets = ARRAY_SIZE(en751221_rst_map),
-	.econet = &en7528_econet_data,
-	.pcie_ops = {
-		.is_enabled = en7523_pci_is_enabled,
-		.prepare = en7523_pci_prepare,
-		.unprepare = en7523_pci_unprepare,
-	},
-	.hw_init = econet_clk_hw_init,
-};
-
-static const struct en_clk_soc_data en7580_data = {
-	.num_clocks = EN7580_MAX_CLKS,
-	/* The MIPS EN7580 retains the legacy NP-SCU reset banks. */
-	.rst_map = en751221_rst_map,
-	.rst_ofs = en751221_rst_ofs,
-	.nr_resets = ARRAY_SIZE(en751221_rst_map),
-	.econet = &en7580_econet_data,
-	.pcie_ops = {
-		.is_enabled = en7523_pci_is_enabled,
-		.prepare = en7523_pci_prepare,
-		.unprepare = en7523_pci_unprepare,
-	},
-	.hw_init = econet_clk_hw_init,
 };
 
 static const struct of_device_id of_match_clk_en7523[] = {

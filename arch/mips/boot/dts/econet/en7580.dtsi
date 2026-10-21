@@ -144,15 +144,23 @@
 		};
 
 		chip_scu: syscon@1fa20000 {
-			compatible = "airoha,scuclk", "econet,en7580-chip-scu", "syscon";
+			compatible = "airoha,chip-scu", "syscon";
 			reg = <0x1fa20000 0x400>;
+		};
+
+		scu_efuse: syscon@1fbf8200 {
+			compatible = "airoha,scu-efuse", "syscon";
+			reg = <0x1fbf8200 0x1c>;
 		};
 
 		scuclk: system-controller@1fb00000 {
 			compatible = "econet,en7580-scu", "syscon";
 			reg = <0x1fb00000 0x1000>;
+			reg-names = "np-scu";
 
 			airoha,chip-scu = <&chip_scu>;
+			airoha,scu-efuse = <&scu_efuse>;
+
 			#clock-cells = <1>;
 			#reset-cells = <1>;
 		};
