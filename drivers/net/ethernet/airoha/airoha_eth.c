@@ -67,6 +67,8 @@ static bool airoha_xpon_receive_data(struct airoha_gdm_dev *dev,
 				     u16 wire_id);
 static bool econet_xpon_receive_data(struct airoha_eth *eth, u8 qdma_id,
 				     struct sk_buff *skb, union desc_msg *msg);
+static u16 econet_rx_ingress_gem(struct airoha_qdma *qdma,
+				 const union desc_msg *msg);
 
 static void econet_prepare_qdma_cfg(struct airoha_qdma_mips_cfg *cfg,
 				    const struct airoha_eth_soc_data *soc,
@@ -423,12 +425,14 @@ static void econet_qdma_rx_process_one(struct econet_q_rx *q, u32 cpu_i,
 				     struct airoha_whnat_batch *batch)
 {
 	struct econet_q_rx_ent *e = &q->entry[cpu_i];
+	struct airoha_eth *eth = q->qdma->qdma->eth;
 	int headroom = econet_rx_headroom(q->qdma);
 	struct sk_buff *skb;
 	struct page *page;
 	struct desc desc;
+	u16 ingress_gem;
 	u32 hash;
-	u8 sport;
+	u8 sport, reason;
 	int len;
 
 	memcpy(&desc, &q->desc[cpu_i], sizeof(desc));
@@ -469,12 +473,17 @@ static void econet_qdma_rx_process_one(struct econet_q_rx *q, u32 cpu_i,
 					q->qdma->qdma->id, skb, &desc.msg))
 		return;
 
+	hash = get_erx_ppe_entry(&desc.msg.erx);
+	reason = get_erx_crsn(&desc.msg.erx);
+	ingress_gem = econet_rx_ingress_gem(q->qdma->qdma, &desc.msg);
 	/* The PPE has already forwarded the original packet. Do not route its
 	 * duplicate keepalive copy through the network stack a second time.
+	 * Process it first so the PPE can invalidate a changed ingress GEM.
 	 */
-	if (airoha_is(q->qdma->qdma->eth, econet_en751221) &&
-	    get_erx_crsn(&desc.msg.erx) ==
+	if (airoha_is(eth, econet_en751221) && reason ==
 	    AIROHA_PPE_CPU_REASON_KEEPALIVE_DUP_OLD_HDR) {
+		airoha_ppe_dev_check_skb_reason(eth->ppe_dev, skb, hash,
+						reason, ingress_gem);
 		dev_kfree_skb(skb);
 		return;
 	}
@@ -483,11 +492,10 @@ static void econet_qdma_rx_process_one(struct econet_q_rx *q, u32 cpu_i,
 				     q->qdma->qdma->id, skb, &desc.msg))
 		return;
 
-	hash = get_erx_ppe_entry(&desc.msg.erx);
 	skb_set_hash(skb, jhash_1word(hash, 0),
 		     PKT_HASH_TYPE_L4);
-	airoha_ppe_dev_check_skb_reason(q->qdma->qdma->eth->ppe_dev, skb, hash,
-					get_erx_crsn(&desc.msg.erx));
+	airoha_ppe_dev_check_skb_reason(eth->ppe_dev, skb, hash, reason,
+					ingress_gem);
 
 	if (airoha_is(q->qdma->qdma->eth, econet_en7528))
 		sport = FIELD_GET(EN7528_ERX_SPORT_MASK,
@@ -5166,6 +5174,27 @@ static void airoha_retire_all(struct net_device *netdev)
 		airoha_retire_drop(eth, netdev);
 
 	WRITE_ONCE(dev->xpon_tx_stopped, false);
+}
+
+static u16 econet_rx_ingress_gem(struct airoha_qdma *qdma,
+				 const union desc_msg *msg)
+{
+	struct airoha_eth *eth = qdma->eth;
+	struct airoha_gdm_dev *port;
+	u8 sport;
+
+	/* Word 0 is GPON metadata only on the managed EN751221 WAN path. */
+	if (!airoha_is(eth, econet_en751221) || qdma->id != 1)
+		return AIROHA_PPE_RX_GEM_NONE;
+	sport = FIELD_GET(ERX_SPORT_MASK, msg->erx.bitfield_0);
+	if (sport != ETX_FPORT_GDM2 && sport != ETX_FPORT_QDMA1_CPU)
+		return AIROHA_PPE_RX_GEM_NONE;
+	port = airoha_eth_get_gdm_dev(eth, AIROHA_GDM2_IDX);
+	if (!port || !(READ_ONCE(port->flags) & AIROHA_PRIV_F_XPON_MANAGED) ||
+	    READ_ONCE(port->xpon_mode) != AIROHA_XPON_MODE_GPON)
+		return AIROHA_PPE_RX_GEM_NONE;
+
+	return FIELD_GET(ERX_XPON_GEM_MASK, msg->raw[0]);
 }
 
 static bool econet_xpon_receive_data(struct airoha_eth *eth, u8 qdma_id,

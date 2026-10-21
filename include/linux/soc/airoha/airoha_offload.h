@@ -20,6 +20,8 @@ enum {
 	PPE_CPU_REASON_HIT_UNBIND_RATE_REACHED = 0x0f,
 };
 
+#define AIROHA_PPE_RX_GEM_NONE 0xffff
+
 struct airoha_ppe_dev {
 	struct {
 		int (*setup_tc_block_cb)(struct airoha_ppe_dev *dev,
@@ -29,7 +31,7 @@ struct airoha_ppe_dev {
 				  bool rx_wlan);
 		void (*check_skb_reason)(struct airoha_ppe_dev *dev,
 					 struct sk_buff *skb, u16 hash,
-					 u8 reason);
+					 u8 reason, u16 ingress_gem);
 		int (*setup_tc)(struct airoha_ppe_dev *dev,
 				struct net_device *netdev,
 				enum tc_setup_type type, void *type_data);
@@ -59,10 +61,11 @@ static inline void airoha_ppe_dev_check_skb(struct airoha_ppe_dev *dev,
 
 static inline void
 airoha_ppe_dev_check_skb_reason(struct airoha_ppe_dev *dev,
-				struct sk_buff *skb, u16 hash, u8 reason)
+				struct sk_buff *skb, u16 hash, u8 reason,
+				u16 ingress_gem)
 {
 	if (dev && dev->ops.check_skb_reason)
-		dev->ops.check_skb_reason(dev, skb, hash, reason);
+		dev->ops.check_skb_reason(dev, skb, hash, reason, ingress_gem);
 }
 
 static inline int airoha_ppe_dev_setup_tc(struct airoha_ppe_dev *dev,
@@ -100,7 +103,8 @@ static inline void airoha_ppe_dev_check_skb(struct airoha_ppe_dev *dev,
 
 static inline void
 airoha_ppe_dev_check_skb_reason(struct airoha_ppe_dev *dev,
-				struct sk_buff *skb, u16 hash, u8 reason)
+				struct sk_buff *skb, u16 hash, u8 reason,
+				u16 ingress_gem)
 {
 }
 

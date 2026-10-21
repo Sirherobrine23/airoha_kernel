@@ -807,6 +807,8 @@ struct airoha_flow_table_entry {
 	const void *v1_owner;
 	/* v1: never bind again (its WiFi vif went away). */
 	bool v1_dead;
+	/* v1: GPON ingress GEM recorded at bind, or AIROHA_PPE_RX_GEM_NONE. */
+	u16 v1_ingress_gem;
 	u16 addr_type;
 	u16 src_port;
 	u16 dest_port;
@@ -1193,6 +1195,8 @@ struct airoha_ppe_v1 {
 	struct airoha_flow_table_entry **foe_owner;
 	bool armed;
 	u32 rx_multicast_skip;
+	u32 rx_keepalive;
+	u32 rx_gem_changed;
 };
 
 struct airoha_ppe {

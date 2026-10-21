@@ -598,6 +598,8 @@ static int airoha_ppe_v1_debugfs_regs_show(struct seq_file *m, void *private)
 	seq_printf(m, "armed=%u\n", READ_ONCE(ppe->v1.armed));
 	seq_printf(m, "rx_multicast_skip=%u\n",
 		   READ_ONCE(ppe->v1.rx_multicast_skip));
+	seq_printf(m, "rx_keepalive=%u\n", READ_ONCE(ppe->v1.rx_keepalive));
+	seq_printf(m, "rx_gem_changed=%u\n", READ_ONCE(ppe->v1.rx_gem_changed));
 	seq_printf(m, "flows=%u\n", flows);
 	seq_printf(m, "foe_cpu=%px\n", ppe->common.foe);
 	seq_printf(m, "foe_dma=%pad\n", &ppe->common.foe_dma);

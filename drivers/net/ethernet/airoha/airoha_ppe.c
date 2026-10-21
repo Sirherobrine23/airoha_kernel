@@ -2860,8 +2860,10 @@ static void airoha_ppe_v1_clear_owner(struct airoha_ppe *ppe, u16 hash)
 		return;
 
 	owner = ppe->v1.foe_owner[hash];
-	if (owner && owner->hash == hash)
+	if (owner && owner->hash == hash) {
 		owner->hash = AIROHA_FOE_V1_INVALID_HASH;
+		owner->v1_ingress_gem = AIROHA_PPE_RX_GEM_NONE;
+	}
 	ppe->v1.foe_owner[hash] = NULL;
 }
 
@@ -2875,6 +2877,7 @@ static void airoha_ppe_v1_release_flow_slot(struct airoha_ppe *ppe,
 	    hash >= ppe->common.eth->soc->ppe_dram_entries ||
 	    ppe->v1.foe_owner[hash] != flow) {
 		flow->hash = AIROHA_FOE_V1_INVALID_HASH;
+		flow->v1_ingress_gem = AIROHA_PPE_RX_GEM_NONE;
 		return;
 	}
 
@@ -2882,6 +2885,7 @@ static void airoha_ppe_v1_release_flow_slot(struct airoha_ppe *ppe,
 		airoha_ppe_v1_invalidate_entry(ppe, hash);
 	ppe->v1.foe_owner[hash] = NULL;
 	flow->hash = AIROHA_FOE_V1_INVALID_HASH;
+	flow->v1_ingress_gem = AIROHA_PPE_RX_GEM_NONE;
 }
 
 #if IS_ENABLED(CONFIG_NET_AIROHA_WHNAT)
@@ -2974,6 +2978,7 @@ static u16 airoha_ppe_v1_find_bind_way(struct airoha_ppe *ppe,
 
 struct airoha_foe_v1_tuple {
 	u16 addr_type;
+	u8 l4proto;
 	union {
 		struct {
 			u32 src;
@@ -3047,6 +3052,7 @@ static bool airoha_foe_v1_parse_tuple(struct sk_buff *skb,
 
 		l4 = iph + ihl;
 		tuple->addr_type = FLOW_DISSECTOR_KEY_IPV4_ADDRS;
+		tuple->l4proto = iph[9];
 		tuple->v4.src = get_unaligned_be32(iph + offsetof(struct iphdr, saddr));
 		tuple->v4.dest = get_unaligned_be32(iph + offsetof(struct iphdr, daddr));
 		tuple->src_port = get_unaligned_be16(l4);
@@ -3069,6 +3075,7 @@ static bool airoha_foe_v1_parse_tuple(struct sk_buff *skb,
 			return false;
 
 		tuple->addr_type = FLOW_DISSECTOR_KEY_IPV6_ADDRS;
+		tuple->l4proto = nexthdr;
 		memcpy(&tuple->v6.src,
 		       data + off + offsetof(struct ipv6hdr, saddr),
 		       sizeof(tuple->v6.src));
@@ -3088,6 +3095,8 @@ airoha_foe_v1_flow_matches_tuple(const struct airoha_flow_table_entry *flow,
 			      const struct airoha_foe_v1_tuple *tuple)
 {
 	if (flow->addr_type != tuple->addr_type ||
+	    !!(flow->data.ib1 & AIROHA_FOE_IB1_BIND_UDP) !=
+	    (tuple->l4proto == IPPROTO_UDP) ||
 	    flow->src_port != tuple->src_port ||
 	    flow->dest_port != tuple->dest_port)
 		return false;
@@ -3103,8 +3112,44 @@ airoha_foe_v1_flow_matches_tuple(const struct airoha_flow_table_entry *flow,
 	return false;
 }
 
+static void
+airoha_ppe_v1_rx_keepalive(struct airoha_ppe *ppe, struct sk_buff *skb,
+			   u16 hash, u16 ingress_gem)
+{
+	struct airoha_flow_table_entry *flow;
+	struct airoha_foe_v1_tuple tuple;
+	struct airoha_foe_entry raw;
+
+	if (!airoha_foe_v1_parse_tuple(skb, &tuple))
+		return;
+
+	spin_lock_bh(&ppe->v1.lock);
+	ppe->v1.rx_keepalive++;
+	flow = ppe->v1.foe_owner[hash];
+	if (!flow || flow->hash != hash || flow->v1_dead ||
+	    !airoha_foe_v1_flow_matches_tuple(flow, &tuple))
+		goto out;
+	airoha_ppe_v1_read_entry(ppe, hash, &raw);
+	if (airoha_ppe_v1_raw_state(&raw) != AIROHA_FOE_STATE_BIND)
+		goto out;
+
+	/* PpeGemportCheck() invalidates a bound downstream flow when its
+	 * ingress GEM changes. The slot may already have been reused, so
+	 * check its software owner and the original-header tuple first.
+	 */
+	if (ingress_gem != AIROHA_PPE_RX_GEM_NONE &&
+	    flow->v1_ingress_gem != AIROHA_PPE_RX_GEM_NONE &&
+	    flow->v1_ingress_gem != ingress_gem) {
+		airoha_ppe_v1_release_flow_slot(ppe, flow, true);
+		airoha_ppe_v1_cache_clean(ppe);
+		ppe->v1.rx_gem_changed++;
+	}
+out:
+	spin_unlock_bh(&ppe->v1.lock);
+}
+
 static void airoha_ppe_v1_rx_check(struct airoha_ppe *ppe, struct sk_buff *skb,
-				u16 hash, u8 reason)
+				u16 hash, u8 reason, u16 ingress_gem)
 {
 	struct airoha_foe_v1_tuple tuple;
 	struct airoha_flow_table_entry *flow;
@@ -3115,6 +3160,10 @@ static void airoha_ppe_v1_rx_check(struct airoha_ppe *ppe, struct sk_buff *skb,
 	if (!ppe || !READ_ONCE(ppe->v1.armed) ||
 	    hash >= ppe->common.eth->soc->ppe_dram_entries)
 		return;
+	if (reason == AIROHA_PPE_CPU_REASON_KEEPALIVE_DUP_OLD_HDR) {
+		airoha_ppe_v1_rx_keepalive(ppe, skb, hash, ingress_gem);
+		return;
+	}
 	if (reason != EN751221_PPE_CPU_REASON_NO_FLOW &&
 	    reason != AIROHA_PPE_CPU_REASON_HIT_UNBIND &&
 	    reason != AIROHA_PPE_CPU_REASON_HIT_UNBIND_RATE_REACHED)
@@ -3157,18 +3206,20 @@ static void airoha_ppe_v1_rx_check(struct airoha_ppe *ppe, struct sk_buff *skb,
 				       lookup_valid ? &lookup_raw : NULL);
 		ppe->v1.foe_owner[bind_hash] = flow;
 		flow->hash = bind_hash;
+		flow->v1_ingress_gem = ingress_gem;
 		break;
 	}
 	spin_unlock_bh(&ppe->v1.lock);
 }
 
 static void airoha_ppe_check_skb_reason(struct airoha_ppe_dev *ppe_dev,
-				       struct sk_buff *skb, u16 hash, u8 reason)
+				       struct sk_buff *skb, u16 hash, u8 reason,
+				       u16 ingress_gem)
 {
 	struct airoha_ppe *ppe = ppe_dev->priv;
 
 	if (ppe->common.eth->soc->foe_format == AIROHA_FOE_FORMAT_V1)
-		airoha_ppe_v1_rx_check(ppe, skb, hash, reason);
+		airoha_ppe_v1_rx_check(ppe, skb, hash, reason, ingress_gem);
 }
 
 static void airoha_ppe_v1_flush(struct airoha_ppe *ppe)
@@ -3769,6 +3820,7 @@ static int airoha_ppe_v1_flow_offload_replace(struct net_device *dev,
 	flow->dest_port = ntohs(dest_port);
 	flow->hash = AIROHA_FOE_V1_INVALID_HASH;
 	flow->v1_lastused = jiffies;
+	flow->v1_ingress_gem = AIROHA_PPE_RX_GEM_NONE;
 	flow->v1_owner = owner;
 	INIT_LIST_HEAD(&flow->v1_list);
 
