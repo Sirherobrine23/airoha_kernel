@@ -4,6 +4,7 @@
 #include <linux/etherdevice.h>
 #include <linux/rtnetlink.h>
 #include <net/net_namespace.h>
+#include <net/pkt_cls.h>
 
 #include "internal.h"
 
@@ -75,6 +76,18 @@ static int xpon_endpoint_stop(struct net_device *dev)
 	return 0;
 }
 
+static int xpon_endpoint_setup_tc(struct net_device *dev,
+				  enum tc_setup_type type, void *type_data)
+{
+	struct xpon_endpoint *ep = netdev_priv(dev);
+	struct net_device *lower = ep->xpon->netdev;
+
+	if (type != TC_SETUP_FT || !lower->netdev_ops->ndo_setup_tc)
+		return -EOPNOTSUPP;
+
+	return lower->netdev_ops->ndo_setup_tc(lower, type, type_data);
+}
+
 static const struct net_device_ops xpon_endpoint_ops = {
 	.ndo_open = xpon_endpoint_open,
 	.ndo_stop = xpon_endpoint_stop,
@@ -82,7 +95,27 @@ static const struct net_device_ops xpon_endpoint_ops = {
 	.ndo_get_stats64 = dev_get_tstats64,
 	.ndo_set_mac_address = eth_mac_addr,
 	.ndo_validate_addr = eth_validate_addr,
+	.ndo_setup_tc = xpon_endpoint_setup_tc,
 };
+
+int xpon_endpoint_get_path(struct net_device *dev, struct net_device **lower,
+			   struct xpon_endpoint_config *config)
+{
+	struct xpon_endpoint *ep;
+	bool ready;
+
+	if (dev->netdev_ops != &xpon_endpoint_ops)
+		return -EOPNOTSUPP;
+	ep = netdev_priv(dev);
+	spin_lock_bh(&ep->xpon->state_lock);
+	*config = ep->config;
+	ready = config->enabled && !READ_ONCE(ep->xpon->unregistering);
+	*lower = ep->xpon->netdev;
+	spin_unlock_bh(&ep->xpon->state_lock);
+
+	return ready && netif_running(dev) ? 0 : -ENETDOWN;
+}
+EXPORT_SYMBOL_GPL(xpon_endpoint_get_path);
 
 static void xpon_endpoint_destructor(struct net_device *dev)
 {
@@ -110,6 +143,7 @@ int xpon_endpoint_set(struct xpon_device *xpon,
 	struct net_device *dev = NULL;
 	struct xpon_endpoint *ep, *other;
 	unsigned long key, old_key = 0;
+	bool changed = false;
 	int ret;
 
 	ASSERT_RTNL();
@@ -161,6 +195,7 @@ int xpon_endpoint_set(struct xpon_device *xpon,
 		netif_carrier_off(dev);
 	} else {
 		old_key = xpon_rx_key(ep->config.type, ep->config.wire_id);
+		changed = !xpon_endpoint_same_binding(&ep->config, config);
 	}
 	ret = xa_err(xa_store(&xpon->rx_endpoints, key, ep, GFP_KERNEL));
 	if (ret)
@@ -175,6 +210,9 @@ int xpon_endpoint_set(struct xpon_device *xpon,
 			netif_carrier_on(ep->netdev);
 		else
 			netif_carrier_off(ep->netdev);
+		/* Flush provider offloads which captured the previous binding. */
+		if (changed)
+			call_netdevice_notifiers(NETDEV_CHANGE, ep->netdev);
 		xpon_device_report_event(xpon, XPON_EVENT_ENDPOINT);
 		return 0;
 	}

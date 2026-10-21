@@ -3,6 +3,7 @@
 #define _NET_XPON_H
 
 #include <linux/bitops.h>
+#include <linux/errno.h>
 #include <linux/log2.h>
 #include <linux/types.h>
 #include <linux/netdevice.h>
@@ -65,6 +66,16 @@ struct xpon_endpoint_config {
 	u8 queue;
 	bool enabled;
 };
+
+static inline bool
+xpon_endpoint_same_binding(const struct xpon_endpoint_config *a,
+			   const struct xpon_endpoint_config *b)
+{
+	return a->id == b->id && a->wire_id == b->wire_id &&
+	       a->scheduler_id == b->scheduler_id && a->link_id == b->link_id &&
+	       a->type == b->type && a->channel == b->channel &&
+	       a->queue == b->queue && a->enabled == b->enabled;
+}
 
 struct xpon_link_info {
 	u16 llid;
@@ -155,5 +166,18 @@ int xpon_endpoint_queue(struct xpon_device *xpon,
 /* Consumes a complete Ethernet frame only when a matching endpoint exists. */
 bool xpon_endpoint_receive(struct xpon_device *xpon, u8 type, u16 wire_id,
 			   struct sk_buff *skb);
+
+/* The caller must keep dev alive; the returned lower device is borrowed. */
+#if IS_REACHABLE(CONFIG_XPON)
+int xpon_endpoint_get_path(struct net_device *dev, struct net_device **lower,
+			   struct xpon_endpoint_config *config);
+#else
+static inline int
+xpon_endpoint_get_path(struct net_device *dev, struct net_device **lower,
+		       struct xpon_endpoint_config *config)
+{
+	return -EOPNOTSUPP;
+}
+#endif
 
 #endif /* _NET_XPON_H */
