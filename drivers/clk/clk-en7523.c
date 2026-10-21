@@ -19,9 +19,6 @@
 #include <linux/reset-controller.h>
 #include <linux/soc/airoha/pkgids.h>
 #include <dt-bindings/clock/en7523-clk.h>
-#include <dt-bindings/clock/econet,en751221-scu.h>
-#include <dt-bindings/clock/econet,en7528-scu.h>
-#include <dt-bindings/clock/econet,en7580-scu.h>
 #include <dt-bindings/reset/airoha,en7523-reset.h>
 #include <dt-bindings/reset/airoha,en7581-reset.h>
 #include <dt-bindings/reset/airoha,an7583-reset.h>
@@ -113,7 +110,6 @@
 #define   EN751221_XPON_TOD_CLK_EN	BIT(8)
 #define EN751221_REG_TOD_DIVIDER_ENABLE	0x0ec
 #define   EN751221_XPON_TOD_DIV_EN	BIT(1)
-#define EN751221_MAX_CLKS		5
 
 /* EN7528 CHIP-SCU differs from both EN751221 and EN7523. */
 #define EN7528_REG_SPI_DIV		0x0cc
@@ -126,7 +122,6 @@
 #define   EN7528_XPON_TOD_DIV_EN	BIT(1)
 #define EN7528_REG_SHARED_UNZIPMENT_SEL	0x954
 #define EN7528_SHARED_UNZIPMENT_FE	0x3
-#define EN7528_MAX_CLKS		5
 
 /* EN7580 MIPS CHIP-SCU layout (ecnt_scu.h and spi_controller.c). */
 #define EN7580_REG_SPI_DIV		0x1b8
@@ -134,7 +129,6 @@
 #define EN7580_SPI_DIV_DEFAULT		40
 #define EN7580_REG_NP_PER_DOM_CLK_GAT_1	0x1dc
 #define EN7580_REG_TOD_DIVIDER_ENABLE	0x1e4
-#define EN7580_MAX_CLKS			5
 
 /* SCU PKG ID */
 #define AIROHA_NP_SCU_PDIDR		0x05c
@@ -564,15 +558,6 @@ static const u32 crypto_base[] = { 540000000, 480000000 };
 static const u32 emmc7581_base[] = { 200000000, 150000000 };
 /* EN751221 / EN7528 */
 static const u32 gsw751221_base[] = { 500000000, 250000000, 400000000, 200000000 };
-
-enum econet_clk_id {
-	ECONET_CLK_PCIE,
-	ECONET_CLK_SPI,
-	ECONET_CLK_BUS,
-	ECONET_CLK_CPU,
-	ECONET_CLK_GSW,
-	ECONET_MAX_CLKS,
-};
 
 /* AN7583 */
 static const u32 gsw7583_base[] = { 540672000, 270336000, 400000000, 200000000 };
@@ -2003,7 +1988,7 @@ static int econet_register_clocks(struct device *dev,
 	if (IS_ERR(hw))
 		return PTR_ERR(hw);
 
-	clk_data->hws[ECONET_CLK_PCIE] = hw;
+	clk_data->hws[EN7523_CLK_PCIE] = hw;
 
 	/* SPI */
 	rate = data->spi_base;
@@ -2019,7 +2004,7 @@ static int econet_register_clocks(struct device *dev,
 	if (!val)
 		val = data->spi_div_default;
 
-	err = econet_register_fixed_rate(dev, ECONET_CLK_SPI, clk_data,
+	err = econet_register_fixed_rate(dev, EN7523_CLK_SPI, clk_data,
 					 "spi", rate / val);
 	if (err)
 		return err;
@@ -2035,13 +2020,13 @@ static int econet_register_clocks(struct device *dev,
 	if (!rate)
 		return dev_err_probe(dev, -EINVAL,
 				     "Bootloader did not save the bus clock rate\n");
-	err = econet_register_fixed_rate(dev, ECONET_CLK_BUS, clk_data,
+	err = econet_register_fixed_rate(dev, EN7523_CLK_BUS, clk_data,
 					 "bus", rate);
 	if (err)
 		return err;
 
 	/* CPU */
-	err = econet_register_fixed_rate(dev, ECONET_CLK_CPU, clk_data,
+	err = econet_register_fixed_rate(dev, EN7523_CLK_CPU, clk_data,
 					 "cpu", rate * priv->soc_data->cpu_clk_mult);
 	if (err)
 		return err;
@@ -2057,7 +2042,7 @@ static int econet_register_clocks(struct device *dev,
 		return dev_err_probe(dev, -EINVAL,
 				     "Invalid GSW clock selector %u\n", val);
 
-	return econet_register_fixed_rate(dev, ECONET_CLK_GSW, clk_data,
+	return econet_register_fixed_rate(dev, EN7523_CLK_GSW, clk_data,
 					  "gsw", gsw751221_base[val]);
 }
 
@@ -2439,7 +2424,7 @@ static const struct airoha_clk_soc_data en751221_data = {
 	.old_chip_scu_compatible = "econet,en751221-chip-scu",
 	.bus_clk_mask = EN751221_REG_BUS_MASK,
 	.cpu_clk_mult = 4,
-	.num_clocks = EN751221_MAX_CLKS,
+	.num_clocks = EN7523_CLK_CPU + 1,
 	.rst_map = en751221_rst_map,
 	.rst_ofs = en751221_rst_ofs,
 	.nr_resets = ARRAY_SIZE(en751221_rst_map),
@@ -2456,7 +2441,7 @@ static const struct airoha_clk_soc_data en751627_data = {
 	.old_chip_scu_compatible = "econet,en7528-chip-scu",
 	.bus_clk_mask = EN751221_REG_BUS_MASK,
 	.cpu_clk_mult = 4,
-	.num_clocks = EN7528_MAX_CLKS,
+	.num_clocks = EN7523_CLK_CPU + 1,
 	.rst_map = en751221_rst_map,
 	.rst_ofs = en751221_rst_ofs,
 	.nr_resets = ARRAY_SIZE(en751221_rst_map),
@@ -2473,7 +2458,7 @@ static const struct airoha_clk_soc_data en7528_data = {
 	.old_chip_scu_compatible = "econet,en7528-chip-scu",
 	.bus_clk_mask = EN7528_REG_BUS_MASK,
 	.cpu_clk_mult = 4,
-	.num_clocks = EN7528_MAX_CLKS,
+	.num_clocks = EN7523_CLK_CPU + 1,
 	/* EN7528 keeps the EN751221 NP-SCU reset layout. */
 	.rst_map = en751221_rst_map,
 	.rst_ofs = en751221_rst_ofs,
@@ -2491,7 +2476,7 @@ static const struct airoha_clk_soc_data en7580_data = {
 	.old_chip_scu_compatible = "econet,en7580-chip-scu",
 	.bus_clk_mask = EN7528_REG_BUS_MASK,
 	.cpu_clk_mult = 5,
-	.num_clocks = EN7580_MAX_CLKS,
+	.num_clocks = EN7523_CLK_CPU + 1,
 	/* The MIPS EN7580 retains the legacy NP-SCU reset banks. */
 	.rst_map = en751221_rst_map,
 	.rst_ofs = en751221_rst_ofs,

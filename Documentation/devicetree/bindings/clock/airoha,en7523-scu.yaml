@@ -54,7 +54,7 @@ properties:
       cover the package identification words at offsets 0x14 and 0x18.
 
   "#clock-cells":
-    description: Clock identifier from the matching SoC clock binding header.
+    description: Clock identifier from dt-bindings/clock/en7523-clk.h.
     const: 1
 
   "#reset-cells":

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
 
-#include <dt-bindings/clock/econet,en751221-scu.h>
+#include <dt-bindings/clock/en7523-clk.h>
 
 #include <dt-bindings/reset/econet,en751221-scu.h>
 #include <dt-bindings/leds/common.h>
@@ -62,7 +62,7 @@
 		compatible = "econet,en751221-spi";
 		reg = <0x1fa10000 0x140>;
 
-		clocks = <&scuclk EN751221_CLK_SPI>;
+		clocks = <&scuclk EN7523_CLK_SPI>;
 		clock-names = "spi";
 		#address-cells = <1>;
 		#size-cells = <0>;
@@ -137,7 +137,7 @@
 		compatible = "econet,en751221-wdt";
 		reg = <0x1fbf0100 0x3c>;
 
-		clocks = <&scuclk EN751221_CLK_BUS>;
+		clocks = <&scuclk EN7523_CLK_BUS>;
 		clock-names = "bus";
 	};
 
@@ -190,7 +190,7 @@
 		interrupt-parent = <&intc>;
 		interrupts = <23>;
 		interrupt-names = "pcie_irq";
-		clocks = <&scuclk EN751221_CLK_PCIE>;
+		clocks = <&scuclk EN7523_CLK_PCIE>;
 		clock-names = "sys_ck0";
 		phys = <&pcie_phy0>;
 		phy-names = "pcie-phy0";
@@ -232,7 +232,7 @@
 		interrupt-parent = <&intc>;
 		interrupts = <24>;
 		interrupt-names = "pcie_irq";
-		clocks = <&scuclk EN751221_CLK_PCIE>;
+		clocks = <&scuclk EN7523_CLK_PCIE>;
 		clock-names = "sys_ck1";
 		phys = <&pcie_phy1>;
 		phy-names = "pcie-phy1";

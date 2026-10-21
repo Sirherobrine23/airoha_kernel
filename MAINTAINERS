@@ -8902,9 +8902,7 @@ F:	drivers/cpufreq/econet-cpufreq.c
 F:	drivers/irqchip/irq-econet-en751221.c
 F:	drivers/nvmem/econet-efuse.c
 F:	drivers/phy/phy-en7528-usb.c
-F:	include/dt-bindings/clock/econet,en751221-scu.h
-F:	include/dt-bindings/clock/econet,en7528-scu.h
-F:	include/dt-bindings/clock/econet,en7580-scu.h
+F:	include/dt-bindings/clock/en7523-clk.h
 F:	include/dt-bindings/reset/econet,en751221-scu.h
 F:	include/dt-bindings/reset/econet,en7528-scu.h
 F:	include/dt-bindings/reset/econet,en7580-scu.h
