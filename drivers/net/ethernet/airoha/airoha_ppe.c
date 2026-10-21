@@ -2707,14 +2707,30 @@ static void airoha_foe_v1_entry_set_queue(struct airoha_foe_entry *entry,
 static int airoha_foe_v1_entry_set_xpon(struct airoha_foe_entry *entry,
 					 struct net_device *odev,
 					 bool vlan_valid, u16 vlan_id,
-					 bool pcp_valid, u8 pcp)
+					 bool pcp_valid, u8 pcp,
+					 struct xpon_endpoint_config *endpoint)
 {
 	struct airoha_xpon_tx_info info = {};
+	struct net_device *lower;
 	u32 *data;
 	int err;
 
-	err = airoha_eth_xpon_get_tx_info(odev, vlan_valid, vlan_id,
-					  pcp_valid, pcp, &info);
+	err = xpon_endpoint_get_path(odev, &lower, endpoint);
+	if (!err) {
+		struct airoha_gdm_common *gdm;
+
+		gdm = airoha_gdm_common_from_netdev(lower);
+		if (!gdm || gdm->family != AIROHA_ETH_FAMILY_ECONET ||
+		    gdm->id != AIROHA_GDM2_IDX ||
+		    endpoint->type != XPON_ENDPOINT_GEM)
+			return -EOPNOTSUPP;
+		info.gem_port_id = endpoint->wire_id;
+		info.tcont = endpoint->channel;
+		info.queue = endpoint->queue;
+	} else if (err == -EOPNOTSUPP) {
+		err = airoha_eth_xpon_get_tx_info(odev, vlan_valid, vlan_id,
+						  pcp_valid, pcp, &info);
+	}
 	if (err)
 		return err;
 	if (info.oam || info.gem_port_id > 0xfff || info.tcont >= 32 ||
@@ -2886,6 +2902,58 @@ static void airoha_ppe_v1_release_flow_slot(struct airoha_ppe *ppe,
 	ppe->v1.foe_owner[hash] = NULL;
 	flow->hash = AIROHA_FOE_V1_INVALID_HASH;
 	flow->v1_ingress_gem = AIROHA_PPE_RX_GEM_NONE;
+}
+
+static bool
+airoha_ppe_v1_endpoint_valid(struct airoha_flow_table_entry *flow)
+{
+	struct xpon_endpoint_config config;
+	struct net_device *lower;
+
+	if (!flow->v1_xpon_dev)
+		return true;
+	if (xpon_endpoint_get_path(flow->v1_xpon_dev, &lower, &config))
+		return false;
+
+	return xpon_endpoint_same_binding(&config, &flow->v1_xpon_config);
+}
+
+static void airoha_ppe_v1_free_flow(struct airoha_flow_table_entry *flow)
+{
+	if (flow->v1_xpon_dev)
+		dev_put(flow->v1_xpon_dev);
+	kfree(flow);
+}
+
+static int airoha_ppe_v1_netdev_event(struct notifier_block *nb,
+				      unsigned long event, void *ptr)
+{
+	struct airoha_ppe *ppe = container_of(nb, struct airoha_ppe,
+					     v1.netdev_nb);
+	struct net_device *dev = netdev_notifier_info_to_dev(ptr);
+	struct airoha_flow_table_entry *flow;
+	bool changed = false;
+
+	if (event != NETDEV_CHANGE && event != NETDEV_DOWN &&
+	    event != NETDEV_UNREGISTER)
+		return NOTIFY_DONE;
+
+	spin_lock_bh(&ppe->v1.lock);
+	list_for_each_entry(flow, &ppe->v1.flows, v1_list) {
+		if (flow->v1_xpon_dev != dev || flow->v1_dead ||
+		    (event == NETDEV_CHANGE && airoha_ppe_v1_endpoint_valid(flow)))
+			continue;
+		airoha_ppe_v1_release_flow_slot(ppe, flow, true);
+		flow->v1_dead = true;
+		dev_put(flow->v1_xpon_dev);
+		flow->v1_xpon_dev = NULL;
+		changed = true;
+	}
+	if (changed && READ_ONCE(ppe->v1.armed))
+		airoha_ppe_v1_cache_clean(ppe);
+	spin_unlock_bh(&ppe->v1.lock);
+
+	return NOTIFY_DONE;
 }
 
 #if IS_ENABLED(CONFIG_NET_AIROHA_WHNAT)
@@ -3189,6 +3257,18 @@ static void airoha_ppe_v1_rx_check(struct airoha_ppe *ppe, struct sk_buff *skb,
 		    !airoha_foe_v1_flow_matches_tuple(flow, &tuple))
 			continue;
 
+		/* A rule can race an endpoint reconfiguration before joining this
+		 * list. Revalidate the captured path before publishing a FoE slot.
+		 */
+		if (!airoha_ppe_v1_endpoint_valid(flow)) {
+			airoha_ppe_v1_release_flow_slot(ppe, flow, true);
+			airoha_ppe_v1_cache_clean(ppe);
+			flow->v1_dead = true;
+			dev_put(flow->v1_xpon_dev);
+			flow->v1_xpon_dev = NULL;
+			break;
+		}
+
 		flow->v1_lastused = jiffies;
 		bind_hash = airoha_ppe_v1_find_bind_way(ppe, flow, hash,
 						     &lookup_raw, &lookup_valid);
@@ -3237,7 +3317,7 @@ static void airoha_ppe_v1_flush(struct airoha_ppe *ppe)
 		rhashtable_remove_fast(&ppe->common.eth->flow_table, &flow->node,
 				       airoha_flow_table_params);
 		list_del(&flow->v1_list);
-		kfree(flow);
+		airoha_ppe_v1_free_flow(flow);
 	}
 
 	memset(ppe->common.foe, 0, airoha_ppe_v1_foe_size(ppe->common.eth));
@@ -3276,7 +3356,7 @@ static void airoha_ppe_v1_flush_owner(struct airoha_ppe *ppe,
 		rhashtable_remove_fast(&ppe->common.eth->flow_table, &flow->node,
 				       airoha_flow_table_params);
 		list_del(&flow->v1_list);
-		kfree(flow);
+		airoha_ppe_v1_free_flow(flow);
 	}
 }
 
@@ -3524,7 +3604,8 @@ static struct airoha_ppe *airoha_ppe_from_netdev(struct net_device *netdev)
 
 static int airoha_ppe_v1_flow_set_output(struct airoha_foe_entry *entry,
 				  struct net_device *odev, bool vlan_valid,
-				  u16 vlan_id, u8 vlan_prio, bool *xpon)
+				  u16 vlan_id, u8 vlan_prio, bool *xpon,
+				  struct xpon_endpoint_config *endpoint)
 {
 	struct airoha_gdm_common *gdm;
 	struct dsa_port *dp;
@@ -3568,10 +3649,6 @@ static int airoha_ppe_v1_flow_set_output(struct airoha_foe_entry *entry,
 	if (!odev)
 		return -EOPNOTSUPP;
 
-	gdm = airoha_gdm_common_from_netdev(odev);
-	if (!gdm || gdm->family != AIROHA_ETH_FAMILY_ECONET)
-		return -EOPNOTSUPP;
-
 	/*
 	 * Probe the xPON service API before using direct GDM2 egress. A managed
 	 * GPON port needs QDMA_HW plus GEM/T-CONT metadata; sending a FoE flow
@@ -3580,7 +3657,7 @@ static int airoha_ppe_v1_flow_set_output(struct airoha_foe_entry *entry,
 	 */
 	if (dsa_port < 0) {
 		err = airoha_foe_v1_entry_set_xpon(entry, odev, vlan_valid, vlan_id,
-						vlan_valid, vlan_prio);
+						vlan_valid, vlan_prio, endpoint);
 		if (!err) {
 			*xpon = true;
 			return 0;
@@ -3588,6 +3665,10 @@ static int airoha_ppe_v1_flow_set_output(struct airoha_foe_entry *entry,
 		if (err != -EOPNOTSUPP)
 			return err;
 	}
+
+	gdm = airoha_gdm_common_from_netdev(odev);
+	if (!gdm || gdm->family != AIROHA_ETH_FAMILY_ECONET)
+		return -EOPNOTSUPP;
 
 	/* VLAN insertion is only implemented for the GPON/QDMA FoE format. */
 	if (vlan_valid)
@@ -3619,6 +3700,7 @@ static int airoha_ppe_v1_flow_offload_replace(struct net_device *dev,
 	struct flow_action_entry *act;
 	struct airoha_flow_table_entry *flow;
 	struct airoha_flow_data data = {};
+	struct xpon_endpoint_config endpoint = {};
 	struct airoha_foe_entry entry;
 	struct net_device *odev = NULL;
 	struct in6_addr src_addr6 = {}, dest_addr6 = {};
@@ -3797,7 +3879,7 @@ static int airoha_ppe_v1_flow_offload_replace(struct net_device *dev,
 		airoha_foe_v1_entry_set_pppoe(&entry, pppoe_sid);
 
 	err = airoha_ppe_v1_flow_set_output(&entry, odev, vlan_push, vlan_id,
-				     vlan_prio, &xpon);
+				     vlan_prio, &xpon, &endpoint);
 	if (err)
 		return err;
 	if (vlan_push && !xpon)
@@ -3823,11 +3905,16 @@ static int airoha_ppe_v1_flow_offload_replace(struct net_device *dev,
 	flow->v1_ingress_gem = AIROHA_PPE_RX_GEM_NONE;
 	flow->v1_owner = owner;
 	INIT_LIST_HEAD(&flow->v1_list);
+	if (xpon && endpoint.enabled) {
+		flow->v1_xpon_dev = odev;
+		flow->v1_xpon_config = endpoint;
+		dev_hold(odev);
+	}
 
 	err = rhashtable_insert_fast(&ppe->common.eth->flow_table, &flow->node,
 				     airoha_flow_table_params);
 	if (err) {
-		kfree(flow);
+		airoha_ppe_v1_free_flow(flow);
 		return err;
 	}
 
@@ -3859,7 +3946,7 @@ static int airoha_ppe_v1_flow_offload_destroy(struct net_device *dev,
 
 	rhashtable_remove_fast(&ppe->common.eth->flow_table, &flow->node,
 			       airoha_flow_table_params);
-	kfree(flow);
+	airoha_ppe_v1_free_flow(flow);
 
 	return 0;
 }
@@ -3877,6 +3964,13 @@ static unsigned long airoha_ppe_v1_flow_lastused(struct airoha_ppe *ppe,
 	u16 hash = flow->hash;
 
 	lockdep_assert_held(&ppe->v1.lock);
+	if (!flow->v1_dead && !airoha_ppe_v1_endpoint_valid(flow)) {
+		airoha_ppe_v1_release_flow_slot(ppe, flow, true);
+		airoha_ppe_v1_cache_clean(ppe);
+		flow->v1_dead = true;
+		dev_put(flow->v1_xpon_dev);
+		flow->v1_xpon_dev = NULL;
+	}
 	if (!READ_ONCE(ppe->v1.armed) || hash == AIROHA_FOE_V1_INVALID_HASH ||
 	    hash >= ppe->common.eth->soc->ppe_dram_entries ||
 	    ppe->v1.foe_owner[hash] != flow)
@@ -4076,10 +4170,15 @@ static int airoha_ppe_v1_init(struct airoha_eth *eth)
 	eth->ppe = ppe;
 	airoha_ppe_common_enable(&ppe->common);
 
+	ppe->v1.netdev_nb.notifier_call = airoha_ppe_v1_netdev_event;
+	err = register_netdevice_notifier(&ppe->v1.netdev_nb);
+	if (err)
+		goto error_disable;
+
 	if (eth->soc->ppe_datapath) {
 		err = airoha_ppe_v1_engine_arm(ppe);
 		if (err)
-			goto error_disable;
+			goto error_notifier;
 	}
 
 	dev_info(dev, "PPE FoE table at %pad, %u entries\n",
@@ -4088,6 +4187,8 @@ static int airoha_ppe_v1_init(struct airoha_eth *eth)
 		airoha_whnat_set_ppe(ppe);
 	return 0;
 
+error_notifier:
+	unregister_netdevice_notifier(&ppe->v1.netdev_nb);
 error_disable:
 	airoha_ppe_common_disable(&ppe->common);
 	eth->ppe = NULL;
@@ -4103,6 +4204,7 @@ static void airoha_ppe_v1_deinit(struct airoha_eth *eth)
 	if (!ppe)
 		return;
 
+	unregister_netdevice_notifier(&ppe->v1.netdev_nb);
 	airoha_whnat_clear_ppe(ppe);
 	if (READ_ONCE(ppe->v1.armed))
 		airoha_ppe_v1_engine_disarm(ppe);

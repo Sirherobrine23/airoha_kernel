@@ -24,6 +24,7 @@
 #include <linux/workqueue.h>
 #include <linux/soc/airoha/airoha_offload.h>
 #include <net/dsa.h>
+#include <net/xpon.h>
 
 /* Common Ethernet/GDM/QDMA definitions. */
 struct device;
@@ -805,10 +806,13 @@ struct airoha_flow_table_entry {
 	unsigned long v1_lastused;
 	/* v1: the flow block this flow was offloaded through. */
 	const void *v1_owner;
-	/* v1: never bind again (its WiFi vif went away). */
+	/* v1: never bind again after the output path became invalid. */
 	bool v1_dead;
 	/* v1: GPON ingress GEM recorded at bind, or AIROHA_PPE_RX_GEM_NONE. */
 	u16 v1_ingress_gem;
+	/* v1: hold an endpoint and its immutable offload binding snapshot. */
+	struct net_device *v1_xpon_dev;
+	struct xpon_endpoint_config v1_xpon_config;
 	u16 addr_type;
 	u16 src_port;
 	u16 dest_port;
@@ -1192,6 +1196,7 @@ struct airoha_ppe_v1 {
 	/* Protects flow ownership in the hardware-created V1 hash buckets. */
 	spinlock_t lock;
 	struct list_head flows;
+	struct notifier_block netdev_nb;
 	struct airoha_flow_table_entry **foe_owner;
 	bool armed;
 	u32 rx_multicast_skip;
