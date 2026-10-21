@@ -1,12 +1,13 @@
 .. SPDX-License-Identifier: GPL-2.0-only
 
-EcoNet MIPS CPU frequency reporting
-==================================
+EcoNet MIPS CPU frequency control and reporting
+=============================================
 
 The ``econet`` CPUFreq driver reports the CPU frequency on EN751221,
 EN751627, EN7528 and EN7580 SoCs. It exposes a single frequency shared by all
-cores and VPEs. It does not program the CPU PLL, change bus or DDR clocks,
-or implement runtime frequency scaling or thermal throttling.
+cores and VPEs. The tested EN7526G configuration supports explicit profile
+changes; other devices retain reporting-only operation. DDR settings and
+the external timer are not changed.
 
 Enable ``CONFIG_CPU_FREQ``, ``CONFIG_COMMON_CLK_EN7523`` and
 ``CONFIG_ECONET_CPUFREQ``. The latter can be built in or built as the
@@ -17,11 +18,13 @@ controller's CPU clock, as provided by the EcoNet SoC DTSI files.
 Frequency sources
 -----------------
 
-On EN751221 and EN7580, the CPU and bus clocks use uncached ``recalc_rate``
-callbacks to read the programmed PLL configuration. The bus clock is the CPU
-clock divided by four on EN751221, or by five on EN7580. Both clocks read the
-hardware, so reading the bus clock alone does not depend on a prior CPU clock
-read. These are configured nominal rates, not cycle-counter measurements.
+On EN751221 and EN7580, the CPU clock uses an uncached ``recalc_rate``
+callback to read the programmed PLL configuration. The bus clock is the CPU
+clock divided by four on EN751221, or by five on EN7580. BUS derives its rate
+from the CPU parent, allowing CCF to predict and notify bus changes before
+programming the PLL. CPU readback refreshes that parent. Direct MMIO changes
+bypass this mechanism; when inspecting them, read the CPU rate first. These
+are configured nominal rates, not cycle-counter measurements.
 
 EN751221 recognizes the following complete register profiles, with ``0x12``
 at ``0x1fa20144`` and ``0x406`` at ``0x1fa201a8``:
@@ -29,14 +32,16 @@ at ``0x1fa20144`` and ``0x406`` at ``0x1fa201a8``:
 ========== ============ ============ ================================
 CPU        0x1fa2019c   0x1fa201ac   Source
 ========== ============ ============ ================================
+400 MHz    0x05100c08   0x00a00000   Measured on EN7526G with the PMU
 700 MHz    0x05101b08   0x02800000   Vendor bootloader
 800 MHz    0x05101f08   0x03000000   Interpolated, exercised on EN7526G
 900 MHz    0x05102308   0x03800000   Vendor bootloader
 ========== ============ ============ ================================
 
-No other rates are extrapolated from these undocumented fields. In
-particular, ``0x05100c08`` / ``0x00a00000`` is not reported as 325 MHz:
-the benchmark result did not establish that frequency. EN7526C/EN7522 use
+The 400 MHz pair was initially extrapolated as 325 MHz, but short PMU
+measurements established approximately 400.008 MHz between two 900 MHz
+reference measurements. It is reported as 400 MHz on EN7526G only; no other
+rates are extrapolated from these undocumented fields. EN7526C/EN7522 use
 a different PLL layout and retain boot-metadata reporting even when they
 share the EN751221 clock-controller compatible.
 
@@ -110,18 +115,57 @@ registers after boot. Read it after a completed register sequence, not while
 another process is programming the PLL. Register readback does not confirm
 PLL lock or establish the active mux source.
 
-The sole policy-table entry is the rate captured when CPUFreq registers;
-minimum and maximum frequencies remain identical. This table is not a list
-of supported transitions. Automatic dynamic governors are disabled, and
-the driver does not restore a rate changed outside CPUFreq. Such a request
-returns ``-EOPNOTSUPP``. ``scaling_cur_freq`` follows the policy's last
-observed rate; use ``cpuinfo_cur_freq`` for an on-demand PLL read.
+On reporting-only devices, the sole policy-table entry remains the initial
+rate, and minimum and maximum frequencies are identical. Such devices cannot
+restore a rate changed outside CPUFreq (``-EOPNOTSUPP``). On all platforms,
+use ``cpuinfo_cur_freq`` for an on-demand PLL read.
 
 The Common Clock Framework also exposes the CPU and bus clocks in
 ``/sys/kernel/debug/clk/clk_summary`` when clock debugging is available.
 The policy number may differ if CPU0 is offline when the policy is created.
 
-This change adds no PLL writes, transition notifiers, watchdog retiming or
-delay-loop adjustment. Direct register writes bypass clock and CPUFreq
-transition handling; observing their result does not make such writes a
-kernel-managed frequency transition.
+EN7526G profile control
+----------------------
+
+CPU control is enabled only for the EN7526G eFuse ID, a saved 900 MHz boot
+rate, and a recognized initial PLL profile. The clock controller exposes
+only the four exercised rates: 400, 700, 800 and 900 MHz. CPUFreq uses the
+same four rates, with a 400 MHz floor and 900 MHz ceiling. This policy floor
+is not a claim that 400 MHz is the silicon's minimum frequency.
+
+Enable ``CONFIG_CPU_FREQ_GOV_USERSPACE`` (built in or as a module), then use::
+
+    policy=/sys/devices/system/cpu/cpufreq/policy0
+    cat "$policy/scaling_available_frequencies"
+    echo userspace > "$policy/scaling_governor"
+    echo 400000 > "$policy/scaling_setspeed"
+    cat "$policy/cpuinfo_cur_freq"
+    echo 900000 > "$policy/scaling_setspeed"
+
+Frequencies are in kHz. The 400 MHz floor applies to supported clock API
+requests and CPUFreq selection; root can still bypass both with ``devmem``.
+Automatic dynamic governors remain disabled. No voltage adjustment or
+thermal cooling device is introduced.
+
+The clock provider runs the tested five-write sequence once inside
+``stop_machine()``, with the other VPEs quiesced. It checks complete register
+readback and attempts to restore the old profile on a mismatch. CPUFreq
+verifies the resulting live rate even if CCF failed to propagate a provider
+error. An unknown starting PLL state is rejected without writes. No PLL lock
+bit or glitchless-switch procedure is documented: this remains experimental
+support based on the observed EN7526G transitions, not a hardware guarantee.
+``stop_machine()`` does not stop peripheral DMA.
+
+MIPS transition notifiers update the delay loops for the shared CPU policy.
+The Airoha watchdog listens for bus-clock changes, preserves the remaining
+countdown and keeps the configured timeout for future pings. Before a clock
+increase it preloads for the faster rate so the watchdog does not expire
+early. An unrepresentable timeout or remaining counter vetoes the change.
+A concurrent watchdog operation obtains the clock before its own mutex and
+retries if a notification changed the rate generation, avoiding lock-order
+inversion. If a failed provider change caused CCF to omit POST, the next
+watchdog operation reconciles the conservative PRE rate with the actual
+clock. In that failure case the grace period can be temporarily extended.
+
+Do not mix direct PLL writes with CPUFreq control. MMIO writes bypass the
+transition notifications, watchdog accounting and MIPS delay-loop updates.

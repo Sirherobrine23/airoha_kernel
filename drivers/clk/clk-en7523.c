@@ -18,6 +18,7 @@
 #include <linux/regmap.h>
 #include <linux/reset-controller.h>
 #include <linux/soc/airoha/pkgids.h>
+#include <linux/stop_machine.h>
 #include <linux/string.h>
 #include <dt-bindings/clock/en7523-clk.h>
 #include <dt-bindings/reset/airoha,en7523-reset.h>
@@ -303,6 +304,20 @@ struct econet_cpu_clk {
 	struct econet_cpu_pll_state boot_state;
 	unsigned long boot_rate;
 	u8 divisor;
+};
+
+struct en751221_cpu_profile {
+	u32 config;
+	u32 param;
+	unsigned long rate;
+};
+
+static const struct en751221_cpu_profile en751221_cpu_profiles[] = {
+	/* This pair was measured at 400 MHz on EN7526G, not 325 MHz. */
+	{ 0x05100c08, 0x00a00000, 400000000UL },
+	{ 0x05101b08, 0x02800000, 700000000UL },
+	{ 0x05101f08, 0x03000000, 800000000UL },
+	{ 0x05102308, 0x03800000, 900000000UL },
 };
 
 static const struct of_device_id of_match_clk_en7523[];
@@ -2152,31 +2167,29 @@ static void econet_cpu_pll_read(struct airoha_clk_priv *priv,
 	}
 }
 
-static unsigned long
-en751221_cpu_pll_rate(const struct econet_cpu_pll_state *state)
+static const struct en751221_cpu_profile *
+en751221_cpu_pll_profile(const struct econet_cpu_pll_state *state)
 {
-	static const struct {
-		u32 config;
-		u32 param;
-		unsigned long rate;
-	} profiles[] = {
-		{ 0x05101b08, 0x02800000, 700000000UL },
-		/* Interpolated profile exercised on EN7526G. */
-		{ 0x05101f08, 0x03000000, 800000000UL },
-		{ 0x05102308, 0x03800000, 900000000UL },
-	};
 	unsigned int i;
 
 	if (state->setup != 0x12 || state->control != 0x406)
-		return 0;
+		return NULL;
 
-	for (i = 0; i < ARRAY_SIZE(profiles); i++)
-		if (state->config == profiles[i].config &&
-		    state->param == profiles[i].param)
-			return profiles[i].rate;
+	for (i = 0; i < ARRAY_SIZE(en751221_cpu_profiles); i++)
+		if (state->config == en751221_cpu_profiles[i].config &&
+		    state->param == en751221_cpu_profiles[i].param)
+			return &en751221_cpu_profiles[i];
 
-	/* Do not extrapolate undocumented PLL fields to unverified rates. */
-	return 0;
+	return NULL;
+}
+
+static unsigned long
+en751221_cpu_pll_rate(const struct econet_cpu_pll_state *state)
+{
+	const struct en751221_cpu_profile *profile;
+
+	profile = en751221_cpu_pll_profile(state);
+	return profile ? profile->rate : 0;
 }
 
 static unsigned long
@@ -2200,22 +2213,113 @@ static unsigned long econet_cpu_clk_recalc_rate(struct clk_hw *hw,
 	struct econet_cpu_pll_state state;
 	unsigned long rate;
 
+	/* Let CCF predict the BUS rate and notify consumers before a CPU change. */
+	if (clk->divisor != 1)
+		return parent_rate / clk->divisor;
+
 	econet_cpu_pll_read(clk->priv, &state);
-	if (clk->priv->soc_family == EN751221_PKG)
+	if (clk->priv->soc_family == EN751221_PKG) {
 		rate = en751221_cpu_pll_rate(&state);
-	else
+		if (rate == 400000000UL && clk->priv->soc_id != EN7526G)
+			rate = 0;
+	} else {
 		rate = en7580_cpu_pll_rate(&state);
+	}
 
 	/* Preserve other boot profiles only while their registers are unchanged. */
 	if (!rate && !memcmp(&state, &clk->boot_state, sizeof(state)))
 		rate = clk->boot_rate;
 
-	/* Read the PLL for BUS too: a NOCACHE child need not refresh its parent. */
-	return rate / clk->divisor;
+	return rate;
 }
 
 static const struct clk_ops econet_cpu_clk_ops = {
 	.recalc_rate = econet_cpu_clk_recalc_rate,
+};
+
+struct en751221_cpu_change {
+	struct econet_cpu_clk *clk;
+	const struct en751221_cpu_profile *profile;
+	bool rollback_failed;
+};
+
+static void en751221_cpu_pll_write(void __iomem *base,
+				   const struct en751221_cpu_profile *profile)
+{
+	writel(0x12, base + EN751221_REG_CPU_PLL_SETUP);
+	writel(profile->config, base + EN751221_REG_CPU_PLL_CONFIG);
+	writel(profile->param, base + EN751221_REG_CPU_PLL_PARAM);
+	writel(0x402, base + EN751221_REG_CPU_PLL_CONTROL);
+	writel(0x406, base + EN751221_REG_CPU_PLL_CONTROL);
+	readl(base + EN751221_REG_CPU_PLL_CONTROL);
+}
+
+static int en751221_cpu_change_stopped(void *arg)
+{
+	struct en751221_cpu_change *change = arg;
+	struct airoha_clk_priv *priv = change->clk->priv;
+	const struct en751221_cpu_profile *old;
+	struct econet_cpu_pll_state state;
+
+	econet_cpu_pll_read(priv, &state);
+	old = en751221_cpu_pll_profile(&state);
+	if (!old)
+		return -EOPNOTSUPP;
+	if (old == change->profile)
+		return 0;
+
+	en751221_cpu_pll_write(priv->chip_scu_base, change->profile);
+	econet_cpu_pll_read(priv, &state);
+	if (en751221_cpu_pll_profile(&state) == change->profile)
+		return 0;
+
+	en751221_cpu_pll_write(priv->chip_scu_base, old);
+	econet_cpu_pll_read(priv, &state);
+	change->rollback_failed = en751221_cpu_pll_profile(&state) != old;
+	return -EIO;
+}
+
+static long en751221_cpu_clk_round_rate(struct clk_hw *hw, unsigned long rate,
+					unsigned long *parent_rate)
+{
+	unsigned int i;
+
+	/* Only the discrete, exercised profiles are writable; the floor is 400 MHz. */
+	for (i = 0; i < ARRAY_SIZE(en751221_cpu_profiles); i++)
+		if (rate == en751221_cpu_profiles[i].rate)
+			return rate;
+
+	return -EINVAL;
+}
+
+static int en751221_cpu_clk_set_rate(struct clk_hw *hw, unsigned long rate,
+				     unsigned long parent_rate)
+{
+	struct en751221_cpu_change change = {
+		.clk = container_of(hw, struct econet_cpu_clk, hw),
+	};
+	unsigned int i;
+	int ret;
+
+	for (i = 0; i < ARRAY_SIZE(en751221_cpu_profiles); i++) {
+		if (rate != en751221_cpu_profiles[i].rate)
+			continue;
+
+		change.profile = &en751221_cpu_profiles[i];
+		/* Run the MMIO sequence once, with both VPEs otherwise quiesced. */
+		ret = stop_machine(en751221_cpu_change_stopped, &change, NULL);
+		if (change.rollback_failed)
+			pr_err("EN7526G CPU PLL rollback failed\n");
+		return ret;
+	}
+
+	return -EINVAL;
+}
+
+static const struct clk_ops en751221_cpu_clk_ops = {
+	.recalc_rate = econet_cpu_clk_recalc_rate,
+	.round_rate = en751221_cpu_clk_round_rate,
+	.set_rate = en751221_cpu_clk_set_rate,
 };
 
 static struct clk_hw *
@@ -2239,6 +2343,11 @@ econet_register_cpu_clk(struct device *dev, struct airoha_clk_priv *priv,
 	clk->boot_state = *boot_state;
 	clk->boot_rate = boot_rate;
 	clk->divisor = parent ? priv->soc_data->cpu_clk_mult : 1;
+	/* Restrict writes to the tested 900 MHz EN7526G boot configuration. */
+	if (!parent && priv->soc_family == EN751221_PKG &&
+	    priv->soc_id == EN7526G && boot_rate == 900000000UL &&
+	    en751221_cpu_pll_profile(boot_state))
+		init.ops = &en751221_cpu_clk_ops;
 	if (parent) {
 		init.parent_hws = &parent;
 		init.num_parents = 1;

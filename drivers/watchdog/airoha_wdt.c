@@ -17,6 +17,7 @@
 #include <linux/clk.h>
 #include <linux/io.h>
 #include <linux/math.h>
+#include <linux/mutex.h>
 #include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/watchdog.h>
@@ -45,6 +46,13 @@ struct airoha_wdt_desc {
 	const struct airoha_wdt_soc_data *soc_data;
 	unsigned int wdt_freq;
 	void __iomem *base;
+	struct clk *bus_clk;
+	struct notifier_block clk_nb;
+	/* Serialize watchdog operations and clock-notifier register updates. */
+	struct mutex lock;
+	unsigned int clk_generation;
+	unsigned int old_freq;
+	bool rate_pending;
 };
 
 #define WDT_HEARTBEAT			24
@@ -73,58 +81,183 @@ static void airoha_wdt_enable(struct airoha_wdt_desc *airoha_wdt, u32 load)
 	writel(val, airoha_wdt->base + TIMER_CTRL);
 }
 
+static bool airoha_wdt_running(struct airoha_wdt_desc *wdt)
+{
+	u32 ctrl = readl(wdt->base + TIMER_CTRL);
+
+	return (ctrl & (WDT_ENABLE | WDT_TIMER_ENABLE)) ==
+		(WDT_ENABLE | WDT_TIMER_ENABLE);
+}
+
+/* Caller holds lock. Preserve the current countdown, then restore the reload. */
+static int airoha_wdt_retime(struct airoha_wdt_desc *wdt, unsigned int freq)
+{
+	u64 remaining;
+
+	if (!freq || wdt->wdog_dev.timeout > FIELD_MAX(WDT_TIMER_VAL) / freq)
+		return -EINVAL;
+	if (freq == wdt->wdt_freq)
+		return 0;
+
+	if (airoha_wdt_running(wdt)) {
+		remaining = readl(wdt->base + WDT_TIMER_CUR_VALUE);
+		remaining = DIV_ROUND_UP_ULL(remaining * freq, wdt->wdt_freq);
+		if (remaining > FIELD_MAX(WDT_TIMER_VAL))
+			return -ERANGE;
+		writel(max_t(u64, remaining, 1), wdt->base + WDT_TIMER_LOAD_VALUE);
+		writel(WDT_RLD, wdt->base + WDT_RELOAD);
+		/* Future pings must reload the full configured timeout. */
+		writel(wdt->wdog_dev.timeout * freq,
+		       wdt->base + WDT_TIMER_LOAD_VALUE);
+	}
+	wdt->wdt_freq = freq;
+	wdt->wdog_dev.max_timeout = FIELD_MAX(WDT_TIMER_VAL) / freq;
+	return 0;
+}
+
+/* Get the clock before lock: CCF notifiers take the locks in that order. */
+static int airoha_wdt_lock_rate(struct airoha_wdt_desc *wdt)
+{
+	unsigned int generation, freq;
+	int ret;
+
+	for (;;) {
+		generation = READ_ONCE(wdt->clk_generation);
+		freq = clk_get_rate(wdt->bus_clk) / 2;
+		mutex_lock(&wdt->lock);
+		if (generation == wdt->clk_generation)
+			break;
+		mutex_unlock(&wdt->lock);
+	}
+
+	/* Also recover the conservative PRE rate if CCF omitted a failed POST. */
+	ret = airoha_wdt_retime(wdt, freq);
+	if (ret)
+		mutex_unlock(&wdt->lock);
+	else
+		wdt->rate_pending = false;
+	return ret;
+}
+
+static int airoha_wdt_clk_notify(struct notifier_block *nb,
+				 unsigned long event, void *arg)
+{
+	struct airoha_wdt_desc *wdt = container_of(nb, struct airoha_wdt_desc, clk_nb);
+	struct clk_notifier_data *change = arg;
+	unsigned int freq = change->new_rate / 2;
+	int ret = 0;
+
+	mutex_lock(&wdt->lock);
+	switch (event) {
+	case PRE_RATE_CHANGE:
+		wdt->old_freq = change->old_rate / 2;
+		if (!freq || !wdt->old_freq) {
+			ret = -EINVAL;
+			wdt->rate_pending = false;
+			break;
+		}
+		/* Preload for the faster clock so an increase cannot expire early. */
+		ret = airoha_wdt_retime(wdt, max(freq, wdt->old_freq));
+		wdt->rate_pending = !ret;
+		break;
+	case POST_RATE_CHANGE:
+	case ABORT_RATE_CHANGE:
+		if (wdt->rate_pending) {
+			ret = airoha_wdt_retime(wdt, event == POST_RATE_CHANGE ?
+					       freq : wdt->old_freq);
+			wdt->rate_pending = false;
+		}
+		break;
+	default:
+		mutex_unlock(&wdt->lock);
+		return NOTIFY_DONE;
+	}
+	wdt->clk_generation++;
+	mutex_unlock(&wdt->lock);
+	return notifier_from_errno(ret);
+}
+
+static void airoha_wdt_start_locked(struct airoha_wdt_desc *wdt)
+{
+	u32 load = wdt->wdog_dev.timeout * wdt->wdt_freq;
+
+	airoha_wdt_enable(wdt, load);
+}
+
 static int airoha_wdt_start(struct watchdog_device *wdog_dev)
 {
-	struct airoha_wdt_desc *airoha_wdt = watchdog_get_drvdata(wdog_dev);
-	u32 load;
+	struct airoha_wdt_desc *wdt = watchdog_get_drvdata(wdog_dev);
+	int ret = airoha_wdt_lock_rate(wdt);
 
-	load = wdog_dev->timeout * airoha_wdt->wdt_freq;
-	airoha_wdt_enable(airoha_wdt, load);
-
+	if (ret)
+		return ret;
+	airoha_wdt_start_locked(wdt);
+	mutex_unlock(&wdt->lock);
 	return 0;
+}
+
+static void airoha_wdt_stop_locked(struct airoha_wdt_desc *wdt)
+{
+	u32 val = readl(wdt->base + TIMER_CTRL);
+
+	val &= ~WDT_TIMER_STATUS_MASK;
+	val &= ~(WDT_ENABLE | WDT_TIMER_ENABLE);
+	writel(val, wdt->base + TIMER_CTRL);
 }
 
 static int airoha_wdt_stop(struct watchdog_device *wdog_dev)
 {
-	struct airoha_wdt_desc *airoha_wdt = watchdog_get_drvdata(wdog_dev);
-	u32 val;
+	struct airoha_wdt_desc *wdt = watchdog_get_drvdata(wdog_dev);
 
-	val = readl(airoha_wdt->base + TIMER_CTRL);
-	val &= ~WDT_TIMER_STATUS_MASK;
-	val &= ~(WDT_ENABLE | WDT_TIMER_ENABLE);
-	writel(val, airoha_wdt->base + TIMER_CTRL);
-
+	mutex_lock(&wdt->lock);
+	airoha_wdt_stop_locked(wdt);
+	mutex_unlock(&wdt->lock);
 	return 0;
 }
 
 static int airoha_wdt_ping(struct watchdog_device *wdog_dev)
 {
-	struct airoha_wdt_desc *airoha_wdt = watchdog_get_drvdata(wdog_dev);
+	struct airoha_wdt_desc *wdt = watchdog_get_drvdata(wdog_dev);
+	int ret = airoha_wdt_lock_rate(wdt);
 
-	writel(WDT_RLD, airoha_wdt->base + WDT_RELOAD);
-
+	if (ret)
+		return ret;
+	writel(WDT_RLD, wdt->base + WDT_RELOAD);
+	mutex_unlock(&wdt->lock);
 	return 0;
 }
 
 static int airoha_wdt_set_timeout(struct watchdog_device *wdog_dev, unsigned int timeout)
 {
-	wdog_dev->timeout = timeout;
+	struct airoha_wdt_desc *wdt = watchdog_get_drvdata(wdog_dev);
+	int ret = airoha_wdt_lock_rate(wdt);
 
-	if (watchdog_active(wdog_dev)) {
-		airoha_wdt_stop(wdog_dev);
-		return airoha_wdt_start(wdog_dev);
+	if (ret)
+		return ret;
+	if (!timeout || timeout > FIELD_MAX(WDT_TIMER_VAL) / wdt->wdt_freq) {
+		mutex_unlock(&wdt->lock);
+		return -EINVAL;
 	}
-
+	wdog_dev->timeout = timeout;
+	if (watchdog_active(wdog_dev)) {
+		airoha_wdt_stop_locked(wdt);
+		airoha_wdt_start_locked(wdt);
+	}
+	mutex_unlock(&wdt->lock);
 	return 0;
 }
 
 static unsigned int airoha_wdt_get_timeleft(struct watchdog_device *wdog_dev)
 {
-	struct airoha_wdt_desc *airoha_wdt = watchdog_get_drvdata(wdog_dev);
+	struct airoha_wdt_desc *wdt = watchdog_get_drvdata(wdog_dev);
 	u32 val;
 
-	val = readl(airoha_wdt->base + WDT_TIMER_CUR_VALUE);
-	return DIV_ROUND_UP(val, airoha_wdt->wdt_freq);
+	if (airoha_wdt_lock_rate(wdt))
+		return 0;
+	val = readl(wdt->base + WDT_TIMER_CUR_VALUE);
+	val = DIV_ROUND_UP_ULL((u64)val, wdt->wdt_freq);
+	mutex_unlock(&wdt->lock);
+	return val;
 }
 
 static const struct watchdog_info airoha_wdt_info = {
@@ -152,6 +285,7 @@ static int airoha_wdt_probe(struct platform_device *pdev)
 	airoha_wdt = devm_kzalloc(dev, sizeof(*airoha_wdt), GFP_KERNEL);
 	if (!airoha_wdt)
 		return -ENOMEM;
+	mutex_init(&airoha_wdt->lock);
 
 	airoha_wdt->soc_data = device_get_match_data(dev);
 	if (!airoha_wdt->soc_data)
@@ -166,6 +300,7 @@ static int airoha_wdt_probe(struct platform_device *pdev)
 		return dev_err_probe(dev, PTR_ERR(bus_clk),
 				     "failed to enable bus clock\n");
 
+	airoha_wdt->bus_clk = bus_clk;
 	/* Watchdog ticks at half the bus rate */
 	airoha_wdt->wdt_freq = clk_get_rate(bus_clk) / 2;
 	if (!airoha_wdt->wdt_freq)
@@ -184,6 +319,11 @@ static int airoha_wdt_probe(struct platform_device *pdev)
 	watchdog_set_drvdata(wdog_dev, airoha_wdt);
 	watchdog_set_nowayout(wdog_dev, nowayout);
 	watchdog_stop_on_unregister(wdog_dev);
+
+	airoha_wdt->clk_nb.notifier_call = airoha_wdt_clk_notify;
+	ret = devm_clk_notifier_register(dev, bus_clk, &airoha_wdt->clk_nb);
+	if (ret)
+		return dev_err_probe(dev, ret, "failed to register clock notifier\n");
 
 	ret = devm_watchdog_register_device(dev, wdog_dev);
 	if (ret)

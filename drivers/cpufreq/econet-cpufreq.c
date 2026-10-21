@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Report the CPU frequency supplied by the EcoNet MIPS clock controller.
- *
- * CPU and bus clocks are coupled. Until runtime PLL switching is supported,
- * expose the rate supplied by the clock controller and never change it.
+ * Control the tested EN7526G CPU profiles; report rates on other EcoNet SoCs.
  */
 
 #include <linux/clk.h>
@@ -15,8 +12,13 @@
 
 struct econet_cpufreq_data {
 	struct clk *clk;
-	struct cpufreq_frequency_table table[2];
+	struct cpufreq_frequency_table table[5];
 	struct cpufreq_driver driver;
+	bool scaling;
+};
+
+static const unsigned int econet_cpu_frequencies[] = {
+	400000, 700000, 800000, 900000,
 };
 
 static int econet_cpufreq_init(struct cpufreq_policy *policy)
@@ -24,7 +26,8 @@ static int econet_cpufreq_init(struct cpufreq_policy *policy)
 	struct econet_cpufreq_data *data = cpufreq_get_driver_data();
 
 	policy->clk = data->clk;
-	cpufreq_generic_init(policy, data->table, 0);
+	cpufreq_generic_init(policy, data->table,
+			     data->scaling ? CPUFREQ_DEFAULT_TRANSITION_LATENCY_NS : 0);
 	/* All cores and VPEs belong to the same CPU clock domain. */
 	cpumask_copy(policy->cpus, cpu_possible_mask);
 
@@ -35,6 +38,20 @@ static int econet_cpufreq_target_index(struct cpufreq_policy *policy,
 				      unsigned int index)
 {
 	struct econet_cpufreq_data *data = cpufreq_get_driver_data();
+
+	if (data->scaling) {
+		unsigned long requested;
+		int ret;
+
+		if (index >= ARRAY_SIZE(econet_cpu_frequencies))
+			return -EINVAL;
+		requested = data->table[index].frequency * 1000UL;
+		ret = clk_set_rate(policy->clk, requested);
+		if (ret)
+			return ret;
+		/* CCF may ignore a provider's set_rate error; verify live readback. */
+		return clk_get_rate(policy->clk) == requested ? 0 : -EIO;
+	}
 
 	if (index)
 		return -EINVAL;
@@ -69,6 +86,7 @@ static int econet_cpufreq_probe(struct platform_device *pdev)
 	struct econet_cpufreq_data *data;
 	struct device *cpu_dev;
 	unsigned long rate;
+	unsigned int i;
 	int ret;
 
 	cpu_dev = get_cpu_device(0);
@@ -99,6 +117,22 @@ static int econet_cpufreq_probe(struct platform_device *pdev)
 	data->driver = econet_cpufreq_driver;
 	data->driver.driver_data = data;
 
+	/* Read-only providers cannot round all four distinct requested rates. */
+	for (i = 0; i < ARRAY_SIZE(econet_cpu_frequencies); i++) {
+		unsigned long requested = econet_cpu_frequencies[i] * 1000UL;
+
+		if (clk_round_rate(data->clk, requested) != requested)
+			break;
+	}
+	if (i == ARRAY_SIZE(econet_cpu_frequencies)) {
+		data->scaling = true;
+		for (i = 0; i < ARRAY_SIZE(econet_cpu_frequencies); i++)
+			data->table[i].frequency = econet_cpu_frequencies[i];
+		data->table[i].frequency = CPUFREQ_TABLE_END;
+		/* MIPS must rescale the delay loops for every VPE on transitions. */
+		data->driver.flags &= ~CPUFREQ_CONST_LOOPS;
+	}
+
 	ret = cpufreq_register_driver(&data->driver);
 	if (ret)
 		return dev_err_probe(dev, ret, "Failed to register CPUFreq driver\n");
@@ -108,8 +142,8 @@ static int econet_cpufreq_probe(struct platform_device *pdev)
 	if (ret)
 		return ret;
 
-	dev_info(dev, "Initial CPU frequency: %lu MHz (reporting only)\n",
-		 rate / 1000000);
+	dev_info(dev, "Initial CPU frequency: %lu MHz (%s)\n", rate / 1000000,
+		 data->scaling ? "400-900 MHz control" : "reporting only");
 
 	return 0;
 }

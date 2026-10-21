@@ -265,17 +265,22 @@ endif
 
 if MIPS
 config ECONET_CPUFREQ
-	tristate "EcoNet MIPS CPU frequency reporting"
+	tristate "EcoNet MIPS CPU frequency control and reporting"
 	depends on ECONET && OF && COMMON_CLK_EN7523
 	help
 	  Expose the CPU frequency of EN751221, EN751627, EN7528 and
 	  EN7580 SoCs through CPUFreq. All cores and VPEs share one policy
-	  with a single frequency supplied by the system clock controller.
+	  supplied by the system clock controller.
 
-	  This driver does not change the CPU PLL, bus clock or DDR settings.
+	  Experimental EN7526G control with a recognized 900 MHz boot rate
+	  can select
+	  the tested 400, 700, 800 and 900 MHz profiles. The lower policy
+	  limit is 400 MHz; no other rates are extrapolated. Other devices
+	  retain reporting-only operation. DDR settings are not changed.
 	  EN751221 and EN7580 read recognized PLL configurations on demand.
 	  Other SoCs use bootloader metadata. This is not a cycle-counter
-	  frequency measurement. Runtime frequency scaling is not supported.
+	  frequency measurement. Automatic dynamic governors are disabled;
+	  use the userspace governor to select a profile explicitly.
 
 	  If unsure, say N.
 
