@@ -488,14 +488,17 @@ static void econet_qdma_rx_process_one(struct econet_q_rx *q, u32 cpu_i,
 		return;
 	}
 
-	if (econet_xpon_receive_data(q->qdma->qdma->eth,
-				     q->qdma->qdma->id, skb, &desc.msg))
-		return;
-
 	skb_set_hash(skb, jhash_1word(hash, 0),
 		     PKT_HASH_TYPE_L4);
 	airoha_ppe_dev_check_skb_reason(eth->ppe_dev, skb, hash, reason,
 					ingress_gem);
+
+	/* GEM endpoints consume the skb, so bind the original Ethernet tuple
+	 * before endpoint delivery changes skb->data and enters the stack.
+	 */
+	if (econet_xpon_receive_data(q->qdma->qdma->eth,
+				     q->qdma->qdma->id, skb, &desc.msg))
+		return;
 
 	if (airoha_is(q->qdma->qdma->eth, econet_en7528))
 		sport = FIELD_GET(EN7528_ERX_SPORT_MASK,
