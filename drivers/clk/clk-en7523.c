@@ -318,6 +318,8 @@ static const struct en751221_cpu_profile en751221_cpu_profiles[] = {
 	{ 0x05101b08, 0x02800000, 700000000UL },
 	{ 0x05101f08, 0x03000000, 800000000UL },
 	{ 0x05102308, 0x03800000, 900000000UL },
+	/* Experimental extrapolation; confirm the actual rate with the PMU. */
+	{ 0x05102708, 0x04000000, 1000000000UL },
 };
 
 static const struct of_device_id of_match_clk_en7523[];
@@ -2220,7 +2222,8 @@ static unsigned long econet_cpu_clk_recalc_rate(struct clk_hw *hw,
 	econet_cpu_pll_read(clk->priv, &state);
 	if (clk->priv->soc_family == EN751221_PKG) {
 		rate = en751221_cpu_pll_rate(&state);
-		if (rate == 400000000UL && clk->priv->soc_id != EN7526G)
+		if ((rate == 400000000UL || rate == 1000000000UL) &&
+		    clk->priv->soc_id != EN7526G)
 			rate = 0;
 	} else {
 		rate = en7580_cpu_pll_rate(&state);
@@ -2284,7 +2287,7 @@ static long en751221_cpu_clk_round_rate(struct clk_hw *hw, unsigned long rate,
 {
 	unsigned int i;
 
-	/* Only the discrete, exercised profiles are writable; the floor is 400 MHz. */
+	/* Only the explicit profiles are writable; the floor is 400 MHz. */
 	for (i = 0; i < ARRAY_SIZE(en751221_cpu_profiles); i++)
 		if (rate == en751221_cpu_profiles[i].rate)
 			return rate;

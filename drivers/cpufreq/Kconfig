@@ -273,10 +273,12 @@ config ECONET_CPUFREQ
 	  supplied by the system clock controller.
 
 	  Experimental EN7526G control with a recognized 900 MHz boot rate
-	  can select
-	  the tested 400, 700, 800 and 900 MHz profiles. The lower policy
-	  limit is 400 MHz; no other rates are extrapolated. Other devices
-	  retain reporting-only operation. DDR settings are not changed.
+	  can select the tested 400, 700, 800 and 900 MHz profiles. The lower
+	  policy limit is 400 MHz. An extrapolated, unverified 1 GHz profile
+	  is available as software boost, disabled by default. This is an
+	  experimental overclock, not a validated hardware turbo mode.
+	  Other devices retain reporting-only operation. DDR settings are
+	  not changed.
 	  EN751221 and EN7580 read recognized PLL configurations on demand.
 	  Other SoCs use bootloader metadata. This is not a cycle-counter
 	  frequency measurement. Automatic dynamic governors are disabled;

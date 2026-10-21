@@ -36,12 +36,15 @@ CPU        0x1fa2019c   0x1fa201ac   Source
 700 MHz    0x05101b08   0x02800000   Vendor bootloader
 800 MHz    0x05101f08   0x03000000   Interpolated, exercised on EN7526G
 900 MHz    0x05102308   0x03800000   Vendor bootloader
+1000 MHz   0x05102708   0x04000000   Experimental, unverified
 ========== ============ ============ ================================
 
 The 400 MHz pair was initially extrapolated as 325 MHz, but short PMU
 measurements established approximately 400.008 MHz between two 900 MHz
 reference measurements. It is reported as 400 MHz on EN7526G only; no other
-rates are extrapolated from these undocumented fields. EN7526C/EN7522 use
+rates are inferred automatically from these undocumented fields. The 1 GHz
+entry is a separately listed, unverified experiment for EN7526G only.
+EN7526C/EN7522 use
 a different PLL layout and retain boot-metadata reporting even when they
 share the EN751221 clock-controller compatible.
 
@@ -129,9 +132,10 @@ EN7526G profile control
 
 CPU control is enabled only for the EN7526G eFuse ID, a saved 900 MHz boot
 rate, and a recognized initial PLL profile. The clock controller exposes
-only the four exercised rates: 400, 700, 800 and 900 MHz. CPUFreq uses the
-same four rates, with a 400 MHz floor and 900 MHz ceiling. This policy floor
-is not a claim that 400 MHz is the silicon's minimum frequency.
+the four exercised rates (400, 700, 800 and 900 MHz) and an experimental
+1 GHz candidate. CPUFreq starts with a 400 MHz floor and 900 MHz ceiling;
+the 1 GHz entry is marked as software boost and disabled by default. This
+policy floor is not a claim that 400 MHz is the silicon's minimum frequency.
 
 Enable ``CONFIG_CPU_FREQ_GOV_USERSPACE`` (built in or as a module), then use::
 
@@ -169,3 +173,45 @@ clock. In that failure case the grace period can be temporarily extended.
 
 Do not mix direct PLL writes with CPUFreq control. MMIO writes bypass the
 transition notifications, watchdog accounting and MIPS delay-loop updates.
+
+Experimental 1 GHz test
+-----------------------
+
+The candidate pair ``0x05102708`` / ``0x04000000`` extrapolates the
+700/800/900 MHz pairs. It has not been measured or validated. The low pair
+previously called 325 MHz actually measured 400 MHz, demonstrating why
+register arithmetic alone cannot establish a frequency. CPUFreq readback
+of ``1000000`` only confirms that the candidate register pair is selected.
+It does not measure the CPU or confirm PLL lock.
+
+This is an experimental overclock, not a documented hardware turbo mode.
+No supply-voltage change is made. If CPU/4 remains the bus relationship,
+the bus rises from 225 to 250 MHz; bus peripherals and DMA are exposed to
+that change. The watchdog notifier remains active. There is no guarantee
+of stability or recovery from a hung PLL. Use a serial console and a
+recoverable test image.
+
+After boot, the global ``/sys/devices/system/cpu/cpufreq/boost`` switch
+reads zero. The candidate appears in ``scaling_boost_frequencies``.
+Select the userspace governor and 900 MHz before enabling boost::
+
+    policy=/sys/devices/system/cpu/cpufreq/policy0
+    echo userspace > "$policy/scaling_governor"
+    echo 900000 > "$policy/scaling_setspeed"
+    cat "$policy/scaling_boost_frequencies"
+    echo 1 > /sys/devices/system/cpu/cpufreq/boost
+    echo 1000000 > "$policy/scaling_max_freq"
+    echo 1000000 > "$policy/scaling_setspeed"
+
+Measure a short pinned PMU window as in the previous tests. Restore with::
+
+    echo 900000 > "$policy/scaling_setspeed"
+    echo 0 > /sys/devices/system/cpu/cpufreq/boost
+    echo 900000 > "$policy/scaling_max_freq"
+
+Enabling boost while a performance governor is active can select 1 GHz
+immediately. Do not enable it from boot scripts. The clock-provider API
+knows the candidate pair even while CPUFreq boost is disabled; the boost
+switch controls CPUFreq requests, not direct kernel clock API callers or
+MMIO writes. EN7580 and all other reporting-only configurations retain
+their previous behavior.
