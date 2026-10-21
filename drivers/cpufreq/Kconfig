@@ -265,15 +265,16 @@ endif
 
 if MIPS
 config ECONET_CPUFREQ
-	tristate "EcoNet MIPS boot CPU frequency reporting"
+	tristate "EcoNet MIPS CPU frequency reporting"
 	depends on ECONET && OF && COMMON_CLK_EN7523
 	help
-	  Expose the boot CPU frequency of EN751221, EN751627, EN7528 and
+	  Expose the CPU frequency of EN751221, EN751627, EN7528 and
 	  EN7580 SoCs through CPUFreq. All cores and VPEs share one policy
 	  with a single frequency supplied by the system clock controller.
 
 	  This driver does not change the CPU PLL, bus clock or DDR settings.
-	  The reported rate comes from bootloader metadata, not a live
+	  EN751221 and EN7580 read recognized PLL configurations on demand.
+	  Other SoCs use bootloader metadata. This is not a cycle-counter
 	  frequency measurement. Runtime frequency scaling is not supported.
 
 	  If unsure, say N.

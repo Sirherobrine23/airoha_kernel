@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Report the boot CPU frequency on EcoNet MIPS SoCs.
+ * Report the CPU frequency supplied by the EcoNet MIPS clock controller.
  *
  * CPU and bus clocks are coupled. Until runtime PLL switching is supported,
- * expose only the rate supplied by the clock controller and never change it.
+ * expose the rate supplied by the clock controller and never change it.
  */
 
 #include <linux/clk.h>
@@ -34,8 +34,14 @@ static int econet_cpufreq_init(struct cpufreq_policy *policy)
 static int econet_cpufreq_target_index(struct cpufreq_policy *policy,
 				      unsigned int index)
 {
-	/* The sole table entry describes the unchanged boot frequency. */
-	return index ? -EINVAL : 0;
+	struct econet_cpufreq_data *data = cpufreq_get_driver_data();
+
+	if (index)
+		return -EINVAL;
+
+	/* A reporting-only driver cannot restore a rate changed out of band. */
+	return clk_get_rate(policy->clk) / 1000 == data->table[0].frequency ?
+		0 : -EOPNOTSUPP;
 }
 
 static const struct cpufreq_driver econet_cpufreq_driver = {
@@ -86,7 +92,7 @@ static int econet_cpufreq_probe(struct platform_device *pdev)
 	rate = clk_get_rate(data->clk);
 	if (!rate || rate % 1000)
 		return dev_err_probe(dev, -EINVAL,
-				     "Invalid boot CPU clock rate %lu\n", rate);
+				     "Invalid initial CPU clock rate %lu\n", rate);
 
 	data->table[0].frequency = rate / 1000;
 	data->table[1].frequency = CPUFREQ_TABLE_END;
@@ -102,7 +108,8 @@ static int econet_cpufreq_probe(struct platform_device *pdev)
 	if (ret)
 		return ret;
 
-	dev_info(dev, "Boot CPU frequency: %lu MHz (fixed)\n", rate / 1000000);
+	dev_info(dev, "Initial CPU frequency: %lu MHz (reporting only)\n",
+		 rate / 1000000);
 
 	return 0;
 }
@@ -115,6 +122,6 @@ static struct platform_driver econet_cpufreq_platdrv = {
 };
 module_platform_driver(econet_cpufreq_platdrv);
 
-MODULE_DESCRIPTION("EcoNet MIPS boot CPU frequency reporting");
+MODULE_DESCRIPTION("EcoNet MIPS CPU frequency reporting");
 MODULE_LICENSE("GPL");
 MODULE_ALIAS("platform:econet-cpufreq");

@@ -18,6 +18,7 @@
 #include <linux/regmap.h>
 #include <linux/reset-controller.h>
 #include <linux/soc/airoha/pkgids.h>
+#include <linux/string.h>
 #include <dt-bindings/clock/en7523-clk.h>
 #include <dt-bindings/reset/airoha,en7523-reset.h>
 #include <dt-bindings/reset/airoha,en7581-reset.h>
@@ -101,6 +102,10 @@
 #define EN751221_SPI_BASE_EN7526C	400000000
 #define EN751221_SPI_DIV_DEFAULT	40
 #define EN751221_REG_BUS_MASK		GENMASK(21, 12)
+#define EN751221_REG_CPU_PLL_SETUP	0x144
+#define EN751221_REG_CPU_PLL_CONFIG	0x19c
+#define EN751221_REG_CPU_PLL_CONTROL	0x1a8
+#define EN751221_REG_CPU_PLL_PARAM	0x1ac
 #define EN7528_REG_BUS_MASK		GENMASK(19, 10)
 #define EN751221_REG_SSR3		0x094
 #define EN751221_REG_NP_PER_DOM_CLK_GAT_1	0x0e4
@@ -132,6 +137,13 @@
 #define EN7580_SPI_DIV_DEFAULT		40
 #define EN7580_REG_NP_PER_DOM_CLK_GAT_1	0x1dc
 #define EN7580_REG_TOD_DIVIDER_ENABLE	0x1e4
+#define EN7580_REG_CPU_PLL_PROTECT	0x264
+#define EN7580_REG_CPU_PLL_PCW		0x2ac
+#define EN7580_REG_CPU_PLL_CHANGE		0x2b0
+#define EN7580_CPU_PLL_PCW_MASK		GENMASK(30, 24)
+#define EN7580_CPU_PLL_PCW_MIN		26
+#define EN7580_CPU_PLL_PCW_MAX		104
+#define EN7580_CPU_PLL_PCW_RATE		12500000UL
 
 /* SCU PKG ID */
 #define AIROHA_NP_SCU_PDIDR		0x05c
@@ -276,6 +288,21 @@ struct airoha_clk_priv {
 	void __iomem *chip_scu_base;
 	void __iomem *efuse_base;
 	void __iomem *mcucfg;
+};
+
+struct econet_cpu_pll_state {
+	u32 setup;
+	u32 config;
+	u32 control;
+	u32 param;
+};
+
+struct econet_cpu_clk {
+	struct clk_hw hw;
+	struct airoha_clk_priv *priv;
+	struct econet_cpu_pll_state boot_state;
+	unsigned long boot_rate;
+	u8 divisor;
 };
 
 static const struct of_device_id of_match_clk_en7523[];
@@ -2107,6 +2134,148 @@ static int econet_register_fixed_rate(struct device *dev, int key,
 	return 0;
 }
 
+static void econet_cpu_pll_read(struct airoha_clk_priv *priv,
+				struct econet_cpu_pll_state *state)
+{
+	void __iomem *base = priv->chip_scu_base;
+
+	if (priv->soc_family == EN751221_PKG) {
+		state->setup = readl(base + EN751221_REG_CPU_PLL_SETUP);
+		state->config = readl(base + EN751221_REG_CPU_PLL_CONFIG);
+		state->control = readl(base + EN751221_REG_CPU_PLL_CONTROL);
+		state->param = readl(base + EN751221_REG_CPU_PLL_PARAM);
+	} else {
+		state->setup = readl(base + EN7580_REG_CPU_PLL_PROTECT);
+		state->config = 0;
+		state->control = readl(base + EN7580_REG_CPU_PLL_CHANGE);
+		state->param = readl(base + EN7580_REG_CPU_PLL_PCW);
+	}
+}
+
+static unsigned long
+en751221_cpu_pll_rate(const struct econet_cpu_pll_state *state)
+{
+	static const struct {
+		u32 config;
+		u32 param;
+		unsigned long rate;
+	} profiles[] = {
+		{ 0x05101b08, 0x02800000, 700000000UL },
+		/* Interpolated profile exercised on EN7526G. */
+		{ 0x05101f08, 0x03000000, 800000000UL },
+		{ 0x05102308, 0x03800000, 900000000UL },
+	};
+	unsigned int i;
+
+	if (state->setup != 0x12 || state->control != 0x406)
+		return 0;
+
+	for (i = 0; i < ARRAY_SIZE(profiles); i++)
+		if (state->config == profiles[i].config &&
+		    state->param == profiles[i].param)
+			return profiles[i].rate;
+
+	/* Do not extrapolate undocumented PLL fields to unverified rates. */
+	return 0;
+}
+
+static unsigned long
+en7580_cpu_pll_rate(const struct econet_cpu_pll_state *state)
+{
+	u32 pcw = FIELD_GET(EN7580_CPU_PLL_PCW_MASK, state->param);
+
+	/* SDK do_cpufreq(): PCW = 104 - 2 * step, CPU = 1300 - 25 * step. */
+	if (state->param & ~EN7580_CPU_PLL_PCW_MASK ||
+	    pcw < EN7580_CPU_PLL_PCW_MIN || pcw > EN7580_CPU_PLL_PCW_MAX ||
+	    (pcw & 1))
+		return 0;
+
+	return pcw * EN7580_CPU_PLL_PCW_RATE;
+}
+
+static unsigned long econet_cpu_clk_recalc_rate(struct clk_hw *hw,
+						unsigned long parent_rate)
+{
+	struct econet_cpu_clk *clk = container_of(hw, struct econet_cpu_clk, hw);
+	struct econet_cpu_pll_state state;
+	unsigned long rate;
+
+	econet_cpu_pll_read(clk->priv, &state);
+	if (clk->priv->soc_family == EN751221_PKG)
+		rate = en751221_cpu_pll_rate(&state);
+	else
+		rate = en7580_cpu_pll_rate(&state);
+
+	/* Preserve other boot profiles only while their registers are unchanged. */
+	if (!rate && !memcmp(&state, &clk->boot_state, sizeof(state)))
+		rate = clk->boot_rate;
+
+	/* Read the PLL for BUS too: a NOCACHE child need not refresh its parent. */
+	return rate / clk->divisor;
+}
+
+static const struct clk_ops econet_cpu_clk_ops = {
+	.recalc_rate = econet_cpu_clk_recalc_rate,
+};
+
+static struct clk_hw *
+econet_register_cpu_clk(struct device *dev, struct airoha_clk_priv *priv,
+			const struct econet_cpu_pll_state *boot_state,
+			unsigned long boot_rate, const struct clk_hw *parent)
+{
+	struct clk_init_data init = {
+		.name = parent ? "bus" : "cpu",
+		.ops = &econet_cpu_clk_ops,
+		.flags = CLK_GET_RATE_NOCACHE,
+	};
+	struct econet_cpu_clk *clk;
+	int err;
+
+	clk = devm_kzalloc(dev, sizeof(*clk), GFP_KERNEL);
+	if (!clk)
+		return ERR_PTR(-ENOMEM);
+
+	clk->priv = priv;
+	clk->boot_state = *boot_state;
+	clk->boot_rate = boot_rate;
+	clk->divisor = parent ? priv->soc_data->cpu_clk_mult : 1;
+	if (parent) {
+		init.parent_hws = &parent;
+		init.num_parents = 1;
+	}
+	clk->hw.init = &init;
+	err = devm_clk_hw_register(dev, &clk->hw);
+	if (err)
+		return ERR_PTR(err);
+
+	return &clk->hw;
+}
+
+static int econet_register_live_cpu_clocks(struct device *dev,
+					   struct airoha_clk_priv *priv,
+					   struct clk_hw_onecell_data *clk_data,
+					   unsigned long boot_rate)
+{
+	struct econet_cpu_pll_state boot_state;
+	struct clk_hw *cpu, *bus;
+
+	econet_cpu_pll_read(priv, &boot_state);
+	cpu = econet_register_cpu_clk(dev, priv, &boot_state, boot_rate, NULL);
+	if (IS_ERR(cpu))
+		return dev_err_probe(dev, PTR_ERR(cpu),
+				     "Failed to register live CPU clock\n");
+
+	bus = econet_register_cpu_clk(dev, priv, &boot_state, boot_rate, cpu);
+	if (IS_ERR(bus))
+		return dev_err_probe(dev, PTR_ERR(bus),
+				     "Failed to register live bus clock\n");
+
+	clk_data->hws[EN7523_CLK_CPU] = cpu;
+	clk_data->hws[EN7523_CLK_BUS] = bus;
+
+	return 0;
+}
+
 static int econet_register_clocks(struct device *dev,
 				  struct airoha_clk_priv *priv,
 				  struct clk_hw_onecell_data *clk_data)
@@ -2131,6 +2300,12 @@ static int econet_register_clocks(struct device *dev,
 	if (!rate)
 		return dev_err_probe(dev, -EINVAL,
 				     "Bootloader did not save the bus clock rate\n");
+
+	/* EN7526C shares a compatible but not the EN751221 CPU PLL layout. */
+	if (priv->soc_family == EN751221_PKG || priv->soc_family == EN7580_PKG)
+		return econet_register_live_cpu_clocks(dev, priv, clk_data,
+						      rate * soc_data->cpu_clk_mult);
+
 	err = econet_register_fixed_rate(dev, EN7523_CLK_BUS, clk_data,
 					 "bus", rate);
 	if (err)
