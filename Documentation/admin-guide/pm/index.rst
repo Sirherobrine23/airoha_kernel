@@ -10,3 +10,4 @@ Power Management
    strategies
    system-wide
    working-state
+   econet-cpufreq

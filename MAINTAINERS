@@ -8886,6 +8886,7 @@ ECONET MIPS PLATFORM
 M:	Caleb James DeLisle <cjd@cjdns.fr>
 L:	linux-mips@vger.kernel.org
 S:	Maintained
+F:	Documentation/admin-guide/pm/econet-cpufreq.rst
 F:	Documentation/devicetree/bindings/interrupt-controller/econet,en751221-intc.yaml
 F:	Documentation/devicetree/bindings/dma/econet,ecnt-gdma.yaml
 F:	Documentation/devicetree/bindings/dma/econet,ecnt-hsdma.yaml
@@ -8897,6 +8898,7 @@ F:	Documentation/devicetree/bindings/usb/econet,en7528-xhci.yaml
 F:	arch/mips/boot/dts/econet/
 F:	arch/mips/econet/
 F:	drivers/clocksource/timer-econet-en751221.c
+F:	drivers/cpufreq/econet-cpufreq.c
 F:	drivers/irqchip/irq-econet-en751221.c
 F:	drivers/nvmem/econet-efuse.c
 F:	drivers/phy/phy-en7528-usb.c

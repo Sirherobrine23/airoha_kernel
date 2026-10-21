@@ -48,6 +48,7 @@
 			device_type = "cpu";
 			compatible = "mips,mips1004Kc";
 			reg = <0>;
+			clocks = <&scuclk EN7580_CLK_CPU>;
 			next-level-cache = <&l2>;
 		};
 
@@ -55,6 +56,7 @@
 			device_type = "cpu";
 			compatible = "mips,mips1004Kc";
 			reg = <1>;
+			clocks = <&scuclk EN7580_CLK_CPU>;
 			next-level-cache = <&l2>;
 		};
 
@@ -62,6 +64,7 @@
 			device_type = "cpu";
 			compatible = "mips,mips1004Kc";
 			reg = <2>;
+			clocks = <&scuclk EN7580_CLK_CPU>;
 			next-level-cache = <&l2>;
 		};
 
@@ -69,6 +72,7 @@
 			device_type = "cpu";
 			compatible = "mips,mips1004Kc";
 			reg = <3>;
+			clocks = <&scuclk EN7580_CLK_CPU>;
 			next-level-cache = <&l2>;
 		};
 

@@ -106,6 +106,7 @@
 #define EN751221_SPI_DIV_DEFAULT	40
 #define EN751221_REG_BUS		0x284
 #define EN751221_REG_BUS_MASK		GENMASK(21, 12)
+#define EN7528_REG_BUS_MASK		GENMASK(19, 10)
 #define EN751221_REG_SSR3		0x094
 #define EN751221_REG_SSR3_GSW_MASK	GENMASK(9, 8)
 #define EN751221_REG_NP_PER_DOM_CLK_GAT_1	0x0e4
@@ -253,6 +254,9 @@ struct airoha_clk_priv;
 struct airoha_clk_soc_data {
 	const char *old_chip_scu_compatible;
 	bool probe_child;
+	/* EcoNet bootloader bus clock field and CPU/bus ratio. */
+	u32 bus_clk_mask;
+	u8 cpu_clk_mult;
 	u32 num_clocks;
 	u32 num_base_clks;
 	const u16 *rst_map;
@@ -2026,7 +2030,8 @@ static int econet_register_clocks(struct device *dev,
 		return dev_err_probe(dev, err,
 				     "Failed reading fixed clk rate bus\n");
 
-	rate = FIELD_GET(EN751221_REG_BUS_MASK, val) * 1000000;
+	rate = ((val & priv->soc_data->bus_clk_mask) >>
+		__ffs(priv->soc_data->bus_clk_mask)) * 1000000;
 	if (!rate)
 		return dev_err_probe(dev, -EINVAL,
 				     "Bootloader did not save the bus clock rate\n");
@@ -2037,7 +2042,7 @@ static int econet_register_clocks(struct device *dev,
 
 	/* CPU */
 	err = econet_register_fixed_rate(dev, ECONET_CLK_CPU, clk_data,
-					 "cpu", rate * 4);
+					 "cpu", rate * priv->soc_data->cpu_clk_mult);
 	if (err)
 		return err;
 
@@ -2327,10 +2332,16 @@ const char *airoha_id_name(enum airoha_pkg_ids id)
 }
 EXPORT_SYMBOL_GPL(airoha_id_name);
 
+static void econet_cpufreq_unregister(void *pdev)
+{
+	platform_device_unregister(pdev);
+}
+
 static int en7523_clk_probe(struct platform_device *pdev)
 {
 	const struct airoha_clk_soc_data *soc_data;
 	struct clk_hw_onecell_data *clk_data;
+	struct platform_device *cpufreq_pdev;
 	struct airoha_clk_priv *priv;
 	struct device *dev = &pdev->dev;
 	int err;
@@ -2366,6 +2377,19 @@ static int en7523_clk_probe(struct platform_device *pdev)
 	if (soc_data->probe_child) {
 		err = of_platform_populate(dev->of_node, NULL, NULL,
 					   dev);
+		if (err)
+			return err;
+	}
+
+	if (soc_data->econet && IS_ENABLED(CONFIG_ECONET_CPUFREQ)) {
+		cpufreq_pdev = platform_device_register_data(dev, "econet-cpufreq",
+							    PLATFORM_DEVID_NONE,
+							    NULL, 0);
+		if (IS_ERR(cpufreq_pdev))
+			return PTR_ERR(cpufreq_pdev);
+
+		err = devm_add_action_or_reset(dev, econet_cpufreq_unregister,
+					       cpufreq_pdev);
 		if (err)
 			return err;
 	}
@@ -2413,6 +2437,8 @@ static const struct econet_clk_soc_data en7580_econet_data = {
 
 static const struct airoha_clk_soc_data en751221_data = {
 	.old_chip_scu_compatible = "econet,en751221-chip-scu",
+	.bus_clk_mask = EN751221_REG_BUS_MASK,
+	.cpu_clk_mult = 4,
 	.num_clocks = EN751221_MAX_CLKS,
 	.rst_map = en751221_rst_map,
 	.rst_ofs = en751221_rst_ofs,
@@ -2426,8 +2452,27 @@ static const struct airoha_clk_soc_data en751221_data = {
 	.hw_init = econet_clk_hw_init,
 };
 
+static const struct airoha_clk_soc_data en751627_data = {
+	.old_chip_scu_compatible = "econet,en7528-chip-scu",
+	.bus_clk_mask = EN751221_REG_BUS_MASK,
+	.cpu_clk_mult = 4,
+	.num_clocks = EN7528_MAX_CLKS,
+	.rst_map = en751221_rst_map,
+	.rst_ofs = en751221_rst_ofs,
+	.nr_resets = ARRAY_SIZE(en751221_rst_map),
+	.econet = &en7528_econet_data,
+	.pcie_ops = {
+		.is_enabled = en7523_pci_is_enabled,
+		.prepare = en7523_pci_prepare,
+		.unprepare = en7523_pci_unprepare,
+	},
+	.hw_init = econet_clk_hw_init,
+};
+
 static const struct airoha_clk_soc_data en7528_data = {
 	.old_chip_scu_compatible = "econet,en7528-chip-scu",
+	.bus_clk_mask = EN7528_REG_BUS_MASK,
+	.cpu_clk_mult = 4,
 	.num_clocks = EN7528_MAX_CLKS,
 	/* EN7528 keeps the EN751221 NP-SCU reset layout. */
 	.rst_map = en751221_rst_map,
@@ -2444,6 +2489,8 @@ static const struct airoha_clk_soc_data en7528_data = {
 
 static const struct airoha_clk_soc_data en7580_data = {
 	.old_chip_scu_compatible = "econet,en7580-chip-scu",
+	.bus_clk_mask = EN7528_REG_BUS_MASK,
+	.cpu_clk_mult = 5,
 	.num_clocks = EN7580_MAX_CLKS,
 	/* The MIPS EN7580 retains the legacy NP-SCU reset banks. */
 	.rst_map = en751221_rst_map,
@@ -2514,7 +2561,7 @@ static const struct of_device_id of_match_clk_en7523[] = {
 	{ .compatible = "airoha,en7581-scu", .data = &en7581_data },
 	{ .compatible = "airoha,an7583-scu", .data = &an7583_data },
 	{ .compatible = "econet,en751221-scu", .data = &en751221_data },
-	{ .compatible = "econet,en751627-scu", .data = &en7528_data },
+	{ .compatible = "econet,en751627-scu", .data = &en751627_data },
 	{ .compatible = "econet,en7528-scu", .data = &en7528_data },
 	{ .compatible = "econet,en7580-scu", .data = &en7580_data },
 	{ /* sentinel */ }
