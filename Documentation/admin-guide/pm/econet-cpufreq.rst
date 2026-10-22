@@ -279,7 +279,8 @@ recognized idle PLL profile. No EN7528HU-only variant gate is applied.
 The 17 retained profiles have short hardware test evidence on EN7528HU; other
 family variants still require hardware validation. Configurations that
 fail the boot-rate or initial-profile checks retain reporting only.
-CPUFreq discovers only the candidates that the provider rounds exactly;
+CPUFreq reads candidates from CPU0's OPP table and keeps only the rates
+that the provider rounds exactly;
 a read-only provider cannot match two different candidate rates. EN7528
 therefore exposes 600 through 1000 MHz in 25 MHz steps. Frequencies through
 900 MHz are available without boost; 925, 950, 975 and 1000 MHz require
@@ -326,10 +327,10 @@ relative deviation on descent was approximately 0.00845 percent. One
 window difference. The final 900 MHz reference measured 900.044 MHz and
 software boost was disabled successfully.
 
-The table is now unconditional; ``CONFIG_ECONET_CPUFREQ_EN7528_RAMP`` is
-no longer needed. The CPUFreq driver's union of candidate rates is still
-filtered through exact provider rounding. Reporting-only providers retain
-one entry and cannot acquire writable ops from the larger candidate list.
+The PLL table is unconditional; ``CONFIG_ECONET_CPUFREQ_EN7528_RAMP`` is
+no longer needed. CPUFreq gets its candidates from the DT OPP table and
+filters them through exact provider rounding. Reporting-only providers
+retain one entry and cannot acquire writable ops from the OPP table.
 No generic PLL arithmetic, voltage control or DDR recalibration is added.
 
 Ondemand governor
@@ -337,7 +338,7 @@ Ondemand governor
 
 Enable ``CONFIG_CPU_FREQ_GOV_ONDEMAND=y`` (or load ``cpufreq_ondemand`` when
 built as a module). The driver permits dynamic governors only after the
-clock provider exposes multiple exactly supported frequencies. This covers
+clock provider exposes programmable profiles matching the OPP table. This covers
 writable EN751221 and EN7528 policies; reporting-only configurations retain
 ``CPUFREQ_NO_AUTO_DYNAMIC_SWITCHING`` and fall back to a static governor.
 
@@ -399,3 +400,55 @@ remaining range. Ondemand, its initial 100 ms sampling interval, the 900 MHz
 non-boost ceiling and watchdog integration are retained. Reporting-only
 configurations, including EN7580, retain their original reported rates even
 when those rates are below 600 MHz.
+
+Device Tree operating points
+----------------------------
+
+The EN751221 and EN7528 DTSI files provide a standard
+``operating-points-v2`` table referenced by both CPU nodes. ``opp-shared``
+describes the shared clock domain; the CPUFreq policy still covers all
+possible CPUs, including VPEs without a separate CPU node.
+
+The EN751221 table contains 700, 800, 900 and 1000 MHz. The EN7528 table
+contains 600 through 1000 MHz in 25 MHz steps. Entries above 900 MHz carry
+``turbo-mode`` and remain disabled until software boost is enabled. The
+driver also enforces the boost flag above 900 MHz if a board table omits
+``turbo-mode``. The tables do not describe voltage scaling and contain no
+``opp-microvolt`` properties.
+
+For example, the EN7528 600 MHz entry is::
+
+    cpu_opp_600: opp-600000000 {
+        opp-hz = /bits/ 64 <600000000>;
+    };
+
+A board can remove or disable individual entries. For example, an
+EN751221 board can restrict the policy to 800 and 900 MHz with::
+
+    &cpu_opp_700 {
+        status = "disabled";
+    };
+
+    &cpu_opp_1000 {
+        status = "disabled";
+    };
+
+CPUFreq loads the available OPPs on CPU0 at probe. Unsupported rates and
+rates that cannot be represented exactly in kHz are disabled before the
+OPP helper builds the CPUFreq table. An OPP can restrict the hardware
+profiles but cannot introduce new PLL settings or restore a removed low
+profile. The PLL register pairs and stopped transition sequence remain
+in the clock driver. Runtime OPP table changes are not synchronized with
+the already-created CPUFreq table; update the DTB and reboot.
+
+Deploy the updated kernel and DTB together. Without ``operating-points-v2``
+on CPU0, this driver reports the current boot rate only. The same fallback
+preserves reporting on read-only clocks whose boot rates are absent from
+the OPP table. A single matching OPP different from the boot rate can still
+be selected through the writable provider. A malformed or empty DT OPP
+table is an error, rather than a request for a built-in frequency list.
+
+The generic ``cpufreq-dt`` automatic platform-device path excludes these
+two SoC compatibles so it cannot race the EcoNet driver after OPP tables
+are added. EcoNet retains its provider checks, boost restrictions, MIPS
+delay updates, BUS/watchdog notifications and 100 ms governor update hint.

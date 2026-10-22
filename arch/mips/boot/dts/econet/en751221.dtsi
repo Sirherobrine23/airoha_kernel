@@ -41,6 +41,7 @@
 			compatible = "mips,mips34Kc";
 			reg = <0>;
 			clocks = <&scuclk EN7523_CLK_CPU>;
+			operating-points-v2 = <&cpu_opp_table>;
 		};
 
 		cpu1: cpu@1 {
@@ -48,6 +49,29 @@
 			compatible = "mips,mips34Kc";
 			reg = <1>;
 			clocks = <&scuclk EN7523_CLK_CPU>;
+			operating-points-v2 = <&cpu_opp_table>;
+		};
+	};
+
+	cpu_opp_table: opp-table-cpu {
+		compatible = "operating-points-v2";
+		opp-shared;
+
+		cpu_opp_700: opp-700000000 {
+			opp-hz = /bits/ 64 <700000000>;
+		};
+
+		cpu_opp_800: opp-800000000 {
+			opp-hz = /bits/ 64 <800000000>;
+		};
+
+		cpu_opp_900: opp-900000000 {
+			opp-hz = /bits/ 64 <900000000>;
+		};
+
+		cpu_opp_1000: opp-1000000000 {
+			opp-hz = /bits/ 64 <1000000000>;
+			turbo-mode;
 		};
 	};
 

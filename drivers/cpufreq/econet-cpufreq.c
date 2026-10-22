@@ -7,22 +7,19 @@
 #include <linux/cpu.h>
 #include <linux/cpufreq.h>
 #include <linux/module.h>
+#include <linux/of.h>
 #include <linux/platform_device.h>
+#include <linux/pm_opp.h>
 #include <linux/slab.h>
 
 #define ECONET_CPUFREQ_TRANSITION_DELAY_US	100000
 
-static const unsigned int econet_cpu_frequencies[] = {
-	600000, 625000, 650000, 675000,
-	700000, 725000, 750000, 775000,
-	800000, 825000, 850000, 875000,
-	900000, 925000, 950000, 975000,
-	1000000,
-};
-
 struct econet_cpufreq_data {
 	struct clk *clk;
-	struct cpufreq_frequency_table table[ARRAY_SIZE(econet_cpu_frequencies) + 1];
+	struct device *cpu_dev;
+	struct cpufreq_frequency_table *table;
+	struct cpufreq_frequency_table *opp_table;
+	struct cpufreq_frequency_table fixed_table[2];
 	struct cpufreq_driver driver;
 	unsigned int num_frequencies;
 	bool scaling;
@@ -93,13 +90,80 @@ static void econet_cpufreq_unregister(void *driver)
 	cpufreq_unregister_driver(driver);
 }
 
+static void econet_cpufreq_remove_opps(void *arg)
+{
+	struct econet_cpufreq_data *data = arg;
+
+	if (data->opp_table)
+		dev_pm_opp_free_cpufreq_table(data->cpu_dev, &data->opp_table);
+	dev_pm_opp_of_remove_table(data->cpu_dev);
+}
+
+static int econet_cpufreq_add_opps(struct device *dev,
+				   struct econet_cpufreq_data *data)
+{
+	struct dev_pm_opp *opp;
+	unsigned long freq = 0;
+	unsigned int i;
+	int count, ret;
+
+	/* Older DTBs and reporting-only SoCs need no programmable OPP table. */
+	if (!of_property_present(data->cpu_dev->of_node, "operating-points-v2"))
+		return 0;
+
+	ret = dev_pm_opp_of_add_table(data->cpu_dev);
+	if (ret)
+		return dev_err_probe(dev, ret, "Failed to add CPU OPP table\n");
+	ret = devm_add_action_or_reset(dev, econet_cpufreq_remove_opps, data);
+	if (ret)
+		return ret;
+
+	/* Validate Hz before the OPP helper converts them to CPUFreq kHz. */
+	for (;;) {
+		opp = dev_pm_opp_find_freq_ceil(data->cpu_dev, &freq);
+		if (IS_ERR(opp)) {
+			ret = PTR_ERR(opp);
+			if (ret != -ERANGE)
+				return ret;
+			break;
+		}
+		dev_pm_opp_put(opp);
+		/* OPPs restrict provider profiles; they cannot add PLL settings. */
+		if (freq % 1000 || clk_round_rate(data->clk, freq) != freq) {
+			ret = dev_pm_opp_disable(data->cpu_dev, freq);
+			if (ret)
+				return ret;
+		}
+		if (freq == ULONG_MAX)
+			break;
+		freq++;
+	}
+
+	count = dev_pm_opp_get_opp_count(data->cpu_dev);
+	if (count < 0)
+		return count;
+	if (!count)
+		return 0;
+
+	ret = dev_pm_opp_init_cpufreq_table(data->cpu_dev, &data->opp_table);
+	if (ret)
+		return dev_err_probe(dev, ret, "Failed to create CPU frequency table\n");
+	data->num_frequencies = count;
+	/* Keep overclocking opt-in even if a DT omits turbo-mode. */
+	for (i = 0; i < data->num_frequencies; i++)
+		if (data->opp_table[i].frequency > 900000)
+			data->opp_table[i].flags |= CPUFREQ_BOOST_FREQ;
+
+	return 0;
+}
+
 static int econet_cpufreq_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
 	struct econet_cpufreq_data *data;
 	struct device *cpu_dev;
 	unsigned long rate;
-	unsigned int i, count = 0;
+	unsigned int i;
 	bool boost = false;
 	int ret;
 
@@ -126,37 +190,33 @@ static int econet_cpufreq_probe(struct platform_device *pdev)
 		return dev_err_probe(dev, -EINVAL,
 				     "Invalid initial CPU clock rate %lu\n", rate);
 
+	data->cpu_dev = cpu_dev;
 	data->driver = econet_cpufreq_driver;
 	data->driver.driver_data = data;
 
-	/* A read-only provider can match at most one distinct candidate rate. */
-	for (i = 0; i < ARRAY_SIZE(econet_cpu_frequencies); i++) {
-		unsigned long requested = econet_cpu_frequencies[i] * 1000UL;
+	ret = econet_cpufreq_add_opps(dev, data);
+	if (ret)
+		return ret;
 
-		if (clk_round_rate(data->clk, requested) != requested)
-			continue;
-		data->table[count].frequency = econet_cpu_frequencies[i];
-		if (econet_cpu_frequencies[i] > 900000) {
-			data->table[count].flags = CPUFREQ_BOOST_FREQ;
-			boost = true;
-		}
-		count++;
-	}
-	if (count > 1) {
+	/* A read-only provider can match only the current boot frequency. */
+	if (data->num_frequencies > 1 ||
+	    (data->num_frequencies == 1 &&
+	     data->opp_table[0].frequency != rate / 1000)) {
+		data->table = data->opp_table;
 		data->scaling = true;
-		/* Keep rates above the nominal 900 MHz ceiling opt-in. */
+		for (i = 0; i < data->num_frequencies; i++)
+			boost |= !!(data->table[i].flags & CPUFREQ_BOOST_FREQ);
 		if (boost)
 			data->driver.set_boost = cpufreq_boost_set_sw;
 		/* Permit governors and rescale the MIPS delay loops on transitions. */
 		data->driver.flags &= ~(CPUFREQ_CONST_LOOPS |
 					CPUFREQ_NO_AUTO_DYNAMIC_SWITCHING);
 	} else {
-		count = 1;
+		data->table = data->fixed_table;
+		data->num_frequencies = 1;
 		data->table[0].frequency = rate / 1000;
-		data->table[0].flags = 0;
+		data->table[1].frequency = CPUFREQ_TABLE_END;
 	}
-	data->num_frequencies = count;
-	data->table[count].frequency = CPUFREQ_TABLE_END;
 
 	ret = cpufreq_register_driver(&data->driver);
 	if (ret)

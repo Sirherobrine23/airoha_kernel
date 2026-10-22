@@ -267,10 +267,13 @@ if MIPS
 config ECONET_CPUFREQ
 	tristate "EcoNet MIPS CPU frequency control and reporting"
 	depends on ECONET && OF && COMMON_CLK_EN7523
+	select PM_OPP
 	help
 	  Expose the CPU frequency of EN751221, EN751627, EN7528 and
 	  EN7580 SoCs through CPUFreq. All cores and VPEs share one policy
-	  supplied by the system clock controller.
+	  supplied by the system clock controller. Operating points are read
+	  from operating-points-v2 on CPU0 and filtered by the clock provider.
+	  Without an OPP table, the driver reports only the current boot rate.
 
 	  Experimental EN751221-family control with a recognized 900 MHz
 	  boot rate supports 700, 800, 900 and 1000 MHz, without an
