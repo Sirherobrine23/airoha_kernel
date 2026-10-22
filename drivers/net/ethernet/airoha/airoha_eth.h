@@ -1238,6 +1238,7 @@ enum airoha_ids {
 	airoha_en7523 = 0x7523,
 	airoha_en7581 = 0x7581,
 	airoha_an7583 = 0x7583,
+	airoha_an7552 = 0x7552,
 };
 
 struct platform_device;

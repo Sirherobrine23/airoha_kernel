@@ -28,7 +28,7 @@ config NET_AIROHA
 	help
 	  Support the shared Airoha/EcoNet frame-engine Ethernet datapath,
 	  including generation-1 EN751221/EN7528 and generation-2
-	  EN7523/EN7581/AN7583 SoCs. The hardware generation is selected
+	  EN7523/AN7552/AN7563/EN7581/AN7583 SoCs. The hardware generation is selected
 	  from the device-tree compatible and SoC data at runtime. QDMA, GDM,
 	  PPE and phylink infrastructure are built as one driver so both
 	  generations follow the same lifecycle and common interfaces.

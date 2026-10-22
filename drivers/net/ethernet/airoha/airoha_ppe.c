@@ -2311,6 +2311,9 @@ void airoha_ppe_init_upd_mem(struct airoha_gdm_dev *dev, const u8 *addr)
 	struct airoha_eth *eth = dev->eth;
 	u32 val;
 
+	if (!eth->soc->num_ppe)
+		return;
+
 	dev_info(eth->dev, "Initializing UPD mem for port id %d\n", port->id);
 
 	val = (addr[2] << 24) | (addr[3] << 16) | (addr[4] << 8) | addr[5];
@@ -4217,6 +4220,9 @@ static void airoha_ppe_v1_deinit(struct airoha_eth *eth)
 
 int airoha_ppe_init(struct airoha_eth *eth)
 {
+	if (!eth->soc->num_ppe)
+		return 0;
+
 	if (eth->soc->foe_format == AIROHA_FOE_FORMAT_V1)
 		return airoha_ppe_v1_init(eth);
 
@@ -4225,6 +4231,9 @@ int airoha_ppe_init(struct airoha_eth *eth)
 
 void airoha_ppe_deinit(struct airoha_eth *eth)
 {
+	if (!eth->soc->num_ppe)
+		return;
+
 	if (eth->soc->foe_format == AIROHA_FOE_FORMAT_V1)
 		airoha_ppe_v1_deinit(eth);
 	else

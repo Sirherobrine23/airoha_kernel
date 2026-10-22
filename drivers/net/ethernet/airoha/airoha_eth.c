@@ -2053,14 +2053,15 @@ static int econet_qdma_init_tx(struct airoha_qdma_mips *qdma)
 /* Airoha QDMA backend. */
 static int airoha_qdma_irq_reg_count(struct airoha_qdma *qdma)
 {
-	/* EN7580 has STATUS1/2 and two enable words per IRQ bank. */
-	return airoha_is(qdma->eth, econet_en7580) ? 2 : QDMA_INT_REG_MAX;
+	/* EN7580 and AN7552 have two status words per IRQ bank. */
+	return airoha_is(qdma->eth, econet_en7580, airoha_an7552) ?
+	       2 : QDMA_INT_REG_MAX;
 }
 
 static u32 airoha_qdma_rx_irq_mask(struct airoha_qdma *qdma, int bank)
 {
-	/* EN7580 RX rings 10..14 reside in the low 16-ring status word. */
-	if (airoha_is(qdma->eth, econet_en7580) && bank == 1)
+	/* The 16-ring QDMA routes RX10..14 through the second IRQ bank. */
+	if (airoha_is(qdma->eth, econet_en7580, airoha_an7552) && bank == 1)
 		return GENMASK(14, 10);
 
 	return RX_IRQ_BANK_PIN_MASK(bank);
@@ -2129,7 +2130,7 @@ static int airoha_qdma_fill_rx_queue(struct airoha_queue *q)
 		e->dma_len = SKB_WITH_OVERHEAD(q->buf_size);
 
 		WRITE_ONCE(desc->tcp_ts_reply, 0);
-		val = airoha_is(qdma->eth, airoha_en7523, econet_en7580) ?
+		val = airoha_is(qdma->eth, airoha_en7523, econet_en7580, airoha_an7552) ?
 			FIELD_PREP(EN7523_QDMA_DESC_LEN_MASK, e->dma_len) :
 			FIELD_PREP(QDMA_DESC_LEN_MASK, e->dma_len);
 		WRITE_ONCE(desc->ctrl, cpu_to_le32(val));
@@ -2239,6 +2240,7 @@ static struct sk_buff *airoha_qdma_lro_rx_skb(struct airoha_queue *q,
 		break;
 	case airoha_en7581:
 	case airoha_an7583:
+	case airoha_an7552:
 		ipv4 = FIELD_GET(QDMA_ETH_RXMSG_IP4_MASK, msg1);
 		ipv6 = FIELD_GET(QDMA_ETH_RXMSG_IP6_MASK, msg1);
 		break;
@@ -2383,7 +2385,8 @@ static struct sk_buff *airoha_qdma_build_rx_skb(struct airoha_queue *q,
 	int qid = q - &q->qdma->q_rx[0];
 	struct sk_buff *skb;
 
-	if (!raw && FIELD_GET(QDMA_ETH_RXMSG_AGG_COUNT_MASK, msg2) > 1) { /* LRO */
+	if (!raw && !airoha_is(q->qdma->eth, airoha_an7552) &&
+	    FIELD_GET(QDMA_ETH_RXMSG_AGG_COUNT_MASK, msg2) > 1) { /* LRO */
 		skb = airoha_qdma_lro_rx_skb(q, desc, e);
 		if (!skb)
 			return NULL;
@@ -2497,7 +2500,7 @@ static int airoha_qdma_rx_process(struct airoha_queue *q, int budget)
 					SKB_WITH_OVERHEAD(q->buf_size), dir);
 
 		page = virt_to_head_page(e->buf);
-		len = airoha_is(eth, airoha_en7523, econet_en7580) ?
+		len = airoha_is(eth, airoha_en7523, econet_en7580, airoha_an7552) ?
 			FIELD_GET(EN7523_QDMA_DESC_LEN_MASK, desc_ctrl) :
 			FIELD_GET(QDMA_DESC_LEN_MASK, desc_ctrl);
 		data_len = q->skb ? q->buf_size
@@ -3374,24 +3377,24 @@ static void airoha_qdma_init_qos_stats(struct airoha_qdma *qdma)
 
 static int airoha_qdma_modern_hw_init(struct airoha_qdma *qdma)
 {
-	bool en7580 = airoha_is(qdma->eth, econet_en7580);
+	bool compact_irq = airoha_qdma_irq_reg_count(qdma) == 2;
 	int i;
 
 	/* Status words are shared by the four IRQ output banks. */
-	if (en7580)
+	if (compact_irq)
 		for (i = 0; i < airoha_qdma_irq_reg_count(qdma); i++)
 			airoha_qdma_wr(qdma, REG_INT_STATUS(i), 0xffffffff);
 
 	for (i = 0; i < qdma->eth->soc->irq_banks; i++) {
 		/* clear pending irqs */
-		if (!en7580)
+		if (!compact_irq)
 			airoha_qdma_wr(qdma, REG_INT_STATUS(i), 0xffffffff);
 		/* setup rx irqs */
 		airoha_qdma_irq_enable(&qdma->irq_banks[i], QDMA_INT_REG_IDX0,
 				       INT_RX0_MASK(airoha_qdma_rx_irq_mask(qdma, i)));
 		airoha_qdma_irq_enable(&qdma->irq_banks[i], QDMA_INT_REG_IDX1,
 				       INT_RX1_MASK(airoha_qdma_rx_irq_mask(qdma, i)));
-		if (en7580)
+		if (compact_irq)
 			continue;
 
 		airoha_qdma_irq_enable(&qdma->irq_banks[i], QDMA_INT_REG_IDX2,
@@ -3402,7 +3405,7 @@ static int airoha_qdma_modern_hw_init(struct airoha_qdma *qdma)
 	/* setup tx irqs */
 	airoha_qdma_irq_enable(&qdma->irq_banks[0], QDMA_INT_REG_IDX0,
 			       TX_COHERENT_LOW_INT_MASK | INT_TX_MASK);
-	if (!en7580)
+	if (!compact_irq)
 		airoha_qdma_irq_enable(&qdma->irq_banks[0], QDMA_INT_REG_IDX4,
 				       TX_COHERENT_HIGH_INT_MASK);
 
@@ -3540,7 +3543,7 @@ static int airoha_qdma_modern_init_irqs(struct platform_device *pdev,
 		spin_lock_init(&irq_bank->irq_lock);
 		irq_bank->qdma = qdma;
 
-		if (airoha_is(eth, econet_en7580)) {
+		if (airoha_is(eth, econet_en7580, airoha_an7552)) {
 			char irq_name[8];
 			int j;
 
@@ -3608,7 +3611,7 @@ static int airoha_qdma_prepare(struct platform_device *pdev,
 		return -ENOMEM;
 
 	airoha_qdma_setup(qdma, eth, qdma->regs, id, AIROHA_NUM_QOS_CHANNELS);
-	if (airoha_is(eth, econet_en7580))
+	if (airoha_is(eth, econet_en7580, airoha_an7552))
 		airoha_qdma_wr(qdma, REG_QDMA_GLOBAL_CFG, 0);
 
 	return 0;
@@ -3703,7 +3706,7 @@ void airoha_qdma_cleanup(struct airoha_qdma *qdma)
 		return;
 	}
 
-	if (airoha_is(qdma->eth, econet_en7580)) {
+	if (airoha_is(qdma->eth, econet_en7580, airoha_an7552)) {
 		airoha_qdma_wr(qdma, REG_QDMA_GLOBAL_CFG, 0);
 		if (qdma->irq_banks) {
 			for (i = 0; i < qdma->eth->soc->irq_banks; i++) {
@@ -6414,6 +6417,8 @@ static void airoha_fe_lro_rxq_enable(struct airoha_eth *eth, int qdma_id,
 			      __field_prep(EN7523_LRO_RXQ_MASK(lro_queue_index),
 					   qid));
 		break;
+	case airoha_an7552:
+		break;
 	case airoha_en7581:
 	case airoha_an7583:
 		airoha_fe_rmw(eth, REG_CDM_LRO_RXQ(id, lro_queue_index),
@@ -6437,6 +6442,8 @@ static void airoha_fe_lro_disable(struct airoha_eth *eth, int qdma_id)
 	case airoha_en7523:
 		airoha_fe_clear(eth, REG_CDM_LRO_EN(id),
 			EN7523_LRO_RXQ_EN_MASK | EN7523_LRO_ALL_RXQ_MASK);
+		break;
+	case airoha_an7552:
 		break;
 	case airoha_en7581:
 	case airoha_an7583:
@@ -6525,6 +6532,40 @@ static void airoha_fe_pse_iq_init(struct airoha_eth *eth)
 		      FIELD_PREP(PSE_IQ_RES2_P4_MASK, 0x34));
 }
 
+/* AN7552/AN7563 share the EN7523 datapath, with a revised PSE. */
+static int an7552_fe_init(struct airoha_eth *eth)
+{
+	airoha_fe_maccr_init(eth);
+	airoha_wr(eth->gdmp_regs, 0x74, 3);
+	airoha_fe_wr(eth, eth->soc->pse_fq_cfg, 0x500);
+	airoha_fe_wr(eth, REG_FE_RST_GLO_CFG, FE_RST_CORE_MASK);
+	usleep_range(1000, 2000);
+
+	/* The SDK leaves the OQ reservations at their silicon defaults. */
+	airoha_fe_wr(eth, AN7552_PSE_SHARE_USED_THD, 0x01e001f4);
+	airoha_fe_wr(eth, REG_FE_PCE_CFG, 0);
+	airoha_fe_vip_setup(eth);
+	airoha_fe_crsn_qsel_init(eth);
+	airoha_fe_rmw(eth, REG_CDM_FWD_CFG(1), CDM_VIP_QSEL_MASK,
+		      FIELD_PREP(CDM_VIP_QSEL_MASK, 4));
+	airoha_fe_rmw(eth, REG_CDM_FWD_CFG(2),
+		      CDM_VIP_QSEL_MASK | CDM_OAM_QSEL_MASK,
+		      FIELD_PREP(CDM_VIP_QSEL_MASK, 4) |
+		      FIELD_PREP(CDM_OAM_QSEL_MASK, 15));
+
+	/* Match fe_set_qdma_fc_map(); PSE port 2, OQs 10 and 11. */
+	airoha_fe_wr(eth, AN7552_QDMA2_FC_MAPPING5, 0x004b004a);
+	airoha_fe_clear(eth, REG_FE_CPORT_CFG, FE_CPORT_QUEUE_XFC_MASK);
+	airoha_fe_set(eth, REG_FE_CPORT_CFG, FE_CPORT_PORT_XFC_MASK);
+	airoha_fe_clear(eth, REG_FE_CSR_IFC_CFG, FE_IFC_EN_MASK);
+	airoha_set_gdm_port_fwd_cfg(eth, REG_GDM_FWD_CFG(AIROHA_GDM1_IDX),
+				    FE_PSE_PORT_CDM1);
+	airoha_set_gdm_port_fwd_cfg(eth, REG_GDM_FWD_CFG(AIROHA_GDM2_IDX),
+				    FE_PSE_PORT_DROP);
+
+	return 0;
+}
+
 static int airoha_fe_init(struct airoha_eth *eth)
 {
 	int err;
@@ -6558,6 +6599,8 @@ static int airoha_fe_init(struct airoha_eth *eth)
 	}
 
 	airoha_fe_pse_iq_init(eth);
+	if (airoha_is(eth, airoha_an7552))
+		return an7552_fe_init(eth);
 
 	/* VIP classification is shared by the EcoNet and Airoha FEs.
 	 * EN7516/EN7527/EN7528 additionally use the same 4-bit CRSN layout
@@ -7151,6 +7194,9 @@ static int airoha_dev_open(struct net_device *netdev)
 	u32 pse_port = FE_PSE_PORT_PPE1;
 	int err;
 
+	if (!eth->soc->num_ppe)
+		pse_port = airoha_is_lan_gdm_dev(dev) ?
+			   FE_PSE_PORT_CDM1 : FE_PSE_PORT_CDM2;
 	qdma = airoha_qdma_deref(dev);
 	if (!econet) {
 		int qdma_id = qdma - &eth->qdma[0];
@@ -7546,7 +7592,8 @@ static void airoha_dev_set_qdma(struct airoha_gdm_dev *dev)
 	}
 
 	ppe_id = !airoha_is_lan_gdm_dev(dev) && airoha_ppe_is_enabled(eth, 1);
-	airoha_ppe_set_cpu_port(dev, ppe_id, airoha_get_fe_port(dev));
+	if (eth->soc->num_ppe)
+		airoha_ppe_set_cpu_port(dev, ppe_id, airoha_get_fe_port(dev));
 
 	if (!cur_qdma)
 		return;
@@ -7997,7 +8044,8 @@ static netdev_tx_t __airoha_dev_xmit(struct sk_buff *skb,
 				  xpon->gem_port_id);
 		if (xpon->oam)
 			msg0 |= QDMA_ETH_TXMSG_OAM_MASK;
-	} else if (airoha_is(qdma->eth, airoha_en7523, econet_en7580)) {
+	} else if (airoha_is(qdma->eth, airoha_en7523, econet_en7580,
+			     airoha_an7552)) {
 		airoha_qdma_skb_get_mtk_meta(skb, netdev,
 					     AIROHA_MTK_TAG_TO_DESC,
 					     &skb_meta);
@@ -8061,6 +8109,9 @@ static netdev_tx_t __airoha_dev_xmit(struct sk_buff *skb,
 		       FIELD_PREP(QDMA_ETH_TXMSG_METER_MASK, 0x7f);
 	}
 
+	if (airoha_is(qdma->eth, airoha_an7552))
+		msg1 |= GENMASK(10, 0);
+
 	if (xpon_oam)
 		msg1 |= QDMA_ETH_TXMSG_NO_DROP;
 
@@ -8117,7 +8168,7 @@ static netdev_tx_t __airoha_dev_xmit(struct sk_buff *skb,
 				     list);
 		index = e - q->entry;
 
-		val = airoha_is(qdma->eth, airoha_en7523, econet_en7580) ?
+		val = airoha_is(qdma->eth, airoha_en7523, econet_en7580, airoha_an7552) ?
 			FIELD_PREP(EN7523_QDMA_DESC_LEN_MASK, len) :
 			FIELD_PREP(QDMA_DESC_LEN_MASK, len);
 		if (i < nr_frags - 1)
@@ -9273,6 +9324,9 @@ static int airoha_gdm_dev_tc_setup(struct net_device *netdev,
 		return airoha_ppe_dev_setup_tc(dev->common.ppe, netdev, type,
 					       type_data);
 
+	if (!dev->eth->soc->num_ppe)
+		return -EOPNOTSUPP;
+
 	switch (type) {
 	case TC_SETUP_QDISC_ETS:
 		return airoha_tc_setup_qdisc_ets(netdev, type_data);
@@ -9599,6 +9653,13 @@ static int airoha_alloc_gdm_device(struct airoha_eth *eth,
 		netdev->hw_features = AIROHA_HW_FEATURES | NETIF_F_GRO_HW;
 		netdev->features |= AIROHA_HW_FEATURES;
 		netdev->vlan_features = AIROHA_HW_FEATURES;
+	}
+	if (airoha_is(eth, airoha_an7552)) {
+		netdev_features_t unsupported = NETIF_F_HW_TC | NETIF_F_GRO_HW;
+
+		netdev->hw_features &= ~unsupported;
+		netdev->features &= ~unsupported;
+		netdev->vlan_features &= ~unsupported;
 	}
 
 	netdev->watchdog_timeo = 5 * HZ;
@@ -10464,6 +10525,40 @@ const struct airoha_eth_soc_data airoha_an7583_soc_data = {
 	},
 };
 
+static int an7552_get_dev_from_sport(struct airoha_eth *eth, u32 sport,
+				     u16 *port, u16 *dev)
+{
+	*dev = 0;
+	switch (sport) {
+	case 0:
+	case 1:
+	case 0x10 ... 0x14:
+		*port = AIROHA_GDM1_IDX - 1;
+		return 0;
+	case 2:
+	case 5:
+		*port = AIROHA_GDM2_IDX - 1;
+		return 0;
+	default:
+		return -EINVAL;
+	}
+}
+
+static const struct airoha_eth_soc_data an7552_soc_data = {
+	.version = airoha_an7552,
+	.tx_ring = 8,
+	.rx_ring = 16,
+	.irq_banks = 4,
+	.max_gdm_ports = 2,
+	.pse_fq_cfg = PSE_FQ_CFG,
+	/* PPE and hardware LRO require separate AN7552 profiles. */
+	.ops = {
+		.get_sport = airoha_en7523_get_sport,
+		.get_vip_port = airoha_en7523_get_vip_port,
+		.get_dev_from_sport = an7552_get_dev_from_sport,
+	},
+};
+
 const struct airoha_eth_soc_data airoha_en7523_soc_data = {
 	.version = airoha_en7523,
 	.xpon_ops = &airoha_xpon_ops,
@@ -10976,6 +11071,8 @@ void airoha_eth_xdsl_update_link(struct net_device *netdev,
 EXPORT_SYMBOL_GPL(airoha_eth_xdsl_update_link);
 
 static const struct of_device_id airoha_eth_of_match[] = {
+	{ .compatible = "airoha,an7552-eth", .data = &an7552_soc_data },
+	{ .compatible = "airoha,an7563-eth", .data = &an7552_soc_data },
 	{ .compatible = "econet,en751221-eth", .data = &econet_en751221_soc_data },
 	{ .compatible = "econet,en751627-eth", .data = &econet_en7528_soc_data },
 	{ .compatible = "econet,en7528-eth", .data = &econet_en7528_soc_data },
