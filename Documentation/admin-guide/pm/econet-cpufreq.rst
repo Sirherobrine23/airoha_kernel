@@ -87,8 +87,8 @@ behavior on that unit, not prolonged stability or silicon operating limits.
 
 Profiles below 600 MHz are no longer exposed after a system hang followed
 by watchdog recovery was reported with automatic switching. This restriction
-does not establish the cause of that hang. Only explicitly listed complete
-pairs can be programmed through the clock provider.
+does not establish the cause of that hang. Only the retained family rate sets can be programmed through the clock
+provider using the characterized encoding.
 
 The SDK's 900 MHz path only saves boot metadata. Runtime restoration uses
 the observed boot pair, not a documented SDK 900 MHz transition. The SDK's
@@ -327,8 +327,8 @@ relative deviation on descent was approximately 0.00845 percent. One
 window difference. The final 900 MHz reference measured 900.044 MHz and
 software boost was disabled successfully.
 
-The PLL table is unconditional; ``CONFIG_ECONET_CPUFREQ_EN7528_RAMP`` is
-no longer needed. CPUFreq gets its candidates from the DT OPP table and
+The retained rate set is unconditional;
+``CONFIG_ECONET_CPUFREQ_EN7528_RAMP`` is no longer needed. CPUFreq gets its candidates from the DT OPP table and
 filters them through exact provider rounding. Reporting-only providers
 retain one entry and cannot acquire writable ops from the OPP table.
 No generic PLL arithmetic, voltage control or DDR recalibration is added.
@@ -437,8 +437,8 @@ CPUFreq loads the available OPPs on CPU0 at probe. Unsupported rates and
 rates that cannot be represented exactly in kHz are disabled before the
 OPP helper builds the CPUFreq table. An OPP can restrict the hardware
 profiles but cannot introduce new PLL settings or restore a removed low
-profile. The PLL register pairs and stopped transition sequence remain
-in the clock driver. Runtime OPP table changes are not synchronized with
+profile. The PLL field encoding and stopped transition sequence remain in the
+clock driver. Runtime OPP table changes are not synchronized with
 the already-created CPUFreq table; update the DTB and reboot.
 
 Deploy the updated kernel and DTB together. Without ``operating-points-v2``
@@ -452,3 +452,56 @@ The generic ``cpufreq-dt`` automatic platform-device path excludes these
 two SoC compatibles so it cannot race the EcoNet driver after OPP tables
 are added. EcoNet retains its provider checks, boost restrictions, MIPS
 delay updates, BUS/watchdog notifications and 100 ms governor update hint.
+
+Boot context and masked PLL programming
+--------------------------------------
+
+The register-profile arrays have been removed. For the characterized
+25 MHz encoding, the clock provider retains exactly the same rate sets:
+EN751221 accepts 700 through 1000 MHz in 100 MHz increments; EN7528 accepts
+600 through 1000 MHz in 25 MHz increments. DT OPP tables can restrict these
+sets. No additional frequency is enabled by removing the arrays.
+
+For an accepted rate, the configuration count is ``rate / 25000000 - 1``
+and the parameter count is seven less. The observed configuration byte is
+bits 15:8; the parameter field used by these rates is bits 26:21. A
+transition reads the complete current register state inside stop_machine,
+replaces only these frequency fields, and retains all other bits. It does
+not synthesize a complete ``0x05101708`` register value. The direct divider
+encoding in config bits 21:20 must still equal one. Writable registration
+also requires the decoded boot fields to agree with the saved 900 MHz
+boot rate, rather than accepting inconsistent metadata and register fields.
+
+Live readback validates setup, control, divider, family rate bounds and the
+relationship between the two frequency fields. Bits outside the frequency
+fields must match the boot snapshot. An unexpected change outside them is
+rejected rather than silently interpreted as the same PLL mode. Target
+readback compares the full expected state; failure reapplies and verifies
+the exact previous snapshot. The five/six-write transition order, watchdog
+notifications, MIPS delay handling and software boost checks are retained.
+
+EN7528 XTAL selection
+~~~~~~~~~~~~~~~~~~~~
+
+The SDK's EN7528 DDR calibration object chooses the XTAL selector using
+bit 9 of the parameters saved at ``0x1fb00284``. When clear, it reads
+``0x1fa20174``; when set, it reads ``0x1fa2ff28``. Bit 21 of the selected
+register is the selector: one indicates 25 MHz, zero indicates 20 MHz.
+The EN7528 SCU node maps the alternate selector as a separate four-byte
+``xtal`` resource, adjacent to the xPON TX-off register without overlapping
+it. With an older DTB that provides neither this resource nor a CHIP-SCU
+range covering the alternate address, that path returns an unknown
+reference and frequency control remains disabled.
+
+The supplied short PMU measurements characterize the 25 MHz CPU encoding
+only. They do not establish the CPU PLL programming fields or fractional
+behavior for a 20 MHz reference. An EN7528 with 20 MHz or unknown XTAL
+therefore retains reporting of its saved boot rate without writable PLL
+operations. A change from that saved state becomes unknown. The driver
+does not scale the 25 MHz formula by a guessed 20/25 factor. EN751221
+retains its previously characterized 25 MHz encoding; no new XTAL detector
+is inferred for that family.
+
+Preserving other boot bits is not hardware validation of a new PLL mode or
+board. Characterizing the 20 MHz CPU path still requires its boot PLL dump
+and independent frequency measurements before enabling transitions.

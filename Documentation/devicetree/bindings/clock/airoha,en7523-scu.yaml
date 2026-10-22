@@ -41,7 +41,7 @@ properties:
     minItems: 1
     items:
       - const: np-scu
-      - const: mcucfg
+      - enum: [mcucfg, xtal]
 
   airoha,chip-scu:
     $ref: /schemas/types.yaml#/definitions/phandle
@@ -79,6 +79,10 @@ allOf:
           items:
             - description: NP-SCU registers
             - description: Optional MCUCFG registers used while switching the CPU PLL
+        reg-names:
+          items:
+            - const: np-scu
+            - const: mcucfg
       required:
         - reg-names
         - airoha,chip-scu
@@ -113,7 +117,6 @@ allOf:
             enum:
               - econet,en751221-scu
               - econet,en751627-scu
-              - econet,en7528-scu
               - econet,en7580-scu
     then:
       properties:
@@ -124,6 +127,37 @@ allOf:
             - const: np-scu
       required:
         - airoha,chip-scu
+
+  - if:
+      properties:
+        compatible:
+          contains:
+            const: econet,en7528-scu
+    then:
+      properties:
+        reg:
+          minItems: 1
+          items:
+            - description: NP-SCU registers
+            - description: Optional four-byte alternate XTAL selector at 0x1fa2ff28
+        reg-names:
+          minItems: 1
+          items:
+            - const: np-scu
+            - const: xtal
+      required:
+        - airoha,chip-scu
+      allOf:
+        - if:
+            properties:
+              reg:
+                minItems: 2
+          then:
+            properties:
+              reg-names:
+                minItems: 2
+            required:
+              - reg-names
 
 additionalProperties: false
 

@@ -195,12 +195,13 @@
 
 		chip_scu: syscon@1fa20000 {
 			compatible = "airoha,scuclk", "econet,en7528-chip-scu", "syscon";
-			reg = <0x1fa20000 0x400>;
+			reg = <0x1fa20000 0x10000>;
 		};
 
 		scuclk: system-controller@1fb00000 {
 			compatible = "econet,en7528-scu", "syscon";
 			reg = <0x1fb00000 0x1000>;
+			reg-names = "np-scu";
 
 			airoha,chip-scu = <&chip_scu>;
 			#clock-cells = <1>;
@@ -680,9 +681,8 @@
 		xpon: xmac@1fb60000 {
 			compatible = "airoha,en7528-xpon";
 
-			reg = <0x1fb60000 0x10000>,
-			      <0x1fa2ff24 0x4>;
-			reg-names = "mac", "tx-off";
+			reg = <0x1fb60000 0x10000>;
+			reg-names = "mac";
 
 			interrupts = <GIC_SHARED 26 IRQ_TYPE_LEVEL_HIGH>,
 			             <GIC_SHARED 18 IRQ_TYPE_LEVEL_HIGH>;

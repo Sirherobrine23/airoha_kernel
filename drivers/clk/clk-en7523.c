@@ -97,6 +97,7 @@
 #define REG_RST_CTRL2			0x830
 #define REG_RST_CTRL1			0x834
 #define EN751221_REG_RST_DMT		0x84
+#define EN751221_REG_XTAL		0x8c
 #define EN751221_REG_RST_USB		0xec
 #define EN751221_REG_SPI_DIV		0x0cc
 #define EN751221_SPI_BASE		500000000
@@ -135,6 +136,14 @@
 #define EN7528_REG_CPU_PLL_CONFIG		0x1ec
 #define EN7528_REG_CPU_PLL_CONTROL	0x1f8
 #define EN7528_REG_CPU_PLL_PARAM		0x1fc
+#define EN7528_REG_XTAL_SELECT		0x0174
+#define EN7528_REG_XTAL_SELECT_ALT	0xff28
+#define EN7528_XTAL_25MHZ		BIT(21)
+#define ECONET_CPU_PLL_CONFIG_FREQ	GENMASK(15, 8)
+#define ECONET_CPU_PLL_CONFIG_DIV	GENMASK(21, 20)
+#define ECONET_CPU_PLL_CONFIG_DIRECT	BIT(20)
+#define ECONET_CPU_PLL_PARAM_FREQ	GENMASK(26, 21)
+#define ECONET_SAVED_IS_FPGA		BIT(9)
 
 /* EN7580 MIPS CHIP-SCU layout (ecnt_scu.h and spi_controller.c). */
 #define EN7580_REG_SPI_DIV		0x1b8
@@ -144,7 +153,9 @@
 #define EN7580_REG_TOD_DIVIDER_ENABLE	0x1e4
 #define EN7580_REG_CPU_PLL_PROTECT	0x264
 #define EN7580_REG_CPU_PLL_PCW		0x2ac
-#define EN7580_REG_CPU_PLL_CHANGE		0x2b0
+#define EN7580_REG_CPU_PLL_CHANGE	0x2b0
+#define EN7580_REG_XTAL_SELECT		0x0254
+#define EN7580_REG_XTAL_SELECT_ALT	0xff30
 #define EN7580_CPU_PLL_PCW_MASK		GENMASK(30, 24)
 #define EN7580_CPU_PLL_PCW_MIN		26
 #define EN7580_CPU_PLL_PCW_MAX		104
@@ -291,6 +302,7 @@ struct airoha_clk_priv {
 	struct regmap *scu_np;
 	void __iomem *np_scu_base;
 	void __iomem *chip_scu_base;
+	resource_size_t chip_scu_size;
 	void __iomem *efuse_base;
 	void __iomem *mcucfg;
 };
@@ -307,42 +319,8 @@ struct econet_cpu_clk {
 	struct airoha_clk_priv *priv;
 	struct econet_cpu_pll_state boot_state;
 	unsigned long boot_rate;
+	unsigned long xtal_rate;
 	u8 divisor;
-};
-
-struct econet_cpu_profile {
-	u32 config;
-	u32 param;
-	unsigned long rate;
-};
-
-static const struct econet_cpu_profile en751221_cpu_profiles[] = {
-	{ 0x05101b08, 0x02800000, 700000000UL },
-	{ 0x05101f08, 0x03000000, 800000000UL },
-	{ 0x05102308, 0x03800000, 900000000UL },
-	/* Exercised with short PMU windows on EN7526G. */
-	{ 0x05102708, 0x04000000, 1000000000UL },
-};
-
-static const struct econet_cpu_profile en7528_cpu_profiles[] = {
-	/* All pairs exercised with short PMU windows on one EN7528HU. */
-	{ 0x05101708, 0x02000000, 600000000UL },
-	{ 0x05101808, 0x02200000, 625000000UL },
-	{ 0x05101908, 0x02400000, 650000000UL },
-	{ 0x05101a08, 0x02600000, 675000000UL },
-	{ 0x05101b08, 0x02800000, 700000000UL },
-	{ 0x05101c08, 0x02a00000, 725000000UL },
-	{ 0x05101d08, 0x02c00000, 750000000UL },
-	{ 0x05101e08, 0x02e00000, 775000000UL },
-	{ 0x05101f08, 0x03000000, 800000000UL },
-	{ 0x05102008, 0x03200000, 825000000UL },
-	{ 0x05102108, 0x03400000, 850000000UL },
-	{ 0x05102208, 0x03600000, 875000000UL },
-	{ 0x05102308, 0x03800000, 900000000UL },
-	{ 0x05102408, 0x03a00000, 925000000UL },
-	{ 0x05102508, 0x03c00000, 950000000UL },
-	{ 0x05102608, 0x03e00000, 975000000UL },
-	{ 0x05102708, 0x04000000, 1000000000UL },
 };
 
 struct econet_cpu_pll_layout {
@@ -351,8 +329,6 @@ struct econet_cpu_pll_layout {
 	u16 control;
 	u16 param;
 	u32 idle_setup;
-	const struct econet_cpu_profile *profiles;
-	unsigned int num_profiles;
 };
 
 static const struct econet_cpu_pll_layout en751221_cpu_pll = {
@@ -361,8 +337,6 @@ static const struct econet_cpu_pll_layout en751221_cpu_pll = {
 	.control = EN751221_REG_CPU_PLL_CONTROL,
 	.param = EN751221_REG_CPU_PLL_PARAM,
 	.idle_setup = 0x12,
-	.profiles = en751221_cpu_profiles,
-	.num_profiles = ARRAY_SIZE(en751221_cpu_profiles),
 };
 
 static const struct econet_cpu_pll_layout en7528_cpu_pll = {
@@ -371,8 +345,6 @@ static const struct econet_cpu_pll_layout en7528_cpu_pll = {
 	.control = EN7528_REG_CPU_PLL_CONTROL,
 	.param = EN7528_REG_CPU_PLL_PARAM,
 	.idle_setup = 0,
-	.profiles = en7528_cpu_profiles,
-	.num_profiles = ARRAY_SIZE(en7528_cpu_profiles),
 };
 
 static const struct of_device_id of_match_clk_en7523[];
@@ -2217,6 +2189,62 @@ econet_cpu_pll_layout(struct airoha_clk_priv *priv)
 	}
 }
 
+static unsigned long airoha_xtal_rate(struct airoha_clk_priv *priv)
+{
+	u32 strap, value;
+
+	switch (priv->soc_family) {
+	case AN7583_PKG:
+	case EN7581_PKG:
+		/* AN7581 and AN7583 is fixed in 50 MHz */
+		return 50000000UL;
+	case EN7523_PKG:
+		strap = readl(priv->chip_scu_base + EN7523_SCU_XTAL_SELECT);
+		if (strap & BIT(19))
+			return 25000000UL; /* 25 MHz */
+		return 20000000UL; /* 20 MHz */
+	case EN7580_PKG:
+		strap = readl(priv->np_scu_base + AIROHA_NP_SCU_SCREG_WR1);
+		value = readl(priv->chip_scu_base + (strap & ECONET_SAVED_IS_FPGA ?
+						     EN7580_REG_XTAL_SELECT_ALT :
+						     EN7580_REG_XTAL_SELECT));
+		if (value & BIT(19))
+			return 25000000UL; /* 25 MHz */
+		return 20000000UL; /* 20 MHz */
+	case EN751221_PKG:
+		value = readl(priv->np_scu_base + EN751221_REG_XTAL);
+		if (value & BIT(0))
+			return 25000000UL;
+		return 20000000UL;
+	case EN7528_PKG:
+		/* SDK DDR calibration chooses the selector using saved parameter bit 9. */
+		strap = readl(priv->np_scu_base + AIROHA_NP_SCU_SCREG_WR1);
+		value = readl(priv->chip_scu_base + (strap & ECONET_SAVED_IS_FPGA ?
+						     EN7528_REG_XTAL_SELECT_ALT :
+						     EN7528_REG_XTAL_SELECT));
+		if (value & EN7528_XTAL_25MHZ)
+			return 25000000UL;
+		return 20000000UL;
+	default:
+		return 0;
+	}
+}
+
+static bool econet_cpu_rate_supported(struct airoha_clk_priv *priv,
+				      unsigned long rate)
+{
+	switch (priv->soc_family) {
+	case EN751221_PKG:
+		return rate >= 600000000UL && rate <= 1000000000UL &&
+		       !(rate % 100000000UL);
+	case EN7528_PKG:
+		return rate >= 600000000UL && rate <= 1000000000UL &&
+		       !(rate % 25000000UL);
+	default:
+		return false;
+	}
+}
+
 static void econet_cpu_pll_read(struct airoha_clk_priv *priv,
 				struct econet_cpu_pll_state *state)
 {
@@ -2236,31 +2264,42 @@ static void econet_cpu_pll_read(struct airoha_clk_priv *priv,
 	}
 }
 
-static const struct econet_cpu_profile *
-econet_cpu_pll_profile(const struct econet_cpu_pll_layout *pll,
-		       const struct econet_cpu_pll_state *state)
-{
-	unsigned int i;
-
-	if (!pll || state->setup != pll->idle_setup || state->control != 0x406)
-		return NULL;
-
-	for (i = 0; i < pll->num_profiles; i++)
-		if (state->config == pll->profiles[i].config &&
-		    state->param == pll->profiles[i].param)
-			return &pll->profiles[i];
-
-	return NULL;
-}
-
 static unsigned long
-econet_cpu_pll_rate(struct airoha_clk_priv *priv,
+econet_cpu_pll_rate(struct econet_cpu_clk *clk,
 		    const struct econet_cpu_pll_state *state)
 {
-	const struct econet_cpu_profile *profile;
+	const struct econet_cpu_pll_layout *pll = econet_cpu_pll_layout(clk->priv);
+	unsigned long rate;
+	u32 count;
 
-	profile = econet_cpu_pll_profile(econet_cpu_pll_layout(priv), state);
-	return profile ? profile->rate : 0;
+	/* Only the characterized 25 MHz direct-PLL encoding can be decoded. */
+	if (!pll || clk->xtal_rate != 25000000UL ||
+	    state->setup != pll->idle_setup || state->control != 0x406 ||
+	    (state->config & ECONET_CPU_PLL_CONFIG_DIV) !=
+					ECONET_CPU_PLL_CONFIG_DIRECT)
+		return 0;
+
+	/* Other bits must remain as captured at boot, including calibration. */
+	if (((state->config ^ clk->boot_state.config) &
+	     ~ECONET_CPU_PLL_CONFIG_FREQ) ||
+	    ((state->param ^ clk->boot_state.param) &
+	     ~ECONET_CPU_PLL_PARAM_FREQ))
+		return 0;
+
+	count = FIELD_GET(ECONET_CPU_PLL_CONFIG_FREQ, state->config);
+	/* Bound before multiplying to avoid unsigned-long overflow on MIPS. */
+	if (count < 23 || count > 39 ||
+	    FIELD_GET(ECONET_CPU_PLL_PARAM_FREQ, state->param) != count - 7)
+		return 0;
+	rate = (count + 1) * 25000000UL;
+
+	return econet_cpu_rate_supported(clk->priv, rate) ? rate : 0;
+}
+
+static bool econet_cpu_clk_can_scale(struct econet_cpu_clk *clk)
+{
+	return clk->boot_rate == 900000000UL &&
+		econet_cpu_pll_rate(clk, &clk->boot_state) == clk->boot_rate;
 }
 
 static unsigned long
@@ -2290,7 +2329,7 @@ static unsigned long econet_cpu_clk_recalc_rate(struct clk_hw *hw,
 
 	econet_cpu_pll_read(clk->priv, &state);
 	if (econet_cpu_pll_layout(clk->priv))
-		rate = econet_cpu_pll_rate(clk->priv, &state);
+		rate = econet_cpu_pll_rate(clk, &state);
 	else
 		rate = en7580_cpu_pll_rate(&state);
 
@@ -2308,17 +2347,17 @@ static const struct clk_ops econet_cpu_clk_ops = {
 struct econet_cpu_change {
 	struct econet_cpu_clk *clk;
 	const struct econet_cpu_pll_layout *pll;
-	const struct econet_cpu_profile *profile;
+	unsigned long rate;
 	bool rollback_failed;
 };
 
 static void econet_cpu_pll_write(void __iomem *base,
 				 const struct econet_cpu_pll_layout *pll,
-				 const struct econet_cpu_profile *profile)
+				 const struct econet_cpu_pll_state *state)
 {
 	writel(0x12, base + pll->setup);
-	writel(profile->config, base + pll->config);
-	writel(profile->param, base + pll->param);
+	writel(state->config, base + pll->config);
+	writel(state->param, base + pll->param);
 	writel(0x402, base + pll->control);
 	writel(0x406, base + pll->control);
 	/* EN7528 clears the programming setup after applying the new pair. */
@@ -2331,24 +2370,33 @@ static int econet_cpu_change_stopped(void *arg)
 {
 	struct econet_cpu_change *change = arg;
 	struct airoha_clk_priv *priv = change->clk->priv;
-	const struct econet_cpu_profile *old;
-	struct econet_cpu_pll_state state;
+	struct econet_cpu_pll_state old, target, state;
+	unsigned long old_rate;
+	u32 count;
 
-	econet_cpu_pll_read(priv, &state);
-	old = econet_cpu_pll_profile(change->pll, &state);
-	if (!old)
+	econet_cpu_pll_read(priv, &old);
+	old_rate = econet_cpu_pll_rate(change->clk, &old);
+	if (!old_rate)
 		return -EOPNOTSUPP;
-	if (old == change->profile)
+	if (old_rate == change->rate)
 		return 0;
 
-	econet_cpu_pll_write(priv->chip_scu_base, change->pll, change->profile);
+	/* Preserve the live register bits outside the two frequency fields. */
+	count = change->rate / 25000000UL - 1;
+	target = old;
+	target.config = (old.config & ~ECONET_CPU_PLL_CONFIG_FREQ) |
+			FIELD_PREP(ECONET_CPU_PLL_CONFIG_FREQ, count);
+	target.param = (old.param & ~ECONET_CPU_PLL_PARAM_FREQ) |
+		       FIELD_PREP(ECONET_CPU_PLL_PARAM_FREQ, count - 7);
+	econet_cpu_pll_write(priv->chip_scu_base, change->pll, &target);
 	econet_cpu_pll_read(priv, &state);
-	if (econet_cpu_pll_profile(change->pll, &state) == change->profile)
+	if (!memcmp(&state, &target, sizeof(state)))
 		return 0;
 
-	econet_cpu_pll_write(priv->chip_scu_base, change->pll, old);
+	/* Reapply the exact previous snapshot, rather than synthesizing it. */
+	econet_cpu_pll_write(priv->chip_scu_base, change->pll, &old);
 	econet_cpu_pll_read(priv, &state);
-	change->rollback_failed = econet_cpu_pll_profile(change->pll, &state) != old;
+	change->rollback_failed = memcmp(&state, &old, sizeof(state));
 	return -EIO;
 }
 
@@ -2356,18 +2404,12 @@ static long econet_cpu_clk_round_rate(struct clk_hw *hw, unsigned long rate,
 				      unsigned long *parent_rate)
 {
 	struct econet_cpu_clk *clk = container_of(hw, struct econet_cpu_clk, hw);
-	const struct econet_cpu_pll_layout *pll = econet_cpu_pll_layout(clk->priv);
-	unsigned int i;
 
-	if (!pll)
+	if (!econet_cpu_clk_can_scale(clk) ||
+	    !econet_cpu_rate_supported(clk->priv, rate))
 		return -EINVAL;
 
-	/* Each family exposes only its explicitly listed profiles. */
-	for (i = 0; i < pll->num_profiles; i++)
-		if (rate == pll->profiles[i].rate)
-			return rate;
-
-	return -EINVAL;
+	return rate;
 }
 
 static int econet_cpu_clk_set_rate(struct clk_hw *hw, unsigned long rate,
@@ -2375,28 +2417,22 @@ static int econet_cpu_clk_set_rate(struct clk_hw *hw, unsigned long rate,
 {
 	struct econet_cpu_change change = {
 		.clk = container_of(hw, struct econet_cpu_clk, hw),
+		.rate = rate,
 	};
-	unsigned int i;
 	int ret;
 
 	change.pll = econet_cpu_pll_layout(change.clk->priv);
-	if (!change.pll)
+	if (!change.pll || !econet_cpu_clk_can_scale(change.clk))
 		return -EOPNOTSUPP;
+	if (!econet_cpu_rate_supported(change.clk->priv, rate))
+		return -EINVAL;
 
-	for (i = 0; i < change.pll->num_profiles; i++) {
-		if (rate != change.pll->profiles[i].rate)
-			continue;
-
-		change.profile = &change.pll->profiles[i];
-		/* Run the sequence once, with all other cores and VPEs quiesced. */
-		ret = stop_machine(econet_cpu_change_stopped, &change, NULL);
-		if (change.rollback_failed)
-			pr_err("EcoNet CPU PLL rollback failed (family %#x)\n",
-			       change.clk->priv->soc_family);
-		return ret;
-	}
-
-	return -EINVAL;
+	/* Run the sequence once, with all other cores and VPEs quiesced. */
+	ret = stop_machine(econet_cpu_change_stopped, &change, NULL);
+	if (change.rollback_failed)
+		pr_err("EcoNet CPU PLL rollback failed (family %#x)\n",
+		       change.clk->priv->soc_family);
+	return ret;
 }
 
 static const struct clk_ops econet_cpu_scaling_ops = {
@@ -2404,19 +2440,6 @@ static const struct clk_ops econet_cpu_scaling_ops = {
 	.round_rate = econet_cpu_clk_round_rate,
 	.set_rate = econet_cpu_clk_set_rate,
 };
-
-static bool econet_cpu_clk_can_scale(struct airoha_clk_priv *priv,
-				     const struct econet_cpu_pll_state *boot_state,
-				     unsigned long boot_rate)
-{
-	bool supported;
-
-	supported = priv->soc_family == EN751221_PKG ||
-		    priv->soc_family == EN7528_PKG;
-
-	return supported && boot_rate == 900000000UL &&
-		econet_cpu_pll_profile(econet_cpu_pll_layout(priv), boot_state);
-}
 
 static struct clk_hw *
 econet_register_cpu_clk(struct device *dev, struct airoha_clk_priv *priv,
@@ -2439,9 +2462,14 @@ econet_register_cpu_clk(struct device *dev, struct airoha_clk_priv *priv,
 	clk->boot_state = *boot_state;
 	clk->boot_rate = boot_rate;
 	clk->divisor = parent ? priv->soc_data->cpu_clk_mult : 1;
-	/* Restrict writes to the identified variants and 900 MHz boot metadata. */
-	if (!parent && econet_cpu_clk_can_scale(priv, boot_state, boot_rate))
+	clk->xtal_rate = parent ? 0 : airoha_xtal_rate(priv);
+	/* Keep the characterized reference, boot-rate and PLL-state gates. */
+	if (!parent && econet_cpu_clk_can_scale(clk))
 		init.ops = &econet_cpu_scaling_ops;
+	if (!parent && priv->soc_family == EN7528_PKG &&
+	    clk->xtal_rate != 25000000UL)
+		dev_info(dev, "%s XTAL: CPU PLL control is not characterized\n",
+			 clk->xtal_rate == 20000000UL ? "20 MHz" : "Unknown");
 	if (parent) {
 		init.parent_hws = &parent;
 		init.num_parents = 1;
@@ -2504,7 +2532,7 @@ static int econet_register_clocks(struct device *dev,
 		return dev_err_probe(dev, -EINVAL,
 				     "Bootloader did not save the bus clock rate\n");
 
-	/* EN7526C shares a compatible but not the EN751221 CPU PLL layout. */
+	/* Return CPU live clock */
 	if (priv->soc_family == EN751221_PKG || priv->soc_family == EN7528_PKG ||
 	    priv->soc_family == EN7580_PKG)
 		return econet_register_live_cpu_clocks(dev, priv, clk_data,
@@ -2608,6 +2636,13 @@ static int airoha_clk_map_resources(struct platform_device *pdev,
 	}
 	if (!chip_np)
 		return -ENODEV;
+
+	err = of_address_to_resource(chip_np, 0, &res);
+	if (err) {
+		of_node_put(chip_np);
+		return err;
+	}
+	priv->chip_scu_size = resource_size(&res);
 
 	priv->scu_chip = syscon_node_to_regmap(chip_np);
 	if (IS_ERR(priv->scu_chip)) {
