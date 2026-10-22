@@ -81,6 +81,115 @@ struct airoha_tr_reg {
 };
 
 
+/* AN7552 A7552.04.02 PHY tuning, separate from the EN7523 profile. */
+static const struct airoha_mmd_reg an7552_ge_init_regs[] = {
+	{ MDIO_MMD_VEND2, 0x0044, 0x00a0 },
+	{ MDIO_MMD_VEND2, 0x027c, 0x0808 },
+	{ MDIO_MMD_VEND2, 0x027b, 0x1177 },
+	{ MDIO_MMD_VEND2, 0x0417, 0x7775 },
+	{ MDIO_MMD_VEND2, 0x0024, 0xc007 },
+	{ MDIO_MMD_VEND2, 0x0025, 0x003f },
+	{ MDIO_MMD_VEND2, 0x0026, 0xc007 },
+	{ MDIO_MMD_VEND2, 0x0027, 0x003f },
+	{ MDIO_MMD_VEND2, 0x0021, 0x800a },
+	{ MDIO_MMD_VEND1, 0x0000, 0x0190 },
+	{ MDIO_MMD_VEND1, 0x0001, 0x01c8 },
+	{ MDIO_MMD_VEND1, 0x0002, 0x01c2 },
+	{ MDIO_MMD_VEND1, 0x0003, 0x0100 },
+	{ MDIO_MMD_VEND1, 0x0004, 0x020d },
+	{ MDIO_MMD_VEND1, 0x0005, 0x020a },
+	{ MDIO_MMD_VEND1, 0x0006, 0x038f },
+	{ MDIO_MMD_VEND1, 0x0007, 0x03c8 },
+	{ MDIO_MMD_VEND1, 0x0008, 0x03c4 },
+	{ MDIO_MMD_VEND1, 0x0009, 0x0300 },
+	{ MDIO_MMD_VEND1, 0x000a, 0x0008 },
+	{ MDIO_MMD_VEND1, 0x000b, 0x0002 },
+	{ MDIO_MMD_VEND1, 0x0011, 0x0f00 },
+	{ MDIO_MMD_VEND1, 0x0013, 0x0000 },
+	{ MDIO_MMD_VEND1, 0x0014, 0x0000 },
+	{ MDIO_MMD_VEND1, 0x0044, 0x0000 },
+	{ MDIO_MMD_VEND1, 0x0176, 0x6600 },
+	{ MDIO_MMD_VEND1, 0x0177, 0x0066 },
+	{ MDIO_MMD_VEND1, 0x0041, 0x3333 },
+	{ MDIO_MMD_VEND1, 0x0040, 0x0000 },
+	{ MDIO_MMD_VEND1, 0x0201, 0x4000 },
+	{ MDIO_MMD_VEND1, 0x003d, 0x0000 },
+	{ MDIO_MMD_VEND1, 0x0198, 0x0001 },
+	{ MDIO_MMD_VEND1, 0x003e, 0x0000 },
+	{ MDIO_MMD_VEND1, 0x023c, 0x0a20 },
+	{ MDIO_MMD_VEND1, 0x01a3, 0x00d2 },
+	{ MDIO_MMD_VEND1, 0x01a4, 0x010e },
+	{ MDIO_MMD_VEND1, 0x0123, 0xffff },
+	{ MDIO_MMD_VEND1, 0x0147, 0x0000 },
+	{ MDIO_MMD_VEND1, 0x0236, 0x0020 },
+	{ MDIO_MMD_VEND1, 0x0190, 0x0110 },
+	{ MDIO_MMD_VEND1, 0x0191, 0x4444 },
+	{ MDIO_MMD_VEND1, 0x00a6, 0x0350 },
+	{ MDIO_MMD_VEND1, 0x00e7, 0x5555 },
+	{ MDIO_MMD_VEND1, 0x00e9, 0x0001 },
+	{ MDIO_MMD_VEND1, 0x00fe, 0x0000 },
+	{ MDIO_MMD_VEND1, 0x00e6, 0x1111 },
+	{ MDIO_MMD_VEND1, 0x0023, 0x0885 },
+	{ MDIO_MMD_VEND1, 0x0024, 0x0885 },
+	{ MDIO_MMD_VEND1, 0x0025, 0x0885 },
+	{ MDIO_MMD_VEND1, 0x0026, 0x0885 },
+	{ MDIO_MMD_AN, 0x003c, 0x0006 },
+};
+
+static const u8 an7552_zcal_to_r50ohm[2][64] = {
+	{
+		127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127,
+		127, 126, 122, 117, 112, 109, 104, 101, 97, 94, 90, 88, 84, 80, 78, 74,
+		72, 68, 66, 64, 61, 58, 56, 53, 51, 48, 47, 44, 42, 40, 38, 36,
+		34, 32, 31, 28, 27, 24, 24, 22, 20, 18, 16, 16, 14, 12, 11, 9,
+	},
+	{
+		127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127,
+		127, 127, 127, 127, 127, 127, 127, 127, 123, 119, 115, 112, 108, 104, 100, 96,
+		94, 92, 88, 85, 82, 80, 76, 74, 72, 68, 66, 64, 62, 60, 56, 55,
+		52, 50, 48, 46, 44, 42, 40, 39, 36, 35, 32, 32, 30, 28, 27, 25,
+	},
+};
+
+static const s8 an7552_tx_comp[TRANSFORMER_TYPE_MAX][MDI_TYPE_MAX][CALIB_CONST_TYPE_MAX][4] = {
+	[TXMR][MDI_5R] = {
+		[TX_AMP_TEST_A] = { 17, 16, 19, 14 },
+		[TX_AMP_TEST_B] = { 16, 16, 16, 16 },
+		[TX_AMP_TEST_C] = { 14, 17, 17, 13 },
+		[TX_AMP_TEST_D] = { 17, 15, 15, 17 },
+		[TX_AMP_1G_A] = { 17, 16, 19, 14 },
+		[TX_AMP_1G_B] = { 16, 16, 16, 16 },
+		[TX_AMP_1G_C] = { 14, 17, 17, 13 },
+		[TX_AMP_1G_D] = { 17, 15, 15, 17 },
+		[TX_AMP_100M_A] = { 31, 32, 31, 28 },
+		[TX_AMP_100M_B] = { 31, 29, 27, 30 },
+		[TX_AMP_10M_A] = { 22, 22, 22, 23 },
+		[TX_AMP_10M_B] = { 22, 22, 22, 23 },
+		[R50_A] = { 7, 8, 9, 11 },
+		[R50_B] = { 8, 9, 10, 11 },
+		[R50_C] = { 10, 10, 10, 11 },
+		[R50_D] = { 10, 10, 10, 10 },
+	},
+	[DISCRETE][MDI_5R] = {
+		[TX_AMP_TEST_A] = { 3, 2, 1, 3 },
+		[TX_AMP_TEST_B] = { 1, -1, 0, 4 },
+		[TX_AMP_TEST_C] = { 4, 4, 1, 2 },
+		[TX_AMP_TEST_D] = { 3, 3, 1, 2 },
+		[TX_AMP_1G_A] = { 3, 2, 1, 3 },
+		[TX_AMP_1G_B] = { 1, -1, 0, 4 },
+		[TX_AMP_1G_C] = { 4, 4, 1, 2 },
+		[TX_AMP_1G_D] = { 3, 3, 1, 2 },
+		[TX_AMP_100M_A] = { 17, 17, 16, 15 },
+		[TX_AMP_100M_B] = { 17, 15, 14, 18 },
+		[TX_AMP_10M_A] = { 22, 22, 22, 23 },
+		[TX_AMP_10M_B] = { 22, 22, 22, 23 },
+		[R50_A] = { 0, 0, 0, 0 },
+		[R50_B] = { 0, 0, 0, 0 },
+		[R50_C] = { 0, 0, 0, 0 },
+		[R50_D] = { 0, 0, 0, 0 },
+	},
+};
+
 static int en7523_tx_amp_compensation_tbl[TRANSFORMER_TYPE_MAX][MDI_TYPE_MAX][CALIB_CONST_TYPE_MAX][4];
 
 static u8 en7523_zcal_to_r45ohm[64] = {
@@ -984,6 +1093,7 @@ static int airoha_tx_amp_cal_sw(struct phy_device *phydev, u8 txg_calen_x)
 	switch (phydev->drv->phy_id) {
 	case AIROHA_GPHY_ID_EN7528:
 	case AIROHA_GPHY_ID_EN7523:
+	case AIROHA_GPHY_ID_AN7552:
 		phy_write_mmd(phydev, MDIO_MMD_VEND1, MTK_PHY_RG_ANA_CAL_RG0,
 			      MTK_PHY_RG_CAL_CKINV | MTK_PHY_RG_ANA_CALEN);
 		phy_write_mmd(phydev, MDIO_MMD_VEND1, MTK_PHY_RG_ANA_CAL_RG1,
@@ -1014,6 +1124,7 @@ static int airoha_tx_amp_cal_sw(struct phy_device *phydev, u8 txg_calen_x)
 	case PAIR_A:
 		phy_write_mmd(phydev, MDIO_MMD_VEND1, 0xdd, BIT(12));
 		if (phydev->drv->phy_id == AIROHA_GPHY_ID_EN7523 ||
+		    phydev->drv->phy_id == AIROHA_GPHY_ID_AN7552 ||
 		    airoha_is_en7580(phydev)) {
 			phy_write_mmd(phydev, MDIO_MMD_VEND1,
 				      MTK_PHY_RG_ANA_CAL_RG0,
@@ -1036,6 +1147,7 @@ static int airoha_tx_amp_cal_sw(struct phy_device *phydev, u8 txg_calen_x)
 	case PAIR_B:
 		phy_write_mmd(phydev, MDIO_MMD_VEND1, 0xdd, BIT(8));
 		if (phydev->drv->phy_id == AIROHA_GPHY_ID_EN7523 ||
+		    phydev->drv->phy_id == AIROHA_GPHY_ID_AN7552 ||
 		    airoha_is_en7580(phydev)) {
 			phy_write_mmd(phydev, MDIO_MMD_VEND1,
 				      MTK_PHY_RG_ANA_CAL_RG0,
@@ -1058,6 +1170,7 @@ static int airoha_tx_amp_cal_sw(struct phy_device *phydev, u8 txg_calen_x)
 	case PAIR_C:
 		phy_write_mmd(phydev, MDIO_MMD_VEND1, 0xdd, BIT(4));
 		if (phydev->drv->phy_id == AIROHA_GPHY_ID_EN7523 ||
+		    phydev->drv->phy_id == AIROHA_GPHY_ID_AN7552 ||
 		    airoha_is_en7580(phydev)) {
 			phy_write_mmd(phydev, MDIO_MMD_VEND1,
 				      MTK_PHY_RG_ANA_CAL_RG0,
@@ -1080,6 +1193,7 @@ static int airoha_tx_amp_cal_sw(struct phy_device *phydev, u8 txg_calen_x)
 	case PAIR_D:
 		phy_write_mmd(phydev, MDIO_MMD_VEND1, 0xdd, BIT(0));
 		if (phydev->drv->phy_id == AIROHA_GPHY_ID_EN7523 ||
+		    phydev->drv->phy_id == AIROHA_GPHY_ID_AN7552 ||
 		    airoha_is_en7580(phydev)) {
 			phy_write_mmd(phydev, MDIO_MMD_VEND1,
 				      MTK_PHY_RG_ANA_CAL_RG0,
@@ -1307,6 +1421,7 @@ restore:
 	switch (phydev->drv->phy_id) {
 	case AIROHA_GPHY_ID_EN7528:
 	case AIROHA_GPHY_ID_EN7523:
+	case AIROHA_GPHY_ID_AN7552:
 		phy_write_mmd(phydev, MDIO_MMD_VEND1, MTK_PHY_RG_ANA_CAL_RG6, 0);
 		airoha_p0_write_mmd(phydev, MDIO_MMD_VEND1, MTK_PHY_RG_ANA_CAL_RG6, 0);
 		phy_write_mmd(phydev, MDIO_MMD_VEND1, 0x3e, 0xc000);
@@ -1445,6 +1560,16 @@ static int airoha_tx_r50_cal_sw(struct phy_device *phydev, u8 txg_calen_x)
 		zcal_ctrl = shared->r50_cal_tbl[zcal_ctrl];
 	}
 
+	if (phydev->drv->phy_id == AIROHA_GPHY_ID_AN7552) {
+		u16 shift = txg_calen_x == PAIR_A || txg_calen_x == PAIR_C ? 8 : 0;
+
+		/* AN7552 has a seven-bit impedance code and per-byte enable. */
+		reg = txg_calen_x <= PAIR_B ? 0x174 : 0x175;
+		ret = phy_modify_mmd(phydev, MDIO_MMD_VEND1, reg,
+				     0xff << shift, (0x80 | zcal_ctrl) << shift);
+		goto restore;
+	}
+
 	switch (txg_calen_x) {
 	case PAIR_A:
 		reg = BIT(7) | FIELD_PREP(MTK_PHY_CR_TX_R50_OFFSET_A_MASK, zcal_ctrl);
@@ -1474,6 +1599,7 @@ static int airoha_tx_r50_cal_sw(struct phy_device *phydev, u8 txg_calen_x)
 		return -EINVAL;
 	}
 
+restore:
 	phy_write_mmd(phydev, MDIO_MMD_VEND1, MTK_PHY_RG_ANA_CAL_RG0, 0);
 	phy_write_mmd(phydev, MDIO_MMD_VEND1, MTK_PHY_RG_ANA_CAL_RG1, 0);
 	airoha_p0_write_mmd(phydev, MDIO_MMD_VEND1, MTK_PHY_RG_ANA_CAL_RG0, 0);
@@ -1495,7 +1621,7 @@ static int airoha_tx_r50_cal_sw(struct phy_device *phydev, u8 txg_calen_x)
 	/* Restore MDI */
 	phy_write_mmd(phydev, MDIO_MMD_VEND1, 0x0145, dev1e_145_tmp);
 
-	return 0;
+	return ret < 0 ? ret : 0;
 }
 
 static int airoha_rx_offset_cal_sw(struct phy_device *phydev)
@@ -3080,11 +3206,14 @@ static int an7581_phy_probe(struct phy_device *phydev)
 	struct pinctrl *pinctrl;
 	int ret;
 
-	/* Toggle pinctrl to enable PHY LED */
-	pinctrl = devm_pinctrl_get_select(&phydev->mdio.dev, "gbe-led");
-	if (IS_ERR(pinctrl))
-		dev_err(&phydev->mdio.bus->dev,
-			"Failed to setup PHY LED pinctrl\n");
+	/* AN7552 boards may leave the PHY LED pads unconnected. */
+	if (phydev->drv->phy_id != AIROHA_GPHY_ID_AN7552 ||
+	    of_property_present(phydev->mdio.dev.of_node, "pinctrl-names")) {
+		pinctrl = devm_pinctrl_get_select(&phydev->mdio.dev, "gbe-led");
+		if (IS_ERR(pinctrl))
+			dev_err(&phydev->mdio.bus->dev,
+				"Failed to setup PHY LED pinctrl\n");
+	}
 
 	ret = devm_phy_package_join(&phydev->mdio.dev, phydev, 0,
 				    sizeof(struct airoha_socphy_shared));
@@ -3256,7 +3385,131 @@ static int an7583_phy_config_init(struct phy_device *phydev)
 	return 0;
 }
 
+static int an7552_phy_match(struct phy_device *phydev,
+			    const struct phy_driver *phydrv)
+{
+	return (phydev->phy_id & 0xffff) == AIROHA_GPHY_ID_AN7552 &&
+	       (of_machine_is_compatible("airoha,an7552") ||
+		of_machine_is_compatible("airoha,an7563"));
+}
+
+static int an7552_phy_config_init(struct phy_device *phydev)
+{
+	static const u16 amp_regs[CALIB_CONST_TYPE_MAX] = {
+		0x16, 0x18, 0x20, 0x22, 0x12, 0x17, 0x19, 0x21,
+		0x16, 0x18, 0x12, 0x17, 0x174, 0x174, 0x175, 0x175,
+	};
+	static const u16 amp_masks[CALIB_CONST_TYPE_MAX] = {
+		0x003f, 0x003f, 0x003f, 0x003f, 0xfc00, 0x3f00, 0x3f00, 0x3f00,
+		0xfc00, 0x3f00, 0x003f, 0x003f, 0x7f00, 0x007f, 0x7f00, 0x007f,
+	};
+	struct airoha_socphy_shared *shared = phy_package_get_priv(phydev);
+	struct device_node *np = phydev->mdio.dev.of_node;
+	u32 ohms = 5;
+	int port = phydev->mdio.addr - AIROHA_DEFAULT_PORT0_ADDR;
+	int i, ret, val, comp;
+	bool integrated;
+
+	if (port < 0 || port >= 4)
+		return -EINVAL;
+	of_property_read_u32(np, "airoha,mdi-resistor-ohms", &ohms);
+	if (ohms != 0 && ohms != 5)
+		return -EINVAL;
+	integrated = of_property_read_bool(np, "airoha,integrated-transformer");
+
+	mutex_lock(&shared->calib_lock);
+	shared->mdi_resister_type = ohms ? MDI_5R : MDI_0R;
+	shared->transformer_type[port] = integrated ? TXMR : DISCRETE;
+	shared->r50_cal_tbl = an7552_zcal_to_r50ohm[!!ohms];
+	shared->r50_cal_offset = 0;
+
+	for (i = 0; i < ARRAY_SIZE(an7552_ge_init_regs); i++) {
+		const struct airoha_mmd_reg *reg = &an7552_ge_init_regs[i];
+
+		ret = phy_write_mmd(phydev, reg->devad, reg->reg, reg->val);
+		if (ret < 0)
+			goto out;
+	}
+	phy_select_page(phydev, MTK_PHY_PAGE_EXTENDED_52B5);
+	__mtk_tr_write(phydev, 0x1, 0xf, 0x03, 0x082422);
+	phy_restore_page(phydev, MTK_PHY_PAGE_STANDARD, 0);
+
+	/* PreCalSet: use the AN7552 low-power and long-reach profile. */
+	phy_write_mmd(phydev, MDIO_MMD_VEND1, 0x3c, 0);
+	phy_write_mmd(phydev, MDIO_MMD_VEND1, 0x3d, 0);
+	phy_write_mmd(phydev, MDIO_MMD_VEND1, 0x3e, 0);
+	phy_write_mmd(phydev, MDIO_MMD_VEND1, 0xc6, 0x53aa);
+	phy_write_mmd(phydev, MDIO_MMD_VEND2, 0x268, 0x07f1);
+	phy_write_mmd(phydev, MDIO_MMD_VEND2, 0x269, 0x1111);
+	phy_write_mmd(phydev, MDIO_MMD_VEND2, 0x26a, 0);
+	phy_write_mmd(phydev, MDIO_MMD_VEND2, 0x26b, 0x0074);
+	phy_write_mmd(phydev, MDIO_MMD_VEND2, 0x26e, 0x00f6);
+	phy_write_mmd(phydev, MDIO_MMD_VEND2, 0x26f, 0x6666);
+	phy_write_mmd(phydev, MDIO_MMD_VEND2, 0x271, 0x2c02);
+	phy_write_mmd(phydev, MDIO_MMD_VEND2, 0x272, 0x0c22);
+	phy_write_mmd(phydev, MDIO_MMD_VEND2, 0x700, 0x0001);
+	phy_write_mmd(phydev, MDIO_MMD_VEND2, 0x701, 0x0803);
+	phy_write_mmd(phydev, MDIO_MMD_VEND2, 0x702, 0x01b6);
+	phy_write_mmd(phydev, MDIO_MMD_VEND2, 0x703, 0x1111);
+	for (i = 0x200; i <= 0x230; i += 2)
+		phy_write_mmd(phydev, MDIO_MMD_VEND2, i, 0x2010);
+
+	ret = airoha_phy_calib(phydev);
+	if (ret)
+		goto out;
+
+	for (i = 0; i < CALIB_CONST_TYPE_MAX; i++) {
+		u16 mask = amp_masks[i];
+
+		val = phy_read_mmd(phydev, MDIO_MMD_VEND1, amp_regs[i]);
+		if (val < 0) {
+			ret = val;
+			goto out;
+		}
+		comp = an7552_tx_comp[shared->transformer_type[port]]
+				    [shared->mdi_resister_type][i][port];
+		val = clamp_t(int, ((val & mask) >> __ffs(mask)) + comp,
+			      0, mask >> __ffs(mask));
+		ret = phy_modify_mmd(phydev, MDIO_MMD_VEND1, amp_regs[i],
+				     mask, val << __ffs(mask));
+		if (ret < 0)
+			goto out;
+	}
+
+	phy_write_mmd(phydev, MDIO_MMD_VEND1, 0xe7,
+		      ohms ? (integrated ? 0x6666 : 0x5555) : 0x2222);
+	phy_write_mmd(phydev, MDIO_MMD_VEND1, 0xe9,
+		      ohms && integrated ? 6 : 1);
+	phy_write_mmd(phydev, MDIO_MMD_VEND1, 0xfe,
+		      ohms && integrated ? 3 : 0);
+	if (integrated && ohms) {
+		phy_write_mmd(phydev, MDIO_MMD_VEND1, 0x5c, 0x5555);
+		phy_write_mmd(phydev, MDIO_MMD_VEND1, 0x176, 0x5500);
+		phy_write_mmd(phydev, MDIO_MMD_VEND1, 0x177, 0x0055);
+	}
+	phy_write_mmd(phydev, MDIO_MMD_AN, MDIO_AN_EEE_ADV, 0);
+	phy_select_page(phydev, MTK_PHY_PAGE_EXTENDED_1);
+	__phy_write(phydev, 0x14, 0x3a18);
+	phy_restore_page(phydev, MTK_PHY_PAGE_STANDARD, 0);
+	ret = 0;
+out:
+	mutex_unlock(&shared->calib_lock);
+	return ret;
+}
+
 static struct phy_driver mtk_socphy_driver[] = {
+	{
+		.phy_id = AIROHA_GPHY_ID_AN7552,
+		.phy_id_mask = 0x0000ffff,
+		.match_phy_device = an7552_phy_match,
+		.name = "Airoha AN7552/AN7563 GPHY",
+		.config_init = an7552_phy_config_init,
+		.probe = an7581_phy_probe,
+		.config_intr = genphy_no_config_intr,
+		.handle_interrupt = genphy_handle_interrupt_no_ack,
+		.read_page = mtk_phy_read_page,
+		.write_page = mtk_phy_write_page,
+	},
 	{
 		PHY_ID_MATCH_EXACT(AIROHA_GPHY_ID_EN7512),
 		.name		= "EcoNet EN7512/EN7521 GPHY",
@@ -3340,6 +3593,7 @@ static struct phy_driver mtk_socphy_driver[] = {
 module_phy_driver(mtk_socphy_driver);
 
 static const struct mdio_device_id __maybe_unused airoha_socphy_tbl[] = {
+	{ .phy_id = AIROHA_GPHY_ID_AN7552, .phy_id_mask = 0x0000ffff },
 	{ PHY_ID_MATCH_EXACT(AIROHA_GPHY_ID_EN7512) },
 	{ PHY_ID_MATCH_EXACT(AIROHA_GPHY_ID_EN7528) },
 	{ PHY_ID_MATCH_EXACT(AIROHA_GPHY_ID_EN7523) },
