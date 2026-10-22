@@ -752,6 +752,7 @@ L:	linux-arm-kernel@lists.infradead.org (moderated for non-subscribers)
 L:	linux-mediatek@lists.infradead.org (moderated for non-subscribers)
 L:	netdev@vger.kernel.org
 S:	Maintained
+F:	Documentation/devicetree/bindings/net/airoha,an7552-eth.yaml
 F:	Documentation/devicetree/bindings/net/airoha,en7523-wed.yaml
 F:	Documentation/devicetree/bindings/net/airoha,en7580-xpon.yaml
 F:	Documentation/devicetree/bindings/net/airoha,en7581-eth.yaml
@@ -767,6 +768,7 @@ L:	linux-arm-kernel@lists.infradead.org (moderated for non-subscribers)
 L:	linux-mediatek@lists.infradead.org (moderated for non-subscribers)
 L:	netdev@vger.kernel.org
 S:	Maintained
+F:	Documentation/devicetree/bindings/net/airoha,an7552-phy.yaml
 F:	drivers/net/phy/mediatek/airoha-ge-soc.c
 
 AIROHA PCIE PHY DRIVER
