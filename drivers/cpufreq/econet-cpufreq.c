@@ -10,12 +10,14 @@
 #include <linux/platform_device.h>
 #include <linux/slab.h>
 
+#define ECONET_CPUFREQ_TRANSITION_DELAY_US	100000
+
 static const unsigned int econet_cpu_frequencies[] = {
-	325000, 350000, 375000, 400000, 425000, 450000,
-	475000, 500000, 525000, 550000, 575000, 600000,
-	625000, 650000, 675000, 700000, 725000, 750000,
-	775000, 800000, 825000, 850000, 875000, 900000,
-	925000, 950000, 975000, 1000000,
+	600000, 625000, 650000, 675000,
+	700000, 725000, 750000, 775000,
+	800000, 825000, 850000, 875000,
+	900000, 925000, 950000, 975000,
+	1000000,
 };
 
 struct econet_cpufreq_data {
@@ -33,6 +35,9 @@ static int econet_cpufreq_init(struct cpufreq_policy *policy)
 	policy->clk = data->clk;
 	cpufreq_generic_init(policy, data->table,
 			     data->scaling ? CPUFREQ_DEFAULT_TRANSITION_LATENCY_NS : 0);
+	/* PLL changes stop all VPEs; start with 100 ms governor updates. */
+	policy->transition_delay_us = data->scaling ?
+		ECONET_CPUFREQ_TRANSITION_DELAY_US : 0;
 	/* All cores and VPEs belong to the same CPU clock domain. */
 	cpumask_copy(policy->cpus, cpu_possible_mask);
 
@@ -142,8 +147,9 @@ static int econet_cpufreq_probe(struct platform_device *pdev)
 		/* Keep rates above the nominal 900 MHz ceiling opt-in. */
 		if (boost)
 			data->driver.set_boost = cpufreq_boost_set_sw;
-		/* MIPS must rescale the delay loops for every VPE on transitions. */
-		data->driver.flags &= ~CPUFREQ_CONST_LOOPS;
+		/* Permit governors and rescale the MIPS delay loops on transitions. */
+		data->driver.flags &= ~(CPUFREQ_CONST_LOOPS |
+					CPUFREQ_NO_AUTO_DYNAMIC_SWITCHING);
 	} else {
 		count = 1;
 		data->table[0].frequency = rate / 1000;

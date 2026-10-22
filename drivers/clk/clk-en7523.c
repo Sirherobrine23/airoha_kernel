@@ -317,8 +317,6 @@ struct econet_cpu_profile {
 };
 
 static const struct econet_cpu_profile en751221_cpu_profiles[] = {
-	/* This pair was measured at 400 MHz on EN7526G, not 325 MHz. */
-	{ 0x05100c08, 0x00a00000, 400000000UL },
 	{ 0x05101b08, 0x02800000, 700000000UL },
 	{ 0x05101f08, 0x03000000, 800000000UL },
 	{ 0x05102308, 0x03800000, 900000000UL },
@@ -328,18 +326,6 @@ static const struct econet_cpu_profile en751221_cpu_profiles[] = {
 
 static const struct econet_cpu_profile en7528_cpu_profiles[] = {
 	/* All pairs exercised with short PMU windows on one EN7528HU. */
-	/* Below 525 MHz use the /2 path anchored by the SDK 450 MHz pair. */
-	{ 0x05200c08, 0x02400000, 325000000UL },
-	{ 0x05200d08, 0x02800000, 350000000UL },
-	{ 0x05200e08, 0x02c00000, 375000000UL },
-	{ 0x05200f08, 0x03000000, 400000000UL },
-	{ 0x05201008, 0x03400000, 425000000UL },
-	{ 0x05201108, 0x03800000, 450000000UL },
-	{ 0x05201208, 0x03c00000, 475000000UL },
-	{ 0x05201308, 0x04000000, 500000000UL },
-	{ 0x05101408, 0x01a00000, 525000000UL },
-	{ 0x05101508, 0x01c00000, 550000000UL },
-	{ 0x05101608, 0x01e00000, 575000000UL },
 	{ 0x05101708, 0x02000000, 600000000UL },
 	{ 0x05101808, 0x02200000, 625000000UL },
 	{ 0x05101908, 0x02400000, 650000000UL },

@@ -33,7 +33,6 @@ at ``0x1fa20144`` and ``0x406`` at ``0x1fa201a8``:
 ========== ============ ============ ================================
 CPU        0x1fa2019c   0x1fa201ac   Source
 ========== ============ ============ ================================
-400 MHz    0x05100c08   0x00a00000   Measured on EN7526G with the PMU
 700 MHz    0x05101b08   0x02800000   Vendor bootloader
 800 MHz    0x05101f08   0x03000000   Interpolated, exercised on EN7526G
 900 MHz    0x05102308   0x03800000   Vendor bootloader
@@ -42,7 +41,9 @@ CPU        0x1fa2019c   0x1fa201ac   Source
 
 The 400 MHz pair was initially extrapolated as 325 MHz, but short PMU
 measurements established approximately 400.008 MHz between two 900 MHz
-reference measurements. All five complete pairs are recognized throughout
+reference measurements. This pair is no longer exposed after a system hang
+was reported during automatic switching. The four retained complete pairs
+are recognized throughout
 the EN751221 family; no other rates are inferred automatically from these
 undocumented fields. Measurements on EN7526G do not establish stability
 on other family variants.
@@ -53,23 +54,12 @@ share the EN751221 clock-controller compatible.
 EN7528 uses a different layout: ``0x1fa201a0`` for programming setup,
 ``0x1fa201ec`` for configuration, ``0x1fa201f8`` for apply control, and
 ``0x1fa201fc`` for the parameter. An idle recognized profile requires
-setup zero and control ``0x406``. The following 28 complete pairs are
+setup zero and control ``0x406``. The following 17 complete pairs are
 recognized without a separate characterization option:
 
 ========== ============ ============
 CPU        0x1fa201ec   0x1fa201fc
 ========== ============ ============
-325  MHz   0x05200c08   0x02400000
-350  MHz   0x05200d08   0x02800000
-375  MHz   0x05200e08   0x02c00000
-400  MHz   0x05200f08   0x03000000
-425  MHz   0x05201008   0x03400000
-450  MHz   0x05201108   0x03800000
-475  MHz   0x05201208   0x03c00000
-500  MHz   0x05201308   0x04000000
-525  MHz   0x05101408   0x01a00000
-550  MHz   0x05101508   0x01c00000
-575  MHz   0x05101608   0x01e00000
 600  MHz   0x05101708   0x02000000
 625  MHz   0x05101808   0x02200000
 650  MHz   0x05101908   0x02400000
@@ -95,11 +85,10 @@ The measured endpoints were approximately 325.013 and 1000.039 MHz, with
 matching workload checksums. This establishes short-window frequency
 behavior on that unit, not prolonged stability or silicon operating limits.
 
-Below 525 MHz the pairs use a divide-by-two interpretation anchored by the
-SDK's 450 MHz pair. The 325 MHz pair is ``0x05200c08`` / ``0x02400000``;
-it differs from the EN751221 pair that measured 400 MHz. The measurements
-support this divider interpretation but do not document a general PLL
-formula. Only explicitly listed complete pairs are accepted.
+Profiles below 600 MHz are no longer exposed after a system hang followed
+by watchdog recovery was reported with automatic switching. This restriction
+does not establish the cause of that hang. Only explicitly listed complete
+pairs can be programmed through the clock provider.
 
 The SDK's 900 MHz path only saves boot metadata. Runtime restoration uses
 the observed boot pair, not a documented SDK 900 MHz transition. The SDK's
@@ -189,26 +178,27 @@ EN751221-family profile control
 
 CPU control requires the EN751221 family, a saved 900 MHz boot rate, and a
 recognized initial PLL profile. No EN7526G-only variant gate is applied.
-The clock controller exposes 400, 700, 800, 900 and 1000 MHz. These profiles
+The clock controller exposes 700, 800, 900 and 1000 MHz. These profiles
 have short test evidence on EN7526G; enabling them on another family
 variant does not establish its operating limits or stability. CPUFreq starts
-with a 400 MHz floor and 900 MHz ceiling;
+with a 700 MHz floor and 900 MHz ceiling;
 the 1 GHz entry is marked as software boost and disabled by default. This
-policy floor is not a claim that 400 MHz is the silicon's minimum frequency.
+policy floor is not a claim that 700 MHz is the silicon's minimum frequency.
 
 Enable ``CONFIG_CPU_FREQ_GOV_USERSPACE`` (built in or as a module), then use::
 
     policy=/sys/devices/system/cpu/cpufreq/policy0
     cat "$policy/scaling_available_frequencies"
     echo userspace > "$policy/scaling_governor"
-    echo 400000 > "$policy/scaling_setspeed"
+    echo 700000 > "$policy/scaling_setspeed"
     cat "$policy/cpuinfo_cur_freq"
     echo 900000 > "$policy/scaling_setspeed"
 
-Frequencies are in kHz. The 400 MHz floor applies to supported clock API
+Frequencies are in kHz. The 700 MHz floor applies to supported clock API
 requests and CPUFreq selection; root can still bypass both with ``devmem``.
-Automatic dynamic governors remain disabled. No voltage adjustment or
-thermal cooling device is introduced.
+Writable EN751221 and EN7528 policies allow dynamic governors. Reporting-only
+policies keep automatic switching disabled. No voltage adjustment or thermal
+cooling device is introduced.
 
 The clock provider runs the tested five-write sequence once inside
 ``stop_machine()``, with the other VPEs quiesced. It checks complete register
@@ -286,17 +276,16 @@ registers are not used as an EN7526G identification. Bits 19:10 contain
 
 Writable ops require the EN7528 family, 900 MHz boot metadata, and a
 recognized idle PLL profile. No EN7528HU-only variant gate is applied.
-The 28 profiles have short hardware test evidence on EN7528HU; other
+The 17 retained profiles have short hardware test evidence on EN7528HU; other
 family variants still require hardware validation. Configurations that
 fail the boot-rate or initial-profile checks retain reporting only.
 CPUFreq discovers only the candidates that the provider rounds exactly;
 a read-only provider cannot match two different candidate rates. EN7528
-therefore exposes 325 through 1000 MHz in 25 MHz steps. Frequencies through
+therefore exposes 600 through 1000 MHz in 25 MHz steps. Frequencies through
 900 MHz are available without boost; 925, 950, 975 and 1000 MHz require
-boost. The initial policy limits are 325 and 900 MHz. The powersave governor
-can select 325 MHz, so use userspace for explicit characterization.
-EN751221-family devices retain their five-entry table and opt-in 1 GHz
-boost; EN7528 pairs are not reused for those devices.
+boost. The initial policy limits are 600 and 900 MHz. EN751221-family devices
+retain their four-entry table and opt-in 1 GHz boost. No unvalidated
+EN751221 600 MHz entry is added; its lowest retained profile is 700 MHz.
 
 One policy covers all possible CPUs, including all four logical CPUs on
 the observed 1004Kc system. The stop-machine callback executes the sequence
@@ -321,8 +310,8 @@ configured nominal rates with short pinned PMU windows as on EN7526G.
 At nominal 800 MHz the derived BUS rate is 200 MHz; at 700 MHz it is
 175 MHz. CCF bus notifications preserve the existing Airoha watchdog
 retiming, and MIPS CPUFreq notifiers update delays on every VPE. No DDR
-recalibration or voltage adjustment is performed. Automatic dynamic
-switching remains disabled. No documented PLL lock or glitchless-switch
+recalibration or voltage adjustment is performed. Writable policies allow
+automatic dynamic switching. No documented PLL lock or glitchless-switch
 guarantee is available; use a serial console and a recoverable test image.
 
 EN7528HU measurement evidence
@@ -342,3 +331,71 @@ no longer needed. The CPUFreq driver's union of candidate rates is still
 filtered through exact provider rounding. Reporting-only providers retain
 one entry and cannot acquire writable ops from the larger candidate list.
 No generic PLL arithmetic, voltage control or DDR recalibration is added.
+
+Ondemand governor
+-----------------
+
+Enable ``CONFIG_CPU_FREQ_GOV_ONDEMAND=y`` (or load ``cpufreq_ondemand`` when
+built as a module). The driver permits dynamic governors only after the
+clock provider exposes multiple exactly supported frequencies. This covers
+writable EN751221 and EN7528 policies; reporting-only configurations retain
+``CPUFREQ_NO_AUTO_DYNAMIC_SWITCHING`` and fall back to a static governor.
+
+Select ondemand after configuring the shared policy limits::
+
+    policy=/sys/devices/system/cpu/cpufreq/policy0
+    echo 0 > /sys/devices/system/cpu/cpufreq/boost
+    echo 900000 > "$policy/scaling_max_freq"
+    cat "$policy/scaling_min_freq"
+    cat "$policy/scaling_available_governors"
+    echo ondemand > "$policy/scaling_governor"
+    cat "$policy/scaling_governor"
+
+The ordinary minimum is 700 MHz on EN751221 and 600 MHz on EN7528. A
+600 MHz floor resolves to the next available EN751221 profile, 700 MHz.
+Previous userspace limits remain in force within the new supported range.
+Rates above 900 MHz remain opt-in software boost frequencies. Ondemand
+respects the policy limits and does not enable boost itself.
+
+The driver supplies ``transition_delay_us = 100000`` for writable policies.
+This sets an initial 100 ms update interval for ondemand. It is a software
+sampling choice to reduce repeated stopped PLL transitions, not a measured
+PLL transition or lock time. The reported transition latency remains the
+existing generic default. The ondemand ``sampling_rate`` tunable can change
+the interval; the driver does not impose a hard 100 ms minimum between
+requests. With per-policy governor tunables it is available at::
+
+    cat "$policy/ondemand/sampling_rate"
+
+With global governor tunables use::
+
+    cat /sys/devices/system/cpu/cpufreq/ondemand/sampling_rate
+
+All changes use the existing sleeping ``target_index`` path, stopped PLL
+sequence, readback, rollback, BUS/watchdog notifications and MIPS delay
+updates. No fast-switch callback is introduced. Clearing the generic flag
+also permits other dynamic governors; this change does not select a global
+default governor. To select ondemand at boot, configure
+``CONFIG_CPU_FREQ_DEFAULT_GOV_ONDEMAND=y``.
+
+The previous short PMU windows establish the selected nominal rates, not
+stability under prolonged automatic switching. Check repeated idle/load
+transitions and peripheral traffic on each target board.
+
+Restricted operating range after a hang
+--------------------------------------
+
+Following a report of a system hang followed by watchdog recovery with
+automatic switching, the writable tables exclude every profile below
+600 MHz. EN7528 retains 17 profiles from 600 through 1000 MHz. EN751221
+retains 700, 800, 900 and 1000 MHz because no 600 MHz profile has yet been
+validated on that family. Unsupported low requests are rejected by the
+clock provider without programming the PLL. CPUFreq resolves its policy
+limits against the retained table, so userspace cannot restore the removed
+profiles by lowering ``scaling_min_freq``.
+
+This restriction does not diagnose the hang or establish stability of the
+remaining range. Ondemand, its initial 100 ms sampling interval, the 900 MHz
+non-boost ceiling and watchdog integration are retained. Reporting-only
+configurations, including EN7580, retain their original reported rates even
+when those rates are below 600 MHz.

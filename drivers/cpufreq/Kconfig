@@ -273,11 +273,11 @@ config ECONET_CPUFREQ
 	  supplied by the system clock controller.
 
 	  Experimental EN751221-family control with a recognized 900 MHz
-	  boot rate supports 400, 700, 800, 900 and 1000 MHz, without an
+	  boot rate supports 700, 800, 900 and 1000 MHz, without an
 	  EN7526G-only variant restriction. These profiles were exercised
 	  on EN7526G; other family variants require hardware validation.
-	  EN7528-family control with 900 MHz boot metadata supports the 28
-	  profiles from 325 through 1000 MHz in 25 MHz steps, exercised
+	  EN7528-family control with 900 MHz boot metadata supports the 17
+	  profiles from 600 through 1000 MHz in 25 MHz steps, exercised
 	  with short PMU windows on one EN7528HU. Rates above 900 MHz
 	  are software boost entries, disabled by default. These tests
 	  do not establish prolonged stability or silicon operating limits.
@@ -285,8 +285,11 @@ config ECONET_CPUFREQ
 	  supply voltages are not changed.
 	  EN751221, EN7528 and EN7580 read recognized PLL profiles on demand.
 	  Other SoCs use bootloader metadata. This is not a cycle-counter
-	  frequency measurement. Automatic dynamic governors are disabled;
-	  use the userspace governor to select a profile explicitly.
+	  frequency measurement. Writable EN751221 and EN7528 policies allow
+	  dynamic governors with a 100 ms default update interval. Enable
+	  CPU_FREQ_GOV_ONDEMAND to use ondemand, or use the userspace governor
+	  to select a profile explicitly. Reporting-only policies keep
+	  automatic dynamic switching disabled.
 
 	  If unsure, say N.
 
