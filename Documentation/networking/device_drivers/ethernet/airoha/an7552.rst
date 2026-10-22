@@ -1,0 +1,79 @@
+.. SPDX-License-Identifier: GPL-2.0-only
+
+AN7552 and AN7563 copper Ethernet
+================================
+
+This implementation brings up the integrated four-port Gigabit switch through
+GDM1 and QDMA0. AN7552 and AN7563 share the Ethernet register layout. Their
+package differences do not require separate DMA backends.
+
+Device trees
+------------
+
+``arch/arm/boot/dts/airoha/an7552.dtsi`` describes the common CPU, interrupt,
+reset and Ethernet resources. ``an7563.dtsi`` overrides the package identity.
+Both use the existing ``airoha,an7563-pinctrl`` driver. The EN7523 SCU provider
+is reused for the compatible Ethernet and switch reset banks; no CPU OPP table
+or PCIe/USB configuration is inherited from the EN7523 board.
+
+The evaluation DTS files are bring-up templates, not descriptions of a
+particular retail product. They enable switch ports 1 through 4, mapped to
+MDIO addresses 9 through 12, and use a 512 MiB memory map. Adjust memory, MAC
+addresses and physical port labels for the target board. The QDMA reservations
+occupy 0x86400000..0x893fffff and must not overlap bootloader reservations.
+
+PHY calibration
+---------------
+
+The PHY profile comes from ``private/tcphy/tcetherphy_7552.c`` in the supplied
+SDK (A7552.04.02). It has independent MMD initialization, impedance tables,
+REXT/R50/TX offset/TX amplitude calibration and per-port compensation. Shared
+calibration is serialized across the four PHYs.
+
+The default board profile is 5-ohm external MDI resistors and discrete
+transformers, matching the SDK default. Set ``airoha,mdi-resistor-ohms = <0>``
+for a zero-ohm design. Set ``airoha,integrated-transformer`` when the board
+uses the integrated-transformer compensation profile. These properties belong
+to each Ethernet PHY node. Incorrect physical profiles can cause poor signal
+quality even when autonegotiation succeeds.
+
+The SDK identifies these PHYs using PHYSID2 == 0x0400 without checking PHYSID1.
+The driver follows that comparison only on AN7552/AN7563 machines, and does not
+invent or override the OUI half of the PHY ID. Capture both PHY ID registers
+on hardware before replacing this with a full-width ID match.
+
+PHY LED pin groups are supplied but not enabled by the evaluation templates,
+as LED wiring is board-specific. A board can select the existing pinctrl
+``gbe-led`` state, as on EN7523.
+
+Kernel configuration
+--------------------
+
+Enable these options, built-in when booting an initramfs for initial testing::
+
+  CONFIG_ARCH_AIROHA=y
+  CONFIG_NET_VENDOR_AIROHA=y
+  CONFIG_NET_AIROHA=y
+  CONFIG_AIROHA_GE_SOC_PHY=y
+  CONFIG_NET_DSA=y
+  CONFIG_NET_DSA_MT7530=y
+  CONFIG_NET_DSA_MT7530_MMIO=y
+  CONFIG_PINCTRL_AIROHA=y
+  CONFIG_PINCTRL_AIROHA_AN7563=y
+
+Build the corresponding ``airoha/an7552-evb.dtb`` or
+``airoha/an7563-evb.dtb``. Use the same bootloader and kernel loading procedure
+as the board's existing ARM kernel.
+
+Scope and validation
+--------------------
+
+PPE flow offload, hardware LRO, Wi-Fi offload, and Ethernet SerDes are not
+advertised by this initial profile. Ingress goes directly to the LAN QDMA;
+there is no dependency on NPU firmware. PON is not instantiated by these DTS
+files. The SDK explicitly excludes PON mode on AN7563CT and AN7563PT.
+
+On hardware, verify MDIO IDs and link negotiation at 10/100/1000 Mbps on each
+port, unicast and broadcast RX/TX, VLAN-aware DSA bridges, bidirectional
+traffic, IRQ progress, interface cycling and sustained traffic. Compilation
+and DT schema checks do not validate the analog calibration or DMA hardware.

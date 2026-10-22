@@ -1,0 +1,275 @@
+// SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+
+#include <dt-bindings/interrupt-controller/arm-gic.h>
+#include <dt-bindings/clock/en7523-clk.h>
+#include <dt-bindings/reset/airoha,en7523-reset.h>
+
+/ {
+	compatible = "airoha,an7552";
+	interrupt-parent = <&gic>;
+	#address-cells = <1>;
+	#size-cells = <1>;
+
+	cpus {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		cpu0: cpu@0 {
+			device_type = "cpu";
+			compatible = "arm,cortex-a53";
+			reg = <0>;
+			enable-method = "psci";
+		};
+
+		cpu1: cpu@1 {
+			device_type = "cpu";
+			compatible = "arm,cortex-a53";
+			reg = <1>;
+			enable-method = "psci";
+		};
+	};
+
+	psci {
+		compatible = "arm,psci-0.2";
+		method = "smc";
+	};
+
+	timer {
+		compatible = "arm,armv8-timer";
+		interrupts = <GIC_PPI 13 IRQ_TYPE_LEVEL_LOW>,
+			     <GIC_PPI 14 IRQ_TYPE_LEVEL_LOW>,
+			     <GIC_PPI 11 IRQ_TYPE_LEVEL_LOW>,
+			     <GIC_PPI 10 IRQ_TYPE_LEVEL_LOW>;
+	};
+
+	gic: interrupt-controller@9000000 {
+		compatible = "arm,gic-v3";
+		reg = <0x09000000 0x20000>,
+		      <0x09080000 0x80000>,
+		      <0x09400000 0x2000>,
+		      <0x09500000 0x2000>,
+		      <0x09600000 0x20000>;
+		interrupt-controller;
+		#interrupt-cells = <3>;
+		#address-cells = <0>;
+		interrupts = <GIC_PPI 9 IRQ_TYPE_LEVEL_LOW>;
+	};
+
+	chip_scu: syscon@1fa20000 {
+		compatible = "airoha,chip-scu", "syscon";
+		reg = <0x1fa20000 0x400>;
+	};
+
+	/* The Ethernet/GSW reset banks retain the EN7523 register layout. */
+	scuclk: system-controller@1fb00000 {
+		compatible = "airoha,en7523-scu", "airoha,scuclk", "syscon";
+		reg = <0x1fb00000 0x1000>, <0x1efbe000 0x800>;
+		reg-names = "np-scu", "mcucfg";
+		airoha,chip-scu = <&chip_scu>;
+		#clock-cells = <1>;
+		#reset-cells = <1>;
+	};
+
+	system-controller@1fbf0200 {
+		compatible = "syscon", "simple-mfd";
+		reg = <0x1fbf0200 0xc0>;
+
+		pinctrl: pinctrl {
+			compatible = "airoha,an7563-pinctrl";
+			interrupts = <GIC_SPI 26 IRQ_TYPE_LEVEL_HIGH>;
+			airoha,chip-scu = <&chip_scu>;
+			gpio-controller;
+			#gpio-cells = <2>;
+			gpio-ranges = <&pinctrl 0 0 38>;
+			interrupt-controller;
+			#interrupt-cells = <2>;
+			#address-cells = <0>;
+
+			swp1_led_pins: switch-port1-led-pins {
+				mux {
+					function = "phy1_led0";
+					groups = "gpio8";
+				};
+			};
+
+			swp2_led_pins: switch-port2-led-pins {
+				mux {
+					function = "phy2_led0";
+					groups = "gpio9";
+				};
+			};
+
+			swp3_led_pins: switch-port3-led-pins {
+				mux {
+					function = "phy3_led0";
+					groups = "gpio10";
+				};
+			};
+
+			swp4_led_pins: switch-port4-led-pins {
+				mux {
+					function = "phy4_led0";
+					groups = "gpio11";
+				};
+			};
+		};
+	};
+
+	uart1: serial@1fbf0000 {
+		compatible = "ns16550";
+		reg = <0x1fbf0000 0x30>;
+		reg-io-width = <4>;
+		reg-shift = <2>;
+		interrupts = <GIC_SPI 18 IRQ_TYPE_LEVEL_HIGH>;
+		clock-frequency = <1843200>;
+	};
+
+	reserved-memory {
+		#address-cells = <1>;
+		#size-cells = <1>;
+		ranges;
+
+		qdma0_buf: qdma0-buf@86400000 {
+			reg = <0x86400000 0x02000000>;
+			no-map;
+		};
+
+		qdma1_buf: qdma1-buf@88400000 {
+			reg = <0x88400000 0x01000000>;
+			no-map;
+		};
+	};
+
+	eth: ethernet@1fb50000 {
+		compatible = "airoha,an7552-eth";
+		reg = <0x1fb50000 0x2600>,
+		      <0x1fb54000 0x2000>,
+		      <0x1fb56000 0x2000>,
+		      <0x1fbf9000 0x1000>;
+		reg-names = "fe", "qdma0", "qdma1", "gdmp";
+		resets = <&scuclk EN7523_FE_RST>,
+			 <&scuclk EN7523_FE_PDMA_RST>,
+			 <&scuclk EN7523_FE_QDMA_RST>;
+		reset-names = "fe", "pdma", "qdma";
+		interrupts = <GIC_SPI 37 IRQ_TYPE_LEVEL_HIGH>,
+			     <GIC_SPI 55 IRQ_TYPE_LEVEL_HIGH>,
+			     <GIC_SPI 56 IRQ_TYPE_LEVEL_HIGH>,
+			     <GIC_SPI 57 IRQ_TYPE_LEVEL_HIGH>,
+			     <GIC_SPI 38 IRQ_TYPE_LEVEL_HIGH>,
+			     <GIC_SPI 58 IRQ_TYPE_LEVEL_HIGH>,
+			     <GIC_SPI 59 IRQ_TYPE_LEVEL_HIGH>,
+			     <GIC_SPI 60 IRQ_TYPE_LEVEL_HIGH>,
+			     <GIC_SPI 49 IRQ_TYPE_LEVEL_HIGH>,
+			     <GIC_SPI 64 IRQ_TYPE_LEVEL_HIGH>;
+		interrupt-names = "lan0", "lan1", "lan2", "lan3",
+				  "wan0", "wan1", "wan2", "wan3",
+				  "fe-error", "pdma";
+		memory-region = <&qdma0_buf>, <&qdma1_buf>;
+		memory-region-names = "qdma0-buf", "qdma1-buf";
+		#address-cells = <1>;
+		#size-cells = <0>;
+		status = "disabled";
+
+		gdm1: ethernet@1 {
+			compatible = "airoha,eth-mac";
+			reg = <1>;
+			phy-mode = "internal";
+			status = "disabled";
+
+			fixed-link {
+				speed = <10000>;
+				full-duplex;
+				pause;
+			};
+		};
+	};
+
+	switch: switch@1fb58000 {
+		compatible = "airoha,an7552-switch";
+		reg = <0x1fb58000 0x8000>;
+		resets = <&scuclk EN7523_GSW_RST>;
+		interrupts = <GIC_SPI 31 IRQ_TYPE_LEVEL_HIGH>;
+		interrupt-controller;
+		#interrupt-cells = <1>;
+		#address-cells = <0>;
+		status = "disabled";
+
+		ports {
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			gsw_port1: port@1 {
+				reg = <1>;
+				phy-mode = "internal";
+				phy-handle = <&gsw_phy1>;
+				status = "disabled";
+			};
+
+			gsw_port2: port@2 {
+				reg = <2>;
+				phy-mode = "internal";
+				phy-handle = <&gsw_phy2>;
+				status = "disabled";
+			};
+
+			gsw_port3: port@3 {
+				reg = <3>;
+				phy-mode = "internal";
+				phy-handle = <&gsw_phy3>;
+				status = "disabled";
+			};
+
+			gsw_port4: port@4 {
+				reg = <4>;
+				phy-mode = "internal";
+				phy-handle = <&gsw_phy4>;
+				status = "disabled";
+			};
+
+			port@6 {
+				reg = <6>;
+				ethernet = <&gdm1>;
+				phy-mode = "internal";
+
+				fixed-link {
+					speed = <10000>;
+					full-duplex;
+					pause;
+				};
+			};
+		};
+
+		mdio: mdio {
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			gsw_phy1: ethernet-phy@9 {
+				compatible = "ethernet-phy-ieee802.3-c22";
+				reg = <9>;
+				airoha,mdi-resistor-ohms = <5>;
+				status = "disabled";
+			};
+
+			gsw_phy2: ethernet-phy@a {
+				compatible = "ethernet-phy-ieee802.3-c22";
+				reg = <10>;
+				airoha,mdi-resistor-ohms = <5>;
+				status = "disabled";
+			};
+
+			gsw_phy3: ethernet-phy@b {
+				compatible = "ethernet-phy-ieee802.3-c22";
+				reg = <11>;
+				airoha,mdi-resistor-ohms = <5>;
+				status = "disabled";
+			};
+
+			gsw_phy4: ethernet-phy@c {
+				compatible = "ethernet-phy-ieee802.3-c22";
+				reg = <12>;
+				airoha,mdi-resistor-ohms = <5>;
+				status = "disabled";
+			};
+		};
+	};
+};

@@ -1,0 +1,14 @@
+// SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+#include "an7552.dtsi"
+
+/ {
+	compatible = "airoha,an7563";
+};
+
+&eth {
+	compatible = "airoha,an7563-eth", "airoha,an7552-eth";
+};
+
+&switch {
+	compatible = "airoha,an7563-switch", "airoha,an7552-switch";
+};

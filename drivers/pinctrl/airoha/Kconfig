@@ -27,7 +27,7 @@ config PINCTRL_AIROHA
 
 config PINCTRL_AIROHA_AN7563
 	tristate "AN7563 pinctrl"
-	depends on ARM64 || COMPILE_TEST
+	depends on ARCH_AIROHA || COMPILE_TEST
 	depends on PINCTRL_AIROHA
 	help
 	  Say yes here to support pin controller and gpio driver
