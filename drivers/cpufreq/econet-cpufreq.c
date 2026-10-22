@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Control EN7526G CPU profiles; report rates on other EcoNet SoCs.
+ * Control EN751221 and EN7528 profiles; report rates on other EcoNet SoCs.
  */
 
 #include <linux/clk.h>
@@ -10,15 +10,20 @@
 #include <linux/platform_device.h>
 #include <linux/slab.h>
 
-struct econet_cpufreq_data {
-	struct clk *clk;
-	struct cpufreq_frequency_table table[6];
-	struct cpufreq_driver driver;
-	bool scaling;
+static const unsigned int econet_cpu_frequencies[] = {
+	325000, 350000, 375000, 400000, 425000, 450000,
+	475000, 500000, 525000, 550000, 575000, 600000,
+	625000, 650000, 675000, 700000, 725000, 750000,
+	775000, 800000, 825000, 850000, 875000, 900000,
+	925000, 950000, 975000, 1000000,
 };
 
-static const unsigned int econet_cpu_frequencies[] = {
-	400000, 700000, 800000, 900000, 1000000,
+struct econet_cpufreq_data {
+	struct clk *clk;
+	struct cpufreq_frequency_table table[ARRAY_SIZE(econet_cpu_frequencies) + 1];
+	struct cpufreq_driver driver;
+	unsigned int num_frequencies;
+	bool scaling;
 };
 
 static int econet_cpufreq_init(struct cpufreq_policy *policy)
@@ -43,7 +48,7 @@ static int econet_cpufreq_target_index(struct cpufreq_policy *policy,
 		unsigned long requested;
 		int ret;
 
-		if (index >= ARRAY_SIZE(econet_cpu_frequencies))
+		if (index >= data->num_frequencies)
 			return -EINVAL;
 		if ((data->table[index].flags & CPUFREQ_BOOST_FREQ) &&
 		    (!cpufreq_boost_enabled() || !policy->boost_enabled))
@@ -89,7 +94,8 @@ static int econet_cpufreq_probe(struct platform_device *pdev)
 	struct econet_cpufreq_data *data;
 	struct device *cpu_dev;
 	unsigned long rate;
-	unsigned int i;
+	unsigned int i, count = 0;
+	bool boost = false;
 	int ret;
 
 	cpu_dev = get_cpu_device(0);
@@ -115,31 +121,36 @@ static int econet_cpufreq_probe(struct platform_device *pdev)
 		return dev_err_probe(dev, -EINVAL,
 				     "Invalid initial CPU clock rate %lu\n", rate);
 
-	data->table[0].frequency = rate / 1000;
-	data->table[1].frequency = CPUFREQ_TABLE_END;
 	data->driver = econet_cpufreq_driver;
 	data->driver.driver_data = data;
 
-	/* Read-only providers cannot round all five distinct requested rates. */
+	/* A read-only provider can match at most one distinct candidate rate. */
 	for (i = 0; i < ARRAY_SIZE(econet_cpu_frequencies); i++) {
 		unsigned long requested = econet_cpu_frequencies[i] * 1000UL;
 
 		if (clk_round_rate(data->clk, requested) != requested)
-			break;
-	}
-	if (i == ARRAY_SIZE(econet_cpu_frequencies)) {
-		data->scaling = true;
-		for (i = 0; i < ARRAY_SIZE(econet_cpu_frequencies); i++) {
-			data->table[i].frequency = econet_cpu_frequencies[i];
-			if (econet_cpu_frequencies[i] > 900000)
-				data->table[i].flags = CPUFREQ_BOOST_FREQ;
+			continue;
+		data->table[count].frequency = econet_cpu_frequencies[i];
+		if (econet_cpu_frequencies[i] > 900000) {
+			data->table[count].flags = CPUFREQ_BOOST_FREQ;
+			boost = true;
 		}
-		data->table[i].frequency = CPUFREQ_TABLE_END;
-		/* Keep the extrapolated 1 GHz profile disabled until boost is enabled. */
-		data->driver.set_boost = cpufreq_boost_set_sw;
+		count++;
+	}
+	if (count > 1) {
+		data->scaling = true;
+		/* Keep rates above the nominal 900 MHz ceiling opt-in. */
+		if (boost)
+			data->driver.set_boost = cpufreq_boost_set_sw;
 		/* MIPS must rescale the delay loops for every VPE on transitions. */
 		data->driver.flags &= ~CPUFREQ_CONST_LOOPS;
+	} else {
+		count = 1;
+		data->table[0].frequency = rate / 1000;
+		data->table[0].flags = 0;
 	}
+	data->num_frequencies = count;
+	data->table[count].frequency = CPUFREQ_TABLE_END;
 
 	ret = cpufreq_register_driver(&data->driver);
 	if (ret)
@@ -150,9 +161,13 @@ static int econet_cpufreq_probe(struct platform_device *pdev)
 	if (ret)
 		return ret;
 
-	dev_info(dev, "Initial CPU frequency: %lu MHz (%s)\n", rate / 1000000,
-		 data->scaling ? "400-900 MHz control; experimental 1 GHz boost disabled" :
-		 "reporting only");
+	if (data->scaling)
+		dev_info(dev, "Initial CPU frequency: %lu MHz (%u profiles%s)\n",
+			 rate / 1000000, data->num_frequencies,
+			 boost ? "; boost above 900 MHz disabled" : "");
+	else
+		dev_info(dev, "Initial CPU frequency: %lu MHz (reporting only)\n",
+			 rate / 1000000);
 
 	return 0;
 }

@@ -272,14 +272,18 @@ config ECONET_CPUFREQ
 	  EN7580 SoCs through CPUFreq. All cores and VPEs share one policy
 	  supplied by the system clock controller.
 
-	  Experimental EN7526G control with a recognized 900 MHz boot rate
-	  can select the tested 400, 700, 800 and 900 MHz profiles. The lower
-	  policy limit is 400 MHz. An extrapolated, unverified 1 GHz profile
-	  is available as software boost, disabled by default. This is an
-	  experimental overclock, not a validated hardware turbo mode.
-	  Other devices retain reporting-only operation. DDR settings are
-	  not changed.
-	  EN751221 and EN7580 read recognized PLL configurations on demand.
+	  Experimental EN751221-family control with a recognized 900 MHz
+	  boot rate supports 400, 700, 800, 900 and 1000 MHz, without an
+	  EN7526G-only variant restriction. These profiles were exercised
+	  on EN7526G; other family variants require hardware validation.
+	  EN7528-family control with 900 MHz boot metadata supports the 28
+	  profiles from 325 through 1000 MHz in 25 MHz steps, exercised
+	  with short PMU windows on one EN7528HU. Rates above 900 MHz
+	  are software boost entries, disabled by default. These tests
+	  do not establish prolonged stability or silicon operating limits.
+	  Other configurations retain reporting only. DDR settings and
+	  supply voltages are not changed.
+	  EN751221, EN7528 and EN7580 read recognized PLL profiles on demand.
 	  Other SoCs use bootloader metadata. This is not a cycle-counter
 	  frequency measurement. Automatic dynamic governors are disabled;
 	  use the userspace governor to select a profile explicitly.

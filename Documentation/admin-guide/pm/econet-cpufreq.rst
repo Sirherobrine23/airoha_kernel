@@ -5,9 +5,9 @@ EcoNet MIPS CPU frequency control and reporting
 
 The ``econet`` CPUFreq driver reports the CPU frequency on EN751221,
 EN751627, EN7528 and EN7580 SoCs. It exposes a single frequency shared by all
-cores and VPEs. The tested EN7526G configuration supports explicit profile
-changes; other devices retain reporting-only operation. DDR settings and
-the external timer are not changed.
+cores and VPEs. EN751221-family and EN7528-family configurations support
+experimental explicit profile changes; other devices retain reporting-only
+operation. DDR settings and the external timer are not changed.
 
 Enable ``CONFIG_CPU_FREQ``, ``CONFIG_COMMON_CLK_EN7523`` and
 ``CONFIG_ECONET_CPUFREQ``. The latter can be built in or built as the
@@ -18,9 +18,10 @@ controller's CPU clock, as provided by the EcoNet SoC DTSI files.
 Frequency sources
 -----------------
 
-On EN751221 and EN7580, the CPU clock uses an uncached ``recalc_rate``
-callback to read the programmed PLL configuration. The bus clock is the CPU
-clock divided by four on EN751221, or by five on EN7580. BUS derives its rate
+On EN751221, EN7528 and EN7580, the CPU clock uses an uncached
+``recalc_rate`` callback to read the programmed PLL configuration. The bus
+clock is the CPU clock divided by four on EN751221 and EN7528, or by five
+on EN7580. BUS derives its rate
 from the CPU parent, allowing CCF to predict and notify bus changes before
 programming the PLL. CPU readback refreshes that parent. Direct MMIO changes
 bypass this mechanism; when inspecting them, read the CPU rate first. These
@@ -36,17 +37,73 @@ CPU        0x1fa2019c   0x1fa201ac   Source
 700 MHz    0x05101b08   0x02800000   Vendor bootloader
 800 MHz    0x05101f08   0x03000000   Interpolated, exercised on EN7526G
 900 MHz    0x05102308   0x03800000   Vendor bootloader
-1000 MHz   0x05102708   0x04000000   Experimental, unverified
+1000 MHz   0x05102708   0x04000000   Short PMU windows on EN7526G
 ========== ============ ============ ================================
 
 The 400 MHz pair was initially extrapolated as 325 MHz, but short PMU
 measurements established approximately 400.008 MHz between two 900 MHz
-reference measurements. It is reported as 400 MHz on EN7526G only; no other
-rates are inferred automatically from these undocumented fields. The 1 GHz
-entry is a separately listed, unverified experiment for EN7526G only.
+reference measurements. All five complete pairs are recognized throughout
+the EN751221 family; no other rates are inferred automatically from these
+undocumented fields. Measurements on EN7526G do not establish stability
+on other family variants.
 EN7526C/EN7522 use
 a different PLL layout and retain boot-metadata reporting even when they
 share the EN751221 clock-controller compatible.
+
+EN7528 uses a different layout: ``0x1fa201a0`` for programming setup,
+``0x1fa201ec`` for configuration, ``0x1fa201f8`` for apply control, and
+``0x1fa201fc`` for the parameter. An idle recognized profile requires
+setup zero and control ``0x406``. The following 28 complete pairs are
+recognized without a separate characterization option:
+
+========== ============ ============
+CPU        0x1fa201ec   0x1fa201fc
+========== ============ ============
+325  MHz   0x05200c08   0x02400000
+350  MHz   0x05200d08   0x02800000
+375  MHz   0x05200e08   0x02c00000
+400  MHz   0x05200f08   0x03000000
+425  MHz   0x05201008   0x03400000
+450  MHz   0x05201108   0x03800000
+475  MHz   0x05201208   0x03c00000
+500  MHz   0x05201308   0x04000000
+525  MHz   0x05101408   0x01a00000
+550  MHz   0x05101508   0x01c00000
+575  MHz   0x05101608   0x01e00000
+600  MHz   0x05101708   0x02000000
+625  MHz   0x05101808   0x02200000
+650  MHz   0x05101908   0x02400000
+675  MHz   0x05101a08   0x02600000
+700  MHz   0x05101b08   0x02800000
+725  MHz   0x05101c08   0x02a00000
+750  MHz   0x05101d08   0x02c00000
+775  MHz   0x05101e08   0x02e00000
+800  MHz   0x05101f08   0x03000000
+825  MHz   0x05102008   0x03200000
+850  MHz   0x05102108   0x03400000
+875  MHz   0x05102208   0x03600000
+900  MHz   0x05102308   0x03800000
+925  MHz   0x05102408   0x03a00000
+950  MHz   0x05102508   0x03c00000
+975  MHz   0x05102608   0x03e00000
+1000 MHz   0x05102708   0x04000000
+========== ============ ============
+
+All pairs were exercised in short pinned PMU windows on one EN7528HU,
+including the transition from 525 to 500 MHz and restoration to 900 MHz.
+The measured endpoints were approximately 325.013 and 1000.039 MHz, with
+matching workload checksums. This establishes short-window frequency
+behavior on that unit, not prolonged stability or silicon operating limits.
+
+Below 525 MHz the pairs use a divide-by-two interpretation anchored by the
+SDK's 450 MHz pair. The 325 MHz pair is ``0x05200c08`` / ``0x02400000``;
+it differs from the EN751221 pair that measured 400 MHz. The measurements
+support this divider interpretation but do not document a general PLL
+formula. Only explicitly listed complete pairs are accepted.
+
+The SDK's 900 MHz path only saves boot metadata. Runtime restoration uses
+the observed boot pair, not a documented SDK 900 MHz transition. The SDK's
+separate 225 MHz profile is not exposed by this driver.
 
 On EN7580, ``do_cpufreq`` in the SDK bootram programs bits 30:24 of
 ``0x1fa202ac``. A PCW of 104 corresponds to 1300 MHz, with each decrement
@@ -63,8 +120,8 @@ the EN751221 default/940 MHz boot path. A different unrecognized state
 returns zero from the clock provider; CPUFreq displays ``<unknown>`` in
 ``cpuinfo_cur_freq``. Restore a recognized profile to resume live reporting.
 
-EN751627 and EN7528 retain the fixed bootloader rate. All platforms still
-require nonzero bootloader metadata to initialize the clock controller.
+EN751627 retains the fixed bootloader rate. All platforms still require
+nonzero bootloader metadata to initialize the clock controller.
 
 Bootloader metadata
 ~~~~~~~~~~~~~~~~~~~
@@ -127,13 +184,15 @@ The Common Clock Framework also exposes the CPU and bus clocks in
 ``/sys/kernel/debug/clk/clk_summary`` when clock debugging is available.
 The policy number may differ if CPU0 is offline when the policy is created.
 
-EN7526G profile control
-----------------------
+EN751221-family profile control
+------------------------------
 
-CPU control is enabled only for the EN7526G eFuse ID, a saved 900 MHz boot
-rate, and a recognized initial PLL profile. The clock controller exposes
-the four exercised rates (400, 700, 800 and 900 MHz) and an experimental
-1 GHz candidate. CPUFreq starts with a 400 MHz floor and 900 MHz ceiling;
+CPU control requires the EN751221 family, a saved 900 MHz boot rate, and a
+recognized initial PLL profile. No EN7526G-only variant gate is applied.
+The clock controller exposes 400, 700, 800, 900 and 1000 MHz. These profiles
+have short test evidence on EN7526G; enabling them on another family
+variant does not establish its operating limits or stability. CPUFreq starts
+with a 400 MHz floor and 900 MHz ceiling;
 the 1 GHz entry is marked as software boost and disabled by default. This
 policy floor is not a claim that 400 MHz is the silicon's minimum frequency.
 
@@ -177,12 +236,12 @@ transition notifications, watchdog accounting and MIPS delay-loop updates.
 Experimental 1 GHz test
 -----------------------
 
-The candidate pair ``0x05102708`` / ``0x04000000`` extrapolates the
-700/800/900 MHz pairs. It has not been measured or validated. The low pair
-previously called 325 MHz actually measured 400 MHz, demonstrating why
-register arithmetic alone cannot establish a frequency. CPUFreq readback
-of ``1000000`` only confirms that the candidate register pair is selected.
-It does not measure the CPU or confirm PLL lock.
+The 1 GHz pair ``0x05102708`` / ``0x04000000`` has short PMU evidence
+on EN7526G and EN7528HU. EN7528 also exposes 925, 950 and 975 MHz as
+software boost entries. These observations do not establish prolonged
+stability or validation of other EN751221 variants. CPUFreq readback only
+recognizes a complete register pair; it does not measure CPU cycles or
+confirm PLL lock.
 
 This is an experimental overclock, not a documented hardware turbo mode.
 No supply-voltage change is made. If CPU/4 remains the bus relationship,
@@ -192,7 +251,7 @@ of stability or recovery from a hung PLL. Use a serial console and a
 recoverable test image.
 
 After boot, the global ``/sys/devices/system/cpu/cpufreq/boost`` switch
-reads zero. The candidate appears in ``scaling_boost_frequencies``.
+reads zero. Rates above 900 MHz appear in ``scaling_boost_frequencies``.
 Select the userspace governor and 900 MHz before enabling boost::
 
     policy=/sys/devices/system/cpu/cpufreq/policy0
@@ -215,3 +274,71 @@ knows the candidate pair even while CPUFreq boost is disabled; the boost
 switch controls CPUFreq requests, not direct kernel clock API callers or
 MMIO writes. EN7580 and all other reporting-only configurations retain
 their previous behavior.
+
+EN7528-family profile control
+-----------------------------
+
+The observed identification is HIR ``0x000b0000`` (EN7528 family), PDIDR
+``0x00000001``, and saved parameters ``0x01038500``. The package field is
+zero, identifying EN7528HU through the bootloader SCU metadata; zero eFuse
+registers are not used as an EN7526G identification. Bits 19:10 contain
+225 MHz, corresponding to a nominal 900 MHz CPU clock.
+
+Writable ops require the EN7528 family, 900 MHz boot metadata, and a
+recognized idle PLL profile. No EN7528HU-only variant gate is applied.
+The 28 profiles have short hardware test evidence on EN7528HU; other
+family variants still require hardware validation. Configurations that
+fail the boot-rate or initial-profile checks retain reporting only.
+CPUFreq discovers only the candidates that the provider rounds exactly;
+a read-only provider cannot match two different candidate rates. EN7528
+therefore exposes 325 through 1000 MHz in 25 MHz steps. Frequencies through
+900 MHz are available without boost; 925, 950, 975 and 1000 MHz require
+boost. The initial policy limits are 325 and 900 MHz. The powersave governor
+can select 325 MHz, so use userspace for explicit characterization.
+EN751221-family devices retain their five-entry table and opt-in 1 GHz
+boost; EN7528 pairs are not reused for those devices.
+
+One policy covers all possible CPUs, including all four logical CPUs on
+the observed 1004Kc system. The stop-machine callback executes the sequence
+once while the other cores and VPEs are stopped: setup ``0x12``, config,
+parameter, control ``0x402``, control ``0x406``, then setup zero. Full-state
+readback must match; a mismatch attempts to reapply the previous profile.
+The EN751221 five-write sequence keeps its existing setup value of ``0x12``.
+
+Use the userspace governor for the first 900 -> 800 -> 900 MHz test::
+
+    policy=/sys/devices/system/cpu/cpufreq/policy0
+    cat "$policy/scaling_available_frequencies"
+    cat "$policy/related_cpus"
+    echo userspace > "$policy/scaling_governor"
+    echo 900000 > "$policy/scaling_setspeed"
+    echo 800000 > "$policy/scaling_setspeed"
+    cat "$policy/cpuinfo_cur_freq"
+    echo 900000 > "$policy/scaling_setspeed"
+
+Keep a restoration trap around an actual test workload, and confirm the
+configured nominal rates with short pinned PMU windows as on EN7526G.
+At nominal 800 MHz the derived BUS rate is 200 MHz; at 700 MHz it is
+175 MHz. CCF bus notifications preserve the existing Airoha watchdog
+retiming, and MIPS CPUFreq notifiers update delays on every VPE. No DDR
+recalibration or voltage adjustment is performed. Automatic dynamic
+switching remains disabled. No documented PLL lock or glitchless-switch
+guarantee is available; use a serial console and a recoverable test image.
+
+EN7528HU measurement evidence
+----------------------------
+
+The completed sweep contains 33 short PMU windows: a 900 MHz reference,
+925/950/975 MHz on ascent, all 28 profiles from 1000 down to 325 MHz, and
+a restored 900 MHz reference. All workload checksums matched. The largest
+relative deviation on descent was approximately 0.00845 percent. One
+975 MHz ascent window measured 967.645 MHz, while the same pair measured
+975.064 MHz on descent; further measurements are needed to explain that
+window difference. The final 900 MHz reference measured 900.044 MHz and
+software boost was disabled successfully.
+
+The table is now unconditional; ``CONFIG_ECONET_CPUFREQ_EN7528_RAMP`` is
+no longer needed. The CPUFreq driver's union of candidate rates is still
+filtered through exact provider rounding. Reporting-only providers retain
+one entry and cannot acquire writable ops from the larger candidate list.
+No generic PLL arithmetic, voltage control or DDR recalibration is added.
