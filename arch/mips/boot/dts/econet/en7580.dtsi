@@ -49,6 +49,8 @@
 			compatible = "mips,mips1004Kc";
 			reg = <0>;
 			clocks = <&scuclk EN7523_CLK_CPU>;
+			clock-names = "cpu";
+			operating-points-v2 = <&cpu_opp_table>;
 			next-level-cache = <&l2>;
 		};
 
@@ -57,6 +59,8 @@
 			compatible = "mips,mips1004Kc";
 			reg = <1>;
 			clocks = <&scuclk EN7523_CLK_CPU>;
+			clock-names = "cpu";
+			operating-points-v2 = <&cpu_opp_table>;
 			next-level-cache = <&l2>;
 		};
 
@@ -65,6 +69,8 @@
 			compatible = "mips,mips1004Kc";
 			reg = <2>;
 			clocks = <&scuclk EN7523_CLK_CPU>;
+			clock-names = "cpu";
+			operating-points-v2 = <&cpu_opp_table>;
 			next-level-cache = <&l2>;
 		};
 
@@ -73,6 +79,8 @@
 			compatible = "mips,mips1004Kc";
 			reg = <3>;
 			clocks = <&scuclk EN7523_CLK_CPU>;
+			clock-names = "cpu";
+			operating-points-v2 = <&cpu_opp_table>;
 			next-level-cache = <&l2>;
 		};
 
@@ -107,6 +115,172 @@
 			cache-size = <0x80000>;
 			cache-line-size = <32>;
 			cache-sets = <2048>;
+		};
+	};
+
+	cpu_opp_table: opp-table-cpu {
+		compatible = "operating-points-v2";
+		opp-shared;
+
+		/* SDK CPU PLL range; writable transitions need provider support. */
+		cpu_opp_325: opp-325000000 {
+			opp-hz = /bits/ 64 <325000000>;
+		};
+
+		cpu_opp_350: opp-350000000 {
+			opp-hz = /bits/ 64 <350000000>;
+		};
+
+		cpu_opp_375: opp-375000000 {
+			opp-hz = /bits/ 64 <375000000>;
+		};
+
+		cpu_opp_400: opp-400000000 {
+			opp-hz = /bits/ 64 <400000000>;
+		};
+
+		cpu_opp_425: opp-425000000 {
+			opp-hz = /bits/ 64 <425000000>;
+		};
+
+		cpu_opp_450: opp-450000000 {
+			opp-hz = /bits/ 64 <450000000>;
+		};
+
+		cpu_opp_475: opp-475000000 {
+			opp-hz = /bits/ 64 <475000000>;
+		};
+
+		cpu_opp_500: opp-500000000 {
+			opp-hz = /bits/ 64 <500000000>;
+		};
+
+		cpu_opp_525: opp-525000000 {
+			opp-hz = /bits/ 64 <525000000>;
+		};
+
+		cpu_opp_550: opp-550000000 {
+			opp-hz = /bits/ 64 <550000000>;
+		};
+
+		cpu_opp_575: opp-575000000 {
+			opp-hz = /bits/ 64 <575000000>;
+		};
+
+		cpu_opp_600: opp-600000000 {
+			opp-hz = /bits/ 64 <600000000>;
+		};
+
+		cpu_opp_625: opp-625000000 {
+			opp-hz = /bits/ 64 <625000000>;
+		};
+
+		cpu_opp_650: opp-650000000 {
+			opp-hz = /bits/ 64 <650000000>;
+		};
+
+		cpu_opp_675: opp-675000000 {
+			opp-hz = /bits/ 64 <675000000>;
+		};
+
+		cpu_opp_700: opp-700000000 {
+			opp-hz = /bits/ 64 <700000000>;
+		};
+
+		cpu_opp_725: opp-725000000 {
+			opp-hz = /bits/ 64 <725000000>;
+		};
+
+		cpu_opp_750: opp-750000000 {
+			opp-hz = /bits/ 64 <750000000>;
+		};
+
+		cpu_opp_775: opp-775000000 {
+			opp-hz = /bits/ 64 <775000000>;
+		};
+
+		cpu_opp_800: opp-800000000 {
+			opp-hz = /bits/ 64 <800000000>;
+		};
+
+		cpu_opp_825: opp-825000000 {
+			opp-hz = /bits/ 64 <825000000>;
+		};
+
+		cpu_opp_850: opp-850000000 {
+			opp-hz = /bits/ 64 <850000000>;
+		};
+
+		cpu_opp_875: opp-875000000 {
+			opp-hz = /bits/ 64 <875000000>;
+		};
+
+		cpu_opp_900: opp-900000000 {
+			opp-hz = /bits/ 64 <900000000>;
+		};
+
+		cpu_opp_925: opp-925000000 {
+			opp-hz = /bits/ 64 <925000000>;
+		};
+
+		cpu_opp_950: opp-950000000 {
+			opp-hz = /bits/ 64 <950000000>;
+		};
+
+		cpu_opp_975: opp-975000000 {
+			opp-hz = /bits/ 64 <975000000>;
+		};
+
+		cpu_opp_1000: opp-1000000000 {
+			opp-hz = /bits/ 64 <1000000000>;
+		};
+
+		cpu_opp_1025: opp-1025000000 {
+			opp-hz = /bits/ 64 <1025000000>;
+		};
+
+		cpu_opp_1050: opp-1050000000 {
+			opp-hz = /bits/ 64 <1050000000>;
+		};
+
+		cpu_opp_1075: opp-1075000000 {
+			opp-hz = /bits/ 64 <1075000000>;
+		};
+
+		cpu_opp_1100: opp-1100000000 {
+			opp-hz = /bits/ 64 <1100000000>;
+		};
+
+		cpu_opp_1125: opp-1125000000 {
+			opp-hz = /bits/ 64 <1125000000>;
+		};
+
+		cpu_opp_1150: opp-1150000000 {
+			opp-hz = /bits/ 64 <1150000000>;
+		};
+
+		cpu_opp_1175: opp-1175000000 {
+			opp-hz = /bits/ 64 <1175000000>;
+		};
+
+		cpu_opp_1200: opp-1200000000 {
+			opp-hz = /bits/ 64 <1200000000>;
+		};
+
+		cpu_opp_1225: opp-1225000000 {
+			opp-hz = /bits/ 64 <1225000000>;
+		};
+
+		cpu_opp_1250: opp-1250000000 {
+			opp-hz = /bits/ 64 <1250000000>;
+		};
+
+		cpu_opp_1275: opp-1275000000 {
+			opp-hz = /bits/ 64 <1275000000>;
+		};
+
+		cpu_opp_1300: opp-1300000000 {
+			opp-hz = /bits/ 64 <1300000000>;
 		};
 	};
 

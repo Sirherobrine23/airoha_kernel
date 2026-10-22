@@ -154,6 +154,8 @@
 #define EN7580_REG_CPU_PLL_PROTECT	0x264
 #define EN7580_REG_CPU_PLL_PCW		0x2ac
 #define EN7580_REG_CPU_PLL_CHANGE	0x2b0
+#define EN7580_CPU_PLL_PROTECT_EN	BIT(7)
+#define EN7580_CPU_PLL_CHANGE_BIT	BIT(3)
 #define EN7580_REG_XTAL_SELECT		0x0254
 #define EN7580_REG_XTAL_SELECT_ALT	0xff30
 #define EN7580_CPU_PLL_PCW_MASK		GENMASK(30, 24)
@@ -2316,6 +2318,20 @@ en7580_cpu_pll_rate(const struct econet_cpu_pll_state *state)
 	return pcw * EN7580_CPU_PLL_PCW_RATE;
 }
 
+static long en7580_cpu_clk_round_rate(struct clk_hw *hw, unsigned long rate,
+				      unsigned long *parent_rate)
+{
+	unsigned long min_rate = EN7580_CPU_PLL_PCW_MIN * EN7580_CPU_PLL_PCW_RATE;
+	unsigned long max_rate = EN7580_CPU_PLL_PCW_MAX * EN7580_CPU_PLL_PCW_RATE;
+	unsigned long step = 2 * EN7580_CPU_PLL_PCW_RATE;
+
+	/* Clamp before rounding so arbitrary requests cannot overflow on MIPS. */
+	rate = clamp_val(rate, min_rate, max_rate);
+
+	/* SDK PCWs are even: each increment of two represents 25 MHz. */
+	return DIV_ROUND_CLOSEST(rate, step) * step;
+}
+
 static unsigned long econet_cpu_clk_recalc_rate(struct clk_hw *hw,
 						unsigned long parent_rate)
 {
@@ -2330,8 +2346,12 @@ static unsigned long econet_cpu_clk_recalc_rate(struct clk_hw *hw,
 	econet_cpu_pll_read(clk->priv, &state);
 	if (econet_cpu_pll_layout(clk->priv))
 		rate = econet_cpu_pll_rate(clk, &state);
-	else
+	else if (state.setup == clk->boot_state.setup &&
+		 !((state.control ^ clk->boot_state.control) &
+		   ~EN7580_CPU_PLL_CHANGE_BIT))
 		rate = en7580_cpu_pll_rate(&state);
+	else
+		rate = 0;
 
 	/* Preserve other boot profiles only while their registers are unchanged. */
 	if (!rate && !memcmp(&state, &clk->boot_state, sizeof(state)))
@@ -2349,6 +2369,158 @@ struct econet_cpu_change {
 	const struct econet_cpu_pll_layout *pll;
 	unsigned long rate;
 	bool rollback_failed;
+};
+
+static bool en7580_cpu_clk_can_scale(struct econet_cpu_clk *clk)
+{
+	struct airoha_clk_priv *priv = clk->priv;
+
+	/* Start from the ASIC boot profile used by SDK do_cpufreq(). */
+	return priv->soc_family == EN7580_PKG &&
+		priv->chip_scu_size >= EN7580_REG_CPU_PLL_CHANGE + sizeof(u32) &&
+		!(readl(priv->np_scu_base + AIROHA_NP_SCU_SCREG_WR1) &
+		  ECONET_SAVED_IS_FPGA) &&
+		!(clk->boot_state.setup & EN7580_CPU_PLL_PROTECT_EN) &&
+		clk->boot_rate == EN7580_CPU_PLL_PCW_MAX * EN7580_CPU_PLL_PCW_RATE &&
+		en7580_cpu_pll_rate(&clk->boot_state) == clk->boot_rate;
+}
+
+static int en7580_cpu_pll_step(void __iomem *base,
+			       const struct econet_cpu_pll_state *old, u32 pcw)
+{
+	u32 param, control;
+
+	param = (old->param & ~EN7580_CPU_PLL_PCW_MASK) |
+		FIELD_PREP(EN7580_CPU_PLL_PCW_MASK, pcw);
+	writel(param, base + EN7580_REG_CPU_PLL_PCW);
+	if (readl(base + EN7580_REG_CPU_PLL_PCW) != param)
+		return -EIO;
+
+	control = readl(base + EN7580_REG_CPU_PLL_CHANGE) ^
+		  EN7580_CPU_PLL_CHANGE_BIT;
+	writel(control, base + EN7580_REG_CPU_PLL_CHANGE);
+	readl(base + EN7580_REG_CPU_PLL_CHANGE);
+	/*
+	 * SDK waits 1 us after each 25 MHz step. Delay loops may still be
+	 * calibrated for the old rate: allow for the full 1300 / 325 ratio.
+	 */
+	udelay(4);
+	if (readl(base + EN7580_REG_CPU_PLL_PCW) != param ||
+	    readl(base + EN7580_REG_CPU_PLL_CHANGE) != control ||
+	    readl(base + EN7580_REG_CPU_PLL_PROTECT) !=
+		(old->setup | EN7580_CPU_PLL_PROTECT_EN))
+		return -EIO;
+
+	return 0;
+}
+
+static int en7580_cpu_pll_ramp(void __iomem *base,
+			       const struct econet_cpu_pll_state *old,
+			       u32 *pcw, u32 target)
+{
+	u32 next;
+	int ret;
+
+	while (*pcw != target) {
+		next = *pcw < target ? *pcw + 2 : *pcw - 2;
+		ret = en7580_cpu_pll_step(base, old, next);
+		if (ret)
+			return ret;
+		*pcw = next;
+	}
+
+	return 0;
+}
+
+static int en7580_cpu_change_stopped(void *arg)
+{
+	struct econet_cpu_change *change = arg;
+	struct econet_cpu_clk *clk = change->clk;
+	void __iomem *base = clk->priv->chip_scu_base;
+	struct econet_cpu_pll_state old, state;
+	u32 pcw, start, target;
+	int ret;
+
+	econet_cpu_pll_read(clk->priv, &old);
+	if (!en7580_cpu_pll_rate(&old) || old.setup != clk->boot_state.setup ||
+	    ((old.control ^ clk->boot_state.control) &
+	     ~EN7580_CPU_PLL_CHANGE_BIT))
+		return -EOPNOTSUPP;
+
+	pcw = FIELD_GET(EN7580_CPU_PLL_PCW_MASK, old.param);
+	start = pcw;
+	target = change->rate / EN7580_CPU_PLL_PCW_RATE;
+	if (pcw == target)
+		return 0;
+
+	writel(old.setup | EN7580_CPU_PLL_PROTECT_EN,
+	       base + EN7580_REG_CPU_PLL_PROTECT);
+	if (readl(base + EN7580_REG_CPU_PLL_PROTECT) !=
+	    (old.setup | EN7580_CPU_PLL_PROTECT_EN)) {
+		ret = -EIO;
+		goto restore_protect;
+	}
+
+	ret = en7580_cpu_pll_ramp(base, &old, &pcw, target);
+	if (ret) {
+		/* A failed write may have latched the attempted adjacent step. */
+		if (en7580_cpu_pll_step(base, &old, pcw) ||
+		    en7580_cpu_pll_ramp(base, &old, &pcw, start)) {
+			change->rollback_failed = true;
+			goto restore_protect;
+		}
+		/* Restore the original toggle phase, relatching the same PCW. */
+		if (readl(base + EN7580_REG_CPU_PLL_CHANGE) != old.control) {
+			writel(old.control, base + EN7580_REG_CPU_PLL_CHANGE);
+			readl(base + EN7580_REG_CPU_PLL_CHANGE);
+			udelay(4);
+		}
+	}
+
+restore_protect:
+	writel(old.setup, base + EN7580_REG_CPU_PLL_PROTECT);
+	econet_cpu_pll_read(clk->priv, &state);
+	if (ret) {
+		if (memcmp(&state, &old, sizeof(state)))
+			change->rollback_failed = true;
+	} else if (state.setup != old.setup || state.config != old.config ||
+		   state.param != FIELD_PREP(EN7580_CPU_PLL_PCW_MASK, target) ||
+		   ((state.control ^ old.control) & ~EN7580_CPU_PLL_CHANGE_BIT)) {
+		ret = -EIO;
+		change->rollback_failed = true;
+	}
+
+	return ret;
+}
+
+static int en7580_cpu_clk_set_rate(struct clk_hw *hw, unsigned long rate,
+				   unsigned long parent_rate)
+{
+	struct econet_cpu_change change = {
+		.clk = container_of(hw, struct econet_cpu_clk, hw),
+		.rate = rate,
+	};
+	int ret;
+
+	if (!en7580_cpu_clk_can_scale(change.clk))
+		return -EOPNOTSUPP;
+	if (rate < EN7580_CPU_PLL_PCW_MIN * EN7580_CPU_PLL_PCW_RATE ||
+	    rate > EN7580_CPU_PLL_PCW_MAX * EN7580_CPU_PLL_PCW_RATE ||
+	    rate % (2 * EN7580_CPU_PLL_PCW_RATE))
+		return -EINVAL;
+
+	/* CPU and BUS share this PLL; quiesce all cores and VPEs once. */
+	ret = stop_machine(en7580_cpu_change_stopped, &change, NULL);
+	if (change.rollback_failed)
+		pr_err("EN7580 CPU PLL state verification/recovery failed\n");
+
+	return ret;
+}
+
+static const struct clk_ops en7580_cpu_clk_ops = {
+	.recalc_rate = econet_cpu_clk_recalc_rate,
+	.round_rate = en7580_cpu_clk_round_rate,
+	.set_rate = en7580_cpu_clk_set_rate,
 };
 
 static void econet_cpu_pll_write(void __iomem *base,
@@ -2463,9 +2635,15 @@ econet_register_cpu_clk(struct device *dev, struct airoha_clk_priv *priv,
 	clk->boot_rate = boot_rate;
 	clk->divisor = parent ? priv->soc_data->cpu_clk_mult : 1;
 	clk->xtal_rate = parent ? 0 : airoha_xtal_rate(priv);
-	/* Keep the characterized reference, boot-rate and PLL-state gates. */
-	if (!parent && econet_cpu_clk_can_scale(clk))
+	/* Unknown boot encodings remain read-only, including OPP filtering. */
+	if (!parent && en7580_cpu_clk_can_scale(clk))
+		init.ops = &en7580_cpu_clk_ops;
+	else if (!parent && econet_cpu_clk_can_scale(clk))
 		init.ops = &econet_cpu_scaling_ops;
+	if (!parent && priv->soc_family == EN7580_PKG &&
+	    init.ops != &en7580_cpu_clk_ops)
+		dev_info(dev, "EN7580 boot PLL profile is read-only (PCW %#x, protect %#x)\n",
+			 boot_state->param, boot_state->setup);
 	if (!parent && priv->soc_family == EN7528_PKG &&
 	    clk->xtal_rate != 25000000UL)
 		dev_info(dev, "%s XTAL: CPU PLL control is not characterized\n",

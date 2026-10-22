@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Control EN751221 and EN7528 profiles; report rates on other EcoNet SoCs.
+ * Control EN751221, EN7528 and EN7580; report rates on other EcoNet SoCs.
  */
 
 #include <linux/clk.h>
@@ -104,6 +104,8 @@ static int econet_cpufreq_add_opps(struct device *dev,
 {
 	struct dev_pm_opp *opp;
 	unsigned long freq = 0;
+	unsigned int max_nonboost = of_machine_is_compatible("econet,en7580") ?
+				    1300000 : 900000;
 	unsigned int i;
 	int count, ret;
 
@@ -151,7 +153,7 @@ static int econet_cpufreq_add_opps(struct device *dev,
 	data->num_frequencies = count;
 	/* Keep overclocking opt-in even if a DT omits turbo-mode. */
 	for (i = 0; i < data->num_frequencies; i++)
-		if (data->opp_table[i].frequency > 900000)
+		if (data->opp_table[i].frequency > max_nonboost)
 			data->opp_table[i].flags |= CPUFREQ_BOOST_FREQ;
 
 	return 0;
@@ -230,7 +232,7 @@ static int econet_cpufreq_probe(struct platform_device *pdev)
 	if (data->scaling)
 		dev_info(dev, "Initial CPU frequency: %lu MHz (%u profiles%s)\n",
 			 rate / 1000000, data->num_frequencies,
-			 boost ? "; boost above 900 MHz disabled" : "");
+			 boost ? "; boost disabled" : "");
 	else
 		dev_info(dev, "Initial CPU frequency: %lu MHz (reporting only)\n",
 			 rate / 1000000);
