@@ -49,8 +49,8 @@
 #define EN7523_SYSPLL_PCW_25M		0x2a8
 #define EN7523_SYSPLL_PCW_20M		0x2ac
 #define EN7523_SYSPLL_DISABLE		0x2b0
-#define EN7523_SYSPLL_PCW_MASK		GENMASK(30, 24)
-#define EN7523_SYSPLL_CHG_BIT		BIT(3)
+#define AIROHA_CPU_PLL_PCW_MASK		GENMASK(30, 24)
+#define AIROHA_CPU_PLL_CHANGE_BIT		BIT(3)
 
 #define EN7523_MCUCFG_CK_SWITCH_UNLOCK	0x640
 #define EN7523_MCUCFG_CK_SOURCE_SEL	0x7c0
@@ -154,11 +154,9 @@
 #define EN7580_REG_CPU_PLL_PROTECT	0x264
 #define EN7580_REG_CPU_PLL_PCW		0x2ac
 #define EN7580_REG_CPU_PLL_CHANGE	0x2b0
-#define EN7580_CPU_PLL_PROTECT_EN	BIT(7)
-#define EN7580_CPU_PLL_CHANGE_BIT	BIT(3)
+#define EN7580_CPU_PLL_PROTECT_KEY	0x80
 #define EN7580_REG_XTAL_SELECT		0x0254
 #define EN7580_REG_XTAL_SELECT_ALT	0xff30
-#define EN7580_CPU_PLL_PCW_MASK		GENMASK(30, 24)
 #define EN7580_CPU_PLL_PCW_MIN		26
 #define EN7580_CPU_PLL_PCW_MAX		104
 #define EN7580_CPU_PLL_PCW_RATE		12500000UL
@@ -332,6 +330,37 @@ struct econet_cpu_pll_layout {
 	u16 control;
 	u16 param;
 	u32 idle_setup;
+};
+
+struct airoha_cpu_pll_desc {
+	u16 protect_reg;
+	u16 pcw_reg;
+	u16 pcw_reg_20m;
+	u16 change_reg;
+	u32 protect_mask;
+	u32 unlock_key;
+	unsigned int settle_us;
+};
+
+static const struct airoha_cpu_pll_desc en7523_cpu_pll = {
+	.protect_reg = EN7523_PLLRG_PROTECT,
+	.pcw_reg = EN7523_SYSPLL_PCW_25M,
+	.pcw_reg_20m = EN7523_SYSPLL_PCW_20M,
+	.change_reg = EN7523_SYSPLL_DISABLE,
+	.protect_mask = EN7523_PLLRG_PROTECT_MASK,
+	.unlock_key = EN7523_PLLRG_PROTECT_KEY,
+	.settle_us = 20,
+};
+
+static const struct airoha_cpu_pll_desc en7580_cpu_pll = {
+	.protect_reg = EN7580_REG_CPU_PLL_PROTECT,
+	.pcw_reg = EN7580_REG_CPU_PLL_PCW,
+	.change_reg = EN7580_REG_CPU_PLL_CHANGE,
+	/* SDK writes the complete protection key. */
+	.protect_mask = GENMASK(31, 0),
+	.unlock_key = EN7580_CPU_PLL_PROTECT_KEY,
+	/* Retain the tested delay with allowance for old loop calibration. */
+	.settle_us = EN7580_CPU_PLL_SETTLE_US,
 };
 
 static const struct econet_cpu_pll_layout en751221_cpu_pll = {
@@ -1613,6 +1642,95 @@ static const struct clk_ops en75xx_clk_ro_ops = {
 
 #define to_en7523_cpu_clk(_hw) container_of(_hw, struct en7523_cpu_clk, hw)
 
+static u32 airoha_cpu_pll_unlock_value(const struct airoha_cpu_pll_desc *pll,
+				       u32 saved)
+{
+	return (saved & ~pll->protect_mask) | pll->unlock_key;
+}
+
+static int airoha_cpu_pll_unlock(void __iomem *base,
+				 const struct airoha_cpu_pll_desc *pll, u32 saved)
+{
+	u32 value = airoha_cpu_pll_unlock_value(pll, saved);
+
+	writel(value, base + pll->protect_reg);
+	return readl(base + pll->protect_reg) == value ? 0 : -EIO;
+}
+
+static int airoha_cpu_pll_restore(void __iomem *base,
+				  const struct airoha_cpu_pll_desc *pll, u32 saved)
+{
+	writel(saved, base + pll->protect_reg);
+	return readl(base + pll->protect_reg) == saved ? 0 : -EIO;
+}
+
+static unsigned long airoha_cpu_pll_rate(u32 param, unsigned long ref_rate)
+{
+	return FIELD_GET(AIROHA_CPU_PLL_PCW_MASK, param) * (ref_rate / 2);
+}
+
+static int airoha_cpu_pll_pcw(unsigned long rate, unsigned long ref_rate, u32 *pcw)
+{
+	unsigned long unit;
+
+	if (!ref_rate || ref_rate % 2)
+		return -EINVAL;
+	unit = ref_rate / 2;
+	if (rate % unit || rate / unit > FIELD_MAX(AIROHA_CPU_PLL_PCW_MASK))
+		return -EINVAL;
+
+	*pcw = rate / unit;
+	return 0;
+}
+
+/* The caller supplies the SoC-specific quiescence and clock-mux sequence. */
+static int airoha_cpu_pll_apply(void __iomem *base,
+				const struct airoha_cpu_pll_desc *pll,
+				u32 pcw_reg, u32 old_param, u32 pcw)
+{
+	u32 param, control;
+
+	if (pcw > FIELD_MAX(AIROHA_CPU_PLL_PCW_MASK))
+		return -EINVAL;
+	param = (old_param & ~AIROHA_CPU_PLL_PCW_MASK) |
+		FIELD_PREP(AIROHA_CPU_PLL_PCW_MASK, pcw);
+	writel(param, base + pcw_reg);
+	if (readl(base + pcw_reg) != param)
+		return -EIO;
+
+	control = readl(base + pll->change_reg) ^ AIROHA_CPU_PLL_CHANGE_BIT;
+	writel(control, base + pll->change_reg);
+	readl(base + pll->change_reg);
+	/* A settling delay and register readback do not establish PLL lock. */
+	udelay(pll->settle_us);
+	if (readl(base + pcw_reg) != param ||
+	    readl(base + pll->change_reg) != control ||
+	    (readl(base + pll->protect_reg) & pll->protect_mask) != pll->unlock_key)
+		return -EIO;
+
+	return 0;
+}
+
+static int airoha_cpu_pll_rollback(void __iomem *base,
+				   const struct airoha_cpu_pll_desc *pll,
+				   u32 pcw_reg, u32 param, u32 control)
+{
+	u32 pcw = FIELD_GET(AIROHA_CPU_PLL_PCW_MASK, param);
+	int ret;
+
+	ret = airoha_cpu_pll_apply(base, pll, pcw_reg, param, pcw);
+	if (ret)
+		return ret;
+	if (readl(base + pll->change_reg) != control) {
+		writel(control, base + pll->change_reg);
+		readl(base + pll->change_reg);
+		udelay(pll->settle_us);
+	}
+
+	return readl(base + pcw_reg) == param &&
+	       readl(base + pll->change_reg) == control ? 0 : -EIO;
+}
+
 #if defined(CONFIG_ARM) || defined(CONFIG_ARM64)
 static unsigned long en7523_cpu_smc_get_rate(void)
 {
@@ -1686,13 +1804,12 @@ static u32 en7523_cpu_xtal_mhz(struct en7523_cpu_clk *cpu_clk)
 static u32 en7523_cpu_pcw_reg(struct en7523_cpu_clk *cpu_clk)
 {
 	return en7523_cpu_xtal_mhz(cpu_clk) == 25 ?
-		EN7523_SYSPLL_PCW_25M : EN7523_SYSPLL_PCW_20M;
+		en7523_cpu_pll.pcw_reg : en7523_cpu_pll.pcw_reg_20m;
 }
 
 static unsigned long en7523_cpu_pll_get_rate(struct en7523_cpu_clk *cpu_clk)
 {
-	unsigned long rate;
-	u32 pcw, pcw_int, xtal;
+	u32 pcw, xtal;
 
 	xtal = en7523_cpu_xtal_mhz(cpu_clk);
 	if (!xtal)
@@ -1700,10 +1817,7 @@ static unsigned long en7523_cpu_pll_get_rate(struct en7523_cpu_clk *cpu_clk)
 
 	pcw = readl(cpu_clk->chip_scu + en7523_cpu_pcw_reg(cpu_clk));
 
-	pcw_int = FIELD_GET(EN7523_SYSPLL_PCW_MASK, pcw);
-	rate = (unsigned long)pcw_int * xtal * 1000000UL;
-
-	return rate / 2;
+	return airoha_cpu_pll_rate(pcw, xtal * 1000000UL);
 }
 
 static void en7523_cpu_clock_switch(struct en7523_cpu_clk *cpu_clk,
@@ -1733,8 +1847,8 @@ static int en7523_cpu_pll_set_rate(struct en7523_cpu_clk *cpu_clk,
 {
 	unsigned long flags;
 	unsigned int state;
-	u32 freq_mhz, old_chg, pcw_int, val, xtal;
-	int ret;
+	u32 pcw_int, pcw_reg, saved, param, control, val, xtal;
+	int ret, restore_ret;
 
 	ret = en7523_cpu_rate_to_state(rate, &state);
 	if (ret)
@@ -1744,42 +1858,38 @@ static int en7523_cpu_pll_set_rate(struct en7523_cpu_clk *cpu_clk,
 	if (!xtal)
 		return -EIO;
 
-	freq_mhz = rate / 1000000UL;
-	pcw_int = (freq_mhz * 2) / xtal;
-	if ((pcw_int * xtal) / 2 != freq_mhz)
-		return -EINVAL;
+	ret = airoha_cpu_pll_pcw(rate, xtal * 1000000UL, &pcw_int);
+	if (ret)
+		return ret;
+	pcw_reg = en7523_cpu_pcw_reg(cpu_clk);
 
 	local_irq_save(flags);
 
 	en7523_cpu_clock_switch(cpu_clk, EN7523_MCUCFG_CK_SEL_PLL2);
 
-	val = readl(cpu_clk->chip_scu + EN7523_PLLRG_PROTECT);
-	writel((val & ~EN7523_PLLRG_PROTECT_MASK) |
-	       EN7523_PLLRG_PROTECT_KEY,
-	       cpu_clk->chip_scu + EN7523_PLLRG_PROTECT);
-
-	val = readl(cpu_clk->chip_scu + en7523_cpu_pcw_reg(cpu_clk));
-	val &= ~EN7523_SYSPLL_PCW_MASK;
-	val |= FIELD_PREP(EN7523_SYSPLL_PCW_MASK, pcw_int);
-	writel(val, cpu_clk->chip_scu + en7523_cpu_pcw_reg(cpu_clk));
-
-	old_chg = readl(cpu_clk->chip_scu + EN7523_SYSPLL_DISABLE);
-	writel(old_chg ^ EN7523_SYSPLL_CHG_BIT,
-	       cpu_clk->chip_scu + EN7523_SYSPLL_DISABLE);
-
-	udelay(20);
+	saved = readl(cpu_clk->chip_scu + en7523_cpu_pll.protect_reg);
+	ret = airoha_cpu_pll_unlock(cpu_clk->chip_scu, &en7523_cpu_pll, saved);
+	if (!ret) {
+		param = readl(cpu_clk->chip_scu + pcw_reg);
+		control = readl(cpu_clk->chip_scu + en7523_cpu_pll.change_reg);
+		ret = airoha_cpu_pll_apply(cpu_clk->chip_scu, &en7523_cpu_pll,
+					   pcw_reg, param, pcw_int);
+		if (ret && airoha_cpu_pll_rollback(cpu_clk->chip_scu,
+						   &en7523_cpu_pll, pcw_reg,
+						   param, control))
+			pr_err("EN7523 CPU PLL rollback failed\n");
+	}
 
 	en7523_cpu_clock_switch(cpu_clk, EN7523_MCUCFG_CK_SEL_ARMPLL);
 
 	val = readl(cpu_clk->chip_scu + EN7523_CPUPLL_CLK_MUX);
 	writel(val & ~BIT(2), cpu_clk->chip_scu + EN7523_CPUPLL_CLK_MUX);
 
-	val = readl(cpu_clk->chip_scu + EN7523_PLLRG_PROTECT);
-	writel(val & ~EN7523_PLLRG_PROTECT_MASK,
-	       cpu_clk->chip_scu + EN7523_PLLRG_PROTECT);
+	restore_ret = airoha_cpu_pll_restore(cpu_clk->chip_scu,
+					     &en7523_cpu_pll, saved);
 
 	local_irq_restore(flags);
-	return 0;
+	return ret ? ret : restore_ret;
 }
 
 static unsigned long en7523_cpu_clk_recalc_rate(struct clk_hw *hw,
@@ -1799,7 +1909,17 @@ static unsigned long en7523_cpu_clk_recalc_rate(struct clk_hw *hw,
 static long en7523_cpu_clk_round_rate(struct clk_hw *hw, unsigned long rate,
 				      unsigned long *parent_rate)
 {
-	rate = clamp_val(rate, EN7523_CPU_MIN_RATE, EN7523_CPU_MAX_RATE);
+	struct en7523_cpu_clk *cpu_clk = to_en7523_cpu_clk(hw);
+	unsigned long max_rate = EN7523_CPU_MAX_RATE;
+
+	if (!cpu_clk->use_smc) {
+		max_rate = FIELD_MAX(AIROHA_CPU_PLL_PCW_MASK) *
+			   (en7523_cpu_xtal_mhz(cpu_clk) * 1000000UL / 2);
+		max_rate = min(max_rate, EN7523_CPU_MAX_RATE);
+		max_rate -= (max_rate - EN7523_CPU_MIN_RATE) %
+			    EN7523_CPU_RATE_STEP;
+	}
+	rate = clamp_val(rate, EN7523_CPU_MIN_RATE, max_rate);
 	rate -= EN7523_CPU_MIN_RATE;
 	rate = DIV_ROUND_CLOSEST(rate, EN7523_CPU_RATE_STEP) *
 	       EN7523_CPU_RATE_STEP;
@@ -2308,15 +2428,15 @@ static bool econet_cpu_clk_can_scale(struct econet_cpu_clk *clk)
 static unsigned long
 en7580_cpu_pll_rate(const struct econet_cpu_pll_state *state)
 {
-	u32 pcw = FIELD_GET(EN7580_CPU_PLL_PCW_MASK, state->param);
+	u32 pcw = FIELD_GET(AIROHA_CPU_PLL_PCW_MASK, state->param);
 
 	/* SDK do_cpufreq(): PCW = 104 - 2 * step, CPU = 1300 - 25 * step. */
-	if (state->param & ~EN7580_CPU_PLL_PCW_MASK ||
+	if (state->param & ~AIROHA_CPU_PLL_PCW_MASK ||
 	    pcw < EN7580_CPU_PLL_PCW_MIN || pcw > EN7580_CPU_PLL_PCW_MAX ||
 	    (pcw & 1))
 		return 0;
 
-	return pcw * EN7580_CPU_PLL_PCW_RATE;
+	return airoha_cpu_pll_rate(state->param, 2 * EN7580_CPU_PLL_PCW_RATE);
 }
 
 static long en7580_cpu_clk_round_rate(struct clk_hw *hw, unsigned long rate,
@@ -2349,7 +2469,7 @@ static unsigned long econet_cpu_clk_recalc_rate(struct clk_hw *hw,
 		rate = econet_cpu_pll_rate(clk, &state);
 	else if (state.setup == clk->boot_state.setup &&
 		 !((state.control ^ clk->boot_state.control) &
-		   ~EN7580_CPU_PLL_CHANGE_BIT))
+		   ~AIROHA_CPU_PLL_CHANGE_BIT))
 		rate = en7580_cpu_pll_rate(&state);
 	else
 		rate = 0;
@@ -2381,39 +2501,9 @@ static bool en7580_cpu_clk_can_scale(struct econet_cpu_clk *clk)
 		priv->chip_scu_size >= EN7580_REG_CPU_PLL_CHANGE + sizeof(u32) &&
 		!(readl(priv->np_scu_base + AIROHA_NP_SCU_SCREG_WR1) &
 		  ECONET_SAVED_IS_FPGA) &&
-		!(clk->boot_state.setup & EN7580_CPU_PLL_PROTECT_EN) &&
+		!(clk->boot_state.setup & EN7580_CPU_PLL_PROTECT_KEY) &&
 		clk->boot_rate == EN7580_CPU_PLL_PCW_MAX * EN7580_CPU_PLL_PCW_RATE &&
 		en7580_cpu_pll_rate(&clk->boot_state) == clk->boot_rate;
-}
-
-static int en7580_cpu_pll_apply(void __iomem *base,
-				const struct econet_cpu_pll_state *old, u32 pcw)
-{
-	u32 param, control;
-
-	param = (old->param & ~EN7580_CPU_PLL_PCW_MASK) |
-		FIELD_PREP(EN7580_CPU_PLL_PCW_MASK, pcw);
-	writel(param, base + EN7580_REG_CPU_PLL_PCW);
-	if (readl(base + EN7580_REG_CPU_PLL_PCW) != param)
-		return -EIO;
-
-	control = readl(base + EN7580_REG_CPU_PLL_CHANGE) ^
-		  EN7580_CPU_PLL_CHANGE_BIT;
-	writel(control, base + EN7580_REG_CPU_PLL_CHANGE);
-	readl(base + EN7580_REG_CPU_PLL_CHANGE);
-	/*
-	 * Keep the delay used for direct-transition testing, including a
-	 * factor of four for loops calibrated at the old rate (1300 / 325).
-	 * This is not a PLL lock timeout; readback only verifies registers.
-	 */
-	udelay(EN7580_CPU_PLL_SETTLE_US);
-	if (readl(base + EN7580_REG_CPU_PLL_PCW) != param ||
-	    readl(base + EN7580_REG_CPU_PLL_CHANGE) != control ||
-	    readl(base + EN7580_REG_CPU_PLL_PROTECT) !=
-		(old->setup | EN7580_CPU_PLL_PROTECT_EN))
-		return -EIO;
-
-	return 0;
 }
 
 static int en7580_cpu_change_stopped(void *arg)
@@ -2423,52 +2513,52 @@ static int en7580_cpu_change_stopped(void *arg)
 	void __iomem *base = clk->priv->chip_scu_base;
 	struct econet_cpu_pll_state old, state;
 	u32 pcw, target;
-	int ret;
+	int ret, restore_ret;
 
 	econet_cpu_pll_read(clk->priv, &old);
 	if (!en7580_cpu_pll_rate(&old) || old.setup != clk->boot_state.setup ||
 	    ((old.control ^ clk->boot_state.control) &
-	     ~EN7580_CPU_PLL_CHANGE_BIT))
+	     ~AIROHA_CPU_PLL_CHANGE_BIT))
 		return -EOPNOTSUPP;
 
-	pcw = FIELD_GET(EN7580_CPU_PLL_PCW_MASK, old.param);
-	target = change->rate / EN7580_CPU_PLL_PCW_RATE;
+	pcw = FIELD_GET(AIROHA_CPU_PLL_PCW_MASK, old.param);
+	ret = airoha_cpu_pll_pcw(change->rate, 2 * EN7580_CPU_PLL_PCW_RATE,
+				 &target);
+	if (ret)
+		return ret;
 	if (pcw == target)
 		return 0;
 
-	writel(old.setup | EN7580_CPU_PLL_PROTECT_EN,
-	       base + EN7580_REG_CPU_PLL_PROTECT);
-	if (readl(base + EN7580_REG_CPU_PLL_PROTECT) !=
-	    (old.setup | EN7580_CPU_PLL_PROTECT_EN)) {
-		ret = -EIO;
+	ret = airoha_cpu_pll_unlock(base, &en7580_cpu_pll, old.setup);
+	if (ret)
 		goto restore_protect;
-	}
 
 	/* Apply only the destination PCW, without intermediate frequencies. */
-	ret = en7580_cpu_pll_apply(base, &old, target);
+	ret = airoha_cpu_pll_apply(base, &en7580_cpu_pll,
+				   en7580_cpu_pll.pcw_reg, old.param, target);
 	if (ret) {
 		/* Reapply the original PCW directly if the target was not verified. */
-		if (en7580_cpu_pll_apply(base, &old, pcw)) {
+		if (airoha_cpu_pll_rollback(base, &en7580_cpu_pll,
+					    en7580_cpu_pll.pcw_reg, old.param,
+					    old.control)) {
 			change->rollback_failed = true;
 			goto restore_protect;
-		}
-		/* Restore the original toggle phase, relatching the same PCW. */
-		if (readl(base + EN7580_REG_CPU_PLL_CHANGE) != old.control) {
-			writel(old.control, base + EN7580_REG_CPU_PLL_CHANGE);
-			readl(base + EN7580_REG_CPU_PLL_CHANGE);
-			udelay(4);
 		}
 	}
 
 restore_protect:
-	writel(old.setup, base + EN7580_REG_CPU_PLL_PROTECT);
+	restore_ret = airoha_cpu_pll_restore(base, &en7580_cpu_pll, old.setup);
+	if (restore_ret) {
+		change->rollback_failed = true;
+		ret = restore_ret;
+	}
 	econet_cpu_pll_read(clk->priv, &state);
 	if (ret) {
 		if (memcmp(&state, &old, sizeof(state)))
 			change->rollback_failed = true;
 	} else if (state.setup != old.setup || state.config != old.config ||
-		   state.param != FIELD_PREP(EN7580_CPU_PLL_PCW_MASK, target) ||
-		   ((state.control ^ old.control) & ~EN7580_CPU_PLL_CHANGE_BIT)) {
+		   state.param != FIELD_PREP(AIROHA_CPU_PLL_PCW_MASK, target) ||
+		   ((state.control ^ old.control) & ~AIROHA_CPU_PLL_CHANGE_BIT)) {
 		ret = -EIO;
 		change->rollback_failed = true;
 	}
