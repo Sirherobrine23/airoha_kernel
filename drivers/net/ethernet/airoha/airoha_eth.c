@@ -3267,11 +3267,18 @@ static int airoha_qdma_modern_init_hfwd(struct airoha_qdma *qdma)
 				   buf_size != AIROHA_MAX_PACKET_SIZE));
 	airoha_qdma_rmw(qdma, REG_FWD_DSCP_LOW_THR, FWD_DSCP_LOW_THR_MASK,
 			FIELD_PREP(FWD_DSCP_LOW_THR_MASK, 128));
+	/* The AN7552 stock firmware runs the LMGR in DRAM mode
+	 * (LMGR_SRAM_MODE clear). With SRAM mode set the QDMA consumes TX
+	 * descriptors but never completes or transmits them: the TX rings
+	 * wedge and no frame reaches GDM1. Run it in DRAM mode on AN7552.
+	 */
 	airoha_qdma_rmw(qdma, REG_LMGR_INIT_CFG,
 			LMGR_INIT_START | LMGR_SRAM_MODE_MASK |
 			HW_FWD_DESC_NUM_MASK,
 			FIELD_PREP(HW_FWD_DESC_NUM_MASK, num_desc) |
-			LMGR_INIT_START | LMGR_SRAM_MODE_MASK);
+			LMGR_INIT_START |
+			(airoha_is(qdma->eth, airoha_an7552) ? 0 :
+			 LMGR_SRAM_MODE_MASK));
 
 	return read_poll_timeout(airoha_qdma_rr, status,
 				 !(status & LMGR_INIT_START), USEC_PER_MSEC,
