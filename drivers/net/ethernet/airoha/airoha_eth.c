@@ -3267,18 +3267,16 @@ static int airoha_qdma_modern_init_hfwd(struct airoha_qdma *qdma)
 				   buf_size != AIROHA_MAX_PACKET_SIZE));
 	airoha_qdma_rmw(qdma, REG_FWD_DSCP_LOW_THR, FWD_DSCP_LOW_THR_MASK,
 			FIELD_PREP(FWD_DSCP_LOW_THR_MASK, 128));
-	/* The AN7552 stock firmware runs the LMGR in DRAM mode
-	 * (LMGR_SRAM_MODE clear). With SRAM mode set the QDMA consumes TX
-	 * descriptors but never completes or transmits them: the TX rings
-	 * wedge and no frame reaches GDM1. Run it in DRAM mode on AN7552.
+	/*
+	 * for an7552 family LMGR_SRAM_MODE_MASK is clenead to use
+	 * DRAM mode
 	 */
 	airoha_qdma_rmw(qdma, REG_LMGR_INIT_CFG,
 			LMGR_INIT_START | LMGR_SRAM_MODE_MASK |
 			HW_FWD_DESC_NUM_MASK,
 			FIELD_PREP(HW_FWD_DESC_NUM_MASK, num_desc) |
-			LMGR_INIT_START |
-			(airoha_is(qdma->eth, airoha_an7552) ? 0 :
-			 LMGR_SRAM_MODE_MASK));
+			LMGR_INIT_START | (airoha_is(qdma->eth, airoha_an7552) ?
+						     0 : LMGR_SRAM_MODE_MASK));
 
 	return read_poll_timeout(airoha_qdma_rr, status,
 				 !(status & LMGR_INIT_START), USEC_PER_MSEC,
@@ -10342,6 +10340,25 @@ static int airoha_an7583_get_dev_from_sport(struct airoha_eth *eth, u32 sport,
 	return 0;
 }
 
+static int an7552_get_dev_from_sport(struct airoha_eth *eth, u32 sport,
+				     u16 *port, u16 *dev)
+{
+	*dev = 0;
+	switch (sport) {
+	case 0:
+	case 1:
+	case 0x10 ... 0x14:
+		*port = AIROHA_GDM1_IDX - 1;
+		return 0;
+	case 2:
+	case 5:
+		*port = AIROHA_GDM2_IDX - 1;
+		return 0;
+	default:
+		return -EINVAL;
+	}
+}
+
 static const struct airoha_eth_xpon_ops econet_xpon_ops = {
 	.set_mode = econet_set_xpon_mode,
 	.set_datapath = econet_set_xpon_datapath,
@@ -10532,40 +10549,6 @@ const struct airoha_eth_soc_data airoha_an7583_soc_data = {
 	},
 };
 
-static int an7552_get_dev_from_sport(struct airoha_eth *eth, u32 sport,
-				     u16 *port, u16 *dev)
-{
-	*dev = 0;
-	switch (sport) {
-	case 0:
-	case 1:
-	case 0x10 ... 0x14:
-		*port = AIROHA_GDM1_IDX - 1;
-		return 0;
-	case 2:
-	case 5:
-		*port = AIROHA_GDM2_IDX - 1;
-		return 0;
-	default:
-		return -EINVAL;
-	}
-}
-
-static const struct airoha_eth_soc_data an7552_soc_data = {
-	.version = airoha_an7552,
-	.tx_ring = 8,
-	.rx_ring = 16,
-	.irq_banks = 4,
-	.max_gdm_ports = 2,
-	.pse_fq_cfg = PSE_FQ_CFG,
-	/* PPE and hardware LRO require separate AN7552 profiles. */
-	.ops = {
-		.get_sport = airoha_en7523_get_sport,
-		.get_vip_port = airoha_en7523_get_vip_port,
-		.get_dev_from_sport = an7552_get_dev_from_sport,
-	},
-};
-
 const struct airoha_eth_soc_data airoha_en7523_soc_data = {
 	.version = airoha_en7523,
 	.xpon_ops = &airoha_xpon_ops,
@@ -10588,6 +10571,31 @@ const struct airoha_eth_soc_data airoha_en7523_soc_data = {
 		.get_sport = airoha_en7523_get_sport,
 		.get_vip_port = airoha_en7523_get_vip_port,
 		.get_dev_from_sport = airoha_en7523_get_dev_from_sport,
+	},
+};
+
+static const struct airoha_eth_soc_data an7552_soc_data = {
+	.version = airoha_an7552,
+	// .xpon_ops = &airoha_xpon_ops,
+	// .xsi_rsts_names = en7523_xsi_rsts_names,
+	// .num_xsi_rsts = ARRAY_SIZE(en7523_xsi_rsts_names),
+	.rx_ring = 16,
+	.tx_ring = 8,
+	.num_ppe = 1,
+	.irq_banks = 4,
+	.max_gdm_ports = 4,
+	.pse_fq_cfg = PSE_FQ_CFG,
+	.ppe_stats_entries = 0,
+	/* AN7552 uses 80-byte extended FoE entries with TB_ENTRY_SIZE=0,
+	 * 512 SRAM entries and a default 16K DRAM table in the vendor SDK.
+	 */
+	.ppe_sram_entries = 512,
+	.ppe_dram_entries = 16 * 1024,
+	.foe_format = AIROHA_FOE_FORMAT_V2_TUNNEL,
+	.ops = {
+		.get_sport = airoha_en7523_get_sport,
+		.get_vip_port = airoha_en7523_get_vip_port,
+		.get_dev_from_sport = an7552_get_dev_from_sport,
 	},
 };
 
@@ -11079,7 +11087,6 @@ EXPORT_SYMBOL_GPL(airoha_eth_xdsl_update_link);
 
 static const struct of_device_id airoha_eth_of_match[] = {
 	{ .compatible = "airoha,an7552-eth", .data = &an7552_soc_data },
-	{ .compatible = "airoha,an7563-eth", .data = &an7552_soc_data },
 	{ .compatible = "econet,en751221-eth", .data = &econet_en751221_soc_data },
 	{ .compatible = "econet,en751627-eth", .data = &econet_en7528_soc_data },
 	{ .compatible = "econet,en7528-eth", .data = &econet_en7528_soc_data },

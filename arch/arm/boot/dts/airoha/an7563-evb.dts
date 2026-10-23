@@ -3,24 +3,131 @@
 
 /memreserve/ 0x80000000 0x200000;
 
-#include "an7563.dtsi"
+#include "an7552.dtsi"
 
 / {
 	model = "Airoha AN7563 Ethernet Evaluation Board";
-	compatible = "airoha,an7563-evb", "airoha,an7563";
-
-	aliases {
-		serial0 = &uart1;
-		ethernet0 = &gdm1;
-	};
-
-	chosen {
-		stdout-path = "serial0:115200n8";
-	};
+	compatible = "airoha,an7563-evb", "airoha,an7552";
 
 	memory@80000000 {
 		device_type = "memory";
 		reg = <0x80000000 0x20000000>;
+	};
+
+	leds {
+		compatible = "gpio-leds";
+
+		internet {
+			label = "internet";
+			gpios = <&pinctrl 20 GPIO_ACTIVE_HIGH>;
+			linux,default-trigger = "timer";
+		};
+
+		power {
+			label = "power";
+			gpios = <&pinctrl 27 GPIO_ACTIVE_LOW>;
+			linux,default-trigger = "timer";
+		};
+
+		usb2 {
+			label = "usb2";
+			gpios = <&pinctrl 21 GPIO_ACTIVE_LOW>;
+			linux,default-trigger = "usbport";
+		};
+
+		usb_0 {
+			label = "usb_0";
+			gpios = <&pinctrl 1 GPIO_ACTIVE_LOW>;
+			linux,default-trigger = "usbport";
+		};
+
+		voip_hook {
+			label = "voip_hook";
+			gpios = <&pinctrl 2 GPIO_ACTIVE_LOW>;
+			linux,default-trigger = "timer";
+		};
+
+		wlan {
+			label = "wlan";
+			gpios = <&pinctrl 12 GPIO_ACTIVE_LOW>;
+			linux,default-trigger = "timer";
+		};
+
+		wps {
+			label = "wps";
+			gpios = <&pinctrl 4 GPIO_ACTIVE_LOW>;
+			linux,default-trigger = "timer";
+		};
+
+		xponLos {
+			label = "xponLos";
+			gpios = <&pinctrl 3 GPIO_ACTIVE_LOW>;
+			linux,default-trigger = "timer";
+		};
+
+		xponStatus {
+			label = "xponStatus";
+			gpios = <&pinctrl 7 GPIO_ACTIVE_LOW>;
+			linux,default-trigger = "timer";
+		};
+	};
+
+	gpio-keys-polled {
+		compatible = "gpio-keys-polled";
+		poll-interval = <100>;
+
+		reset_ {
+			label = "reset";
+			gpios = <&pinctrl 0 GPIO_ACTIVE_LOW>;
+		};
+
+		wps {
+			label = "wps";
+			gpios = <&pinctrl 5 GPIO_ACTIVE_LOW>;
+		};
+	};
+};
+
+&spi0 {
+	flash@0 {
+		reg = <0>;
+		compatible = "spi-nand";
+		spi-max-frequency = <50000000>;
+		spi-tx-bus-width = <1>;
+		spi-rx-bus-width = <2>;
+
+		partitions {
+			compatible = "fixed-partitions";
+			#address-cells = <1>;
+			#size-cells = <1>;
+
+			bootloader@0 {
+				label = "bootloader";
+				reg = <0x00000000 0x00080000>;
+				read-only;
+			};
+
+			tclinux@80000 {
+				label = "tclinux";
+				reg = <0x00080000 0x02800000>;
+			};
+
+			tclinux_slave@2880000 {
+				label = "tclinux_slave";
+				reg = <0x02880000 0x02800000>;
+			};
+
+			rootfs_data@5080000 {
+				label = "rootfs_data";
+				reg = <0x05080000 0x00800000>;
+			};
+
+			art@de80000 {
+				label = "art";
+				reg = <0x05880000 0x00380000>;
+				read-only;
+			};
+		};
 	};
 };
 

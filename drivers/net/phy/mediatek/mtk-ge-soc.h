@@ -12,8 +12,7 @@
 #define MTK_GPHY_ID_EN7528			0x03a29491
 #define AIROHA_GPHY_ID_EN7523			0x03a294a1
 #define AIROHA_GPHY_ID_AN7581			0x03a294c1
-/* AN7552 SDK matches PHYSID2; the OUI half is read from hardware. */
-#define AIROHA_GPHY_ID_AN7552			0x00000400
+#define AIROHA_GPHY_ID_AN7552			0xc0ff0400
 #define AIROHA_GPHY_ID_AN7583			0xc0ff0420
 
 #define MTK_EXT_PAGE_ACCESS			0x1f

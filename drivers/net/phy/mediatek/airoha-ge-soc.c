@@ -3385,14 +3385,6 @@ static int an7583_phy_config_init(struct phy_device *phydev)
 	return 0;
 }
 
-static int an7552_phy_match(struct phy_device *phydev,
-			    const struct phy_driver *phydrv)
-{
-	return (phydev->phy_id & 0xffff) == AIROHA_GPHY_ID_AN7552 &&
-	       (of_machine_is_compatible("airoha,an7552") ||
-		of_machine_is_compatible("airoha,an7563"));
-}
-
 static int an7552_phy_config_init(struct phy_device *phydev)
 {
 	static const u16 amp_regs[CALIB_CONST_TYPE_MAX] = {
@@ -3499,18 +3491,6 @@ out:
 
 static struct phy_driver mtk_socphy_driver[] = {
 	{
-		.phy_id = AIROHA_GPHY_ID_AN7552,
-		.phy_id_mask = 0x0000ffff,
-		.match_phy_device = an7552_phy_match,
-		.name = "Airoha AN7552/AN7563 GPHY",
-		.config_init = an7552_phy_config_init,
-		.probe = an7581_phy_probe,
-		.config_intr = genphy_no_config_intr,
-		.handle_interrupt = genphy_handle_interrupt_no_ack,
-		.read_page = mtk_phy_read_page,
-		.write_page = mtk_phy_write_page,
-	},
-	{
 		PHY_ID_MATCH_EXACT(AIROHA_GPHY_ID_EN7512),
 		.name		= "EcoNet EN7512/EN7521 GPHY",
 		.config_init	= en7512_phy_config_init,
@@ -3575,6 +3555,16 @@ static struct phy_driver mtk_socphy_driver[] = {
 		.write_page	= mtk_phy_write_page,
 	},
 	{
+		PHY_ID_MATCH_EXACT(AIROHA_GPHY_ID_AN7552),
+		.name = "Airoha AN7552 PHY",
+		.config_init = an7552_phy_config_init,
+		.probe = an7581_phy_probe,
+		.config_intr = genphy_no_config_intr,
+		.handle_interrupt = genphy_handle_interrupt_no_ack,
+		.read_page = mtk_phy_read_page,
+		.write_page = mtk_phy_write_page,
+	},
+	{
 		PHY_ID_MATCH_EXACT(AIROHA_GPHY_ID_AN7583),
 		.name		= "Airoha AN7583 PHY",
 		.config_init	= an7583_phy_config_init,
@@ -3593,11 +3583,11 @@ static struct phy_driver mtk_socphy_driver[] = {
 module_phy_driver(mtk_socphy_driver);
 
 static const struct mdio_device_id __maybe_unused airoha_socphy_tbl[] = {
-	{ .phy_id = AIROHA_GPHY_ID_AN7552, .phy_id_mask = 0x0000ffff },
 	{ PHY_ID_MATCH_EXACT(AIROHA_GPHY_ID_EN7512) },
 	{ PHY_ID_MATCH_EXACT(AIROHA_GPHY_ID_EN7528) },
 	{ PHY_ID_MATCH_EXACT(AIROHA_GPHY_ID_EN7523) },
 	{ PHY_ID_MATCH_EXACT(AIROHA_GPHY_ID_AN7581) },
+	{ PHY_ID_MATCH_EXACT(AIROHA_GPHY_ID_AN7552) },
 	{ PHY_ID_MATCH_EXACT(AIROHA_GPHY_ID_AN7583) },
 	{ }
 };

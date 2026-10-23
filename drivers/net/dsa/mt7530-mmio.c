@@ -31,7 +31,6 @@ static int en751221_quiesce_hw_poll(struct mt7530_priv *priv)
 
 static const struct of_device_id mt7988_of_match[] = {
 	{ .compatible = "airoha,an7552-switch", .data = &mt753x_table[ID_AN7552] },
-	{ .compatible = "airoha,an7563-switch", .data = &mt753x_table[ID_AN7552] },
 	{ .compatible = "airoha,en7523-switch", .data = &mt753x_table[ID_EN7523], },
 	{ .compatible = "airoha,an7583-switch", .data = &mt753x_table[ID_AN7583], },
 	{ .compatible = "airoha,en7581-switch", .data = &mt753x_table[ID_EN7581], },

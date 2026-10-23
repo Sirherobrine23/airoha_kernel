@@ -406,6 +406,13 @@ static void airoha_ppe_hw_init(struct airoha_ppe *ppe)
 				      PPE_FLOW_CFG_L2_BRIDGE_MASK);
 		}
 
+		/* The AN7552 SDK explicitly disables FIN_FAST_RP. Clear it
+		 * even when firmware left the PPE configured before probing.
+		 */
+		if (airoha_is(eth, airoha_an7552))
+			airoha_fe_clear(eth, REG_PPE_TB_CFG(i),
+					PPE_TB_CFG_FIN_FAST_RP_MASK);
+
 		airoha_fe_rmw(eth, REG_PPE_BIND_RATE(i),
 			      PPE_BIND_RATE_L2B_BIND_MASK |
 			      PPE_BIND_RATE_BIND_MASK,
@@ -702,12 +709,12 @@ static int airoha_ppe_foe_entry_prepare(struct airoha_eth *eth,
 			 * forwarding descriptors queue.
 			 */
 			/* The vendor SDK defines SUPPORT_FAST_PATH only for
-			 * EN7580/EN7581/AN7583.  EN7523 must use the normal
+			 * EN7580/EN7581/AN7583. EN7523 and AN7552 use the normal
 			 * PPE-to-QDMA path; setting FAST_PATH makes a bound FOE
 			 * entry consume an unsupported descriptor path and drops
 			 * the flow as soon as it transitions to BIND.
 			 */
-			if (!airoha_is(eth, airoha_en7523) &&
+			if (!airoha_is(eth, airoha_en7523, airoha_an7552) &&
 			    airoha_is_lan_gdm_dev(dev))
 				val |= AIROHA_FOE_IB2_FAST_PATH;
 			if (xpon_flow)
@@ -905,12 +912,16 @@ static u32 airoha_ppe_foe_get_entry_hash(struct airoha_ppe *ppe,
 	hash ^= hv1 ^ hv2 ^ hv3;
 	hash ^= hash >> 16;
 
-	if (airoha_is(ppe->common.eth, airoha_en7523)) {
+	if (airoha_is(ppe->common.eth, airoha_en7523, airoha_an7552)) {
 		u32 dram_entries = ppe->common.eth->soc->ppe_dram_entries;
 		u32 sram_entries = airoha_ppe_get_total_sram_num_entries(ppe);
 
-		/* For the EN7523, the hardware maps the main BINDs using a mask on the DRAM.
-		 * We masked to the DRAM boundaries and adjusted sw_idx to point to the area after the SRAM.
+		/* These SoCs have 512 SRAM entries plus a power-of-two DRAM
+		 * table. Masking by the combined size would collapse the
+		 * software hash into a small subset of foe_flow[]. Use the
+		 * DRAM-sized range after the SRAM shadow for these buckets.
+		 * The hardware-learned slot still determines where a flow is
+		 * committed; this does not change HW/SW index translation.
 		 */
 		hash &= (dram_entries - 1);
 		hash += sram_entries;
