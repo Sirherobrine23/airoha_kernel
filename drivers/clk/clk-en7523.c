@@ -162,6 +162,7 @@
 #define EN7580_CPU_PLL_PCW_MIN		26
 #define EN7580_CPU_PLL_PCW_MAX		104
 #define EN7580_CPU_PLL_PCW_RATE		12500000UL
+#define EN7580_CPU_PLL_SETTLE_US	80
 
 /* SCU PKG ID */
 #define AIROHA_NP_SCU_PDIDR		0x05c
@@ -2385,8 +2386,8 @@ static bool en7580_cpu_clk_can_scale(struct econet_cpu_clk *clk)
 		en7580_cpu_pll_rate(&clk->boot_state) == clk->boot_rate;
 }
 
-static int en7580_cpu_pll_step(void __iomem *base,
-			       const struct econet_cpu_pll_state *old, u32 pcw)
+static int en7580_cpu_pll_apply(void __iomem *base,
+				const struct econet_cpu_pll_state *old, u32 pcw)
 {
 	u32 param, control;
 
@@ -2401,33 +2402,16 @@ static int en7580_cpu_pll_step(void __iomem *base,
 	writel(control, base + EN7580_REG_CPU_PLL_CHANGE);
 	readl(base + EN7580_REG_CPU_PLL_CHANGE);
 	/*
-	 * SDK waits 1 us after each 25 MHz step. Delay loops may still be
-	 * calibrated for the old rate: allow for the full 1300 / 325 ratio.
+	 * Keep the delay used for direct-transition testing, including a
+	 * factor of four for loops calibrated at the old rate (1300 / 325).
+	 * This is not a PLL lock timeout; readback only verifies registers.
 	 */
-	udelay(4);
+	udelay(EN7580_CPU_PLL_SETTLE_US);
 	if (readl(base + EN7580_REG_CPU_PLL_PCW) != param ||
 	    readl(base + EN7580_REG_CPU_PLL_CHANGE) != control ||
 	    readl(base + EN7580_REG_CPU_PLL_PROTECT) !=
 		(old->setup | EN7580_CPU_PLL_PROTECT_EN))
 		return -EIO;
-
-	return 0;
-}
-
-static int en7580_cpu_pll_ramp(void __iomem *base,
-			       const struct econet_cpu_pll_state *old,
-			       u32 *pcw, u32 target)
-{
-	u32 next;
-	int ret;
-
-	while (*pcw != target) {
-		next = *pcw < target ? *pcw + 2 : *pcw - 2;
-		ret = en7580_cpu_pll_step(base, old, next);
-		if (ret)
-			return ret;
-		*pcw = next;
-	}
 
 	return 0;
 }
@@ -2438,7 +2422,7 @@ static int en7580_cpu_change_stopped(void *arg)
 	struct econet_cpu_clk *clk = change->clk;
 	void __iomem *base = clk->priv->chip_scu_base;
 	struct econet_cpu_pll_state old, state;
-	u32 pcw, start, target;
+	u32 pcw, target;
 	int ret;
 
 	econet_cpu_pll_read(clk->priv, &old);
@@ -2448,7 +2432,6 @@ static int en7580_cpu_change_stopped(void *arg)
 		return -EOPNOTSUPP;
 
 	pcw = FIELD_GET(EN7580_CPU_PLL_PCW_MASK, old.param);
-	start = pcw;
 	target = change->rate / EN7580_CPU_PLL_PCW_RATE;
 	if (pcw == target)
 		return 0;
@@ -2461,11 +2444,11 @@ static int en7580_cpu_change_stopped(void *arg)
 		goto restore_protect;
 	}
 
-	ret = en7580_cpu_pll_ramp(base, &old, &pcw, target);
+	/* Apply only the destination PCW, without intermediate frequencies. */
+	ret = en7580_cpu_pll_apply(base, &old, target);
 	if (ret) {
-		/* A failed write may have latched the attempted adjacent step. */
-		if (en7580_cpu_pll_step(base, &old, pcw) ||
-		    en7580_cpu_pll_ramp(base, &old, &pcw, start)) {
+		/* Reapply the original PCW directly if the target was not verified. */
+		if (en7580_cpu_pll_apply(base, &old, pcw)) {
 			change->rollback_failed = true;
 			goto restore_protect;
 		}
