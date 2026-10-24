@@ -100,7 +100,7 @@ static int airoha_ppe_hw_to_sw_idx(struct airoha_ppe *ppe, u32 hw_idx,
 {
 	u32 sram_num_entries = airoha_ppe_get_total_sram_num_entries(ppe);
 	u32 dram_num_entries = ppe->common.eth->soc->ppe_dram_entries;
-	u32 ppe_num_entries = sram_num_entries + dram_num_entries;
+	u32 ppe_num_entries = airoha_ppe_get_total_num_entries(ppe);
 
 	if (!airoha_is(ppe->common.eth, airoha_en7523)) {
 		if (hw_idx >= ppe_num_entries)
@@ -137,6 +137,14 @@ static u32 airoha_ppe_sw_to_hw_idx(struct airoha_ppe *ppe, u32 sw_idx)
 u32 airoha_ppe_get_total_num_entries(struct airoha_ppe *ppe)
 {
 	u32 sram_num_entries = airoha_ppe_get_total_sram_num_entries(ppe);
+
+	/* With TB_BASE pointing past the SRAM shadow, the AN7552 PPE accesses
+	 * the DRAM entry for hash h at TB_BASE + (h - sram_num_entries) * size,
+	 * so the table must cover the whole hash range up to the DRAM end.
+	 */
+	if (airoha_is(ppe->common.eth, airoha_an7552))
+		return AN7552_PPE_DRAM_IDX_BASE +
+		       ppe->common.eth->soc->ppe_dram_entries;
 
 	return sram_num_entries + ppe->common.eth->soc->ppe_dram_entries;
 }
@@ -414,6 +422,18 @@ static void airoha_ppe_hw_init(struct airoha_ppe *ppe)
 		if (airoha_is(eth, airoha_an7552))
 			airoha_fe_clear(eth, REG_PPE_TB_CFG(i),
 					PPE_TB_CFG_FIN_FAST_RP_MASK);
+
+		/* The bind limits reset to zero, which keeps the AN7552 PPE
+		 * from learning any entry. Use the AN7552 SDK values.
+		 */
+		if (airoha_is(eth, airoha_an7552)) {
+			airoha_fe_wr(eth, REG_PPE_BIND_LIMIT0(i),
+				     FIELD_PREP(PPE_BIND_LIMIT0_HALF_MASK, 4000) |
+				     FIELD_PREP(PPE_BIND_LIMIT0_QUARTER_MASK, 4000));
+			airoha_fe_wr(eth, REG_PPE_BIND_LIMIT1(i),
+				     FIELD_PREP(PPE_BIND_LIMIT1_NON_L4_MASK, 1) |
+				     FIELD_PREP(PPE_BIND_LIMIT1_FULL_MASK, 8000));
+		}
 
 		airoha_fe_rmw(eth, REG_PPE_BIND_RATE(i),
 			      PPE_BIND_RATE_L2B_BIND_MASK |
