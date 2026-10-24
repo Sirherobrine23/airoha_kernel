@@ -9660,7 +9660,8 @@ static int airoha_alloc_gdm_device(struct airoha_eth *eth,
 		netdev->vlan_features = AIROHA_HW_FEATURES;
 	}
 	if (airoha_is(eth, airoha_an7552)) {
-		netdev_features_t unsupported = NETIF_F_HW_TC | NETIF_F_GRO_HW;
+		/* Keep HW_TC available for the PPE flow-offload callback. */
+		netdev_features_t unsupported = NETIF_F_GRO_HW;
 
 		netdev->hw_features &= ~unsupported;
 		netdev->features &= ~unsupported;
