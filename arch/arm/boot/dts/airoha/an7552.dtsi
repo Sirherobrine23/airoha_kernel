@@ -38,7 +38,8 @@
 
 		npu_binary: npu-binary@84000000 {
 			no-map;
-			reg = <0x84000000 0x00100000>;
+			/* Up to 2 MiB of RV32 code, followed by firmware workspace. */
+			reg = <0x84000000 0x00400000>;
 		};
 
 		npu_pkt: npu-pkt@84d00000 {
@@ -468,8 +469,8 @@
 		};
 	};
 
-	npu: npu@1e800000 {
-		compatible = "airoha,an7552-npu";
+	npu: npu@1e900000 {
+		compatible = "airoha,airoha_an7552-npu";
 		reg = <0x1e900000 0x313000>;
 		interrupts = <GIC_SPI 125 IRQ_TYPE_LEVEL_HIGH>,
 		             <GIC_SPI 118 IRQ_TYPE_LEVEL_HIGH>,
@@ -480,10 +481,12 @@
 		             <GIC_SPI 123 IRQ_TYPE_LEVEL_HIGH>,
 		             <GIC_SPI 134 IRQ_TYPE_LEVEL_HIGH>,
 		             <GIC_SPI 135 IRQ_TYPE_LEVEL_HIGH>;
+		interrupt-names = "mbox", "wlan0", "wlan1", "wlan2",
+				  "wlan3", "wlan4", "wlan5", "wdt0", "wdt1";
 
 		airoha,scu = <&scuclk>;
 		memory-region = <&npu_binary>, <&npu_pkt>;
-		memory-region-names = "binary", "pkt";
+		memory-region-names = "firmware", "pkt";
 	};
 
 	wed0: wed@1fa02000 {

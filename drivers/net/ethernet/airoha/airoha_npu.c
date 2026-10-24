@@ -21,6 +21,8 @@
 
 #define NPU_EN7523_FIRMWARE_DATA		"airoha/en7523_npu_data.bin"
 #define NPU_EN7523_FIRMWARE_RV32		"airoha/en7523_npu_rv32.bin"
+#define NPU_AN7552_FIRMWARE_DATA		"airoha/an7552_npu_data.bin"
+#define NPU_AN7552_FIRMWARE_RV32		"airoha/an7552_npu_rv32.bin"
 #define NPU_EN7581_FIRMWARE_DATA		"airoha/en7581_npu_data.bin"
 #define NPU_EN7581_FIRMWARE_RV32		"airoha/en7581_npu_rv32.bin"
 #define NPU_EN7581_7996_FIRMWARE_DATA		"airoha/en7581_MT7996_npu_data.bin"
@@ -75,6 +77,7 @@
 #define REG_WDT_TIMER_CTRL(_n)		(NPU_TIMER_BASE_ADDR + ((_n) * 0x100))
 #define WDT_EN_MASK			BIT(25)
 #define WDT_INTR_MASK			BIT(21)
+#define AN7552_WDT_TIMER_EN_MASK	0x1e0001ef
 
 enum {
 	NPU_OP_SET = 1,
@@ -127,6 +130,9 @@ struct airoha_npu_soc_data {
 	int max_cores;
 	int cluster_base_addr;
 	int pc_base_addr;
+	u32 mbox_func_mask;
+	int wdt_irq_base;
+	bool shared_wdt;
 
 	struct airoha_npu_fw fw_rv32;
 	struct airoha_npu_fw fw_data;
@@ -151,6 +157,12 @@ struct airoha_npu_priv {
 static struct airoha_npu_priv *airoha_npu_to_priv(struct airoha_npu *npu)
 {
 	return container_of(npu, struct airoha_npu_priv, npu);
+}
+
+static u32 airoha_npu_wdt_ctrl(struct airoha_npu *npu, int core)
+{
+	/* AN7552 packs four watchdogs into each timer control register. */
+	return REG_WDT_TIMER_CTRL(npu->soc_data->shared_wdt ? core / 4 : core);
 }
 
 #define MBOX_MSG_FUNC_ID	GENMASK(14, 11)
@@ -270,6 +282,10 @@ static int __airoha_npu_send_msg(struct airoha_npu *npu, int func_id,
 
 	if (reply && reply_len > len)
 		return -EINVAL;
+
+	if (npu->soc_data->mbox_func_mask &&
+	    !(npu->soc_data->mbox_func_mask & BIT(func_id)))
+		return -EOPNOTSUPP;
 
 	if (npu->soc_data->version == NPU_V1 && func_id > NPU_FUNC_TR471)
 		return -EOPNOTSUPP;
@@ -451,13 +467,30 @@ static irqreturn_t airoha_npu_wdt_handler(int irq, void *core_instance)
 	struct airoha_npu_core *core = core_instance;
 	struct airoha_npu *npu = core->npu;
 	int c = core - &npu->cores[0];
+	u32 ctrl = airoha_npu_wdt_ctrl(npu, c);
+	u32 intr = WDT_INTR_MASK, enable = WDT_EN_MASK;
 	u32 val;
+
+	if (npu->soc_data->shared_wdt) {
+		intr <<= c % 4;
+		enable <<= c % 4;
+		if (regmap_read(npu->regmap, ctrl, &val) || !(val & intr))
+			return IRQ_NONE;
+
+		/* Status bits are W1C: acknowledge only this core and retain
+		 * the timer enable bits, including the other watchdogs.
+		 */
+		regmap_write(npu->regmap, ctrl,
+			     (val & AN7552_WDT_TIMER_EN_MASK) | intr);
+	} else {
+		regmap_set_bits(npu->regmap, ctrl, intr);
+		if (regmap_read(npu->regmap, ctrl, &val))
+			return IRQ_HANDLED;
+	}
 
 	airoha_npu_debugfs_count(npu, AIROHA_NPU_DBG_WDT_IRQS);
 
-	regmap_set_bits(npu->regmap, REG_WDT_TIMER_CTRL(c), WDT_INTR_MASK);
-	if (!regmap_read(npu->regmap, REG_WDT_TIMER_CTRL(c), &val) &&
-	    FIELD_GET(WDT_EN_MASK, val))
+	if (val & enable)
 		schedule_work(&core->wdt_work);
 
 	return IRQ_HANDLED;
@@ -908,7 +941,7 @@ static int airoha_npu_debugfs_registers_show(struct seq_file *m,
 		if (npu->soc_data->version >= NPU_V2) {
 			snprintf(name, sizeof(name), "CORE%d_WDT_CTRL", i);
 			airoha_npu_debugfs_print_reg(m, npu, name,
-						      REG_WDT_TIMER_CTRL(i));
+						     airoha_npu_wdt_ctrl(npu, i));
 		}
 	}
 
@@ -1255,7 +1288,7 @@ static int airoha_npu_debugfs_json_show(struct seq_file *m, void *private)
 		if (npu->soc_data->version >= NPU_V2) {
 			snprintf(name, sizeof(name), "CORE%d_WDT_CTRL", i);
 			airoha_npu_debugfs_json_reg(m, npu, name,
-						    REG_WDT_TIMER_CTRL(i), &first);
+						    airoha_npu_wdt_ctrl(npu, i), &first);
 		}
 	}
 
@@ -1488,7 +1521,8 @@ static void airoha_boot_core_v2(struct airoha_npu *npu,
 	usleep_range(1000, 2000);
 
 	/* enable NPU cores */
-	regmap_write(npu->regmap, REG_CR_BOOT_CONFIG(npu->soc_data), 0xff);
+	regmap_write(npu->regmap, REG_CR_BOOT_CONFIG(npu->soc_data),
+		     GENMASK(npu->soc_data->max_cores - 1, 0));
 	regmap_write(npu->regmap, REG_CR_BOOT_TRIGGER(npu->soc_data), 0x1);
 	msleep(100);
 }
@@ -1570,6 +1604,74 @@ static const struct airoha_npu_soc_data en7523_npu_soc_data = {
 		[WLAN_FUNC_SET_WAIT_INODE_HW_CFG_INFO] = WLAN_FUNC_SET_WAIT_MAX,
 		[WLAN_FUNC_SET_WAIT_INODE_STOP_ACTION] = WLAN_FUNC_SET_WAIT_MAX,
 		[WLAN_FUNC_SET_WAIT_INODE_PCIE_SWAP] = WLAN_FUNC_SET_WAIT_MAX,
+		[WLAN_FUNC_SET_WAIT_RATELIMIT_CTRL] = WLAN_FUNC_SET_WAIT_MAX,
+		[WLAN_FUNC_SET_WAIT_HWNAT_INIT] = WLAN_FUNC_SET_WAIT_MAX,
+		[WLAN_FUNC_SET_WAIT_ARHT_CHIP_INFO] = WLAN_FUNC_SET_WAIT_MAX,
+		[WLAN_FUNC_SET_WAIT_TX_BUF_CHECK_ADDR] = WLAN_FUNC_SET_WAIT_MAX,
+		[WLAN_FUNC_SET_WAIT_TOKEN_ID_SIZE] = WLAN_FUNC_SET_WAIT_MAX,
+	},
+};
+
+static const struct airoha_npu_soc_data an7552_npu_soc_data = {
+	.version = NPU_V2,
+	.max_cores = 2,
+	.cluster_base_addr = 0x306000,
+	.pc_base_addr = 0x305000,
+	.mbox_func_mask = GENMASK(NPU_FUNC_NOTIFY, NPU_FUNC_WIFI),
+	.wdt_irq_base = 7,
+	.shared_wdt = true,
+	.boot_core = airoha_boot_core_v2,
+	.fw_rv32 = {
+		.name = NPU_AN7552_FIRMWARE_RV32,
+		.max_size = NPU_EN7581_FIRMWARE_RV32_MAX_SIZE,
+	},
+	.fw_data = {
+		.name = NPU_AN7552_FIRMWARE_DATA,
+		.max_size = NPU_EN7581_FIRMWARE_DATA_MAX_SIZE,
+	},
+	.wlan_func_get = {
+		[WLAN_FUNC_GET_WAIT_NPU_INFO] = 0,
+		[WLAN_FUNC_GET_WAIT_LAST_RATE] = 1,
+		[WLAN_FUNC_GET_WAIT_COUNTER] = 2,
+		[WLAN_FUNC_GET_WAIT_DBG_COUNTER] = 3,
+		[WLAN_FUNC_GET_WAIT_RXDESC_BASE] = 4,
+		[WLAN_FUNC_GET_WAIT_WCID_DBG_COUNTER] = 5,
+		[WLAN_FUNC_GET_WAIT_DMA_ADDR] = 6,
+		[WLAN_FUNC_GET_WAIT_RING_SIZE] = 7,
+		[WLAN_FUNC_GET_WAIT_NPU_SUPPORT_MAP] = WLAN_FUNC_GET_WAIT_MAX,
+		[WLAN_FUNC_GET_WAIT_MDC_LOCK_ADDRESS] = WLAN_FUNC_GET_WAIT_MAX,
+		[WLAN_FUNC_GET_WAIT_NPU_VERSION] = WLAN_FUNC_GET_WAIT_MAX,
+	},
+	.wlan_func_set = {
+		[WLAN_FUNC_SET_WAIT_PCIE_ADDR] = 0,
+		[WLAN_FUNC_SET_WAIT_DESC] = 1,
+		[WLAN_FUNC_SET_WAIT_NPU_INIT_DONE] = 2,
+		[WLAN_FUNC_SET_WAIT_TRAN_TO_CPU] = 3,
+		[WLAN_FUNC_SET_WAIT_BA_WIN_SIZE] = 4,
+		[WLAN_FUNC_SET_WAIT_DRIVER_MODEL] = 5,
+		[WLAN_FUNC_SET_WAIT_DEL_STA] = 6,
+		[WLAN_FUNC_SET_WAIT_DRAM_BA_NODE_ADDR] = 7,
+		[WLAN_FUNC_SET_WAIT_PKT_BUF_ADDR] = 8,
+		[WLAN_FUNC_SET_WAIT_IS_TEST_NOBA] = 9,
+		[WLAN_FUNC_SET_WAIT_FLUSHONE_TIMEOUT] = 10,
+		[WLAN_FUNC_SET_WAIT_FLUSHALL_TIMEOUT] = 11,
+		[WLAN_FUNC_SET_WAIT_IS_FORCE_TO_CPU] = 12,
+		[WLAN_FUNC_SET_WAIT_PCIE_STATE] = 13,
+		[WLAN_FUNC_SET_WAIT_PCIE_PORT_TYPE] = 14,
+		[WLAN_FUNC_SET_WAIT_ERROR_RETRY_TIMES] = 15,
+		[WLAN_FUNC_SET_WAIT_BAR_INFO] = 16,
+		[WLAN_FUNC_SET_WAIT_FAST_FLAG] = 17,
+		[WLAN_FUNC_SET_WAIT_NPU_BAND0_ONCPU] = 18,
+		[WLAN_FUNC_SET_WAIT_TX_RING_PCIE_ADDR] = 19,
+		[WLAN_FUNC_SET_WAIT_TX_DESC_HW_BASE] = 20,
+		[WLAN_FUNC_SET_WAIT_TX_BUF_SPACE_HW_BASE] = 21,
+		[WLAN_FUNC_SET_WAIT_RX_RING_FOR_TXDONE_HW_BASE] = 22,
+		[WLAN_FUNC_SET_WAIT_TX_PKT_BUF_ADDR] = 23,
+		[WLAN_FUNC_SET_WAIT_INODE_TXRX_REG_ADDR] = 24,
+		[WLAN_FUNC_SET_WAIT_INODE_DEBUG_FLAG] = 25,
+		[WLAN_FUNC_SET_WAIT_INODE_HW_CFG_INFO] = 26,
+		[WLAN_FUNC_SET_WAIT_INODE_STOP_ACTION] = 27,
+		[WLAN_FUNC_SET_WAIT_INODE_PCIE_SWAP] = 28,
 		[WLAN_FUNC_SET_WAIT_RATELIMIT_CTRL] = WLAN_FUNC_SET_WAIT_MAX,
 		[WLAN_FUNC_SET_WAIT_HWNAT_INIT] = WLAN_FUNC_SET_WAIT_MAX,
 		[WLAN_FUNC_SET_WAIT_ARHT_CHIP_INFO] = WLAN_FUNC_SET_WAIT_MAX,
@@ -1712,6 +1814,7 @@ static const struct of_device_id of_airoha_npu_match[] = {
 	{ .compatible = "airoha,airoha_en7523-npu", .data = &en7523_npu_soc_data },
 	{ .compatible = "airoha,airoha_en7581-npu", .data = &en7581_npu_soc_data },
 	{ .compatible = "airoha,airoha_an7583-npu", .data = &an7583_npu_soc_data },
+	{ .compatible = "airoha,airoha_an7552-npu", .data = &an7552_npu_soc_data },
 	{ /* sentinel */ }
 };
 MODULE_DEVICE_TABLE(of, of_airoha_npu_match);
@@ -1965,7 +2068,8 @@ static int airoha_npu_probe(struct platform_device *pdev)
 		if (npu->soc_data->version < NPU_V2)
 			continue;
 
-		irq = platform_get_irq(pdev, i + npu->soc_data->max_cores + 1);
+		irq = platform_get_irq(pdev, i + (npu->soc_data->wdt_irq_base ?:
+						npu->soc_data->max_cores + 1));
 		if (irq < 0)
 			return irq;
 
@@ -1999,6 +2103,8 @@ module_platform_driver(airoha_npu_driver);
 
 MODULE_FIRMWARE(NPU_EN7523_FIRMWARE_DATA);
 MODULE_FIRMWARE(NPU_EN7523_FIRMWARE_RV32);
+MODULE_FIRMWARE(NPU_AN7552_FIRMWARE_DATA);
+MODULE_FIRMWARE(NPU_AN7552_FIRMWARE_RV32);
 MODULE_FIRMWARE(NPU_EN7581_FIRMWARE_DATA);
 MODULE_FIRMWARE(NPU_EN7581_FIRMWARE_RV32);
 MODULE_FIRMWARE(NPU_EN7581_7996_FIRMWARE_DATA);

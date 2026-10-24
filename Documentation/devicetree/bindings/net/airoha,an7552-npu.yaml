@@ -1,0 +1,109 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/net/airoha,an7552-npu.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Airoha AN7552 Network Processor Unit
+
+maintainers:
+  - Lorenzo Bianconi <lorenzo@kernel.org>
+
+description: |
+  The AN7552 NPU V2-S has two RV32 cores, a 64 KiB data SRAM and six WLAN
+  interrupt lines. Its watchdogs share one timer control register. Firmware
+  runs from reserved DRAM; the firmware test area starts 2 MiB after the
+  beginning of that region and requires another 64 KiB. Reserve at least
+  0x210000 bytes; a 4 MiB region leaves room for firmware workspace.
+
+properties:
+  compatible:
+    const: airoha,an7552-npu
+
+  reg:
+    maxItems: 1
+    description: Data SRAM and registers starting at 0x1e900000.
+
+  interrupts:
+    items:
+      - description: Mailbox interrupt to the host
+      - description: WLAN interrupt 0
+      - description: WLAN interrupt 1
+      - description: WLAN interrupt 2
+      - description: WLAN interrupt 3
+      - description: WLAN interrupt 4
+      - description: WLAN interrupt 5
+      - description: Core 0 watchdog
+      - description: Core 1 watchdog
+
+  interrupt-names:
+    items:
+      - const: mbox
+      - const: wlan0
+      - const: wlan1
+      - const: wlan2
+      - const: wlan3
+      - const: wlan4
+      - const: wlan5
+      - const: wdt0
+      - const: wdt1
+
+  airoha,scu:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: SCU syscon providing the FPGA and L2 SRAM configuration.
+
+  airoha,enable_npu_tx_uart:
+    type: boolean
+    description: Enable firmware diagnostic output on the NPU transmit UART.
+
+  firmware-name:
+    items:
+      - description: AN7552 RV32 code image
+      - description: AN7552 data SRAM image
+
+  memory-region:
+    minItems: 1
+    items:
+      - description: Firmware code and workspace in reserved DRAM
+      - description: WLAN packet buffers
+
+  memory-region-names:
+    minItems: 1
+    items:
+      - const: firmware
+      - const: pkt
+
+required:
+  - compatible
+  - reg
+  - interrupts
+  - interrupt-names
+  - airoha,scu
+  - memory-region
+  - memory-region-names
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/interrupt-controller/arm-gic.h>
+    #include <dt-bindings/interrupt-controller/irq.h>
+
+    npu@1e900000 {
+        compatible = "airoha,an7552-npu";
+        reg = <0x1e900000 0x313000>;
+        interrupts = <GIC_SPI 125 IRQ_TYPE_LEVEL_HIGH>,
+                     <GIC_SPI 118 IRQ_TYPE_LEVEL_HIGH>,
+                     <GIC_SPI 119 IRQ_TYPE_LEVEL_HIGH>,
+                     <GIC_SPI 120 IRQ_TYPE_LEVEL_HIGH>,
+                     <GIC_SPI 121 IRQ_TYPE_LEVEL_HIGH>,
+                     <GIC_SPI 122 IRQ_TYPE_LEVEL_HIGH>,
+                     <GIC_SPI 123 IRQ_TYPE_LEVEL_HIGH>,
+                     <GIC_SPI 134 IRQ_TYPE_LEVEL_HIGH>,
+                     <GIC_SPI 135 IRQ_TYPE_LEVEL_HIGH>;
+        interrupt-names = "mbox", "wlan0", "wlan1", "wlan2", "wlan3",
+                          "wlan4", "wlan5", "wdt0", "wdt1";
+        airoha,scu = <&scuclk>;
+        memory-region = <&npu_binary>, <&npu_pkt>;
+        memory-region-names = "firmware", "pkt";
+    };
