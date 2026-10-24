@@ -847,7 +847,8 @@ static int en7523_thermal_probe(struct platform_device *pdev,
 
 static int en7523_thermal_get_temp(struct thermal_zone_device *tz, int *temp)
 {
-	struct airoha_thermal_priv *priv = thermal_zone_device_priv(tz);
+	struct airoha_thermal_zone *zone = thermal_zone_device_priv(tz);
+	struct airoha_thermal_priv *priv = zone->priv;
 	int adc_val, temp_x10;
 	adc_val = airoha_get_thermal_ADC(priv);
 	temp_x10 = 1000 * (adc_val - priv->default_offset) / priv->default_slope + 300;
@@ -942,6 +943,7 @@ static const struct airoha_thermal_soc_data an7583_data = {
 };
 
 static const struct airoha_thermal_soc_data en7523_data = {
+	.num_sensors = 1,
 	.pllrg_protect_key = AN7583_SCU_THERMAL_PROTECT_KEY,
 	.pllrg_protect = EN7523_PLLRG_PROTECT,
 	.thdev_ops = &en7523_thdev_ops,
