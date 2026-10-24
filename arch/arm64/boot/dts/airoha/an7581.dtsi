@@ -39,26 +39,6 @@
 			no-map;
 			reg = <0x0 0x89000000 0x0 0x1000000>;
 		};
-
-		npu_pkt: npu-pkt@8a000000 {
-			no-map;
-			reg = <0x0 0x8a000000 0x0 0x2c00000>;
-		};
-
-		npu_txpkt: npu-txpkt@8cc00000 {
-			no-map;
-			reg = <0x0 0x8cc00000 0x0 0x4000000>;
-		};
-
-		npu_txbufid: npu-txbufid@90c00000 {
-			no-map;
-			reg = <0x0 0x90c00000 0x0 0x6800>;
-		};
-
-		npu_ba: npu-ba@90c06800 {
-			no-map;
-			reg = <0x0 0x90c06800 0x0 0x200000>;
-		};
 	};
 
 	psci {
@@ -578,6 +558,8 @@
 			reg = <0x0 0x1fb00000 0x0 0x970>;
 			#clock-cells = <1>;
 			#reset-cells = <1>;
+
+			airoha,chip-scu = <&chip_scu>;
 		};
 
 		rng@1faa1000 {
@@ -890,6 +872,7 @@
 		npu: npu@1e900000 {
 			compatible = "airoha,en7581-npu";
 			reg = <0x0 0x1e900000 0x0 0x313000>;
+
 			interrupts = <GIC_SPI 125 IRQ_TYPE_LEVEL_HIGH>,
 				     <GIC_SPI 103 IRQ_TYPE_LEVEL_HIGH>,
 				     <GIC_SPI 109 IRQ_TYPE_LEVEL_HIGH>,
@@ -905,10 +888,13 @@
 				     <GIC_SPI 121 IRQ_TYPE_LEVEL_HIGH>,
 				     <GIC_SPI 122 IRQ_TYPE_LEVEL_HIGH>,
 				     <GIC_SPI 123 IRQ_TYPE_LEVEL_HIGH>;
-			memory-region = <&npu_binary>, <&npu_pkt>, <&npu_txpkt>,
-					<&npu_txbufid>, <&npu_ba>;
-			memory-region-names = "binary", "pkt", "tx-pkt",
-					      "tx-bufid", "ba";
+			interrupt-names = "mbox", "wdt0", "wdt1", "wdt2", "wdt3",
+					  "wdt4", "wdt5", "wdt6", "wdt7", "wlan0",
+					  "wlan1", "wlan2", "wlan3", "wlan4", "wlan5";
+
+			memory-region = <&npu_binary>;
+			memory-region-names = "binary";
+
 			status = "disabled";
 		};
 

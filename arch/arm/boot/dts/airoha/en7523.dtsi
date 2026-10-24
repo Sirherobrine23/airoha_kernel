@@ -905,13 +905,12 @@
 		             <GIC_SPI 121 IRQ_TYPE_LEVEL_HIGH>,
 		             <GIC_SPI 122 IRQ_TYPE_LEVEL_HIGH>,
 		             <GIC_SPI 123 IRQ_TYPE_LEVEL_HIGH>;
+		interrupt-names = "mbox", "wlan0", "wlan1", "wlan2",
+				  "wlan3", "wlan4", "wlan5";
 
 		airoha,scu = <&scuclk>;
 		memory-region = <&npu_binary>, <&npu_pkt>;
 		memory-region-names = "binary", "pkt";
-		/* Enable to debug NPU, remove on publish to upstream repository */
-		// airoha,enable_npu_tx_uart;
-		// airoha,npu-log;
 	};
 
 	wed0: wed@1fa02000 {

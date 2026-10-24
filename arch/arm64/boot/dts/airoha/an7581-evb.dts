@@ -4,7 +4,7 @@
 /* Bootloader installs ATF here */
 /memreserve/ 0x80000000 0x200000;
 
-#include "en7581.dtsi"
+#include "an7581.dtsi"
 
 / {
 	model = "Airoha EN7581 Evaluation Board";

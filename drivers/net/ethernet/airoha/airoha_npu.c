@@ -29,6 +29,9 @@
 #define NPU_EN7581_7996_FIRMWARE_RV32		"airoha/en7581_MT7996_npu_rv32.bin"
 #define NPU_AN7583_FIRMWARE_DATA		"airoha/an7583_npu_data.bin"
 #define NPU_AN7583_FIRMWARE_RV32		"airoha/an7583_npu_rv32.bin"
+#define NPU_MBOX_INTNAME			"mbox"
+#define NPU_WATCHDOG_INTNAME			"wdt%d"
+#define NPU_WLAN_INTNAME			"wlan%d"
 #define NPU_EN7581_FIRMWARE_RV32_MAX_SIZE	0x200000
 #define NPU_EN7581_FIRMWARE_DATA_MAX_SIZE	0x10000
 #define NPU_DUMP_SIZE				512
@@ -133,6 +136,7 @@ struct airoha_npu_soc_data {
 	u32 mbox_func_mask;
 	int wdt_irq_base;
 	bool shared_wdt;
+	u16 watchdogs;
 
 	struct airoha_npu_fw fw_rv32;
 	struct airoha_npu_fw fw_data;
@@ -1549,6 +1553,8 @@ static const struct airoha_npu_soc_data en7523_npu_soc_data = {
 	.cluster_base_addr = 0x308000,
 	.pc_base_addr = 0x308800,
 	.boot_core = airoha_boot_core_v1,
+	.shared_wdt = false,
+	.watchdogs = 0,
 	.fw_rv32 = {
 		.name = NPU_EN7523_FIRMWARE_RV32,
 		.max_size = NPU_EN7581_FIRMWARE_RV32_MAX_SIZE,
@@ -1620,6 +1626,7 @@ static const struct airoha_npu_soc_data an7552_npu_soc_data = {
 	.mbox_func_mask = GENMASK(NPU_FUNC_NOTIFY, NPU_FUNC_WIFI),
 	.wdt_irq_base = 7,
 	.shared_wdt = true,
+	.watchdogs = 2,
 	.boot_core = airoha_boot_core_v2,
 	.fw_rv32 = {
 		.name = NPU_AN7552_FIRMWARE_RV32,
@@ -1686,6 +1693,7 @@ static const struct airoha_npu_soc_data en7581_npu_soc_data = {
 	.cluster_base_addr = 0x306000,
 	.pc_base_addr = 0x305000,
 	.boot_core = airoha_boot_core_v2,
+	.watchdogs = 8,
 	.fw_rv32 = {
 		.name = NPU_EN7581_FIRMWARE_RV32,
 		.max_size = NPU_EN7581_FIRMWARE_RV32_MAX_SIZE,
@@ -1751,6 +1759,7 @@ static const struct airoha_npu_soc_data an7583_npu_soc_data = {
 	.cluster_base_addr = 0x306000,
 	.pc_base_addr = 0x305000,
 	.boot_core = airoha_boot_core_v2,
+	.watchdogs = 8,
 	.fw_rv32 = {
 		.name = NPU_AN7583_FIRMWARE_RV32,
 		.max_size = NPU_EN7581_FIRMWARE_RV32_MAX_SIZE,
@@ -2027,9 +2036,9 @@ static int airoha_npu_probe(struct platform_device *pdev)
 	if (!npu->cores)
 		return -ENOMEM;
 
-	irq = platform_get_irq(pdev, 0);
+	irq = platform_get_irq_byname(pdev, NPU_MBOX_INTNAME);
 	if (irq < 0)
-		return irq;
+		return dev_err_probe(dev, irq, "error on get mbox irq");
 
 	err = devm_request_irq(dev, irq, airoha_npu_mbox_handler,
 			       IRQF_SHARED, "airoha-npu-mbox", npu);
@@ -2038,9 +2047,11 @@ static int airoha_npu_probe(struct platform_device *pdev)
 
 	/* WLAN IRQ lines follow the mailbox IRQ on both NPU revisions. */
 	for (i = 0; i < ARRAY_SIZE(npu->irqs); i++) {
-		irq = platform_get_irq(pdev, i + 1);
+		char wlan_name[16];
+		snprintf(wlan_name, 16, NPU_WLAN_INTNAME, i);
+		irq = platform_get_irq_byname(pdev, wlan_name);
 		if (irq < 0)
-			return irq;
+			return dev_err_probe(dev, irq, "error on get irq to " NPU_WLAN_INTNAME, i);
 
 		npu->irqs[i] = irq;
 	}
@@ -2053,7 +2064,7 @@ static int airoha_npu_probe(struct platform_device *pdev)
 	 * Prepare the coherent mailbox buffers before the delayed firmware start.
 	 * Only NPU v2 exposes per-core watchdog IRQs.
 	 */
-	for (i = 0; i < npu->soc_data->max_cores; i++) {
+	for (i = 0; i < npu->soc_data->watchdogs; i++) {
 		struct airoha_npu_core *core = &npu->cores[i];
 
 		spin_lock_init(&core->lock);
@@ -2065,13 +2076,11 @@ static int airoha_npu_probe(struct platform_device *pdev)
 		if (!core->buf)
 			return -ENOMEM;
 
-		if (npu->soc_data->version < NPU_V2)
-			continue;
-
-		irq = platform_get_irq(pdev, i + (npu->soc_data->wdt_irq_base ?:
-						npu->soc_data->max_cores + 1));
+		char watchdog_name[16];
+		snprintf(watchdog_name, 16, NPU_WATCHDOG_INTNAME, i);
+		irq = platform_get_irq_byname(pdev, watchdog_name);
 		if (irq < 0)
-			return irq;
+			return dev_err_probe(dev, irq, "error on get irq to " NPU_WATCHDOG_INTNAME, i);
 
 		err = devm_request_irq(dev, irq, airoha_npu_wdt_handler,
 				       IRQF_SHARED, "airoha-npu-wdt", core);
