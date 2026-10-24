@@ -1534,6 +1534,18 @@ void airoha_ppe_v1_read_entry(struct airoha_ppe *ppe, u16 hash,
 			      struct airoha_foe_entry *entry);
 
 #if IS_ENABLED(CONFIG_NET_AIROHA_PPE_DEBUGFS)
+struct airoha_ppe_flow_snapshot {
+	unsigned long cookie;
+	u32 hash;
+	enum airoha_flow_entry_type type;
+	struct airoha_foe_entry data;
+};
+
+int airoha_ppe_debugfs_read_entry(struct airoha_ppe *ppe, u32 index,
+				  struct airoha_foe_entry *entry);
+int airoha_ppe_debugfs_get_flows(struct airoha_ppe *ppe,
+				 struct airoha_ppe_flow_snapshot **snapshot,
+				 u32 *count);
 int airoha_ppe_debugfs_init(struct airoha_ppe_common *ppe);
 #else
 static inline int airoha_ppe_debugfs_init(struct airoha_ppe_common *ppe)

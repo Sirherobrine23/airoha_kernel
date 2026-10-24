@@ -10,6 +10,8 @@
 #include <linux/of_platform.h>
 #include <linux/platform_device.h>
 #include <linux/rhashtable.h>
+#include <linux/rtnetlink.h>
+#include <linux/slab.h>
 #include <net/ipv6.h>
 #include <net/flow_offload.h>
 #include <net/netlink.h>
@@ -1113,6 +1115,106 @@ struct airoha_foe_entry *airoha_ppe_foe_get_entry(struct airoha_ppe *ppe,
 
 	return hwe;
 }
+
+#if IS_ENABLED(CONFIG_NET_AIROHA_PPE_DEBUGFS)
+int airoha_ppe_debugfs_read_entry(struct airoha_ppe *ppe, u32 index,
+				  struct airoha_foe_entry *entry)
+{
+	struct airoha_foe_entry *hwe;
+	int err = 0;
+
+	if (ppe->common.eth->soc->foe_format == AIROHA_FOE_FORMAT_V1) {
+		if (index >= ppe->common.eth->soc->ppe_dram_entries)
+			return -EINVAL;
+
+		spin_lock_bh(&ppe->v1.lock);
+		airoha_ppe_v1_read_entry(ppe, index, entry);
+		spin_unlock_bh(&ppe->v1.lock);
+		return 0;
+	}
+
+	if (index >= airoha_ppe_get_total_num_entries(ppe))
+		return -EINVAL;
+
+	/* Keep the SRAM access and its shadow copy under the same lock. */
+	spin_lock_bh(&ppe_lock);
+	hwe = airoha_ppe_foe_get_entry_locked(ppe, index);
+	if (hwe)
+		memcpy(entry, hwe, sizeof(*entry));
+	else
+		err = -ETIMEDOUT;
+	spin_unlock_bh(&ppe_lock);
+
+	return err;
+}
+
+int airoha_ppe_debugfs_get_flows(struct airoha_ppe *ppe,
+				 struct airoha_ppe_flow_snapshot **snapshot,
+				 u32 *count)
+{
+	struct airoha_eth *eth = ppe->common.eth;
+	struct airoha_ppe_flow_snapshot *entries;
+	struct airoha_flow_table_entry *flow;
+	struct rhashtable_iter iter;
+	u32 capacity, n = 0;
+	int err = 0;
+
+	*snapshot = NULL;
+	*count = 0;
+	/* TC uses RTNL, while the flowtable callback uses this mutex. Both
+	 * must be held because flow objects are freed immediately on removal.
+	 * Do not wait for RTNL while debugfs removal may be waiting for us.
+	 */
+	if (!rtnl_trylock())
+		return -EBUSY;
+	mutex_lock(&flow_offload_mutex);
+
+	capacity = atomic_read(&eth->flow_table.nelems);
+	if (!capacity)
+		goto out_unlock;
+
+	entries = kvcalloc(capacity, sizeof(*entries), GFP_KERNEL);
+	if (!entries) {
+		err = -ENOMEM;
+		goto out_unlock;
+	}
+
+	rhashtable_walk_enter(&eth->flow_table, &iter);
+	rhashtable_walk_start(&iter);
+	while ((flow = rhashtable_walk_next(&iter))) {
+		if (IS_ERR(flow)) {
+			if (PTR_ERR(flow) == -EAGAIN)
+				continue;
+			err = PTR_ERR(flow);
+			break;
+		}
+		if (n == capacity)
+			break;
+
+		spin_lock_bh(&ppe_lock);
+		entries[n].cookie = flow->cookie;
+		entries[n].hash = flow->hash;
+		entries[n].type = flow->type;
+		memcpy(&entries[n].data, &flow->data, sizeof(flow->data));
+		spin_unlock_bh(&ppe_lock);
+		n++;
+	}
+	rhashtable_walk_stop(&iter);
+	rhashtable_walk_exit(&iter);
+	if (err) {
+		kvfree(entries);
+		goto out_unlock;
+	}
+
+	*snapshot = entries;
+	*count = n;
+out_unlock:
+	mutex_unlock(&flow_offload_mutex);
+	rtnl_unlock();
+
+	return err;
+}
+#endif
 
 static bool airoha_ppe_foe_compare_entry(struct airoha_flow_table_entry *e,
 					 struct airoha_foe_entry *hwe)
