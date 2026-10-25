@@ -121,6 +121,10 @@ static const struct of_device_id blocklist[] __initconst = {
 	{ .compatible = "calxeda,highbank", },
 	{ .compatible = "calxeda,ecx-2000", },
 
+	{ .compatible = "econet,en751221", },
+	{ .compatible = "econet,en7528", },
+	{ .compatible = "econet,en7580", },
+
 	{ .compatible = "fsl,imx7ulp", },
 	{ .compatible = "fsl,imx7d", },
 	{ .compatible = "fsl,imx7s", },

@@ -11,6 +11,7 @@
 
 #include <asm/addrspace.h>
 #include <asm/io.h>
+#include <asm/irq.h>
 #include <asm/bootinfo.h>
 #include <asm/time.h>
 #include <asm/prom.h>
@@ -127,6 +128,18 @@ const char *get_system_type(void)
 void __init arch_init_irq(void)
 {
 	irqchip_init();
+}
+
+int get_c0_perfcount_int(void)
+{
+	if (mips_gic_present())
+		return gic_get_c0_perfcount_int();
+
+	/* Preserve the generic PMU fallback on non-GIC EcoNet platforms. */
+	if (cp0_perfcount_irq >= 0)
+		return MIPS_CPU_IRQ_BASE + cp0_perfcount_irq;
+
+	return -1;
 }
 
 /* 5. Timers */

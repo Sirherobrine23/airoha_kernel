@@ -3,7 +3,7 @@
 
 #include <dt-bindings/interrupt-controller/irq.h>
 #include <dt-bindings/interrupt-controller/mips-gic.h>
-#include <dt-bindings/clock/econet,en751627-scu.h>
+#include <dt-bindings/clock/en7523-clk.h>
 #include <dt-bindings/phy/phy.h>
 #include <dt-bindings/reset/econet,en751627-scu.h>
 #include <dt-bindings/leds/common.h>
@@ -48,12 +48,14 @@
 			device_type = "cpu";
 			compatible = "mips,mips1004Kc";
 			reg = <0>;
+			clocks = <&scuclk EN7523_CLK_CPU>;
 		};
 
 		cpu@1 {
 			device_type = "cpu";
 			compatible = "mips,mips1004Kc";
 			reg = <1>;
+			clocks = <&scuclk EN7523_CLK_CPU>;
 		};
 	};
 
@@ -240,12 +242,12 @@
 			clocks = <&hpt_clock>;
 		};
 
-		spi: spi@1fa10000 {
+		spi0: spi@1fa10000 {
 			compatible = "airoha,en7523-spi";
 			reg = <0x1fa10000 0x140>,
 			      <0x1fa11000 0x160>;
 
-			clocks = <&scuclk EN751627_CLK_SPI>;
+			clocks = <&scuclk EN7523_CLK_SPI>;
 			clock-names = "spi";
 
 			airoha,scu = <&scuclk>, <&chip_scu>;
@@ -259,7 +261,7 @@
 			compatible = "econet,en751221-wdt";
 			reg = <0x1fbf0100 0x3c>;
 
-			clocks = <&scuclk EN751627_CLK_BUS>;
+			clocks = <&scuclk EN7523_CLK_BUS>;
 			clock-names = "bus";
 
 			interrupts = <GIC_SHARED 9 IRQ_TYPE_LEVEL_HIGH>;
@@ -355,7 +357,7 @@
 			#size-cells = <2>;
 			interrupts = <GIC_SHARED 23 IRQ_TYPE_LEVEL_HIGH>;
 			interrupt-names = "pcie_irq";
-			clocks = <&scuclk EN751627_CLK_PCIE>;
+			clocks = <&scuclk EN7523_CLK_PCIE>;
 			clock-names = "sys_ck0";
 			phys = <&pcie_phy0>;
 			phy-names = "pcie-phy0";
@@ -395,7 +397,7 @@
 			#size-cells = <2>;
 			interrupts = <GIC_SHARED 24 IRQ_TYPE_LEVEL_HIGH>;
 			interrupt-names = "pcie_irq";
-			clocks = <&scuclk EN751627_CLK_PCIE>;
+			clocks = <&scuclk EN7523_CLK_PCIE>;
 			clock-names = "sys_ck1";
 			phys = <&pcie_phy1>;
 			phy-names = "pcie-phy1";

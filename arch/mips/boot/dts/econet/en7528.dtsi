@@ -3,7 +3,7 @@
 
 #include <dt-bindings/interrupt-controller/irq.h>
 #include <dt-bindings/interrupt-controller/mips-gic.h>
-#include <dt-bindings/clock/econet,en7528-scu.h>
+#include <dt-bindings/clock/en7523-clk.h>
 #include <dt-bindings/phy/phy.h>
 #include <dt-bindings/reset/econet,en7528-scu.h>
 #include <dt-bindings/leds/common.h>
@@ -48,12 +48,93 @@
 			device_type = "cpu";
 			compatible = "mips,mips1004Kc";
 			reg = <0>;
+			clocks = <&scuclk EN7523_CLK_CPU>;
+			operating-points-v2 = <&cpu_opp_table>;
 		};
 
 		cpu@1 {
 			device_type = "cpu";
 			compatible = "mips,mips1004Kc";
 			reg = <1>;
+			clocks = <&scuclk EN7523_CLK_CPU>;
+			operating-points-v2 = <&cpu_opp_table>;
+		};
+	};
+
+	cpu_opp_table: opp-table-cpu {
+		compatible = "operating-points-v2";
+		opp-shared;
+
+		cpu_opp_600: opp-600000000 {
+			opp-hz = /bits/ 64 <600000000>;
+		};
+
+		cpu_opp_625: opp-625000000 {
+			opp-hz = /bits/ 64 <625000000>;
+		};
+
+		cpu_opp_650: opp-650000000 {
+			opp-hz = /bits/ 64 <650000000>;
+		};
+
+		cpu_opp_675: opp-675000000 {
+			opp-hz = /bits/ 64 <675000000>;
+		};
+
+		cpu_opp_700: opp-700000000 {
+			opp-hz = /bits/ 64 <700000000>;
+		};
+
+		cpu_opp_725: opp-725000000 {
+			opp-hz = /bits/ 64 <725000000>;
+		};
+
+		cpu_opp_750: opp-750000000 {
+			opp-hz = /bits/ 64 <750000000>;
+		};
+
+		cpu_opp_775: opp-775000000 {
+			opp-hz = /bits/ 64 <775000000>;
+		};
+
+		cpu_opp_800: opp-800000000 {
+			opp-hz = /bits/ 64 <800000000>;
+		};
+
+		cpu_opp_825: opp-825000000 {
+			opp-hz = /bits/ 64 <825000000>;
+		};
+
+		cpu_opp_850: opp-850000000 {
+			opp-hz = /bits/ 64 <850000000>;
+		};
+
+		cpu_opp_875: opp-875000000 {
+			opp-hz = /bits/ 64 <875000000>;
+		};
+
+		cpu_opp_900: opp-900000000 {
+			opp-hz = /bits/ 64 <900000000>;
+		};
+
+		cpu_opp_925: opp-925000000 {
+			opp-hz = /bits/ 64 <925000000>;
+			turbo-mode;
+		};
+
+		cpu_opp_950: opp-950000000 {
+			opp-hz = /bits/ 64 <950000000>;
+			turbo-mode;
+		};
+
+		cpu_opp_975: opp-975000000 {
+			opp-hz = /bits/ 64 <975000000>;
+			turbo-mode;
+		};
+
+		cpu_opp_1000: opp-1000000000 {
+			opp-hz = /bits/ 64 <1000000000>;
+			turbo-mode;
 		};
 	};
 
@@ -114,12 +195,13 @@
 
 		chip_scu: syscon@1fa20000 {
 			compatible = "airoha,scuclk", "econet,en7528-chip-scu", "syscon";
-			reg = <0x1fa20000 0x400>;
+			reg = <0x1fa20000 0x10000>;
 		};
 
 		scuclk: system-controller@1fb00000 {
 			compatible = "econet,en7528-scu", "syscon";
 			reg = <0x1fb00000 0x1000>;
+			reg-names = "np-scu";
 
 			airoha,chip-scu = <&chip_scu>;
 			#clock-cells = <1>;
@@ -395,7 +477,7 @@
 			reg = <0x1fa10000 0x140>,
 			      <0x1fa11000 0x160>;
 
-			clocks = <&scuclk EN7528_CLK_SPI>;
+			clocks = <&scuclk EN7523_CLK_SPI>;
 			clock-names = "spi";
 
 			airoha,scu = <&scuclk>, <&chip_scu>;
@@ -409,7 +491,7 @@
 			compatible = "econet,en751221-wdt";
 			reg = <0x1fbf0100 0x3c>;
 
-			clocks = <&scuclk EN7528_CLK_BUS>;
+			clocks = <&scuclk EN7523_CLK_BUS>;
 			clock-names = "bus";
 
 			interrupts = <GIC_SHARED 9 IRQ_TYPE_LEVEL_HIGH>;
@@ -505,7 +587,7 @@
 			#size-cells = <2>;
 			interrupts = <GIC_SHARED 23 IRQ_TYPE_LEVEL_HIGH>;
 			interrupt-names = "pcie_irq";
-			clocks = <&scuclk EN7528_CLK_PCIE>;
+			clocks = <&scuclk EN7523_CLK_PCIE>;
 			clock-names = "sys_ck0";
 			phys = <&pcie_phy0>;
 			phy-names = "pcie-phy0";
@@ -545,7 +627,7 @@
 			#size-cells = <2>;
 			interrupts = <GIC_SHARED 24 IRQ_TYPE_LEVEL_HIGH>;
 			interrupt-names = "pcie_irq";
-			clocks = <&scuclk EN7528_CLK_PCIE>;
+			clocks = <&scuclk EN7523_CLK_PCIE>;
 			clock-names = "sys_ck1";
 			phys = <&pcie_phy1>;
 			phy-names = "pcie-phy1";
@@ -599,9 +681,8 @@
 		xpon: xmac@1fb60000 {
 			compatible = "airoha,en7528-xpon";
 
-			reg = <0x1fb60000 0x10000>,
-			      <0x1fa2ff24 0x4>;
-			reg-names = "mac", "tx-off";
+			reg = <0x1fb60000 0x10000>;
+			reg-names = "mac";
 
 			interrupts = <GIC_SHARED 26 IRQ_TYPE_LEVEL_HIGH>,
 			             <GIC_SHARED 18 IRQ_TYPE_LEVEL_HIGH>;

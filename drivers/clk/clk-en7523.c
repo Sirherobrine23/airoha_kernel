@@ -18,10 +18,9 @@
 #include <linux/regmap.h>
 #include <linux/reset-controller.h>
 #include <linux/soc/airoha/pkgids.h>
+#include <linux/stop_machine.h>
+#include <linux/string.h>
 #include <dt-bindings/clock/en7523-clk.h>
-#include <dt-bindings/clock/econet,en751221-scu.h>
-#include <dt-bindings/clock/econet,en7528-scu.h>
-#include <dt-bindings/clock/econet,en7580-scu.h>
 #include <dt-bindings/reset/airoha,en7523-reset.h>
 #include <dt-bindings/reset/airoha,en7581-reset.h>
 #include <dt-bindings/reset/airoha,an7583-reset.h>
@@ -50,8 +49,8 @@
 #define EN7523_SYSPLL_PCW_25M		0x2a8
 #define EN7523_SYSPLL_PCW_20M		0x2ac
 #define EN7523_SYSPLL_DISABLE		0x2b0
-#define EN7523_SYSPLL_PCW_MASK		GENMASK(30, 24)
-#define EN7523_SYSPLL_CHG_BIT		BIT(3)
+#define AIROHA_CPU_PLL_PCW_MASK		GENMASK(30, 24)
+#define AIROHA_CPU_PLL_CHANGE_BIT		BIT(3)
 
 #define EN7523_MCUCFG_CK_SWITCH_UNLOCK	0x640
 #define EN7523_MCUCFG_CK_SOURCE_SEL	0x7c0
@@ -98,25 +97,33 @@
 #define REG_RST_CTRL2			0x830
 #define REG_RST_CTRL1			0x834
 #define EN751221_REG_RST_DMT		0x84
+#define EN751221_REG_XTAL		0x8c
 #define EN751221_REG_RST_USB		0xec
 #define EN751221_REG_SPI_DIV		0x0cc
-#define EN751221_REG_SPI_DIV_MASK	GENMASK(15, 8)
 #define EN751221_SPI_BASE		500000000
 #define EN751221_SPI_BASE_EN7526C	400000000
 #define EN751221_SPI_DIV_DEFAULT	40
-#define EN751221_REG_BUS		0x284
 #define EN751221_REG_BUS_MASK		GENMASK(21, 12)
+#define EN751221_REG_CPU_PLL_SETUP	0x144
+#define EN751221_REG_CPU_PLL_CONFIG	0x19c
+#define EN751221_REG_CPU_PLL_CONTROL	0x1a8
+#define EN751221_REG_CPU_PLL_PARAM	0x1ac
+#define EN7528_REG_BUS_MASK		GENMASK(19, 10)
 #define EN751221_REG_SSR3		0x094
-#define EN751221_REG_SSR3_GSW_MASK	GENMASK(9, 8)
 #define EN751221_REG_NP_PER_DOM_CLK_GAT_1	0x0e4
 #define   EN751221_XPON_TOD_CLK_EN	BIT(8)
 #define EN751221_REG_TOD_DIVIDER_ENABLE	0x0ec
 #define   EN751221_XPON_TOD_DIV_EN	BIT(1)
-#define EN751221_MAX_CLKS		5
 
-/* EN7528 CHIP-SCU differs from both EN751221 and EN7523. */
+/* EN7516/EN7527 use a different CHIP-SCU register layout. */
+#define EN751627_REG_SPI_DIV		0x11c
+#define EN751627_SPI_BASE		400000000
+#define EN751627_SPI_DIV_DEFAULT	40
+#define EN751627_REG_NP_PER_DOM_CLK_GAT_1	0x13c
+#define EN751627_REG_TOD_DIVIDER_ENABLE	0x144
+
+/* EN7528 CHIP-SCU differs from both EN751627 and EN7523. */
 #define EN7528_REG_SPI_DIV		0x0cc
-#define EN7528_REG_SPI_DIV_MASK	GENMASK(15, 8)
 #define EN7528_SPI_BASE		400000000
 #define EN7528_SPI_DIV_DEFAULT		10
 #define EN7528_REG_NP_PER_DOM_CLK_GAT_1	0x0e4
@@ -125,7 +132,18 @@
 #define   EN7528_XPON_TOD_DIV_EN	BIT(1)
 #define EN7528_REG_SHARED_UNZIPMENT_SEL	0x954
 #define EN7528_SHARED_UNZIPMENT_FE	0x3
-#define EN7528_MAX_CLKS		5
+#define EN7528_REG_CPU_PLL_SETUP		0x1a0
+#define EN7528_REG_CPU_PLL_CONFIG		0x1ec
+#define EN7528_REG_CPU_PLL_CONTROL	0x1f8
+#define EN7528_REG_CPU_PLL_PARAM		0x1fc
+#define EN7528_REG_XTAL_SELECT		0x0174
+#define EN7528_REG_XTAL_SELECT_ALT	0xff28
+#define EN7528_XTAL_25MHZ		BIT(21)
+#define ECONET_CPU_PLL_CONFIG_FREQ	GENMASK(15, 8)
+#define ECONET_CPU_PLL_CONFIG_DIV	GENMASK(21, 20)
+#define ECONET_CPU_PLL_CONFIG_DIRECT	BIT(20)
+#define ECONET_CPU_PLL_PARAM_FREQ	GENMASK(26, 21)
+#define ECONET_SAVED_IS_FPGA		BIT(9)
 
 /* EN7580 MIPS CHIP-SCU layout (ecnt_scu.h and spi_controller.c). */
 #define EN7580_REG_SPI_DIV		0x1b8
@@ -133,7 +151,16 @@
 #define EN7580_SPI_DIV_DEFAULT		40
 #define EN7580_REG_NP_PER_DOM_CLK_GAT_1	0x1dc
 #define EN7580_REG_TOD_DIVIDER_ENABLE	0x1e4
-#define EN7580_MAX_CLKS			5
+#define EN7580_REG_CPU_PLL_PROTECT	0x264
+#define EN7580_REG_CPU_PLL_PCW		0x2ac
+#define EN7580_REG_CPU_PLL_CHANGE	0x2b0
+#define EN7580_CPU_PLL_PROTECT_KEY	0x80
+#define EN7580_REG_XTAL_SELECT		0x0254
+#define EN7580_REG_XTAL_SELECT_ALT	0xff30
+#define EN7580_CPU_PLL_PCW_MIN		26
+#define EN7580_CPU_PLL_PCW_MAX		104
+#define EN7580_CPU_PLL_PCW_RATE		12500000UL
+#define EN7580_CPU_PLL_SETTLE_US	80
 
 /* SCU PKG ID */
 #define AIROHA_NP_SCU_PDIDR		0x05c
@@ -186,6 +213,9 @@
 struct en_clk_desc {
 	int id;
 	const char *name;
+	bool np_scu;
+	bool read_only;
+
 	u32 base_reg;
 	u8 base_bits;
 	u8 base_shift;
@@ -234,12 +264,7 @@ struct en_rst_data {
 };
 
 struct econet_clk_soc_data {
-	u32 spi_base;
-	u32 spi_alt_base;
-	enum airoha_pkg spi_alt_hir;
-	u16 spi_div_reg;
-	u32 spi_div_mask;
-	u32 spi_div_default;
+	const struct en_clk_desc *spi_alt_desc;
 	u16 xpon_tod_clk_reg;
 	u32 xpon_tod_clk_mask;
 	u16 xpon_tod_div_reg;
@@ -253,6 +278,9 @@ struct airoha_clk_priv;
 struct airoha_clk_soc_data {
 	const char *old_chip_scu_compatible;
 	bool probe_child;
+	/* EcoNet bootloader bus clock field and CPU/bus ratio. */
+	u32 bus_clk_mask;
+	u8 cpu_clk_mult;
 	u32 num_clocks;
 	u32 num_base_clks;
 	const u16 *rst_map;
@@ -275,8 +303,80 @@ struct airoha_clk_priv {
 	struct regmap *scu_np;
 	void __iomem *np_scu_base;
 	void __iomem *chip_scu_base;
+	resource_size_t chip_scu_size;
 	void __iomem *efuse_base;
 	void __iomem *mcucfg;
+};
+
+struct econet_cpu_pll_state {
+	u32 setup;
+	u32 config;
+	u32 control;
+	u32 param;
+};
+
+struct econet_cpu_clk {
+	struct clk_hw hw;
+	struct airoha_clk_priv *priv;
+	struct econet_cpu_pll_state boot_state;
+	unsigned long boot_rate;
+	unsigned long xtal_rate;
+	u8 divisor;
+};
+
+struct econet_cpu_pll_layout {
+	u16 setup;
+	u16 config;
+	u16 control;
+	u16 param;
+	u32 idle_setup;
+};
+
+struct airoha_cpu_pll_desc {
+	u16 protect_reg;
+	u16 pcw_reg;
+	u16 pcw_reg_20m;
+	u16 change_reg;
+	u32 protect_mask;
+	u32 unlock_key;
+	unsigned int settle_us;
+};
+
+static const struct airoha_cpu_pll_desc en7523_cpu_pll = {
+	.protect_reg = EN7523_PLLRG_PROTECT,
+	.pcw_reg = EN7523_SYSPLL_PCW_25M,
+	.pcw_reg_20m = EN7523_SYSPLL_PCW_20M,
+	.change_reg = EN7523_SYSPLL_DISABLE,
+	.protect_mask = EN7523_PLLRG_PROTECT_MASK,
+	.unlock_key = EN7523_PLLRG_PROTECT_KEY,
+	.settle_us = 20,
+};
+
+static const struct airoha_cpu_pll_desc en7580_cpu_pll = {
+	.protect_reg = EN7580_REG_CPU_PLL_PROTECT,
+	.pcw_reg = EN7580_REG_CPU_PLL_PCW,
+	.change_reg = EN7580_REG_CPU_PLL_CHANGE,
+	/* SDK writes the complete protection key. */
+	.protect_mask = GENMASK(31, 0),
+	.unlock_key = EN7580_CPU_PLL_PROTECT_KEY,
+	/* Retain the tested delay with allowance for old loop calibration. */
+	.settle_us = EN7580_CPU_PLL_SETTLE_US,
+};
+
+static const struct econet_cpu_pll_layout en751221_cpu_pll = {
+	.setup = EN751221_REG_CPU_PLL_SETUP,
+	.config = EN751221_REG_CPU_PLL_CONFIG,
+	.control = EN751221_REG_CPU_PLL_CONTROL,
+	.param = EN751221_REG_CPU_PLL_PARAM,
+	.idle_setup = 0x12,
+};
+
+static const struct econet_cpu_pll_layout en7528_cpu_pll = {
+	.setup = EN7528_REG_CPU_PLL_SETUP,
+	.config = EN7528_REG_CPU_PLL_CONFIG,
+	.control = EN7528_REG_CPU_PLL_CONTROL,
+	.param = EN7528_REG_CPU_PLL_PARAM,
+	.idle_setup = 0,
 };
 
 static const struct of_device_id of_match_clk_en7523[];
@@ -560,15 +660,6 @@ static const u32 crypto_base[] = { 540000000, 480000000 };
 static const u32 emmc7581_base[] = { 200000000, 150000000 };
 /* EN751221 / EN7528 */
 static const u32 gsw751221_base[] = { 500000000, 250000000, 400000000, 200000000 };
-
-enum econet_clk_id {
-	ECONET_CLK_PCIE,
-	ECONET_CLK_SPI,
-	ECONET_CLK_BUS,
-	ECONET_CLK_CPU,
-	ECONET_CLK_GSW,
-	ECONET_MAX_CLKS,
-};
 
 /* AN7583 */
 static const u32 gsw7583_base[] = { 540672000, 270336000, 400000000, 200000000 };
@@ -910,6 +1001,114 @@ static const struct en_clk_desc an7583_base_clks[] = {
 		.div_step = 1,
 		.div_offset = 1,
 	}
+};
+
+static const struct en_clk_desc en751221_base_clks[] = {
+	{
+		.id = EN7523_CLK_SPI,
+		.name = "spi",
+		.read_only = true,
+		.base_reg = EN751221_REG_SPI_DIV,
+		.base_value = EN751221_SPI_BASE,
+		.div_bits = 8,
+		.div_shift = 8,
+		.div_val0 = EN751221_SPI_DIV_DEFAULT,
+		.div_step = 2,
+	}, {
+		.id = EN7523_CLK_GSW,
+		.name = "gsw",
+		.np_scu = true,
+		.read_only = true,
+		.base_reg = EN751221_REG_SSR3,
+		.base_bits = 2,
+		.base_shift = 8,
+		.base_values = gsw751221_base,
+		.n_base_values = ARRAY_SIZE(gsw751221_base),
+	}
+};
+
+static const struct en_clk_desc en751627_base_clks[] = {
+	{
+		.id = EN7523_CLK_SPI,
+		.name = "spi",
+		.read_only = true,
+		.base_reg = EN751627_REG_SPI_DIV,
+		.base_value = EN751627_SPI_BASE,
+		.div_bits = 8,
+		.div_shift = 8,
+		.div_val0 = EN751627_SPI_DIV_DEFAULT,
+		.div_step = 2,
+	}, {
+		.id = EN7523_CLK_GSW,
+		.name = "gsw",
+		.np_scu = true,
+		.read_only = true,
+		.base_reg = EN751221_REG_SSR3,
+		.base_bits = 2,
+		.base_shift = 8,
+		.base_values = gsw751221_base,
+		.n_base_values = ARRAY_SIZE(gsw751221_base),
+	}
+};
+
+static const struct en_clk_desc en7528_base_clks[] = {
+	{
+		.id = EN7523_CLK_SPI,
+		.name = "spi",
+		.read_only = true,
+		.base_reg = EN7528_REG_SPI_DIV,
+		.base_value = EN7528_SPI_BASE,
+		.div_bits = 8,
+		.div_shift = 8,
+		.div_val0 = EN7528_SPI_DIV_DEFAULT,
+		.div_step = 2,
+	}, {
+		.id = EN7523_CLK_GSW,
+		.name = "gsw",
+		.np_scu = true,
+		.read_only = true,
+		.base_reg = EN751221_REG_SSR3,
+		.base_bits = 2,
+		.base_shift = 8,
+		.base_values = gsw751221_base,
+		.n_base_values = ARRAY_SIZE(gsw751221_base),
+	}
+};
+
+static const struct en_clk_desc en7580_base_clks[] = {
+	{
+		.id = EN7523_CLK_SPI,
+		.name = "spi",
+		.read_only = true,
+		.base_reg = EN7580_REG_SPI_DIV,
+		.base_value = EN7580_SPI_BASE,
+		.div_bits = 8,
+		.div_shift = 8,
+		.div_val0 = EN7580_SPI_DIV_DEFAULT,
+		.div_step = 2,
+	}, {
+		.id = EN7523_CLK_GSW,
+		.name = "gsw",
+		.np_scu = true,
+		.read_only = true,
+		.base_reg = EN751221_REG_SSR3,
+		.base_bits = 2,
+		.base_shift = 8,
+		.base_values = gsw751221_base,
+		.n_base_values = ARRAY_SIZE(gsw751221_base),
+	}
+};
+
+static const struct en_clk_desc en7526c_spi_clk = {
+	.id = EN7523_CLK_SPI,
+	.name = "spi",
+	.read_only = true,
+	.base_reg = EN751221_REG_SPI_DIV,
+	.base_value = EN751221_SPI_BASE_EN7526C,
+	.div_bits = 8,
+	.div_shift = 8,
+	.div_val0 = EN751221_SPI_DIV_DEFAULT,
+	.div_step = 2,
 };
 
 static const u16 en7581_rst_ofs[] = {
@@ -1255,38 +1454,46 @@ static struct clk_hw *en7523_register_pcie_clk(struct device *dev,
 }
 
 static unsigned long en75xx_recalc_rate(struct clk_hw *hw,
-					unsigned long parent_rate)
+				      unsigned long parent_rate)
 {
 	struct en_clk *c = container_of(hw, struct en_clk, hw);
 	const struct en_clk_desc *desc = c->desc;
-	struct regmap *map = c->map;
-	u32 val, reg;
-	u32 rate;
+	u32 val, rate, div;
 	int err;
 
-	err = regmap_read(map, desc->base_reg, &val);
+	err = regmap_read(c->map, desc->base_reg, &val);
 	if (err) {
-		pr_err("Failed reading fixed clk rate %s: %d\n",
-		       desc->name, err);
-		return err;
+		pr_err("Failed reading clock %s: %d\n", desc->name, err);
+		return 0;
 	}
+
 	rate = en7523_get_base_rate(desc, val);
+	if (!desc->div_bits)
+		return rate;
 
-	reg = desc->div_reg ? desc->div_reg : desc->base_reg;
-	err = regmap_read(map, reg, &val);
-	if (err) {
-		pr_err("Failed reading fixed clk div %s: %d\n",
-		       desc->name, err);
-		return err;
+	if (desc->div_reg && desc->div_reg != desc->base_reg) {
+		err = regmap_read(c->map, desc->div_reg, &val);
+		if (err) {
+			pr_err("Failed reading divider for clock %s: %d\n",
+			       desc->name, err);
+			return 0;
+		}
 	}
 
-	return rate / en7523_get_div(desc, val);
+	div = en7523_get_div(desc, val);
+	if (!div)
+		return 0;
+
+	return rate / div;
 }
 
 static int en75xx_get_base_val_for_rate(const struct en_clk_desc *desc,
 					int div, unsigned long rate)
 {
 	int i;
+
+	if (!div)
+		return -EINVAL;
 
 	/* Single base rate */
 	if (!desc->base_bits) {
@@ -1429,7 +1636,100 @@ static const struct clk_ops en75xx_clk_ops = {
 };
 
 
+static const struct clk_ops en75xx_clk_ro_ops = {
+	.recalc_rate = en75xx_recalc_rate,
+};
+
 #define to_en7523_cpu_clk(_hw) container_of(_hw, struct en7523_cpu_clk, hw)
+
+static u32 airoha_cpu_pll_unlock_value(const struct airoha_cpu_pll_desc *pll,
+				       u32 saved)
+{
+	return (saved & ~pll->protect_mask) | pll->unlock_key;
+}
+
+static int airoha_cpu_pll_unlock(void __iomem *base,
+				 const struct airoha_cpu_pll_desc *pll, u32 saved)
+{
+	u32 value = airoha_cpu_pll_unlock_value(pll, saved);
+
+	writel(value, base + pll->protect_reg);
+	return readl(base + pll->protect_reg) == value ? 0 : -EIO;
+}
+
+static int airoha_cpu_pll_restore(void __iomem *base,
+				  const struct airoha_cpu_pll_desc *pll, u32 saved)
+{
+	writel(saved, base + pll->protect_reg);
+	return readl(base + pll->protect_reg) == saved ? 0 : -EIO;
+}
+
+static unsigned long airoha_cpu_pll_rate(u32 param, unsigned long ref_rate)
+{
+	return FIELD_GET(AIROHA_CPU_PLL_PCW_MASK, param) * (ref_rate / 2);
+}
+
+static int airoha_cpu_pll_pcw(unsigned long rate, unsigned long ref_rate, u32 *pcw)
+{
+	unsigned long unit;
+
+	if (!ref_rate || ref_rate % 2)
+		return -EINVAL;
+	unit = ref_rate / 2;
+	if (rate % unit || rate / unit > FIELD_MAX(AIROHA_CPU_PLL_PCW_MASK))
+		return -EINVAL;
+
+	*pcw = rate / unit;
+	return 0;
+}
+
+/* The caller supplies the SoC-specific quiescence and clock-mux sequence. */
+static int airoha_cpu_pll_apply(void __iomem *base,
+				const struct airoha_cpu_pll_desc *pll,
+				u32 pcw_reg, u32 old_param, u32 pcw)
+{
+	u32 param, control;
+
+	if (pcw > FIELD_MAX(AIROHA_CPU_PLL_PCW_MASK))
+		return -EINVAL;
+	param = (old_param & ~AIROHA_CPU_PLL_PCW_MASK) |
+		FIELD_PREP(AIROHA_CPU_PLL_PCW_MASK, pcw);
+	writel(param, base + pcw_reg);
+	if (readl(base + pcw_reg) != param)
+		return -EIO;
+
+	control = readl(base + pll->change_reg) ^ AIROHA_CPU_PLL_CHANGE_BIT;
+	writel(control, base + pll->change_reg);
+	readl(base + pll->change_reg);
+	/* A settling delay and register readback do not establish PLL lock. */
+	udelay(pll->settle_us);
+	if (readl(base + pcw_reg) != param ||
+	    readl(base + pll->change_reg) != control ||
+	    (readl(base + pll->protect_reg) & pll->protect_mask) != pll->unlock_key)
+		return -EIO;
+
+	return 0;
+}
+
+static int airoha_cpu_pll_rollback(void __iomem *base,
+				   const struct airoha_cpu_pll_desc *pll,
+				   u32 pcw_reg, u32 param, u32 control)
+{
+	u32 pcw = FIELD_GET(AIROHA_CPU_PLL_PCW_MASK, param);
+	int ret;
+
+	ret = airoha_cpu_pll_apply(base, pll, pcw_reg, param, pcw);
+	if (ret)
+		return ret;
+	if (readl(base + pll->change_reg) != control) {
+		writel(control, base + pll->change_reg);
+		readl(base + pll->change_reg);
+		udelay(pll->settle_us);
+	}
+
+	return readl(base + pcw_reg) == param &&
+	       readl(base + pll->change_reg) == control ? 0 : -EIO;
+}
 
 #if defined(CONFIG_ARM) || defined(CONFIG_ARM64)
 static unsigned long en7523_cpu_smc_get_rate(void)
@@ -1504,13 +1804,12 @@ static u32 en7523_cpu_xtal_mhz(struct en7523_cpu_clk *cpu_clk)
 static u32 en7523_cpu_pcw_reg(struct en7523_cpu_clk *cpu_clk)
 {
 	return en7523_cpu_xtal_mhz(cpu_clk) == 25 ?
-		EN7523_SYSPLL_PCW_25M : EN7523_SYSPLL_PCW_20M;
+		en7523_cpu_pll.pcw_reg : en7523_cpu_pll.pcw_reg_20m;
 }
 
 static unsigned long en7523_cpu_pll_get_rate(struct en7523_cpu_clk *cpu_clk)
 {
-	unsigned long rate;
-	u32 pcw, pcw_int, xtal;
+	u32 pcw, xtal;
 
 	xtal = en7523_cpu_xtal_mhz(cpu_clk);
 	if (!xtal)
@@ -1518,10 +1817,7 @@ static unsigned long en7523_cpu_pll_get_rate(struct en7523_cpu_clk *cpu_clk)
 
 	pcw = readl(cpu_clk->chip_scu + en7523_cpu_pcw_reg(cpu_clk));
 
-	pcw_int = FIELD_GET(EN7523_SYSPLL_PCW_MASK, pcw);
-	rate = (unsigned long)pcw_int * xtal * 1000000UL;
-
-	return rate / 2;
+	return airoha_cpu_pll_rate(pcw, xtal * 1000000UL);
 }
 
 static void en7523_cpu_clock_switch(struct en7523_cpu_clk *cpu_clk,
@@ -1551,8 +1847,8 @@ static int en7523_cpu_pll_set_rate(struct en7523_cpu_clk *cpu_clk,
 {
 	unsigned long flags;
 	unsigned int state;
-	u32 freq_mhz, old_chg, pcw_int, val, xtal;
-	int ret;
+	u32 pcw_int, pcw_reg, saved, param, control, val, xtal;
+	int ret, restore_ret;
 
 	ret = en7523_cpu_rate_to_state(rate, &state);
 	if (ret)
@@ -1562,42 +1858,38 @@ static int en7523_cpu_pll_set_rate(struct en7523_cpu_clk *cpu_clk,
 	if (!xtal)
 		return -EIO;
 
-	freq_mhz = rate / 1000000UL;
-	pcw_int = (freq_mhz * 2) / xtal;
-	if ((pcw_int * xtal) / 2 != freq_mhz)
-		return -EINVAL;
+	ret = airoha_cpu_pll_pcw(rate, xtal * 1000000UL, &pcw_int);
+	if (ret)
+		return ret;
+	pcw_reg = en7523_cpu_pcw_reg(cpu_clk);
 
 	local_irq_save(flags);
 
 	en7523_cpu_clock_switch(cpu_clk, EN7523_MCUCFG_CK_SEL_PLL2);
 
-	val = readl(cpu_clk->chip_scu + EN7523_PLLRG_PROTECT);
-	writel((val & ~EN7523_PLLRG_PROTECT_MASK) |
-	       EN7523_PLLRG_PROTECT_KEY,
-	       cpu_clk->chip_scu + EN7523_PLLRG_PROTECT);
-
-	val = readl(cpu_clk->chip_scu + en7523_cpu_pcw_reg(cpu_clk));
-	val &= ~EN7523_SYSPLL_PCW_MASK;
-	val |= FIELD_PREP(EN7523_SYSPLL_PCW_MASK, pcw_int);
-	writel(val, cpu_clk->chip_scu + en7523_cpu_pcw_reg(cpu_clk));
-
-	old_chg = readl(cpu_clk->chip_scu + EN7523_SYSPLL_DISABLE);
-	writel(old_chg ^ EN7523_SYSPLL_CHG_BIT,
-	       cpu_clk->chip_scu + EN7523_SYSPLL_DISABLE);
-
-	udelay(20);
+	saved = readl(cpu_clk->chip_scu + en7523_cpu_pll.protect_reg);
+	ret = airoha_cpu_pll_unlock(cpu_clk->chip_scu, &en7523_cpu_pll, saved);
+	if (!ret) {
+		param = readl(cpu_clk->chip_scu + pcw_reg);
+		control = readl(cpu_clk->chip_scu + en7523_cpu_pll.change_reg);
+		ret = airoha_cpu_pll_apply(cpu_clk->chip_scu, &en7523_cpu_pll,
+					   pcw_reg, param, pcw_int);
+		if (ret && airoha_cpu_pll_rollback(cpu_clk->chip_scu,
+						   &en7523_cpu_pll, pcw_reg,
+						   param, control))
+			pr_err("EN7523 CPU PLL rollback failed\n");
+	}
 
 	en7523_cpu_clock_switch(cpu_clk, EN7523_MCUCFG_CK_SEL_ARMPLL);
 
 	val = readl(cpu_clk->chip_scu + EN7523_CPUPLL_CLK_MUX);
 	writel(val & ~BIT(2), cpu_clk->chip_scu + EN7523_CPUPLL_CLK_MUX);
 
-	val = readl(cpu_clk->chip_scu + EN7523_PLLRG_PROTECT);
-	writel(val & ~EN7523_PLLRG_PROTECT_MASK,
-	       cpu_clk->chip_scu + EN7523_PLLRG_PROTECT);
+	restore_ret = airoha_cpu_pll_restore(cpu_clk->chip_scu,
+					     &en7523_cpu_pll, saved);
 
 	local_irq_restore(flags);
-	return 0;
+	return ret ? ret : restore_ret;
 }
 
 static unsigned long en7523_cpu_clk_recalc_rate(struct clk_hw *hw,
@@ -1617,7 +1909,17 @@ static unsigned long en7523_cpu_clk_recalc_rate(struct clk_hw *hw,
 static long en7523_cpu_clk_round_rate(struct clk_hw *hw, unsigned long rate,
 				      unsigned long *parent_rate)
 {
-	rate = clamp_val(rate, EN7523_CPU_MIN_RATE, EN7523_CPU_MAX_RATE);
+	struct en7523_cpu_clk *cpu_clk = to_en7523_cpu_clk(hw);
+	unsigned long max_rate = EN7523_CPU_MAX_RATE;
+
+	if (!cpu_clk->use_smc) {
+		max_rate = FIELD_MAX(AIROHA_CPU_PLL_PCW_MASK) *
+			   (en7523_cpu_xtal_mhz(cpu_clk) * 1000000UL / 2);
+		max_rate = min(max_rate, EN7523_CPU_MAX_RATE);
+		max_rate -= (max_rate - EN7523_CPU_MIN_RATE) %
+			    EN7523_CPU_RATE_STEP;
+	}
+	rate = clamp_val(rate, EN7523_CPU_MIN_RATE, max_rate);
 	rate -= EN7523_CPU_MIN_RATE;
 	rate = DIV_ROUND_CLOSEST(rate, EN7523_CPU_RATE_STEP) *
 	       EN7523_CPU_RATE_STEP;
@@ -1688,10 +1990,10 @@ static struct clk_hw *en7523_register_cpu_clk(struct device *dev,
 }
 
 static int en75xx_register_clocks(struct device *dev,
-				  const struct airoha_clk_soc_data *soc_data,
-				  struct clk_hw_onecell_data *clk_data,
-				  struct regmap *map, struct regmap *clk_map)
+				  struct airoha_clk_priv *priv,
+				  struct clk_hw_onecell_data *clk_data)
 {
+	const struct airoha_clk_soc_data *soc_data = priv->soc_data;
 	struct clk_hw *hw;
 	int i;
 
@@ -1703,13 +2005,26 @@ static int en75xx_register_clocks(struct device *dev,
 		struct en_clk *en_clk;
 		int err;
 
+		if (soc_data->econet && soc_data->econet->spi_alt_desc &&
+		    desc->id == EN7523_CLK_SPI &&
+		    priv->soc_family == EN7526C_PKG)
+			desc = soc_data->econet->spi_alt_desc;
+
+		if (WARN_ON_ONCE(desc->id < 0 || desc->id >= clk_data->num))
+			return -EINVAL;
+
+		if (desc->read_only) {
+			init.ops = &en75xx_clk_ro_ops;
+			init.flags = CLK_GET_RATE_NOCACHE;
+		}
+
 		en_clk = devm_kzalloc(dev, sizeof(*en_clk), GFP_KERNEL);
 		if (!en_clk)
 			return -ENOMEM;
 
 		init.name = desc->name;
 
-		en_clk->map = map;
+		en_clk->map = desc->np_scu ? priv->scu_np : priv->scu_chip;
 		en_clk->desc = desc;
 		en_clk->hw.init = &init;
 
@@ -1723,7 +2038,7 @@ static int en75xx_register_clocks(struct device *dev,
 		clk_data->hws[desc->id] = &en_clk->hw;
 	}
 
-	hw = en7523_register_pcie_clk(dev, clk_map);
+	hw = en7523_register_pcie_clk(dev, priv->scu_np);
 	if (IS_ERR(hw))
 		return PTR_ERR(hw);
 
@@ -1775,7 +2090,7 @@ static int en7523_clk_hw_init(struct platform_device *pdev,
 	struct clk_hw *hw;
 	int err;
 
-	err = en75xx_register_clocks(dev, soc_data, clk_data, map, clk_map);
+	err = en75xx_register_clocks(dev, priv, clk_data);
 	if (err)
 		return err;
 
@@ -1920,7 +2235,7 @@ static int en7581_clk_hw_init(struct platform_device *pdev,
 	struct regmap *map = priv->scu_chip, *clk_map = priv->scu_np;
 	int err;
 
-	err = en75xx_register_clocks(dev, soc_data, clk_data, map, clk_map);
+	err = en75xx_register_clocks(dev, priv, clk_data);
 	if (err)
 		return err;
 
@@ -1949,7 +2264,7 @@ static int an7583_clk_hw_init(struct platform_device *pdev,
 	struct regmap *map = priv->scu_chip, *clk_map = priv->scu_np;
 	int err;
 
-	err = en75xx_register_clocks(dev, soc_data, clk_data, map, clk_map);
+	err = en75xx_register_clocks(dev, priv, clk_data);
 	if (err)
 		return err;
 
@@ -1984,76 +2299,508 @@ static int econet_register_fixed_rate(struct device *dev, int key,
 	return 0;
 }
 
+static const struct econet_cpu_pll_layout *
+econet_cpu_pll_layout(struct airoha_clk_priv *priv)
+{
+	switch (priv->soc_family) {
+	case EN751221_PKG:
+		return &en751221_cpu_pll;
+	case EN7528_PKG:
+		return &en7528_cpu_pll;
+	default:
+		return NULL;
+	}
+}
+
+static unsigned long airoha_xtal_rate(struct airoha_clk_priv *priv)
+{
+	u32 strap, value;
+
+	switch (priv->soc_family) {
+	case AN7583_PKG:
+	case EN7581_PKG:
+		/* AN7581 and AN7583 is fixed in 50 MHz */
+		return 50000000UL;
+	case EN7523_PKG:
+		strap = readl(priv->chip_scu_base + EN7523_SCU_XTAL_SELECT);
+		if (strap & BIT(19))
+			return 25000000UL; /* 25 MHz */
+		return 20000000UL; /* 20 MHz */
+	case EN7580_PKG:
+		strap = readl(priv->np_scu_base + AIROHA_NP_SCU_SCREG_WR1);
+		value = readl(priv->chip_scu_base + (strap & ECONET_SAVED_IS_FPGA ?
+						     EN7580_REG_XTAL_SELECT_ALT :
+						     EN7580_REG_XTAL_SELECT));
+		if (value & BIT(19))
+			return 25000000UL; /* 25 MHz */
+		return 20000000UL; /* 20 MHz */
+	case EN751221_PKG:
+		value = readl(priv->np_scu_base + EN751221_REG_XTAL);
+		if (value & BIT(0))
+			return 25000000UL;
+		return 20000000UL;
+	case EN7528_PKG:
+		/* SDK DDR calibration chooses the selector using saved parameter bit 9. */
+		strap = readl(priv->np_scu_base + AIROHA_NP_SCU_SCREG_WR1);
+		value = readl(priv->chip_scu_base + (strap & ECONET_SAVED_IS_FPGA ?
+						     EN7528_REG_XTAL_SELECT_ALT :
+						     EN7528_REG_XTAL_SELECT));
+		if (value & EN7528_XTAL_25MHZ)
+			return 25000000UL;
+		return 20000000UL;
+	default:
+		return 0;
+	}
+}
+
+static bool econet_cpu_rate_supported(struct airoha_clk_priv *priv,
+				      unsigned long rate)
+{
+	switch (priv->soc_family) {
+	case EN751221_PKG:
+		return rate >= 600000000UL && rate <= 1000000000UL &&
+		       !(rate % 100000000UL);
+	case EN7528_PKG:
+		return rate >= 600000000UL && rate <= 1000000000UL &&
+		       !(rate % 25000000UL);
+	default:
+		return false;
+	}
+}
+
+static void econet_cpu_pll_read(struct airoha_clk_priv *priv,
+				struct econet_cpu_pll_state *state)
+{
+	const struct econet_cpu_pll_layout *pll = econet_cpu_pll_layout(priv);
+	void __iomem *base = priv->chip_scu_base;
+
+	if (pll) {
+		state->setup = readl(base + pll->setup);
+		state->config = readl(base + pll->config);
+		state->control = readl(base + pll->control);
+		state->param = readl(base + pll->param);
+	} else {
+		state->setup = readl(base + EN7580_REG_CPU_PLL_PROTECT);
+		state->config = 0;
+		state->control = readl(base + EN7580_REG_CPU_PLL_CHANGE);
+		state->param = readl(base + EN7580_REG_CPU_PLL_PCW);
+	}
+}
+
+static unsigned long
+econet_cpu_pll_rate(struct econet_cpu_clk *clk,
+		    const struct econet_cpu_pll_state *state)
+{
+	const struct econet_cpu_pll_layout *pll = econet_cpu_pll_layout(clk->priv);
+	unsigned long rate;
+	u32 count;
+
+	/* Only the characterized 25 MHz direct-PLL encoding can be decoded. */
+	if (!pll || clk->xtal_rate != 25000000UL ||
+	    state->setup != pll->idle_setup || state->control != 0x406 ||
+	    (state->config & ECONET_CPU_PLL_CONFIG_DIV) !=
+					ECONET_CPU_PLL_CONFIG_DIRECT)
+		return 0;
+
+	/* Other bits must remain as captured at boot, including calibration. */
+	if (((state->config ^ clk->boot_state.config) &
+	     ~ECONET_CPU_PLL_CONFIG_FREQ) ||
+	    ((state->param ^ clk->boot_state.param) &
+	     ~ECONET_CPU_PLL_PARAM_FREQ))
+		return 0;
+
+	count = FIELD_GET(ECONET_CPU_PLL_CONFIG_FREQ, state->config);
+	/* Bound before multiplying to avoid unsigned-long overflow on MIPS. */
+	if (count < 23 || count > 39 ||
+	    FIELD_GET(ECONET_CPU_PLL_PARAM_FREQ, state->param) != count - 7)
+		return 0;
+	rate = (count + 1) * 25000000UL;
+
+	return econet_cpu_rate_supported(clk->priv, rate) ? rate : 0;
+}
+
+static bool econet_cpu_clk_can_scale(struct econet_cpu_clk *clk)
+{
+	return clk->boot_rate == 900000000UL &&
+		econet_cpu_pll_rate(clk, &clk->boot_state) == clk->boot_rate;
+}
+
+static unsigned long
+en7580_cpu_pll_rate(const struct econet_cpu_pll_state *state)
+{
+	u32 pcw = FIELD_GET(AIROHA_CPU_PLL_PCW_MASK, state->param);
+
+	/* SDK do_cpufreq(): PCW = 104 - 2 * step, CPU = 1300 - 25 * step. */
+	if (state->param & ~AIROHA_CPU_PLL_PCW_MASK ||
+	    pcw < EN7580_CPU_PLL_PCW_MIN || pcw > EN7580_CPU_PLL_PCW_MAX ||
+	    (pcw & 1))
+		return 0;
+
+	return airoha_cpu_pll_rate(state->param, 2 * EN7580_CPU_PLL_PCW_RATE);
+}
+
+static long en7580_cpu_clk_round_rate(struct clk_hw *hw, unsigned long rate,
+				      unsigned long *parent_rate)
+{
+	unsigned long min_rate = EN7580_CPU_PLL_PCW_MIN * EN7580_CPU_PLL_PCW_RATE;
+	unsigned long max_rate = EN7580_CPU_PLL_PCW_MAX * EN7580_CPU_PLL_PCW_RATE;
+	unsigned long step = 2 * EN7580_CPU_PLL_PCW_RATE;
+
+	/* Clamp before rounding so arbitrary requests cannot overflow on MIPS. */
+	rate = clamp_val(rate, min_rate, max_rate);
+
+	/* SDK PCWs are even: each increment of two represents 25 MHz. */
+	return DIV_ROUND_CLOSEST(rate, step) * step;
+}
+
+static unsigned long econet_cpu_clk_recalc_rate(struct clk_hw *hw,
+						unsigned long parent_rate)
+{
+	struct econet_cpu_clk *clk = container_of(hw, struct econet_cpu_clk, hw);
+	struct econet_cpu_pll_state state;
+	unsigned long rate;
+
+	/* Let CCF predict the BUS rate and notify consumers before a CPU change. */
+	if (clk->divisor != 1)
+		return parent_rate / clk->divisor;
+
+	econet_cpu_pll_read(clk->priv, &state);
+	if (econet_cpu_pll_layout(clk->priv))
+		rate = econet_cpu_pll_rate(clk, &state);
+	else if (state.setup == clk->boot_state.setup &&
+		 !((state.control ^ clk->boot_state.control) &
+		   ~AIROHA_CPU_PLL_CHANGE_BIT))
+		rate = en7580_cpu_pll_rate(&state);
+	else
+		rate = 0;
+
+	/* Preserve other boot profiles only while their registers are unchanged. */
+	if (!rate && !memcmp(&state, &clk->boot_state, sizeof(state)))
+		rate = clk->boot_rate;
+
+	return rate;
+}
+
+static const struct clk_ops econet_cpu_clk_ops = {
+	.recalc_rate = econet_cpu_clk_recalc_rate,
+};
+
+struct econet_cpu_change {
+	struct econet_cpu_clk *clk;
+	const struct econet_cpu_pll_layout *pll;
+	unsigned long rate;
+	bool rollback_failed;
+};
+
+static bool en7580_cpu_clk_can_scale(struct econet_cpu_clk *clk)
+{
+	struct airoha_clk_priv *priv = clk->priv;
+
+	/* Start from the ASIC boot profile used by SDK do_cpufreq(). */
+	return priv->soc_family == EN7580_PKG &&
+		priv->chip_scu_size >= EN7580_REG_CPU_PLL_CHANGE + sizeof(u32) &&
+		!(readl(priv->np_scu_base + AIROHA_NP_SCU_SCREG_WR1) &
+		  ECONET_SAVED_IS_FPGA) &&
+		!(clk->boot_state.setup & EN7580_CPU_PLL_PROTECT_KEY) &&
+		clk->boot_rate == EN7580_CPU_PLL_PCW_MAX * EN7580_CPU_PLL_PCW_RATE &&
+		en7580_cpu_pll_rate(&clk->boot_state) == clk->boot_rate;
+}
+
+static int en7580_cpu_change_stopped(void *arg)
+{
+	struct econet_cpu_change *change = arg;
+	struct econet_cpu_clk *clk = change->clk;
+	void __iomem *base = clk->priv->chip_scu_base;
+	struct econet_cpu_pll_state old, state;
+	u32 pcw, target;
+	int ret, restore_ret;
+
+	econet_cpu_pll_read(clk->priv, &old);
+	if (!en7580_cpu_pll_rate(&old) || old.setup != clk->boot_state.setup ||
+	    ((old.control ^ clk->boot_state.control) &
+	     ~AIROHA_CPU_PLL_CHANGE_BIT))
+		return -EOPNOTSUPP;
+
+	pcw = FIELD_GET(AIROHA_CPU_PLL_PCW_MASK, old.param);
+	ret = airoha_cpu_pll_pcw(change->rate, 2 * EN7580_CPU_PLL_PCW_RATE,
+				 &target);
+	if (ret)
+		return ret;
+	if (pcw == target)
+		return 0;
+
+	ret = airoha_cpu_pll_unlock(base, &en7580_cpu_pll, old.setup);
+	if (ret)
+		goto restore_protect;
+
+	/* Apply only the destination PCW, without intermediate frequencies. */
+	ret = airoha_cpu_pll_apply(base, &en7580_cpu_pll,
+				   en7580_cpu_pll.pcw_reg, old.param, target);
+	if (ret) {
+		/* Reapply the original PCW directly if the target was not verified. */
+		if (airoha_cpu_pll_rollback(base, &en7580_cpu_pll,
+					    en7580_cpu_pll.pcw_reg, old.param,
+					    old.control)) {
+			change->rollback_failed = true;
+			goto restore_protect;
+		}
+	}
+
+restore_protect:
+	restore_ret = airoha_cpu_pll_restore(base, &en7580_cpu_pll, old.setup);
+	if (restore_ret) {
+		change->rollback_failed = true;
+		ret = restore_ret;
+	}
+	econet_cpu_pll_read(clk->priv, &state);
+	if (ret) {
+		if (memcmp(&state, &old, sizeof(state)))
+			change->rollback_failed = true;
+	} else if (state.setup != old.setup || state.config != old.config ||
+		   state.param != FIELD_PREP(AIROHA_CPU_PLL_PCW_MASK, target) ||
+		   ((state.control ^ old.control) & ~AIROHA_CPU_PLL_CHANGE_BIT)) {
+		ret = -EIO;
+		change->rollback_failed = true;
+	}
+
+	return ret;
+}
+
+static int en7580_cpu_clk_set_rate(struct clk_hw *hw, unsigned long rate,
+				   unsigned long parent_rate)
+{
+	struct econet_cpu_change change = {
+		.clk = container_of(hw, struct econet_cpu_clk, hw),
+		.rate = rate,
+	};
+	int ret;
+
+	if (!en7580_cpu_clk_can_scale(change.clk))
+		return -EOPNOTSUPP;
+	if (rate < EN7580_CPU_PLL_PCW_MIN * EN7580_CPU_PLL_PCW_RATE ||
+	    rate > EN7580_CPU_PLL_PCW_MAX * EN7580_CPU_PLL_PCW_RATE ||
+	    rate % (2 * EN7580_CPU_PLL_PCW_RATE))
+		return -EINVAL;
+
+	/* CPU and BUS share this PLL; quiesce all cores and VPEs once. */
+	ret = stop_machine(en7580_cpu_change_stopped, &change, NULL);
+	if (change.rollback_failed)
+		pr_err("EN7580 CPU PLL state verification/recovery failed\n");
+
+	return ret;
+}
+
+static const struct clk_ops en7580_cpu_clk_ops = {
+	.recalc_rate = econet_cpu_clk_recalc_rate,
+	.round_rate = en7580_cpu_clk_round_rate,
+	.set_rate = en7580_cpu_clk_set_rate,
+};
+
+static void econet_cpu_pll_write(void __iomem *base,
+				 const struct econet_cpu_pll_layout *pll,
+				 const struct econet_cpu_pll_state *state)
+{
+	writel(0x12, base + pll->setup);
+	writel(state->config, base + pll->config);
+	writel(state->param, base + pll->param);
+	writel(0x402, base + pll->control);
+	writel(0x406, base + pll->control);
+	/* EN7528 clears the programming setup after applying the new pair. */
+	if (!pll->idle_setup)
+		writel(0, base + pll->setup);
+	readl(base + pll->control);
+}
+
+static int econet_cpu_change_stopped(void *arg)
+{
+	struct econet_cpu_change *change = arg;
+	struct airoha_clk_priv *priv = change->clk->priv;
+	struct econet_cpu_pll_state old, target, state;
+	unsigned long old_rate;
+	u32 count;
+
+	econet_cpu_pll_read(priv, &old);
+	old_rate = econet_cpu_pll_rate(change->clk, &old);
+	if (!old_rate)
+		return -EOPNOTSUPP;
+	if (old_rate == change->rate)
+		return 0;
+
+	/* Preserve the live register bits outside the two frequency fields. */
+	count = change->rate / 25000000UL - 1;
+	target = old;
+	target.config = (old.config & ~ECONET_CPU_PLL_CONFIG_FREQ) |
+			FIELD_PREP(ECONET_CPU_PLL_CONFIG_FREQ, count);
+	target.param = (old.param & ~ECONET_CPU_PLL_PARAM_FREQ) |
+		       FIELD_PREP(ECONET_CPU_PLL_PARAM_FREQ, count - 7);
+	econet_cpu_pll_write(priv->chip_scu_base, change->pll, &target);
+	econet_cpu_pll_read(priv, &state);
+	if (!memcmp(&state, &target, sizeof(state)))
+		return 0;
+
+	/* Reapply the exact previous snapshot, rather than synthesizing it. */
+	econet_cpu_pll_write(priv->chip_scu_base, change->pll, &old);
+	econet_cpu_pll_read(priv, &state);
+	change->rollback_failed = memcmp(&state, &old, sizeof(state));
+	return -EIO;
+}
+
+static long econet_cpu_clk_round_rate(struct clk_hw *hw, unsigned long rate,
+				      unsigned long *parent_rate)
+{
+	struct econet_cpu_clk *clk = container_of(hw, struct econet_cpu_clk, hw);
+
+	if (!econet_cpu_clk_can_scale(clk) ||
+	    !econet_cpu_rate_supported(clk->priv, rate))
+		return -EINVAL;
+
+	return rate;
+}
+
+static int econet_cpu_clk_set_rate(struct clk_hw *hw, unsigned long rate,
+				   unsigned long parent_rate)
+{
+	struct econet_cpu_change change = {
+		.clk = container_of(hw, struct econet_cpu_clk, hw),
+		.rate = rate,
+	};
+	int ret;
+
+	change.pll = econet_cpu_pll_layout(change.clk->priv);
+	if (!change.pll || !econet_cpu_clk_can_scale(change.clk))
+		return -EOPNOTSUPP;
+	if (!econet_cpu_rate_supported(change.clk->priv, rate))
+		return -EINVAL;
+
+	/* Run the sequence once, with all other cores and VPEs quiesced. */
+	ret = stop_machine(econet_cpu_change_stopped, &change, NULL);
+	if (change.rollback_failed)
+		pr_err("EcoNet CPU PLL rollback failed (family %#x)\n",
+		       change.clk->priv->soc_family);
+	return ret;
+}
+
+static const struct clk_ops econet_cpu_scaling_ops = {
+	.recalc_rate = econet_cpu_clk_recalc_rate,
+	.round_rate = econet_cpu_clk_round_rate,
+	.set_rate = econet_cpu_clk_set_rate,
+};
+
+static struct clk_hw *
+econet_register_cpu_clk(struct device *dev, struct airoha_clk_priv *priv,
+			const struct econet_cpu_pll_state *boot_state,
+			unsigned long boot_rate, const struct clk_hw *parent)
+{
+	struct clk_init_data init = {
+		.name = parent ? "bus" : "cpu",
+		.ops = &econet_cpu_clk_ops,
+		.flags = CLK_GET_RATE_NOCACHE,
+	};
+	struct econet_cpu_clk *clk;
+	int err;
+
+	clk = devm_kzalloc(dev, sizeof(*clk), GFP_KERNEL);
+	if (!clk)
+		return ERR_PTR(-ENOMEM);
+
+	clk->priv = priv;
+	clk->boot_state = *boot_state;
+	clk->boot_rate = boot_rate;
+	clk->divisor = parent ? priv->soc_data->cpu_clk_mult : 1;
+	clk->xtal_rate = parent ? 0 : airoha_xtal_rate(priv);
+	/* Unknown boot encodings remain read-only, including OPP filtering. */
+	if (!parent && en7580_cpu_clk_can_scale(clk))
+		init.ops = &en7580_cpu_clk_ops;
+	else if (!parent && econet_cpu_clk_can_scale(clk))
+		init.ops = &econet_cpu_scaling_ops;
+	if (!parent && priv->soc_family == EN7580_PKG &&
+	    init.ops != &en7580_cpu_clk_ops)
+		dev_info(dev, "EN7580 boot PLL profile is read-only (PCW %#x, protect %#x)\n",
+			 boot_state->param, boot_state->setup);
+	if (!parent && priv->soc_family == EN7528_PKG &&
+	    clk->xtal_rate != 25000000UL)
+		dev_info(dev, "%s XTAL: CPU PLL control is not characterized\n",
+			 clk->xtal_rate == 20000000UL ? "20 MHz" : "Unknown");
+	if (parent) {
+		init.parent_hws = &parent;
+		init.num_parents = 1;
+	}
+	clk->hw.init = &init;
+	err = devm_clk_hw_register(dev, &clk->hw);
+	if (err)
+		return ERR_PTR(err);
+
+	return &clk->hw;
+}
+
+static int econet_register_live_cpu_clocks(struct device *dev,
+					   struct airoha_clk_priv *priv,
+					   struct clk_hw_onecell_data *clk_data,
+					   unsigned long boot_rate)
+{
+	struct econet_cpu_pll_state boot_state;
+	struct clk_hw *cpu, *bus;
+
+	econet_cpu_pll_read(priv, &boot_state);
+	cpu = econet_register_cpu_clk(dev, priv, &boot_state, boot_rate, NULL);
+	if (IS_ERR(cpu))
+		return dev_err_probe(dev, PTR_ERR(cpu),
+				     "Failed to register live CPU clock\n");
+
+	bus = econet_register_cpu_clk(dev, priv, &boot_state, boot_rate, cpu);
+	if (IS_ERR(bus))
+		return dev_err_probe(dev, PTR_ERR(bus),
+				     "Failed to register live bus clock\n");
+
+	clk_data->hws[EN7523_CLK_CPU] = cpu;
+	clk_data->hws[EN7523_CLK_BUS] = bus;
+
+	return 0;
+}
+
 static int econet_register_clocks(struct device *dev,
 				  struct airoha_clk_priv *priv,
-				  struct clk_hw_onecell_data *clk_data,
-				  struct regmap *map, struct regmap *clk_map)
+				  struct clk_hw_onecell_data *clk_data)
 {
-	const struct econet_clk_soc_data *data = priv->soc_data->econet;
-	struct clk_hw *hw;
+	const struct airoha_clk_soc_data *soc_data = priv->soc_data;
 	u32 rate, val;
 	int err;
 
-	/* PCI */
-	hw = en7523_register_pcie_clk(dev, clk_map);
-	if (IS_ERR(hw))
-		return PTR_ERR(hw);
-
-	clk_data->hws[ECONET_CLK_PCIE] = hw;
-
-	/* SPI */
-	rate = data->spi_base;
-	if (data->spi_alt_base && priv->soc_family == data->spi_alt_hir)
-		rate = data->spi_alt_base;
-
-	err = regmap_read(map, data->spi_div_reg, &val);
-	if (err)
-		return dev_err_probe(dev, err,
-				     "Failed reading fixed clk div spi\n");
-
-	val = ((val & data->spi_div_mask) >> __ffs(data->spi_div_mask)) * 2;
-	if (!val)
-		val = data->spi_div_default;
-
-	err = econet_register_fixed_rate(dev, ECONET_CLK_SPI, clk_data,
-					 "spi", rate / val);
+	err = en75xx_register_clocks(dev, priv, clk_data);
 	if (err)
 		return err;
 
 	/* BUS */
-	err = regmap_read(clk_map, EN751221_REG_BUS, &val);
+	err = regmap_read(priv->scu_np, AIROHA_NP_SCU_SCREG_WR1, &val);
 	if (err)
 		return dev_err_probe(dev, err,
 				     "Failed reading fixed clk rate bus\n");
 
-	rate = FIELD_GET(EN751221_REG_BUS_MASK, val) * 1000000;
+	/* SYS_GLOBAL_PARM is a bootloader bitfield, not a clock selector. */
+	rate = ((val & soc_data->bus_clk_mask) >>
+		__ffs(soc_data->bus_clk_mask)) * 1000000;
 	if (!rate)
 		return dev_err_probe(dev, -EINVAL,
 				     "Bootloader did not save the bus clock rate\n");
-	err = econet_register_fixed_rate(dev, ECONET_CLK_BUS, clk_data,
+
+	/* Return CPU live clock */
+	if (priv->soc_family == EN751221_PKG || priv->soc_family == EN7528_PKG ||
+	    priv->soc_family == EN7580_PKG)
+		return econet_register_live_cpu_clocks(dev, priv, clk_data,
+						      rate * soc_data->cpu_clk_mult);
+
+	err = econet_register_fixed_rate(dev, EN7523_CLK_BUS, clk_data,
 					 "bus", rate);
 	if (err)
 		return err;
 
 	/* CPU */
-	err = econet_register_fixed_rate(dev, ECONET_CLK_CPU, clk_data,
-					 "cpu", rate * 4);
+	err = econet_register_fixed_rate(dev, EN7523_CLK_CPU, clk_data,
+					 "cpu", rate * soc_data->cpu_clk_mult);
 	if (err)
 		return err;
 
-	/* GSW */
-	err = regmap_read(clk_map, EN751221_REG_SSR3, &val);
-	if (err)
-		return dev_err_probe(dev, err,
-				     "Failed reading fixed clk rate gsw\n");
-
-	val = FIELD_GET(EN751221_REG_SSR3_GSW_MASK, val);
-	if (val >= ARRAY_SIZE(gsw751221_base))
-		return dev_err_probe(dev, -EINVAL,
-				     "Invalid GSW clock selector %u\n", val);
-
-	return econet_register_fixed_rate(dev, ECONET_CLK_GSW, clk_data,
-					  "gsw", gsw751221_base[val]);
+	return 0;
 }
 
 static int econet_clk_hw_init(struct platform_device *pdev,
@@ -2066,7 +2813,7 @@ static int econet_clk_hw_init(struct platform_device *pdev,
 	struct regmap *map = priv->scu_chip, *clk_map = priv->scu_np;
 	int err;
 
-	err = econet_register_clocks(dev, priv, clk_data, map, clk_map);
+	err = econet_register_clocks(dev, priv, clk_data);
 	if (err)
 		return err;
 
@@ -2140,6 +2887,13 @@ static int airoha_clk_map_resources(struct platform_device *pdev,
 	}
 	if (!chip_np)
 		return -ENODEV;
+
+	err = of_address_to_resource(chip_np, 0, &res);
+	if (err) {
+		of_node_put(chip_np);
+		return err;
+	}
+	priv->chip_scu_size = resource_size(&res);
 
 	priv->scu_chip = syscon_node_to_regmap(chip_np);
 	if (IS_ERR(priv->scu_chip)) {
@@ -2327,10 +3081,16 @@ const char *airoha_id_name(enum airoha_pkg_ids id)
 }
 EXPORT_SYMBOL_GPL(airoha_id_name);
 
+static void econet_cpufreq_unregister(void *pdev)
+{
+	platform_device_unregister(pdev);
+}
+
 static int en7523_clk_probe(struct platform_device *pdev)
 {
 	const struct airoha_clk_soc_data *soc_data;
 	struct clk_hw_onecell_data *clk_data;
+	struct platform_device *cpufreq_pdev;
 	struct airoha_clk_priv *priv;
 	struct device *dev = &pdev->dev;
 	int err;
@@ -2370,28 +3130,39 @@ static int en7523_clk_probe(struct platform_device *pdev)
 			return err;
 	}
 
+	if (soc_data->econet && IS_ENABLED(CONFIG_ECONET_CPUFREQ)) {
+		cpufreq_pdev = platform_device_register_data(dev, "econet-cpufreq",
+							    PLATFORM_DEVID_NONE,
+							    NULL, 0);
+		if (IS_ERR(cpufreq_pdev))
+			return PTR_ERR(cpufreq_pdev);
+
+		err = devm_add_action_or_reset(dev, econet_cpufreq_unregister,
+					       cpufreq_pdev);
+		if (err)
+			return err;
+	}
+
 	platform_set_drvdata(pdev, priv);
 	return 0;
 }
 
 static const struct econet_clk_soc_data en751221_econet_data = {
-	.spi_base = EN751221_SPI_BASE,
-	.spi_alt_base = EN751221_SPI_BASE_EN7526C,
-	.spi_alt_hir = EN7526C_PKG,
-	.spi_div_reg = EN751221_REG_SPI_DIV,
-	.spi_div_mask = EN751221_REG_SPI_DIV_MASK,
-	.spi_div_default = EN751221_SPI_DIV_DEFAULT,
+	.spi_alt_desc = &en7526c_spi_clk,
 	.xpon_tod_clk_reg = EN751221_REG_NP_PER_DOM_CLK_GAT_1,
 	.xpon_tod_clk_mask = EN751221_XPON_TOD_CLK_EN,
 	.xpon_tod_div_reg = EN751221_REG_TOD_DIVIDER_ENABLE,
 	.xpon_tod_div_mask = EN751221_XPON_TOD_DIV_EN,
 };
 
+static const struct econet_clk_soc_data en751627_econet_data = {
+	.xpon_tod_clk_reg = EN751627_REG_NP_PER_DOM_CLK_GAT_1,
+	.xpon_tod_clk_mask = EN751221_XPON_TOD_CLK_EN,
+	.xpon_tod_div_reg = EN751627_REG_TOD_DIVIDER_ENABLE,
+	.xpon_tod_div_mask = EN751221_XPON_TOD_DIV_EN,
+};
+
 static const struct econet_clk_soc_data en7528_econet_data = {
-	.spi_base = EN7528_SPI_BASE,
-	.spi_div_reg = EN7528_REG_SPI_DIV,
-	.spi_div_mask = EN7528_REG_SPI_DIV_MASK,
-	.spi_div_default = EN7528_SPI_DIV_DEFAULT,
 	.xpon_tod_clk_reg = EN7528_REG_NP_PER_DOM_CLK_GAT_1,
 	.xpon_tod_clk_mask = EN7528_XPON_TOD_CLK_EN,
 	.xpon_tod_div_reg = EN7528_REG_TOD_DIVIDER_ENABLE,
@@ -2401,10 +3172,6 @@ static const struct econet_clk_soc_data en7528_econet_data = {
 };
 
 static const struct econet_clk_soc_data en7580_econet_data = {
-	.spi_base = EN7580_SPI_BASE,
-	.spi_div_reg = EN7580_REG_SPI_DIV,
-	.spi_div_mask = EN751221_REG_SPI_DIV_MASK,
-	.spi_div_default = EN7580_SPI_DIV_DEFAULT,
 	.xpon_tod_clk_reg = EN7580_REG_NP_PER_DOM_CLK_GAT_1,
 	.xpon_tod_clk_mask = EN751221_XPON_TOD_CLK_EN,
 	.xpon_tod_div_reg = EN7580_REG_TOD_DIVIDER_ENABLE,
@@ -2413,7 +3180,11 @@ static const struct econet_clk_soc_data en7580_econet_data = {
 
 static const struct airoha_clk_soc_data en751221_data = {
 	.old_chip_scu_compatible = "econet,en751221-chip-scu",
-	.num_clocks = EN751221_MAX_CLKS,
+	.base_clks = en751221_base_clks,
+	.num_base_clks = ARRAY_SIZE(en751221_base_clks),
+	.bus_clk_mask = EN751221_REG_BUS_MASK,
+	.cpu_clk_mult = 4,
+	.num_clocks = EN7523_CLK_CPU + 1,
 	.rst_map = en751221_rst_map,
 	.rst_ofs = en751221_rst_ofs,
 	.nr_resets = ARRAY_SIZE(en751221_rst_map),
@@ -2426,9 +3197,33 @@ static const struct airoha_clk_soc_data en751221_data = {
 	.hw_init = econet_clk_hw_init,
 };
 
+static const struct airoha_clk_soc_data en751627_data = {
+	.old_chip_scu_compatible = "econet,en751627-chip-scu",
+	.base_clks = en751627_base_clks,
+	.num_base_clks = ARRAY_SIZE(en751627_base_clks),
+	.bus_clk_mask = EN751221_REG_BUS_MASK,
+	.cpu_clk_mult = 4,
+	/* EN751627 keeps the EN751221 NP-SCU reset layout. */
+	.num_clocks = EN7523_CLK_CPU + 1,
+	.rst_map = en751221_rst_map,
+	.rst_ofs = en751221_rst_ofs,
+	.nr_resets = ARRAY_SIZE(en751221_rst_map),
+	.econet = &en751627_econet_data,
+	.pcie_ops = {
+		.is_enabled = en7523_pci_is_enabled,
+		.prepare = en7523_pci_prepare,
+		.unprepare = en7523_pci_unprepare,
+	},
+	.hw_init = econet_clk_hw_init,
+};
+
 static const struct airoha_clk_soc_data en7528_data = {
 	.old_chip_scu_compatible = "econet,en7528-chip-scu",
-	.num_clocks = EN7528_MAX_CLKS,
+	.base_clks = en7528_base_clks,
+	.num_base_clks = ARRAY_SIZE(en7528_base_clks),
+	.bus_clk_mask = EN7528_REG_BUS_MASK,
+	.cpu_clk_mult = 4,
+	.num_clocks = EN7523_CLK_CPU + 1,
 	/* EN7528 keeps the EN751221 NP-SCU reset layout. */
 	.rst_map = en751221_rst_map,
 	.rst_ofs = en751221_rst_ofs,
@@ -2444,7 +3239,11 @@ static const struct airoha_clk_soc_data en7528_data = {
 
 static const struct airoha_clk_soc_data en7580_data = {
 	.old_chip_scu_compatible = "econet,en7580-chip-scu",
-	.num_clocks = EN7580_MAX_CLKS,
+	.base_clks = en7580_base_clks,
+	.num_base_clks = ARRAY_SIZE(en7580_base_clks),
+	.bus_clk_mask = EN7528_REG_BUS_MASK,
+	.cpu_clk_mult = 5,
+	.num_clocks = EN7523_CLK_CPU + 1,
 	/* The MIPS EN7580 retains the legacy NP-SCU reset banks. */
 	.rst_map = en751221_rst_map,
 	.rst_ofs = en751221_rst_ofs,
@@ -2514,7 +3313,7 @@ static const struct of_device_id of_match_clk_en7523[] = {
 	{ .compatible = "airoha,en7581-scu", .data = &en7581_data },
 	{ .compatible = "airoha,an7583-scu", .data = &an7583_data },
 	{ .compatible = "econet,en751221-scu", .data = &en751221_data },
-	{ .compatible = "econet,en751627-scu", .data = &en7528_data },
+	{ .compatible = "econet,en751627-scu", .data = &en751627_data },
 	{ .compatible = "econet,en7528-scu", .data = &en7528_data },
 	{ .compatible = "econet,en7580-scu", .data = &en7580_data },
 	{ /* sentinel */ }

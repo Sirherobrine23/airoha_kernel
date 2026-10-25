@@ -264,6 +264,38 @@ source "drivers/cpufreq/Kconfig.powerpc"
 endif
 
 if MIPS
+config ECONET_CPUFREQ
+	tristate "EcoNet MIPS CPU frequency control and reporting"
+	depends on ECONET && OF && COMMON_CLK_EN7523
+	select PM_OPP
+	help
+	  Expose the CPU frequency of EN751221, EN751627, EN7528 and
+	  EN7580 SoCs through CPUFreq. All cores and VPEs share one policy
+	  supplied by the system clock controller. Operating points are read
+	  from operating-points-v2 on CPU0 and filtered by the clock provider.
+	  Without an OPP table, the driver reports only the current boot rate.
+
+	  Experimental EN751221-family control with a recognized 900 MHz
+	  boot rate supports 700, 800, 900 and 1000 MHz, without an
+	  EN7526G-only variant restriction. These profiles were exercised
+	  on EN7526G; other family variants require hardware validation.
+	  EN7528-family control with 900 MHz boot metadata supports the 17
+	  profiles from 600 through 1000 MHz in 25 MHz steps, exercised
+	  with short PMU windows on one EN7528HU. Rates above 900 MHz
+	  are software boost entries, disabled by default. These tests
+	  do not establish prolonged stability or silicon operating limits.
+	  Other configurations retain reporting only. DDR settings and
+	  supply voltages are not changed.
+	  EN751221, EN7528 and EN7580 read recognized PLL profiles on demand.
+	  Other SoCs use bootloader metadata. This is not a cycle-counter
+	  frequency measurement. Writable EN751221 and EN7528 policies allow
+	  dynamic governors with a 100 ms default update interval. Enable
+	  CPU_FREQ_GOV_ONDEMAND to use ondemand, or use the userspace governor
+	  to select a profile explicitly. Reporting-only policies keep
+	  automatic dynamic switching disabled.
+
+	  If unsure, say N.
+
 config BMIPS_CPUFREQ
 	tristate "BMIPS CPUfreq Driver"
 	help
