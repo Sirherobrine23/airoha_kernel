@@ -2827,7 +2827,7 @@ static void airoha_foe_v1_entry_set_pse_port(struct airoha_foe_entry *entry,
 
 	*ib2 &= ~(AIROHA_FOE_V1_IB2_PSE_PORT | AIROHA_FOE_V1_IB2_PSE_QOS);
 	*ib2 |= FIELD_PREP(AIROHA_FOE_V1_IB2_PSE_PORT, port);
-	if (port == AIROHA_FOE_V1_FP_QDMA_HW)
+	if (port == AIROHA_FOE_V1_FP_QDMA_HW || port == AIROHA_FOE_V1_FP_QDMA_LAN)
 		*ib2 |= AIROHA_FOE_V1_IB2_PSE_QOS;
 }
 
@@ -2938,6 +2938,9 @@ static void airoha_foe_v1_entry_set_bind_metadata(struct airoha_foe_entry *entry
 	entry->ib1 |= FIELD_PREP(AIROHA_FOE_V1_IB1_BIND_VLAN_LAYER, 1);
 
 	*data &= ~AIROHA_FOE_V1_ACTDP;
+	/* The LAN QDMA still delivers to GDM1. */
+	if (port == AIROHA_FOE_V1_FP_QDMA_LAN)
+		port = FE_PSE_PORT_GDM1;
 	if (port != AIROHA_FOE_V1_FP_QDMA_HW)
 		*data |= FIELD_PREP(AIROHA_FOE_V1_ACTDP, port + 6);
 }
@@ -3811,15 +3814,25 @@ static int airoha_ppe_v1_flow_set_output(struct airoha_foe_entry *entry,
 		return -EOPNOTSUPP;
 
 	/*
-	 * Keep direct GDM egress on the default queue. The EN751221 PPE
-	 * flow path does not enable PSE_QOS for GDM1/GDM2 destinations,
-	 * and the previous 3 + DSA-port QID mapping is not part of the
-	 * vendor DSA special-tag programming.
+	 * Downstream to the LAN switch goes through the LAN QDMA (fport 3 +
+	 * QoS, channel and QID 0), like the vendor hw_nat: the QDMA buffers
+	 * GPON line-rate bursts in DRAM and its per-channel limiter paces
+	 * them below the LAN port speed.  Sent straight to GDM1 they overflow
+	 * the external MT7530, and the losses cut TCP throughput to WiFi
+	 * clients roughly in half.
 	 *
-	 * The DSA destination is still selected by the in-band special tag;
-	 * leaving QID at its reset/default value isolates queue selection from
-	 * the hardware forwarding path.
+	 * The DSA destination is still selected by the in-band special tag.
+	 * Other GDM egress keeps the default queue without PSE_QOS.
 	 */
+	if (dsa_port >= 0 && gdm->pse_port == FE_PSE_PORT_GDM1) {
+		u32 *data = airoha_foe_v1_data(entry);
+
+		airoha_foe_v1_entry_set_pse_port(entry, AIROHA_FOE_V1_FP_QDMA_LAN);
+		airoha_foe_v1_entry_set_queue(entry, 0);
+		*data &= ~(AIROHA_FOE_V1_SHAPER_ID | AIROHA_FOE_V1_CHANNEL);
+		return 0;
+	}
+
 	airoha_foe_v1_entry_set_pse_port(entry, gdm->pse_port);
 
 	return 0;

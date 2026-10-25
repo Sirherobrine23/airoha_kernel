@@ -1685,6 +1685,63 @@ static void econet_init_en751221_qdma(struct airoha_qdma_mips *qdma)
 	econet_wreg(cngst_cfg, &qdma->regs->tx_congest_cfg);
 }
 
+static int econet_en751221_tx_rl_param(struct airoha_qdma_mips *qdma,
+				       u32 chan, u32 type, u32 val)
+{
+	void __iomem *reg = (void __iomem *)&qdma->regs->tx_limit_param;
+	u32 cmd = EN751221_TX_RL_PARAM_RWCMD |
+		  FIELD_PREP(EN751221_TX_RL_PARAM_TYPE, type) |
+		  FIELD_PREP(EN751221_TX_RL_PARAM_CHAN, chan) |
+		  FIELD_PREP(EN751221_TX_RL_PARAM_VALUE, val);
+	u32 v;
+
+	econet_wreg(cmd, &qdma->regs->tx_limit_param);
+	return readl_poll_timeout(reg, v, v & EN751221_TX_RL_PARAM_DONE, 1,
+				  10 * USEC_PER_MSEC);
+}
+
+/*
+ * Pace LAN QDMA channels 0..4 just below the LAN port speed, as the
+ * MitraStar stock firmware does: 970000 kbit/s with a 48500 byte burst
+ * (25 kbit/s unit from a 320 us tick, 2-byte bucket scale).  Downstream
+ * FoE flows to the switch go through this QDMA (fport 3 + QoS), so GPON
+ * line-rate bursts wait in the DRAM HWF buffers instead of overflowing
+ * the small packet buffer of the external MT7530.
+ *
+ * Enabling a channel first runs it with a 1 us tick and the largest PIR
+ * for 100 ms, like qdma_set_tx_ratelimit() in the vendor SDK, so that its
+ * token bucket starts full.
+ */
+static void econet_en751221_lan_tx_ratelimit(struct airoha_qdma_mips *qdma)
+{
+	const u32 unit = 25, rate = 970000, chans = GENMASK(4, 0);
+	const u32 pir = rate / unit, pbs = ((rate >> 1) + (rate >> 3)) / unit;
+	u32 cfg = EN751221_TX_RL_EN |
+		  FIELD_PREP(EN751221_TX_RL_BUCKET_SCALE, 1) |
+		  FIELD_PREP(EN751221_TX_RL_TICKSEL, 8000 / unit);
+	u32 prime = (cfg & ~EN751221_TX_RL_TICKSEL) |
+		    FIELD_PREP(EN751221_TX_RL_TICKSEL, 1);
+	u32 en = econet_rreg(&qdma->regs->ch_lim_en) | chans;
+	int c, err = 0;
+
+	econet_wreg(en, &qdma->regs->ch_lim_en);
+	econet_wreg(prime, &qdma->regs->tx_limit_cfg);
+	for (c = 0; c < 5; c++)
+		err |= econet_en751221_tx_rl_param(qdma, c, EN751221_TX_RL_PIR,
+						   0xffff);
+	msleep(100);
+	econet_wreg(cfg, &qdma->regs->tx_limit_cfg);
+	for (c = 0; c < 5; c++) {
+		err |= econet_en751221_tx_rl_param(qdma, c, EN751221_TX_RL_PIR,
+						   pir);
+		err |= econet_en751221_tx_rl_param(qdma, c, EN751221_TX_RL_PBS,
+						   pbs);
+	}
+	if (err)
+		dev_warn(qdma->qdma->eth->dev,
+			 "LAN QDMA TX rate limit setup timed out\n");
+}
+
 static int econet_qdma_hw_init(struct airoha_qdma_mips *qdma)
 {
 	struct qregs_qcfg qcfg;
@@ -1815,11 +1872,14 @@ static int econet_qdma_hw_init(struct airoha_qdma_mips *qdma)
 
 	/*
 	 * The vendor EN751221 LAN driver disables per-channel QDMA TX rate
-	 * limiting for channels 0..4 when the external MT7530 is used.  The
-	 * firmware/bootloader may leave these bits enabled, so explicitly clear
-	 * them instead of inheriting a stale hardware shaper configuration.
+	 * limiting for channels 0..4 of its CPU path when the external MT7530
+	 * is used.  The LAN QDMA now also carries the hardware-forwarded
+	 * downstream, which needs the limiter; any other QDMA gets the bits
+	 * cleared instead of inheriting a stale bootloader configuration.
 	 */
-	{
+	if (qdma->qdma->id == 0 && airoha_is(qdma->qdma->eth, econet_en751221)) {
+		econet_en751221_lan_tx_ratelimit(qdma);
+	} else {
 		u32 ch_lim_en = econet_rreg(&qdma->regs->ch_lim_en);
 
 		ch_lim_en &= ~GENMASK(4, 0);
