@@ -548,6 +548,7 @@
 		reset-names = "phy";
 
 		airoha,scu = <&scuclk>;
+		airoha,chip-scu = <&chip_scu>;
 		tx-disable-gpios = <&pinctrl 14 GPIO_ACTIVE_HIGH>;
 
 		#phy-cells = <0>;
