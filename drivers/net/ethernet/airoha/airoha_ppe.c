@@ -3064,6 +3064,9 @@ static void airoha_ppe_v1_free_flow(struct airoha_flow_table_entry *flow)
 	kfree(flow);
 }
 
+static void airoha_ppe_v1_l2_kill(struct airoha_ppe *ppe,
+				  struct airoha_flow_table_entry *parent);
+
 static int airoha_ppe_v1_netdev_event(struct notifier_block *nb,
 				      unsigned long event, void *ptr)
 {
@@ -3086,6 +3089,13 @@ static int airoha_ppe_v1_netdev_event(struct notifier_block *nb,
 		flow->v1_dead = true;
 		dev_put(flow->v1_xpon_dev);
 		flow->v1_xpon_dev = NULL;
+		changed = true;
+	}
+	list_for_each_entry(flow, &ppe->v1.l2_flows, v1_list) {
+		if (flow->v1_xpon_dev != dev || flow->v1_dead ||
+		    (event == NETDEV_CHANGE && airoha_ppe_v1_endpoint_valid(flow)))
+			continue;
+		airoha_ppe_v1_l2_kill(ppe, flow);
 		changed = true;
 	}
 	if (changed && READ_ONCE(ppe->v1.armed))
@@ -3198,6 +3208,12 @@ struct airoha_foe_v1_tuple {
 	};
 	u16 src_port;
 	u16 dest_port;
+	/* L2 header, matched against the L2 bridge flows. */
+	u8 smac[ETH_ALEN];
+	u8 dmac[ETH_ALEN];
+	u16 vlan;
+	u16 pppoe_sid;
+	bool pppoe;
 };
 
 static bool airoha_foe_v1_parse_tuple(struct sk_buff *skb,
@@ -3211,10 +3227,18 @@ static bool airoha_foe_v1_parse_tuple(struct sk_buff *skb,
 	if (len < ETH_HLEN)
 		return false;
 
+	memset(tuple, 0, sizeof(*tuple));
+	ether_addr_copy(tuple->dmac, data);
+	ether_addr_copy(tuple->smac, data + ETH_ALEN);
+	if (skb_vlan_tag_present(skb))
+		tuple->vlan = skb_vlan_tag_get_id(skb);
+
 	proto = get_unaligned_be16(data + proto_off);
 	if (proto == ETH_P_8021Q || proto == ETH_P_8021AD) {
 		if (len < ETH_HLEN + VLAN_HLEN)
 			return false;
+		tuple->vlan = get_unaligned_be16(data + proto_off + 2) &
+			      VLAN_VID_MASK;
 		proto_off += VLAN_HLEN;
 		proto = get_unaligned_be16(data + proto_off);
 	} else if (proto != ETH_P_IP && proto != ETH_P_IPV6 &&
@@ -3233,6 +3257,8 @@ static bool airoha_foe_v1_parse_tuple(struct sk_buff *skb,
 		if (len < proto_off + 10)
 			return false;
 		ppp_proto = get_unaligned_be16(data + proto_off + 8);
+		tuple->pppoe = true;
+		tuple->pppoe_sid = get_unaligned_be16(data + proto_off + 4);
 		if (ppp_proto == PPP_IP)
 			proto = ETH_P_IP;
 		else if (ppp_proto == PPP_IPV6)
@@ -3242,7 +3268,6 @@ static bool airoha_foe_v1_parse_tuple(struct sk_buff *skb,
 		off = proto_off + 10;
 	}
 
-	memset(tuple, 0, sizeof(*tuple));
 	if (proto == ETH_P_IP) {
 		const u8 *iph, *l4;
 		u8 ihl;
@@ -3355,14 +3380,193 @@ out:
 	spin_unlock_bh(&ppe->v1.lock);
 }
 
+/* Bind @flow into the bucket the hardware reported for this packet. */
+static void airoha_ppe_v1_bind_flow(struct airoha_ppe *ppe,
+				    struct airoha_flow_table_entry *flow,
+				    u16 hash, u16 ingress_gem)
+{
+	struct airoha_foe_entry entry, lookup_raw = {};
+	bool lookup_valid;
+	u16 bind_hash;
+
+	flow->v1_lastused = jiffies;
+	bind_hash = airoha_ppe_v1_find_bind_way(ppe, flow, hash, &lookup_raw,
+						&lookup_valid);
+	if (bind_hash == AIROHA_FOE_V1_INVALID_HASH)
+		return;
+	if (ppe->v1.foe_owner[bind_hash] == flow && flow->hash == bind_hash)
+		return;
+
+	entry = flow->data;
+	if (flow->hash != bind_hash)
+		airoha_ppe_v1_release_flow_slot(ppe, flow, true);
+
+	airoha_ppe_v1_commit_entry(ppe, &entry, bind_hash,
+				   lookup_valid ? &lookup_raw : NULL);
+	ppe->v1.foe_owner[bind_hash] = flow;
+	flow->hash = bind_hash;
+	flow->v1_ingress_gem = ingress_gem;
+}
+
+/*
+ * The PPE hashes bridged IP traffic by its L3/L4 tuple like routed traffic,
+ * so an L2 bridge flow is bound as one L3 subflow per tuple: the original
+ * tuple and MAC addresses unchanged, the output of the L2 flow.
+ */
+static unsigned long airoha_ppe_v1_flow_lastused(struct airoha_ppe *ppe,
+						 struct airoha_flow_table_entry *flow);
+
+#define AIROHA_PPE_V1_L2_MAX_SUBFLOWS	256
+#define AIROHA_PPE_V1_L2_SUBFLOW_IDLE	(30 * HZ)
+
+static struct airoha_flow_table_entry *
+airoha_ppe_v1_l2_lookup(struct airoha_ppe *ppe,
+			const struct airoha_foe_v1_tuple *tuple)
+{
+	struct airoha_flow_table_entry *flow;
+
+	list_for_each_entry(flow, &ppe->v1.l2_flows, v1_list) {
+		if (!flow->v1_dead && flow->v1_l2_vlan == tuple->vlan &&
+		    ether_addr_equal(flow->v1_l2_smac, tuple->smac) &&
+		    ether_addr_equal(flow->v1_l2_dmac, tuple->dmac))
+			return flow;
+	}
+
+	return NULL;
+}
+
+/* Copy the output (port, queue, GEM/DSA tag, VLAN) of an L2 flow template. */
+static void airoha_foe_v1_entry_apply_output(struct airoha_foe_entry *entry,
+					     struct airoha_foe_entry *tmpl)
+{
+	const u32 ib1_mask = AIROHA_FOE_V1_IB1_BIND_VLAN_LAYER |
+			     AIROHA_FOE_V1_IB1_BIND_VLAN_TAG |
+			     AIROHA_FOE_IB1_BIND_VPM;
+	const u32 ib2_mask = AIROHA_FOE_V1_IB2_PSE_PORT |
+			     AIROHA_FOE_V1_IB2_PSE_QOS | AIROHA_FOE_V1_IB2_QID;
+	const u32 data_mask = AIROHA_FOE_V1_SHAPER_ID | AIROHA_FOE_V1_CHANNEL;
+	u32 *ib2 = airoha_foe_v1_ib2(entry), *data = airoha_foe_v1_data(entry);
+
+	entry->ib1 = (entry->ib1 & ~ib1_mask) | (tmpl->ib1 & ib1_mask);
+	*ib2 = (*ib2 & ~ib2_mask) | (*airoha_foe_v1_ib2(tmpl) & ib2_mask);
+	*data = (*data & ~data_mask) | (*airoha_foe_v1_data(tmpl) & data_mask);
+	airoha_foe_v1_l2(entry)[0] = airoha_foe_v1_l2(tmpl)[0];
+}
+
+/* Free the subflows of @parent that have been idle, or all of them. */
+static void airoha_ppe_v1_l2_reap(struct airoha_ppe *ppe,
+				  struct airoha_flow_table_entry *parent,
+				  bool all)
+{
+	struct airoha_flow_table_entry *flow, *tmp;
+
+	lockdep_assert_held(&ppe->v1.lock);
+	list_for_each_entry_safe(flow, tmp, &ppe->v1.flows, v1_list) {
+		if (flow->v1_parent != parent)
+			continue;
+		if (!all &&
+		    time_before(jiffies, airoha_ppe_v1_flow_lastused(ppe, flow) +
+					 AIROHA_PPE_V1_L2_SUBFLOW_IDLE))
+			continue;
+
+		airoha_ppe_v1_release_flow_slot(ppe, flow, true);
+		list_del(&flow->v1_list);
+		parent->v1_children--;
+		airoha_ppe_v1_free_flow(flow);
+	}
+}
+
+/*
+ * The xPON endpoint of @parent went away: free its subflows, which carry its
+ * output, and bind no new ones. The flow table's DESTROY still frees it.
+ */
+static void airoha_ppe_v1_l2_kill(struct airoha_ppe *ppe,
+				  struct airoha_flow_table_entry *parent)
+{
+	airoha_ppe_v1_l2_reap(ppe, parent, true);
+	parent->v1_dead = true;
+	dev_put(parent->v1_xpon_dev);
+	parent->v1_xpon_dev = NULL;
+}
+
+static struct airoha_flow_table_entry *
+airoha_ppe_v1_l2_subflow(struct airoha_ppe *ppe,
+			 struct airoha_flow_table_entry *parent,
+			 const struct airoha_foe_v1_tuple *tuple)
+{
+	struct airoha_flow_table_entry *flow;
+	struct airoha_foe_entry *entry;
+	__be16 sport = cpu_to_be16(tuple->src_port);
+	__be16 dport = cpu_to_be16(tuple->dest_port);
+
+	if (parent->v1_children >= AIROHA_PPE_V1_L2_MAX_SUBFLOWS) {
+		airoha_ppe_v1_l2_reap(ppe, parent, false);
+		airoha_ppe_v1_cache_clean(ppe);
+		if (parent->v1_children >= AIROHA_PPE_V1_L2_MAX_SUBFLOWS) {
+			ppe->v1.l2_subflow_full++;
+			return NULL;
+		}
+	}
+
+	flow = kzalloc(sizeof(*flow), GFP_ATOMIC);
+	if (!flow)
+		return NULL;
+
+	entry = &flow->data;
+	if (tuple->addr_type == FLOW_DISSECTOR_KEY_IPV4_ADDRS) {
+		__be32 src = cpu_to_be32(tuple->v4.src);
+		__be32 dest = cpu_to_be32(tuple->v4.dest);
+
+		airoha_foe_v1_entry_prepare(entry, tuple->l4proto,
+					    PPE_PKT_TYPE_IPV4_HNAPT,
+					    FE_PSE_PORT_GDM1, tuple->smac,
+					    tuple->dmac);
+		airoha_foe_v1_entry_set_ipv4_tuple(entry, false, src, sport,
+						   dest, dport);
+		airoha_foe_v1_entry_set_ipv4_tuple(entry, true, src, sport,
+						   dest, dport);
+		flow->src_ip = tuple->v4.src;
+		flow->dest_ip = tuple->v4.dest;
+	} else {
+		airoha_foe_v1_entry_prepare(entry, tuple->l4proto,
+					    PPE_PKT_TYPE_IPV6_ROUTE_5T,
+					    FE_PSE_PORT_GDM1, tuple->smac,
+					    tuple->dmac);
+		airoha_foe_v1_entry_set_ipv6_tuple(entry, &tuple->v6.src, sport,
+						   &tuple->v6.dest, dport);
+		flow->src_ip6 = tuple->v6.src;
+		flow->dest_ip6 = tuple->v6.dest;
+	}
+	/* The PPE strips the ingress PPPoE header of an L3 entry. */
+	if (tuple->pppoe)
+		airoha_foe_v1_entry_set_pppoe(entry, tuple->pppoe_sid);
+	airoha_foe_v1_entry_apply_output(entry, &parent->data);
+
+	flow->type = FLOW_TYPE_L2_SUBFLOW;
+	flow->v1_parent = parent;
+	flow->addr_type = tuple->addr_type;
+	flow->src_port = tuple->src_port;
+	flow->dest_port = tuple->dest_port;
+	flow->hash = AIROHA_FOE_V1_INVALID_HASH;
+	flow->v1_lastused = jiffies;
+	flow->v1_ingress_gem = AIROHA_PPE_RX_GEM_NONE;
+	flow->v1_owner = parent->v1_owner;
+	list_add_tail(&flow->v1_list, &ppe->v1.flows);
+	parent->v1_children++;
+	ppe->v1.l2_subflows++;
+	dev_dbg(ppe->common.eth->dev,
+		"L2 subflow %pM -> %pM vlan %u pppoe %u/%04x children %u\n",
+		tuple->smac, tuple->dmac, tuple->vlan, tuple->pppoe,
+		tuple->pppoe_sid, parent->v1_children);
+
+	return flow;
+}
+
 static void airoha_ppe_v1_rx_check(struct airoha_ppe *ppe, struct sk_buff *skb,
 				u16 hash, u8 reason, u16 ingress_gem)
 {
 	struct airoha_foe_v1_tuple tuple;
-	struct airoha_flow_table_entry *flow;
-	struct airoha_foe_entry entry, lookup_raw = {};
-	bool lookup_valid;
-	u16 bind_hash;
+	struct airoha_flow_table_entry *flow, *parent;
 
 	if (!ppe || !READ_ONCE(ppe->v1.armed) ||
 	    hash >= ppe->common.eth->soc->ppe_dram_entries)
@@ -3408,26 +3612,27 @@ static void airoha_ppe_v1_rx_check(struct airoha_ppe *ppe, struct sk_buff *skb,
 			break;
 		}
 
-		flow->v1_lastused = jiffies;
-		bind_hash = airoha_ppe_v1_find_bind_way(ppe, flow, hash,
-						     &lookup_raw, &lookup_valid);
-		if (bind_hash == AIROHA_FOE_V1_INVALID_HASH)
-			break;
-		if (ppe->v1.foe_owner[bind_hash] == flow &&
-		    flow->hash == bind_hash)
-			break;
-
-		entry = flow->data;
-		if (flow->hash != bind_hash)
-			airoha_ppe_v1_release_flow_slot(ppe, flow, true);
-
-		airoha_ppe_v1_commit_entry(ppe, &entry, bind_hash,
-				       lookup_valid ? &lookup_raw : NULL);
-		ppe->v1.foe_owner[bind_hash] = flow;
-		flow->hash = bind_hash;
-		flow->v1_ingress_gem = ingress_gem;
-		break;
+		airoha_ppe_v1_bind_flow(ppe, flow, hash, ingress_gem);
+		goto out;
 	}
+
+	if (list_empty(&ppe->v1.l2_flows))
+		goto out;
+	ppe->v1.l2_lookups++;
+	parent = airoha_ppe_v1_l2_lookup(ppe, &tuple);
+	if (!parent)
+		ppe->v1.l2_misses++;
+	if (parent && !airoha_ppe_v1_endpoint_valid(parent)) {
+		airoha_ppe_v1_l2_kill(ppe, parent);
+		airoha_ppe_v1_cache_clean(ppe);
+		parent = NULL;
+	}
+	if (parent) {
+		flow = airoha_ppe_v1_l2_subflow(ppe, parent, &tuple);
+		if (flow)
+			airoha_ppe_v1_bind_flow(ppe, flow, hash, ingress_gem);
+	}
+out:
 	spin_unlock_bh(&ppe->v1.lock);
 }
 
@@ -3450,11 +3655,15 @@ static void airoha_ppe_v1_flush(struct airoha_ppe *ppe)
 	list_for_each_entry(flow, &ppe->v1.flows, v1_list)
 		airoha_ppe_v1_release_flow_slot(ppe, flow, true);
 	list_splice_init(&ppe->v1.flows, &free_list);
+	list_splice_init(&ppe->v1.l2_flows, &free_list);
 	spin_unlock_bh(&ppe->v1.lock);
 
 	list_for_each_entry_safe(flow, tmp, &free_list, v1_list) {
-		rhashtable_remove_fast(&ppe->common.eth->flow_table, &flow->node,
-				       airoha_flow_table_params);
+		/* Subflows are never in the cookie table. */
+		if (!flow->v1_parent)
+			rhashtable_remove_fast(&ppe->common.eth->flow_table,
+					       &flow->node,
+					       airoha_flow_table_params);
 		list_del(&flow->v1_list);
 		airoha_ppe_v1_free_flow(flow);
 	}
@@ -3488,12 +3697,18 @@ static void airoha_ppe_v1_flush_owner(struct airoha_ppe *ppe,
 		airoha_ppe_v1_release_flow_slot(ppe, flow, true);
 		list_move_tail(&flow->v1_list, &free_list);
 	}
+	list_for_each_entry_safe(flow, tmp, &ppe->v1.l2_flows, v1_list) {
+		if (flow->v1_owner == owner)
+			list_move_tail(&flow->v1_list, &free_list);
+	}
 	airoha_ppe_v1_cache_clean(ppe);
 	spin_unlock_bh(&ppe->v1.lock);
 
 	list_for_each_entry_safe(flow, tmp, &free_list, v1_list) {
-		rhashtable_remove_fast(&ppe->common.eth->flow_table, &flow->node,
-				       airoha_flow_table_params);
+		if (!flow->v1_parent)
+			rhashtable_remove_fast(&ppe->common.eth->flow_table,
+					       &flow->node,
+					       airoha_flow_table_params);
 		list_del(&flow->v1_list);
 		airoha_ppe_v1_free_flow(flow);
 	}
@@ -3838,6 +4053,124 @@ static int airoha_ppe_v1_flow_set_output(struct airoha_foe_entry *entry,
 	return 0;
 }
 
+/*
+ * L2 bridge flow (bridger): exact MAC pair, optional ingress VLAN, a redirect
+ * and an optional VLAN push/pop. Only the output template is built here; the
+ * traffic is bound later as L3 subflows by airoha_ppe_v1_rx_check().
+ */
+static int airoha_ppe_v1_l2_flow_replace(struct airoha_ppe *ppe,
+					 struct flow_cls_offload *cls,
+					 const void *owner)
+{
+	struct flow_rule *rule = flow_cls_offload_flow_rule(cls);
+	struct flow_match_eth_addrs addrs;
+	struct airoha_flow_table_entry *flow;
+	struct flow_action_entry *act;
+	struct xpon_endpoint_config endpoint = {};
+	struct airoha_foe_entry entry;
+	struct net_device *odev = NULL;
+	bool vlan_push = false, xpon;
+	u16 vlan = 0, vlan_id = 0;
+	u8 vlan_prio = 0;
+	__be16 vlan_proto = 0;
+	int i, err;
+
+	flow_rule_match_eth_addrs(rule, &addrs);
+	if (!is_broadcast_ether_addr(addrs.mask->src) ||
+	    !is_broadcast_ether_addr(addrs.mask->dst) ||
+	    !is_valid_ether_addr(addrs.key->src) ||
+	    !is_valid_ether_addr(addrs.key->dst)) {
+		NL_SET_ERR_MSG_MOD(cls->common.extack,
+				   "FoE v1 L2 flows require exact unicast MACs");
+		return -EOPNOTSUPP;
+	}
+
+	if (flow_rule_match_key(rule, FLOW_DISSECTOR_KEY_VLAN)) {
+		struct flow_match_vlan match;
+
+		flow_rule_match_vlan(rule, &match);
+		if (match.mask->vlan_id != VLAN_VID_MASK)
+			return -EOPNOTSUPP;
+		vlan = match.key->vlan_id;
+	}
+
+	/* bridger asks for immediate stats on the redirect only. */
+	flow_action_for_each(i, act, &rule->action) {
+		switch (act->id) {
+		case FLOW_ACTION_REDIRECT:
+			odev = act->dev;
+			break;
+		case FLOW_ACTION_VLAN_PUSH:
+			if (vlan_push)
+				return -EOPNOTSUPP;
+			vlan_push = true;
+			vlan_id = act->vlan.vid;
+			vlan_prio = act->vlan.prio;
+			vlan_proto = act->vlan.proto;
+			break;
+		case FLOW_ACTION_VLAN_POP:
+			break;
+		default:
+			NL_SET_ERR_MSG_MOD(cls->common.extack,
+					   "unsupported action for FoE v1 L2 flow");
+			return -EOPNOTSUPP;
+		}
+	}
+
+	airoha_foe_v1_entry_prepare(&entry, 0, PPE_PKT_TYPE_IPV4_HNAPT,
+				    FE_PSE_PORT_GDM1, addrs.key->src,
+				    addrs.key->dst);
+	if (vlan_push) {
+		err = airoha_foe_v1_entry_set_vlan(&entry, vlan_id, vlan_prio,
+						   vlan_proto);
+		if (err)
+			return err;
+	}
+	err = airoha_ppe_v1_flow_set_output(&entry, odev, vlan_push, vlan_id,
+					    vlan_prio, &xpon, &endpoint);
+	if (err)
+		return err;
+	if (vlan_push && !xpon)
+		return -EOPNOTSUPP;
+
+	flow = kzalloc(sizeof(*flow), GFP_KERNEL);
+	if (!flow)
+		return -ENOMEM;
+	flow->data = entry;
+	flow->type = FLOW_TYPE_L2;
+	flow->cookie = cls->cookie;
+	ether_addr_copy(flow->v1_l2_smac, addrs.key->src);
+	ether_addr_copy(flow->v1_l2_dmac, addrs.key->dst);
+	flow->v1_l2_vlan = vlan;
+	flow->hash = AIROHA_FOE_V1_INVALID_HASH;
+	flow->v1_lastused = jiffies;
+	flow->v1_ingress_gem = AIROHA_PPE_RX_GEM_NONE;
+	flow->v1_owner = owner;
+	INIT_LIST_HEAD(&flow->v1_list);
+	if (xpon && endpoint.enabled) {
+		flow->v1_xpon_dev = odev;
+		flow->v1_xpon_config = endpoint;
+		dev_hold(odev);
+	}
+
+	err = rhashtable_insert_fast(&ppe->common.eth->flow_table, &flow->node,
+				     airoha_flow_table_params);
+	if (err) {
+		airoha_ppe_v1_free_flow(flow);
+		return err;
+	}
+
+	dev_dbg(ppe->common.eth->dev,
+		"L2 flow %pM -> %pM vlan %u out %s push %u/%u ib2 %08x l2 %08x\n",
+		flow->v1_l2_smac, flow->v1_l2_dmac, vlan, netdev_name(odev),
+		vlan_push, vlan_id, *airoha_foe_v1_ib2(&flow->data),
+		airoha_foe_v1_l2(&flow->data)[0]);
+	spin_lock_bh(&ppe->v1.lock);
+	list_add_tail(&flow->v1_list, &ppe->v1.l2_flows);
+	spin_unlock_bh(&ppe->v1.lock);
+	return 0;
+}
+
 static int airoha_ppe_v1_flow_offload_replace(struct net_device *dev,
 				       struct flow_cls_offload *cls,
 				       const void *owner)
@@ -3866,6 +4199,9 @@ static int airoha_ppe_v1_flow_offload_replace(struct net_device *dev,
 	if (rhashtable_lookup(&ppe->common.eth->flow_table, &cls->cookie,
 			      airoha_flow_table_params))
 		return -EEXIST;
+	if (flow_rule_match_key(rule, FLOW_DISSECTOR_KEY_ETH_ADDRS) &&
+	    !flow_rule_match_key(rule, FLOW_DISSECTOR_KEY_PORTS))
+		return airoha_ppe_v1_l2_flow_replace(ppe, cls, owner);
 	if (!flow_rule_match_key(rule, FLOW_DISSECTOR_KEY_BASIC) ||
 	    !flow_rule_match_key(rule, FLOW_DISSECTOR_KEY_PORTS)) {
 		NL_SET_ERR_MSG_MOD(cls->common.extack,
@@ -4088,6 +4424,8 @@ static int airoha_ppe_v1_flow_offload_destroy(struct net_device *dev,
 		return -ENOENT;
 
 	spin_lock_bh(&ppe->v1.lock);
+	if (flow->type == FLOW_TYPE_L2)
+		airoha_ppe_v1_l2_reap(ppe, flow, true);
 	airoha_ppe_v1_release_flow_slot(ppe, flow, true);
 	airoha_ppe_v1_cache_clean(ppe);
 	list_del_init(&flow->v1_list);
@@ -4114,6 +4452,8 @@ static unsigned long airoha_ppe_v1_flow_lastused(struct airoha_ppe *ppe,
 
 	lockdep_assert_held(&ppe->v1.lock);
 	if (!flow->v1_dead && !airoha_ppe_v1_endpoint_valid(flow)) {
+		if (flow->type == FLOW_TYPE_L2)
+			airoha_ppe_v1_l2_reap(ppe, flow, true);
 		airoha_ppe_v1_release_flow_slot(ppe, flow, true);
 		airoha_ppe_v1_cache_clean(ppe);
 		flow->v1_dead = true;
@@ -4160,6 +4500,20 @@ static int airoha_ppe_v1_flow_offload_stats(struct net_device *dev,
 
 	spin_lock_bh(&ppe->v1.lock);
 	lastused = airoha_ppe_v1_flow_lastused(ppe, flow);
+	if (flow->type == FLOW_TYPE_L2) {
+		struct airoha_flow_table_entry *sub;
+
+		/* An L2 flow is as recent as its most recent subflow. */
+		list_for_each_entry(sub, &ppe->v1.flows, v1_list) {
+			unsigned long t;
+
+			if (sub->v1_parent != flow)
+				continue;
+			t = airoha_ppe_v1_flow_lastused(ppe, sub);
+			if (time_after(t, lastused))
+				lastused = t;
+		}
+	}
 	spin_unlock_bh(&ppe->v1.lock);
 
 	/*
@@ -4306,6 +4660,7 @@ static int airoha_ppe_v1_init(struct airoha_eth *eth)
 
 	spin_lock_init(&ppe->v1.lock);
 	INIT_LIST_HEAD(&ppe->v1.flows);
+	INIT_LIST_HEAD(&ppe->v1.l2_flows);
 	INIT_LIST_HEAD(&ppe->block_cb_list);
 
 	airoha_ppe_hw_init(ppe);

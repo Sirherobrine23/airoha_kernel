@@ -827,6 +827,16 @@ struct airoha_flow_table_entry {
 			struct in6_addr dest_ip6;
 		};
 	};
+	/*
+	 * v1 L2 bridge flow (FLOW_TYPE_L2): MAC/VLAN key, with the output in
+	 * @data. Bridged IP traffic is bound as L3 subflows that point back
+	 * to it through @v1_parent.
+	 */
+	struct airoha_flow_table_entry *v1_parent;
+	u8 v1_l2_smac[ETH_ALEN];
+	u8 v1_l2_dmac[ETH_ALEN];
+	u16 v1_l2_vlan;
+	u16 v1_children;
 
 	/* Must be last --ends in a flexible-array member. */
 	struct airoha_foe_entry data;
@@ -1197,6 +1207,12 @@ struct airoha_ppe_v1 {
 	/* Protects flow ownership in the hardware-created V1 hash buckets. */
 	spinlock_t lock;
 	struct list_head flows;
+	/* L2 bridge flows; their subflows live in @flows. */
+	struct list_head l2_flows;
+	u32 l2_subflows;
+	u32 l2_subflow_full;
+	u32 l2_lookups;
+	u32 l2_misses;
 	struct notifier_block netdev_nb;
 	struct airoha_flow_table_entry **foe_owner;
 	bool armed;
