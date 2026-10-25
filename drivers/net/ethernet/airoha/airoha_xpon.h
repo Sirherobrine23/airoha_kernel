@@ -365,6 +365,7 @@ struct airoha_xpon_match_data {
 #define GPON_RSP_TIME_ACT_EN751221	0x058b
 #define GPON_IDLE_GEM_THLD_DEFAULT	0x00A0
 #define GPON_IDLE_GEM_THLD_EN7523	0x001A
+#define GPON_IDLE_GEM_THLD_AN7552	0x005A
 
 /* TO1 timer: 10 seconds in O3/O4 without Ranging_Time → return to O2 */
 #define GPON_TO1_MS			10000

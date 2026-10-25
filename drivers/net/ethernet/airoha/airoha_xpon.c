@@ -5608,12 +5608,28 @@ static const struct airoha_xpon_match_data en7523_xpon_data = {
 			  XPON_MODE_EPON,
 };
 
+/* The AN7552 1G MAC retains the EN7523 activation and table interface.
+ * GPON_IDLE_GEM_THLD is 0x5a in the AN7552 SDK, rather than 0x1a.
+ * Symmetric GPON uses different PHY timing and is not advertised here.
+ */
+static const struct airoha_xpon_match_data an7552_xpon_data = {
+	.version = airoha_an7552,
+	.wan_mode_mask = EN7523_SCU_WAN_MODE_MASK,
+	.gpon_fine_delay = DBG_DLY_FINE_INT_DEFAULT,
+	.gpon_rsp_time_activation = GPON_RSP_TIME_ACT_EN7523,
+	.gpon_idle_gem_threshold = GPON_IDLE_GEM_THLD_AN7552,
+	.en7523_gpon_defaults = true,
+	.gpon_reset_on_start = true,
+	.xpon_mode_comp = XPON_MODE_GPON | XPON_MODE_EPON,
+};
+
 static const struct of_device_id airoha_xpon_of_match[] = {
 	{ .compatible = "econet,en751221-xpon", .data = &en751221_xpon_data },
 	{ .compatible = "airoha,en751627-xpon", .data = &en7528_xpon_data },
 	{ .compatible = "airoha,en7528-xpon", .data = &en7528_xpon_data },
 	{ .compatible = "airoha,en7580-xpon", .data = &en7580_xpon_data },
 	{ .compatible = "airoha,en7523-xpon", .data = &en7523_xpon_data },
+	{ .compatible = "airoha,an7552-xpon", .data = &an7552_xpon_data },
 	{}
 };
 MODULE_DEVICE_TABLE(of, airoha_xpon_of_match);

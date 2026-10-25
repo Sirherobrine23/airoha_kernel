@@ -2583,7 +2583,7 @@ static int airoha_qdma_rx_process(struct airoha_queue *q, int budget)
 
 		desc = airoha_qdma_rx_frame_desc(q, desc, &frame_desc);
 		msg0 = le32_to_cpu(READ_ONCE(desc->msg0));
-		if (airoha_is(eth, airoha_en7523) &&
+		if (airoha_is(eth, airoha_en7523, airoha_an7552) &&
 		    q - &q->qdma->q_rx[0] == 15) {
 			u32 msg2 = le32_to_cpu(READ_ONCE(desc->msg2));
 			u32 msg3 = le32_to_cpu(READ_ONCE(desc->msg3));
@@ -2599,7 +2599,7 @@ static int airoha_qdma_rx_process(struct airoha_queue *q, int budget)
 					     channel, gem_port_id,
 					     !!(msg0 & EN7523_QDMA_ETH_RXMSG_NO_MIC_MASK));
 		}
-		xpon_oam = airoha_is(eth, airoha_en7523) &&
+		xpon_oam = airoha_is(eth, airoha_en7523, airoha_an7552) &&
 			   (msg0 & EN7523_QDMA_ETH_RXMSG_OAM_MASK);
 
 		/* GPON OAM descriptors are not required to carry an Ethernet
@@ -2640,7 +2640,7 @@ static int airoha_qdma_rx_process(struct airoha_queue *q, int budget)
 		if (FIELD_GET(QDMA_DESC_MORE_MASK, desc_ctrl))
 			continue;
 
-		if (airoha_is(eth, airoha_en7523)) {
+		if (airoha_is(eth, airoha_en7523, airoha_an7552)) {
 			struct airoha_xpon_oam_handler *handler;
 
 			if (xpon_oam) {
@@ -2655,8 +2655,7 @@ static int airoha_qdma_rx_process(struct airoha_queue *q, int budget)
 				channel = FIELD_GET(EN7523_QDMA_ETH_RXMSG_CHAN_MASK,
 						    msg0);
 				msg1 = le32_to_cpu(READ_ONCE(desc->msg1));
-				sport = FIELD_GET(EN7523_QDMA_ETH_RXMSG_SPORT_MASK,
-						  msg1);
+				sport = airoha_qdma_get_rx_sport(eth, desc);
 				if (!(msg0 & EN7523_QDMA_ETH_RXMSG_NO_MIC_MASK))
 					flags |= AIROHA_XPON_OAM_RX_F_MIC_PRESENT;
 				if (!(msg0 & EN7523_QDMA_ETH_RXMSG_CRC_ERR_MASK))
@@ -2705,7 +2704,7 @@ static int airoha_qdma_rx_process(struct airoha_queue *q, int budget)
 			}
 		}
 
-		if (airoha_is(eth, airoha_en7523) &&
+		if (airoha_is(eth, airoha_en7523, airoha_an7552) &&
 		    (READ_ONCE(dev->flags) & AIROHA_PRIV_F_XPON_MANAGED)) {
 			bool consumed;
 			u8 channel = FIELD_GET(EN7523_QDMA_ETH_RXMSG_CHAN_MASK, msg0);
@@ -5553,11 +5552,11 @@ static int airoha_validate_xpon_link_gdm2(struct net_device *netdev,
 		return -ENODEV;
 
 	/*
-	 * Link ownership is shared by EN7523, EN7528 and EN7580. Their
+	 * Link ownership is shared by EN7523, AN7552, EN7528 and EN7580. Their
 	 * protocol-specific FE and descriptor operations remain separate.
 	 */
 	if (common->family == AIROHA_ETH_FAMILY_AIROHA) {
-		if (!airoha_is(common->eth, airoha_en7523))
+		if (!airoha_is(common->eth, airoha_en7523, airoha_an7552))
 			return -EOPNOTSUPP;
 	} else if (common->family == AIROHA_ETH_FAMILY_ECONET) {
 		if (!airoha_is(common->eth, econet_en7528, econet_en7580))
@@ -5747,8 +5746,12 @@ static int airoha_xpon_set_tcont_channel(struct net_device *netdev,
 	if (channel >= 32)
 		return -EINVAL;
 
+	/* The AN7552 SDK returns early from gpon_qos_init()/deinit();
+	 * its T-CONT channels do not use the EN7523 egress trTCM setup.
+	 */
 	setup_dba = dev->xpon_mode == AIROHA_XPON_MODE_GPON &&
-		    !dev->eth->soc->legacy_qdma;
+		    !dev->eth->soc->legacy_qdma &&
+		    !airoha_is(dev->eth, airoha_an7552);
 
 	/*
 	 * gpon_qos_init() in the EN7523 SDK configures both egress trTCM
@@ -8113,7 +8116,7 @@ static netdev_tx_t __airoha_dev_xmit(struct sk_buff *skb,
 	qid = airoha_qdma_get_txq(qdma, xpon ? xpon->queue :
 				    skb_get_queue_mapping(skb));
 	if (xpon) {
-		if (!airoha_is(qdma->eth, airoha_en7523))
+		if (!airoha_is(qdma->eth, airoha_en7523, airoha_an7552))
 			goto error;
 
 		msg0 = FIELD_PREP(QDMA_ETH_TXMSG_QUEUE_MASK, xpon->queue) |
@@ -10650,7 +10653,7 @@ const struct airoha_eth_soc_data airoha_en7523_soc_data = {
 
 static const struct airoha_eth_soc_data an7552_soc_data = {
 	.version = airoha_an7552,
-	// .xpon_ops = &airoha_xpon_ops,
+	.xpon_ops = &airoha_xpon_ops,
 	// .xsi_rsts_names = en7523_xsi_rsts_names,
 	// .num_xsi_rsts = ARRAY_SIZE(en7523_xsi_rsts_names),
 	.rx_ring = 16,
