@@ -6,7 +6,8 @@
  * 0x1faf0000.  The EN7523 generation also integrates the PMA/SerDes
  * controls used by the EN7571 optical front end, while EN751221 uses the
  * older SoC-specific PHY bring-up sequence. EN7580 has a separate 10G
- * PCS/PMA backend for XGS-PON.
+ * PCS/PMA backend for XGS-PON. AN7552 uses its own optical SerDes and
+ * LCPLL/CDR settings for GPON and EPON.
  */
 
 #include <linux/bitfield.h>
@@ -31,6 +32,24 @@
 
 #define ECONET_XPON_PHY_MIN_SIZE		0x0600
 #define EN7523_XPON_PHY_MIN_SIZE		0x480c
+#define AN7552_XPON_PHY_MIN_SIZE		0x480c
+#define AN7552_SCU_SSTR			0x09c
+#define AN7552_SCU_PON_SEL		GENMASK(10, 9)
+#define AN7552_CHIP_SCU_XTAL		0x258
+#define AN7552_CHIP_SCU_XTAL_ALT		BIT(19)
+#define AN7552_LCPLL_PW_CTRL0		0x4100
+#define AN7552_SERDES_CTRL0		0x4200
+#define AN7552_SERDES_CTRL1		0x4204
+#define AN7552_SERDES_CTRL16		0x4248
+#define AN7552_SERDES_CTRL17		0x424c
+#define AN7552_TX_CTRL2			0x4344
+#define AN7552_LCPLL_TDC_PW		0x4110
+#define AN7552_LCPLL_TDC_STATUS		0x4150
+#define AN7552_LCPLL_NCPO		0x415c
+#define AN7552_PLL_RESET_GATE		0x417c
+#define AN7552_PLL_RESET_GATE_EN		BIT(16)
+#define AN7552_PON_SYS_CTRL1		0x4304
+#define AN7552_PON_TX_RESET_N		BIT(8)
 
 #define ECONET_SCU_PHY_CTRL0		0x860
 #define ECONET_SCU_PHY_CTRL0_DIS	BIT(10)
@@ -202,7 +221,8 @@
 #define EN7580_PHY_RX_FREQ_STATUS		0x3820
 #define EN7580_PHY_MEM_CLK			0x38a0
 #define EN7580_PHY_DELAY			0xffff
-#define EN7580_PHY_EYE_VALID		(BIT(16) | BIT(24))
+#define AN7552_PHY_DELAY			0xffff
+#define EN7580_PHY_EYE_VALID			(BIT(16) | BIT(24))
 
 struct en7580_phy_step {
 	u16 reg;
@@ -210,7 +230,547 @@ struct en7580_phy_step {
 	u32 value;
 };
 
-#include "phy-airoha-en7580-seq.h"
+struct an7552_phy_step {
+	u16 reg;
+	u32 keep;
+	u32 gpon;
+	u32 epon;
+};
+
+static const struct en7580_phy_step en7580_init_seq[] = {
+	/* setting_mode_XPON_TXPLL(9) */
+	{ 0x3230, 0xffffffff, 0x07f67620 },
+	{ 0x3248, 0xffffffff, 0x1fd9d880 },
+	{ 0x324c, 0xffffffff, 0x1fd9d880 },
+	{ 0x3234, 0x00000100, 0x00000100 },
+	/* setting_mode_XPON_TX(TX_Sync_XGSPON) */
+	{ 0x3150, 0x00001c00, 0x00001400 },
+	{ 0x3874, 0x00000003, 0x00000002 },
+	{ 0x3150, 0x00000030, 0x00000020 },
+	{ 0x3754, 0x00010000, 0x00000000 },
+	{ 0x3754, 0x00000100, 0x00000000 },
+	/* setting_mode_XPON_RX(9) */
+	{ 0x3118, 0x03000000, 0x00000000 },
+	{ 0x3714, 0x00000003, 0x00000002 },
+	{ 0x3754, 0x00000007, 0x00000000 },
+	/* setting_XPON_DIG() */
+	{ 0x3234, 0x00000003, 0x00000002 },
+	{ 0x322c, 0x00000f00, 0x00000500 },
+	{ 0x3794, 0xffff0000, 0x01130000 },
+	{ 0x3794, 0x0000ffff, 0x000000fa },
+	{ 0x3798, 0xffff0000, 0x009b0000 },
+	{ 0x3798, 0x0000ffff, 0x00000210 },
+	{ 0x3790, 0xffff0000, 0x00040000 },
+	{ 0x3790, 0x0000ffff, 0x00000026 },
+	{ 0x37b8, 0x00ff0000, 0x00020000 },
+	{ 0x3228, 0x00000700, 0x00000300 },
+	{ 0x3224, 0x01000000, 0x00000000 },
+	{ 0x3204, 0xff000000, 0x01000000 },
+	{ 0x3204, 0x00ff0000, 0x00010000 },
+	{ 0x3204, 0x0000ff00, 0x00000a00 },
+	{ 0x3204, 0x00000001, 0x00000001 },
+	{ 0x3344, 0x0000ffff, 0x00000002 },
+	{ 0x3344, 0xffff0000, 0x03e80000 },
+	{ 0x3350, 0x0000ffff, 0x00000002 },
+	{ 0x3350, 0xffff0000, 0x03e80000 },
+	{ 0x3348, 0x0000ffff, 0x00000002 },
+	{ 0x3348, 0xffff0000, 0x03e80000 },
+	{ 0x334c, 0x0000ffff, 0x00000002 },
+	{ 0x334c, 0xffff0000, 0x03e80000 },
+	{ 0x3340, 0x00ffff00, 0x00000100 },
+	{ 0x3340, 0x00000007, 0x00000001 },
+	{ 0x3358, 0x0000ffff, 0x00000002 },
+	{ 0x3378, 0x00000003, 0x00000003 },
+	{ 0x3378, 0x00001f00, 0x00000500 },
+	{ 0x3300, 0x07ff0000, 0x02400000 },
+	{ 0x3300, 0x000007ff, 0x000001c0 },
+	{ 0x3338, 0x00000001, 0x00000001 },
+	{ 0x3338, 0x00000100, 0x00000000 },
+	{ 0x330c, 0x00010000, 0x00010000 },
+	{ 0x3320, 0x0000ff00, 0x00000400 },
+	{ 0x3320, 0x000000ff, 0x00000004 },
+	{ 0x3324, 0x00ff0000, 0x00040000 },
+	{ 0x3324, 0x000007ff, 0x00000004 },
+	{ 0x3330, 0xff000000, 0xff000000 },
+	{ 0x3330, 0x000003ff, 0x000000d0 },
+	{ 0x3370, 0x000000ff, 0x00000080 },
+	{ 0x3370, 0x0007ff00, 0x00000000 },
+	{ 0x3370, 0xff000000, 0x00000000 },
+	{ 0x3374, 0x00000001, 0x00000001 },
+	{ 0x3490, 0x00000100, 0x00000000 },
+	{ 0x3490, 0x00000001, 0x00000001 },
+	{ 0x3440, 0x03000000, 0x01000000 },
+	{ 0x3440, 0x0000ff00, 0x00002e00 },
+	{ 0x3440, 0x00000001, 0x00000001 },
+	{ 0x3440, 0x00030000, 0x00010000 },
+	{ 0x3444, 0x00000001, 0x00000000 },
+	{ 0x3444, 0x00000f00, 0x00000000 },
+	{ 0x3444, 0x00030000, 0x00010000 },
+	{ 0x3354, 0x0000ffff, 0x00000004 },
+	{ 0x3354, 0xffff0000, 0x00c80000 },
+	{ 0x3400, 0x000000ff, 0x00000000 },
+	{ 0x3400, 0x00000100, 0x00000000 },
+	{ 0x3410, 0x00000f00, 0x00000a00 },
+	{ 0x3410, 0x00000001, 0x00000001 },
+	{ 0x3410, 0x007f0000, 0x00100000 },
+	{ 0x3410, 0x3f800000, 0x38000000 },
+	{ 0x3304, 0x0000007f, 0x00000040 },
+	{ 0x3304, 0x00007f00, 0x00003f00 },
+	{ 0x3304, 0x00010000, 0x00010000 },
+	{ 0x3308, 0x000fffff, 0x00000018 },
+	{ 0x37dc, 0x0000ff00, 0x00000200 },
+	{ 0x37dc, 0x00000002, 0x00000002 },
+	{ 0x37dc, 0x00000001, 0x00000001 },
+	{ 0x3430, 0x00000700, 0x00000100 },
+	{ 0x3430, 0x00030000, 0x00000000 },
+	{ 0x3460, 0x0007ff00, 0x0000a500 },
+	{ 0x3460, 0x00000007, 0x00000003 },
+	{ 0x3460, 0x03000000, 0x00000000 },
+	{ 0x3464, 0x07000000, 0x04000000 },
+	{ 0x3464, 0x00070000, 0x00010000 },
+	{ 0x3474, 0x000007ff, 0x000001ff },
+	{ 0x3474, 0x07ff0000, 0x04000000 },
+	{ 0x3468, 0x00000700, 0x00000400 },
+	{ 0x3468, 0x00000007, 0x00000003 },
+	{ 0x365c, 0x01000000, 0x01000000 },
+	{ 0x3490, 0x00000001, 0x00000001 },
+	{ 0x3490, 0x00000100, 0x00000000 },
+	{ 0x3410, 0x00000001, 0x00000000 },
+	{ 0x3410, 0x00000f00, 0x00000a00 },
+	{ 0x3410, 0x007f0000, 0x00100000 },
+	{ 0x3410, 0x3f800000, 0x38000000 },
+	{ 0x3400, 0x00000100, 0x00000000 },
+	/* setting_XPON_ANA(9) */
+	{ 0x3100, 0x01c00000, 0x01000000 },
+	{ 0x3100, 0x80000000, 0x80000000 },
+	{ 0x3100, 0x7e000000, 0x02000000 },
+	{ 0x3144, 0x00400000, 0x00400000 },
+	{ 0x3144, 0x7f800000, 0x10800000 },
+	{ 0x3144, 0x00200000, 0x00000000 },
+	{ 0x3144, 0x80000000, 0x00000000 },
+	{ 0x3144, 0x00100000, 0x00100000 },
+	{ 0x3144, 0x00080000, 0x00000000 },
+	{ 0x3144, 0x00040000, 0x00040000 },
+	{ 0x3144, 0x00020000, 0x00020000 },
+	{ 0x3144, 0x00010000, 0x00000000 },
+	{ 0x3134, 0xe0000000, 0x80000000 },
+	{ 0x3134, 0x1c000000, 0x10000000 },
+	{ 0x3134, 0x03c00000, 0x02000000 },
+	{ 0x3134, 0x00200000, 0x00200000 },
+	{ 0x3134, 0x00060000, 0x00060000 },
+	{ 0x3134, 0x00018000, 0x00018000 },
+	{ 0x3134, 0x00000010, 0x00000010 },
+	{ 0x3134, 0x00001fe0, 0x00001fe0 },
+	{ 0x3138, 0xc0000000, 0xc0000000 },
+	{ 0x3138, 0x00010000, 0x00010000 },
+	{ 0x3138, 0x00001fe0, 0x00001000 },
+	{ 0x313c, 0x7f800000, 0x00000000 },
+	{ 0x313c, 0x007f8000, 0x007f8000 },
+	{ 0x3130, 0xf0000000, 0x60000000 },
+	{ 0x3130, 0x0f000000, 0x03000000 },
+	{ 0x3130, 0x001c0000, 0x00000000 },
+	{ 0x3130, 0x00e00000, 0x00200000 },
+	{ 0x3130, 0x00038000, 0x00028000 },
+	{ 0x3130, 0x00000400, 0x00000400 },
+	{ 0x3130, 0x00000200, 0x00000200 },
+	{ 0x3130, 0x00000100, 0x00000100 },
+	{ 0x3130, 0x00000020, 0x00000020 },
+	{ 0x3130, 0x00000010, 0x00000010 },
+	{ 0x3130, 0x0000000e, 0x00000008 },
+	{ 0x37a8, 0x0000ffff, 0x00000c80 },
+	{ 0x37ac, 0x0000ffff, 0x00000d48 },
+	{ 0x3104, 0x00000800, 0x00000800 },
+	{ 0x3104, 0x0000f000, 0x00007000 },
+	{ 0x3104, 0x3f000000, 0x1f000000 },
+	{ 0x3148, 0x80000000, 0x80000000 },
+	{ 0x3148, 0x60000000, 0x40000000 },
+	{ 0x3148, 0x00000020, 0x00000020 },
+	{ 0x314c, 0x80000000, 0x00000000 },
+	{ 0x314c, 0x40000000, 0x00000000 },
+	{ 0x314c, 0x00020000, 0x00000000 },
+	{ 0x3150, 0x00000300, 0x00000200 },
+	{ 0x3150, 0x000000c0, 0x00000080 },
+	{ 0x314c, 0x00fc0000, 0x00000000 },
+	{ 0x314c, 0x02000000, 0x00000000 },
+	{ 0x314c, 0x01000000, 0x00000000 },
+	{ 0x3148, 0x00000400, 0x00000400 },
+	{ 0x314c, 0x20000000, 0x00000000 },
+	{ 0x314c, 0x10000000, 0x00000000 },
+	{ 0x314c, 0x08000000, 0x08000000 },
+	{ 0x314c, 0x04000000, 0x04000000 },
+	{ 0x3148, 0x0f000000, 0x00000000 },
+	{ 0x3148, 0x00f80000, 0x00000000 },
+	{ 0x3148, 0x0007c000, 0x00030000 },
+	{ 0x3148, 0x00003800, 0x00002000 },
+	{ 0x312c, 0x00200000, 0x00200000 },
+	{ 0x312c, 0x00400000, 0x00400000 },
+	{ 0x312c, 0x00800000, 0x00800000 },
+	{ 0x312c, 0x000e0000, 0x00080000 },
+	{ 0x312c, 0x00100000, 0x00100000 },
+	{ 0x3118, 0x00ffffe0, 0x00100000 },
+	{ 0x3114, 0x3ffff800, 0x3c000000 },
+	{ 0x3124, 0x08000000, 0x00000000 },
+	{ 0x310c, 0x00010000, 0x00000000 },
+	/* seq_XPON_DIG_reset() */
+	{ 0x37b0, 0x0000001f, 0x00000000 },
+	{ 0x37a4, 0x00000002, 0x00000000 },
+	{ 0x37b0, 0x00000002, 0x00000002 },
+	{ 0x37b0, 0x00000010, 0x00000010 },
+	{ 0x37b0, 0x00000008, 0x00000008 },
+	{ 0x37b0, 0x00000004, 0x00000004 },
+	{ 0x37b0, 0x00000001, 0x00000001 },
+	{ 0x37a4, 0x00000002, 0x00000002 },
+	/* seq_JCPLL_on() */
+	{ 0x3204, 0x00000001, 0x00000001 },
+	{ EN7580_PHY_DELAY, 0, 5000 },
+	/* seq_XPON_DIG_fm_on(fm_Sync_XGSPON) */
+	{ 0x3730, 0xffff0000, 0x01000000 },
+	{ 0x3730, 0x0000ffff, 0x00000100 },
+	{ 0x3734, 0xffff0000, 0x00a50000 },
+	{ 0x3734, 0x0000ffff, 0x000000a4 },
+	{ 0x373c, 0x0000f000, 0x00008000 },
+	{ 0x373c, 0x00000f00, 0x00000300 },
+	{ 0x373c, 0x00000007, 0x00000007 },
+	{ 0x3738, 0xffff0000, 0x00a50000 },
+	{ 0x3738, 0x0000ffff, 0x000000a4 },
+	{ 0x3420, 0xffff0000, 0x02000000 },
+	{ 0x3420, 0x0000ffff, 0x00000200 },
+	{ 0x3424, 0xffff0000, 0x02930000 },
+	{ 0x3424, 0x0000ffff, 0x00000292 },
+	{ 0x3428, 0xffff0000, 0x02930000 },
+	{ 0x3428, 0x0000ffff, 0x00000292 },
+	{ 0x342c, 0x0000f000, 0x00008000 },
+	{ 0x342c, 0x00000f00, 0x00000100 },
+	{ 0x342c, 0x00000007, 0x00000007 },
+	/* seq_XPON_TXPLL_on() */
+	{ 0x3200, 0x01000000, 0x01000000 },
+	{ 0x3200, 0x00000001, 0x00000001 },
+	{ EN7580_PHY_DELAY, 0, 5000 },
+	/* seq_XPON_TX_on() */
+	{ 0x3550, 0x00000001, 0x00000001 },
+	{ 0x3750, 0x00000100, 0x00000100 },
+	{ 0x3750, 0x00000001, 0x00000001 },
+	{ 0x3550, 0x00000100, 0x00000100 },
+	{ 0x3550, 0x00000001, 0x00000001 },
+	{ 0x3554, 0x03000000, 0x02000000 },
+	{ 0x3558, 0x03000000, 0x02000000 },
+	{ 0x3554, 0x00010000, 0x00010000 },
+	{ 0x3558, 0x00010000, 0x00010000 },
+};
+
+static const struct en7580_phy_step en7580_rx_cal_seq[] = {
+	/* seq_XPON_RX_preset() */
+	{ 0x3368, 0x00000100, 0x00000000 },
+	{ 0x3360, 0x00000100, 0x00000000 },
+	{ 0x3368, 0x01000000, 0x00000000 },
+	{ 0x3360, 0x01000000, 0x00000000 },
+	{ 0x3630, 0x00010000, 0x00000000 },
+	{ 0x3630, 0x01000000, 0x00000000 },
+	{ 0x363c, 0x00010000, 0x00000000 },
+	{ 0x363c, 0x01000000, 0x00000000 },
+	{ 0x3630, 0x00000003, 0x00000001 },
+	{ 0x3630, 0x00000700, 0x00000300 },
+	{ 0x363c, 0x00000001, 0x00000000 },
+	{ 0x363c, 0x00000100, 0x00000000 },
+	{ 0x366c, 0x00000100, 0x00000100 },
+	{ 0x3678, 0x00000100, 0x00000000 },
+	{ 0x366c, 0x00010000, 0x00000000 },
+	{ 0x3678, 0x00010000, 0x00000000 },
+	{ 0x3494, 0x00000001, 0x00000000 },
+	{ 0x3674, 0x00000001, 0x00000000 },
+	{ 0x3668, 0x00000001, 0x00000000 },
+	{ 0x3360, 0x00010000, 0x00000000 },
+	{ 0x3368, 0x00010000, 0x00000000 },
+	/* aux_XPON_TDC_off() */
+	{ 0x3234, 0x00000100, 0x00000100 },
+	{ 0x3210, 0x00000001, 0x00000000 },
+	{ EN7580_PHY_DELAY, 0, 1000 },
+	/* seq_XPON_RX_on() */
+	{ 0x368c, 0x00000100, 0x00000100 },
+	{ 0x368c, 0x00000001, 0x00000001 },
+	{ 0x368c, 0x01000000, 0x01000000 },
+	{ 0x368c, 0x00010000, 0x00010000 },
+	{ 0x3690, 0x00000001, 0x00000001 },
+	{ 0x368c, 0x00000100, 0x00000000 },
+	{ 0x368c, 0x00000001, 0x00000000 },
+	{ 0x368c, 0x01000000, 0x00000000 },
+	{ 0x368c, 0x00010000, 0x00000000 },
+	{ 0x3690, 0x00000001, 0x00000000 },
+	{ 0x368c, 0x00000100, 0x00000100 },
+	{ 0x368c, 0x00000001, 0x00000001 },
+	{ 0x368c, 0x01000000, 0x01000000 },
+	{ 0x368c, 0x00010000, 0x00010000 },
+	{ 0x3690, 0x00000001, 0x00000001 },
+	{ EN7580_PHY_DELAY, 0, 500 },
+	/* seq_XPON_RX_L2R() */
+	{ 0x3630, 0x00010000, 0x00000000 },
+	{ 0x3630, 0x01000000, 0x00000000 },
+	{ 0x363c, 0x00010000, 0x00000000 },
+	{ 0x363c, 0x01000000, 0x00000000 },
+	{ EN7580_PHY_DELAY, 0, 100 },
+	/* seq_XPON_RX_pical() */
+	{ 0x3644, 0x01000000, 0x01000000 },
+	{ 0x3370, 0x000000ff, 0x00000008 },
+	{ 0x3430, 0x00000700, 0x00000400 },
+	{ 0x3494, 0x00010000, 0x00000000 },
+	{ 0x3664, 0x00000100, 0x00000000 },
+	{ 0x3670, 0x00000100, 0x00000000 },
+	{ 0x3664, 0x00000001, 0x00000000 },
+	{ 0x3670, 0x00000001, 0x00000000 },
+	{ 0x3654, 0x00000100, 0x00000000 },
+	{ 0x3660, 0x01000000, 0x00000000 },
+	{ 0x3364, 0x00000100, 0x00000000 },
+	{ 0x335c, 0x00000100, 0x00000000 },
+	{ 0x3494, 0x00010000, 0x00010000 },
+	{ 0x3664, 0x00000100, 0x00000100 },
+	{ 0x3664, 0x00000001, 0x00000001 },
+	{ 0x3654, 0x00000100, 0x00000100 },
+	{ EN7580_PHY_DELAY, 0, 200 },
+	{ 0x3654, 0x00000100, 0x00000000 },
+	{ 0x3658, 0x00000001, 0x00000000 },
+	{ 0x3648, 0x00000001, 0x00000001 },
+	/* seq_XPON_RX_pdos() */
+	{ 0x3368, 0x00000100, 0x00000000 },
+	{ 0x3360, 0x00000100, 0x00000000 },
+	{ 0x3640, 0x00000100, 0x00000100 },
+	{ 0x3640, 0x00010000, 0x00010000 },
+	{ 0x3640, 0x01000000, 0x01000000 },
+	{ 0x3644, 0x00000001, 0x00000001 },
+	{ 0x3644, 0x00000100, 0x00000100 },
+	{ 0x3668, 0x00000001, 0x00000000 },
+	{ 0x3674, 0x00000001, 0x00000000 },
+	{ 0x3334, 0x01000000, 0x00000000 },
+	{ 0x3334, 0x00000100, 0x00000000 },
+	{ 0x3668, 0x01000000, 0x00000000 },
+	{ 0x3674, 0x01000000, 0x00000000 },
+	{ 0x3334, 0x00010000, 0x00000000 },
+	{ 0x3334, 0x00000001, 0x00000000 },
+	{ 0x3490, 0x00070000, 0x00020000 },
+	{ 0x3664, 0x00010000, 0x00000000 },
+	{ 0x3670, 0x00010000, 0x00000000 },
+	{ 0x3498, 0x00000001, 0x00000000 },
+	{ 0x3364, 0x00010000, 0x00000000 },
+	{ 0x335c, 0x00010000, 0x00000000 },
+	{ 0x3364, 0x00000001, 0x00000001 },
+	{ 0x335c, 0x00000001, 0x00000000 },
+	{ 0x3664, 0x00010000, 0x00010000 },
+	{ 0x3498, 0x00000001, 0x00000001 },
+	{ 0x3364, 0x00010000, 0x00010000 },
+	{ EN7580_PHY_DELAY, 0, 200 },
+	{ 0x3364, 0x00010000, 0x00000000 },
+	{ 0x3364, 0x00000001, 0x00000000 },
+	{ 0x3334, 0x01000000, 0x00000000 },
+	{ 0x3334, 0x00000100, 0x00000100 },
+	{ 0x3668, 0x01000000, 0x00000000 },
+	{ 0x3674, 0x01000000, 0x01000000 },
+	{ 0x3334, 0x00010000, 0x00000000 },
+	{ 0x3334, 0x00000001, 0x00000001 },
+	{ EN7580_PHY_DELAY, 0, 200 },
+	/* seq_XPON_RX_feos() */
+	{ 0x3368, 0x00000100, 0x00000000 },
+	{ 0x3360, 0x00000100, 0x00000000 },
+	{ 0x3644, 0x00010000, 0x00010000 },
+	{ 0x3668, 0x00000001, 0x00000000 },
+	{ 0x3674, 0x00000001, 0x00000000 },
+	{ 0x3400, 0x000000ff, 0x00000030 },
+	{ 0x3668, 0x00010000, 0x00000000 },
+	{ 0x3674, 0x00010000, 0x00000000 },
+	{ 0x3494, 0x00000100, 0x00000000 },
+	{ 0x3364, 0x01000000, 0x00000000 },
+	{ 0x335c, 0x01000000, 0x00000000 },
+	{ 0x3364, 0x00000001, 0x00000001 },
+	{ 0x335c, 0x00000001, 0x00000000 },
+	{ 0x3668, 0x00010000, 0x00010000 },
+	{ 0x3494, 0x00000100, 0x00000100 },
+	{ 0x3364, 0x01000000, 0x01000000 },
+	{ EN7580_PHY_DELAY, 0, 200 },
+	{ 0x3364, 0x01000000, 0x00000000 },
+	{ 0x3364, 0x00000001, 0x00000000 },
+	/* seq_XPON_RX_sdcal() */
+	{ 0x3640, 0x00000001, 0x00000000 },
+	{ 0x3634, 0x0000001f, 0x00000000 },
+};
+
+static const struct en7580_phy_step en7580_eye_setup_seq[] = {
+	/* XPON_eye_setting(10) */
+	{ 0x3118, 0x03000000, 0x00000000 },
+	{ 0x3330, 0xff000000, 0xff000000 },
+	{ 0x3300, 0x000007ff, 0x000001c0 },
+	{ 0x3300, 0x07ff0000, 0x02400000 },
+	{ 0x3330, 0x000003ff, 0x000000f8 },
+	{ 0x3330, 0x00010000, 0x00000000 },
+	{ 0x3338, 0x00000100, 0x00000000 },
+	{ 0x3304, 0x00010000, 0x00000000 },
+	{ 0x3308, 0x000fffff, 0x0000fff8 },
+	{ 0x330c, 0x00000001, 0x00000000 },
+	{ 0x330c, 0x00000100, 0x00000000 },
+	{ 0x330c, 0x00010000, 0x00010000 },
+	{ 0x3320, 0x000000ff, 0x00000004 },
+	{ 0x3320, 0x0000ff00, 0x00000400 },
+	{ 0x3324, 0x000007ff, 0x00000004 },
+	{ 0x3324, 0x00ff0000, 0x00040000 },
+	{ 0x3374, 0x00010000, 0x00000000 },
+	{ 0x3374, 0x00000001, 0x00000000 },
+	{ 0x3374, 0x00000100, 0x00000000 },
+	{ 0x3378, 0x00000003, 0x00000001 },
+	{ 0x3374, 0x01000000, 0x00000000 },
+};
+
+static const struct en7580_phy_step en7580_eye_cal_seq[] = {
+	/* XPON_eye_Cal() */
+	{ 0x3644, 0x01000000, 0x01000000 },
+	{ 0x3370, 0x000000ff, 0x00000080 },
+	{ 0x3430, 0x00000700, 0x00000100 },
+	{ 0x3494, 0x00010000, 0x00000000 },
+	{ 0x3670, 0x00000100, 0x00000000 },
+	{ 0x3664, 0x00000100, 0x00000000 },
+	{ 0x3670, 0x00000001, 0x00000000 },
+	{ 0x3664, 0x00000001, 0x00000000 },
+	{ 0x3660, 0x01000000, 0x00000000 },
+	{ 0x3654, 0x00000100, 0x00000000 },
+	{ 0x335c, 0x00000100, 0x00000000 },
+	{ 0x3364, 0x00000100, 0x00000000 },
+	{ 0x3494, 0x00010000, 0x00010000 },
+	{ 0x3664, 0x00000100, 0x00000100 },
+	{ 0x3664, 0x00000001, 0x00000001 },
+	{ 0x3654, 0x00000100, 0x00000100 },
+	{ EN7580_PHY_DELAY, 0, 1000 },
+	{ 0x3654, 0x00000100, 0x00000000 },
+	{ 0x3658, 0x00000001, 0x00000000 },
+	{ 0x3648, 0x00000001, 0x00000001 },
+};
+
+static const struct en7580_phy_step en7580_rx_connect_seq[] = {
+	/* seq_XPON_DIG_reset() */
+	{ 0x37b0, 0x0000001f, 0x00000000 },
+	{ 0x37a4, 0x00000002, 0x00000000 },
+	{ 0x37b0, 0x00000002, 0x00000002 },
+	{ 0x37b0, 0x00000010, 0x00000010 },
+	{ 0x37b0, 0x00000008, 0x00000008 },
+	{ 0x37b0, 0x00000004, 0x00000004 },
+	{ 0x37b0, 0x00000001, 0x00000001 },
+	{ 0x37a4, 0x00000002, 0x00000002 },
+	/* sw_pma_rst_hold() */
+	{ 0x37b0, 0x00000008, 0x00000000 },
+	/* seq_XPON_RX_L2D() */
+	{ 0x3630, 0x01000000, 0x01000000 },
+	{ 0x3630, 0x00010000, 0x00010000 },
+	{ EN7580_PHY_DELAY, 0, 200 },
+	/* aux_XPON_TDC_on() */
+	{ 0x3234, 0x00000100, 0x00000000 },
+	{ EN7580_PHY_DELAY, 0, 100 },
+	{ 0x3210, 0x00000001, 0x00000001 },
+	{ EN7580_PHY_DELAY, 0, 100 },
+	{ 0x3220, 0x00000001, 0x00000001 },
+	{ EN7580_PHY_DELAY, 0, 100 },
+	{ 0x3220, 0x00000100, 0x00000100 },
+	{ EN7580_PHY_DELAY, 0, 100 },
+	{ 0x3220, 0x00000100, 0x00000000 },
+	{ EN7580_PHY_DELAY, 0, 100 },
+	{ 0x3220, 0x00000001, 0x00000000 },
+	{ EN7580_PHY_DELAY, 0, 100 },
+	{ 0x3220, 0x00010000, 0x00010000 },
+	{ EN7580_PHY_DELAY, 0, 100 },
+	{ 0x3224, 0x00010000, 0x00010000 },
+	{ EN7580_PHY_DELAY, 0, 5000 },
+	/* sw_pma_rst_release() */
+	{ 0x37b0, 0x00000008, 0x00000008 },
+};
+
+static const struct en7580_phy_step en7580_rx_finish_seq[] = {
+	/* seq_XPON_RX_blwc_on() */
+	{ 0x3494, 0x00000001, 0x00000001 },
+	{ 0x3668, 0x00000001, 0x00000001 },
+	{ 0x3368, 0x00010000, 0x00010000 },
+	{ EN7580_PHY_DELAY, 0, 50 },
+	/* aux_XPON_TDC_on() */
+	{ 0x3234, 0x00000100, 0x00000000 },
+	{ EN7580_PHY_DELAY, 0, 100 },
+	{ 0x3210, 0x00000001, 0x00000001 },
+	{ EN7580_PHY_DELAY, 0, 100 },
+	{ 0x3220, 0x00000001, 0x00000001 },
+	{ EN7580_PHY_DELAY, 0, 100 },
+	{ 0x3220, 0x00000100, 0x00000100 },
+	{ EN7580_PHY_DELAY, 0, 100 },
+	{ 0x3220, 0x00000100, 0x00000000 },
+	{ EN7580_PHY_DELAY, 0, 100 },
+	{ 0x3220, 0x00000001, 0x00000000 },
+	{ EN7580_PHY_DELAY, 0, 100 },
+	{ 0x3220, 0x00010000, 0x00010000 },
+	{ EN7580_PHY_DELAY, 0, 100 },
+	{ 0x3224, 0x00010000, 0x00010000 },
+	{ EN7580_PHY_DELAY, 0, 5000 },
+	/* seq_XPON_RX_rxrdy() */
+	{ 0x3368, 0x01000000, 0x01000000 },
+	{ 0x3360, 0x01000000, 0x00000000 },
+	{ EN7580_PHY_DELAY, 0, 10 },
+	{ 0x37b0, 0x00000001, 0x00000000 },
+	{ 0x37b0, 0x00000001, 0x00000001 },
+	{ 0x312c, 0x06000000, 0x04000000 },
+};
+
+static const struct en7580_phy_step en7580_rx_disconnect_seq[] = {
+	/* aux_XPON_TDC_off() */
+	{ 0x3234, 0x00000100, 0x00000100 },
+	{ 0x3210, 0x00000001, 0x00000000 },
+	{ EN7580_PHY_DELAY, 0, 1000 },
+	/* seq_XPON_RX_L2R() */
+	{ 0x3630, 0x00010000, 0x00000000 },
+	{ 0x3630, 0x01000000, 0x00000000 },
+	{ 0x363c, 0x00010000, 0x00000000 },
+	{ 0x363c, 0x01000000, 0x00000000 },
+	{ EN7580_PHY_DELAY, 0, 100 },
+	/* seq_XPON_FLL_Reset() */
+	{ 0x346c, 0x00000001, 0x00000000 },
+	{ EN7580_PHY_DELAY, 0, 500 },
+	{ 0x346c, 0x00000001, 0x00000001 },
+	{ 0x346c, 0x00000100, 0x00000000 },
+	{ EN7580_PHY_DELAY, 0, 500 },
+	{ 0x346c, 0x00000100, 0x00000100 },
+};
+
+static const struct an7552_phy_step an7552_phy_pll_seq[] = {
+	{ 0x0124, 0x7fffffff, 0x80000000, 0x00000000 },
+	{ AN7552_PHY_DELAY, 0, 1, 1 },
+	{ 0x3008, 0x0000ffff, 0x02400000, 0x02400000 },
+	{ 0x4530, 0x0000ffff, 0x00380000, 0x00380000 },
+	{ 0x4500, 0xffffefff, 0x00000000, 0x00000000 },
+	{ 0x4600, 0xff0fffff, 0x07500000, 0x07500000 },
+	{ 0x464c, 0xfffffff0, 0x00000004, 0x00000004 },
+	{ 0x4604, 0xffffffcf, 0x00000020, 0x00000020 },
+	{ 0x3010, 0xfff00fff, 0x00010000, 0x00010000 },
+	{ 0x4610, 0xfffffe00, 0x00000031, 0x00000032 },
+	{ 0x4600, 0xffffcfff, 0x00000000, 0x00000000 },
+	{ 0x3014, 0xffffffff, 0x01000000, 0x01000000 },
+	{ 0x4130, 0x80000000, 0x63886595, 0x64000000 },
+	{ 0x4148, 0x80000000, 0x63886595, 0x63886595 },
+	{ 0x414c, 0x80000000, 0x64000000, 0x64000000 },
+	{ 0x413c, 0xfeffffff, 0x00000000, 0x00000000 },
+	{ 0x4134, 0xffffffff, 0x00000100, 0x00000100 },
+	{ AN7552_PHY_DELAY, 0, 1, 1 },
+	{ 0x413c, 0xffffffff, 0x01000000, 0x01000000 },
+	{ 0x412c, 0xfffffffe, 0x00000001, 0x00000000 },
+	{ 0x4320, 0xfffffffc, 0x00000000, 0x00000000 },
+	{ 0x4208, 0xfffffeff, 0x00000000, 0x00000100 },
+	{ 0x3018, 0xffff0000, 0x0000110c, 0x00001100 },
+	{ 0x4128, 0xfffffff8, 0x00000004, 0x00000004 },
+	{ 0x4324, 0xffffe0e0, 0x00ff100c, 0x00ff100c },
+	{ 0x4328, 0xffffe0e0, 0x00001e1e, 0x00001e1e },
+	{ 0x432c, 0xfff0e0e0, 0x000c0808, 0x00080810 },
+	{ 0x4330, 0xffffe0e0, 0x00001e1e, 0x00001e1e },
+	{ 0x4334, 0xfff0e0e0, 0x00030204, 0x00020204 },
+	{ 0x4338, 0xffffe0e0, 0x00001e1e, 0x00001e1e },
+	{ 0x4608, 0xffffffff, 0x02000000, 0x02000000 },
+	{ 0x3024, 0xf7ffffff, 0x00000000, 0x00000000 },
+};
+
+static const struct an7552_phy_step an7552_phy_rx_seq[] = {
+	{ 0x4200, 0xffffffff, 0x00000001, 0x00000001 },
+	{ AN7552_PHY_DELAY, 0, 2000, 2000 },
+	{ 0x4364, 0xfffff7ff, 0x00000000, 0x00000000 },
+	{ 0x436c, 0xf000ffff, 0x06180000, 0x06180000 },
+	{ 0x4214, 0x0000ffff, 0x03f00000, 0x03f00000 },
+};
 
 struct airoha_xpon_phy;
 
@@ -221,11 +781,14 @@ struct airoha_xpon_phy_soc_data {
 	u32 gpon_bit_delay_mask;
 	u32 gpon_bit_delay_enable;
 	bool has_integrated_pma;
+	bool has_an7552_pma;
 	bool manages_fw_ready;
 	bool has_gpon_bip;
 	bool has_xgspon;
 	const struct phy_ops *ops;
 	int (*configure)(struct airoha_xpon_phy *priv);
+	void (*complete_ready)(struct airoha_xpon_phy *priv);
+	void (*reset_rx)(struct airoha_xpon_phy *priv);
 };
 
 struct airoha_xpon_phy {
@@ -243,6 +806,9 @@ struct airoha_xpon_phy {
 	bool initialized;
 	bool powered;
 	bool ready_reported;
+	bool ever_ready;
+	bool needs_kband;
+	u8 recovery_attempts;
 	/* Serializes the EN7580 calibration, LOS recovery and TX requests. */
 	struct mutex xgspon_lock;
 	bool xgspon_configured;
@@ -663,7 +1229,7 @@ static void airoha_xpon_phy_dump(struct airoha_xpon_phy *priv,
 
 	if (priv->soc->manages_fw_ready)
 		dev_info(priv->dev,
-			 "EN751221 status: fw_ready=%u rx_sync=%#x rx_synced=%u counters=%#010x/%#010x/%#010x/%#010x\n",
+			 "digital status: fw_ready=%u rx_sync=%#x rx_synced=%u counters=%#010x/%#010x/%#010x/%#010x\n",
 			 airoha_xpon_phy_fw_ready(priv),
 			 airoha_xpon_phy_rx_sync(priv),
 			 airoha_xpon_phy_rx_sync(priv) == XPON_RX_SYNC_READY,
@@ -1267,6 +1833,13 @@ static int airoha_xpon_phy_init(struct phy *phy)
 	struct airoha_xpon_phy *priv = phy_get_drvdata(phy);
 	int ret;
 
+	if (priv->soc->has_an7552_pma) {
+		/* Select optical PON before releasing reset on the shared SerDes. */
+		ret = regmap_clear_bits(priv->scu, AN7552_SCU_SSTR,
+					AN7552_SCU_PON_SEL);
+		if (ret)
+			return ret;
+	}
 	ret = airoha_xpon_phy_reset(phy);
 	if (ret)
 		return ret;
@@ -1452,6 +2025,201 @@ econet_xpon_phy_counter_init(struct airoha_xpon_phy *priv)
 	airoha_xpon_phy_write(priv, XPON_RX_COUNTER_ENABLE, val);
 	econet_xpon_phy_counter_clear(priv,
 				      ECONET_XPON_COUNTER_ENABLE_MASK);
+}
+
+static void an7552_xpon_phy_apply(struct airoha_xpon_phy *priv,
+				  const struct an7552_phy_step *seq, size_t n)
+{
+	bool gpon = priv->submode == AIROHA_XPON_PHY_SUBMODE_GPON;
+	size_t i;
+
+	for (i = 0; i < n; i++) {
+		u32 val = gpon ? seq[i].gpon : seq[i].epon;
+
+		if (seq[i].reg == AN7552_PHY_DELAY) {
+			if (val < 1000)
+				udelay(val);
+			else
+				usleep_range(val, val + 100);
+			continue;
+		}
+		val |= airoha_xpon_phy_read(priv, seq[i].reg) & seq[i].keep;
+		airoha_xpon_phy_write(priv, seq[i].reg, val);
+	}
+}
+
+static int airoha_an7552_xpon_phy_configure(struct airoha_xpon_phy *priv)
+{
+	u32 val, mode;
+	int ret;
+
+	airoha_xpon_phy_rmw(priv, XPON_PHYFWREADY, XPON_PHYFWREADY_READY, 0);
+	priv->ever_ready = false;
+	priv->recovery_attempts = 0;
+	mode = priv->submode == AIROHA_XPON_PHY_SUBMODE_GPON ?
+		EN7523_SCU_WAN_MODE_GPON : EN7523_SCU_WAN_MODE_EPON;
+	ret = regmap_update_bits(priv->scu, EN7523_SCU_WAN_CONF,
+				 EN7523_SCU_WAN_MODE_MASK, mode);
+	if (ret)
+		return ret;
+	udelay(1);
+	/* AN7552 PON pads use chip SCU 0x21c, owned by default pinctrl. */
+
+	/* Native Mode_Config_7552(), not the EN7523 PMA sequence. */
+	an7552_xpon_phy_apply(priv, an7552_phy_pll_seq,
+			      ARRAY_SIZE(an7552_phy_pll_seq));
+	if (priv->submode == AIROHA_XPON_PHY_SUBMODE_GPON)
+		airoha_xpon_phy_rmw(priv, 0x4618, BIT(23), BIT(23));
+	an7552_xpon_phy_apply(priv, an7552_phy_rx_seq,
+			      ARRAY_SIZE(an7552_phy_rx_seq));
+	airoha_xpon_phy_rmw(priv, AN7552_LCPLL_PW_CTRL0, BIT(29),
+			    priv->trans_invert & XPON_SETTING_RX_SD_INV ?
+			    BIT(29) : 0);
+	airoha_xpon_phy_rmw(priv, AN7552_SERDES_CTRL1, GENMASK(9, 8),
+			    GENMASK(9, 8));
+	udelay(1);
+	airoha_xpon_phy_rmw(priv, AN7552_SERDES_CTRL1, BIT(9), 0);
+	udelay(1);
+	airoha_xpon_phy_rmw(priv, 0x4364, BIT(10), 0);
+	airoha_xpon_phy_rmw(priv, 0x436c, GENMASK(11, 0), 0x618);
+	airoha_xpon_phy_rmw(priv, 0x4228, BIT(8), 0);
+	/* CTRL17[31:16] is reserved; retain it instead of copying CTRL10. */
+	airoha_xpon_phy_rmw(priv, AN7552_SERDES_CTRL17, GENMASK(15, 0), 0x0b02);
+	airoha_xpon_phy_write(priv, AN7552_SERDES_CTRL16, 2);
+	airoha_xpon_phy_rmw(priv, AN7552_LCPLL_PW_CTRL0, BIT(30), BIT(30));
+	airoha_xpon_phy_rmw(priv, AN7552_TX_CTRL2, GENMASK(2, 0), 1);
+	airoha_xpon_phy_rmw(priv, AN7552_SERDES_CTRL0, BIT(24),
+			    priv->trans_invert & XPON_SETTING_BURST_EN_INV ?
+			    BIT(24) : 0);
+	airoha_xpon_phy_rmw(priv, 0x4134, BIT(8), 0);
+	airoha_xpon_phy_rmw(priv, AN7552_LCPLL_TDC_PW, BIT(0), BIT(0));
+	airoha_xpon_phy_write(priv, 0x4754, 0xff);
+	airoha_xpon_phy_write(priv, 0x4740, 0x7001);
+	airoha_xpon_phy_rmw(priv, 0x4740, BIT(8), BIT(8));
+	airoha_xpon_phy_write(priv, 0x473c, 1);
+	airoha_xpon_phy_rmw(priv, AN7552_PLL_RESET_GATE,
+			    AN7552_PLL_RESET_GATE_EN, AN7552_PLL_RESET_GATE_EN);
+
+	/* phy_dev_init(): release digital controls and initialize counters. */
+	airoha_xpon_phy_rmw(priv, XPON_PHYSET3, BIT(2), 0);
+	ret = regmap_clear_bits(priv->scu, ECONET_SCU_PHY_CTRL1,
+				ECONET_SCU_PHY_CTRL1_DIS);
+	if (ret)
+		return ret;
+	ret = regmap_clear_bits(priv->scu, ECONET_SCU_PHY_CTRL0,
+				ECONET_SCU_PHY_CTRL0_DIS);
+	if (ret)
+		return ret;
+	econet_xpon_phy_counter_init(priv);
+	airoha_xpon_phy_write(priv, XPON_GPON_DELIMITER_GUARD,
+			      XPON_GPON_DELIMITER_DEFAULT);
+	econet_xpon_phy_counter_clear(priv, ECONET_XPON_COUNTER_CLEAR_ALL);
+	val = ECONET_XPON_SETTING_EN757X & ~XPON_SETTING_INV_MASK;
+	airoha_xpon_phy_write(priv, XPON_SETTING, val | priv->trans_invert);
+
+	/* Poll PHY_READY/LOS; do not enable interrupt sources without a handler. */
+	airoha_xpon_phy_write(priv, XPON_INT_ENABLE, 0);
+	airoha_xpon_phy_write(priv, XPON_PMA_INT_ENABLE, 0);
+	val = airoha_xpon_phy_read(priv, XPON_INT_STATUS);
+	airoha_xpon_phy_write(priv, XPON_INT_STATUS_CLR, val);
+	val = airoha_xpon_phy_read(priv, XPON_PMA_INT_STATUS);
+	airoha_xpon_phy_write(priv, XPON_PMA_INT_STATUS_CLR, val);
+	airoha_xpon_phy_rmw(priv, XPON_PHYFWREADY, XPON_PHYFWREADY_READY,
+			    XPON_PHYFWREADY_READY);
+	return 0;
+}
+
+static void an7552_xpon_phy_complete_ready(struct airoha_xpon_phy *priv)
+{
+	u32 val = 0;
+	int i;
+
+	/* Native phy_ready_handler(): settle TDC, then release the TX reset. */
+	for (i = 0; i < 7; i++) {
+		airoha_xpon_phy_rmw(priv, AN7552_LCPLL_TDC_PW, BIT(0), 0);
+		udelay(1);
+		airoha_xpon_phy_rmw(priv, AN7552_LCPLL_TDC_PW, BIT(0), BIT(0));
+		usleep_range(1000, 1100);
+		val = airoha_xpon_phy_read(priv, AN7552_LCPLL_TDC_STATUS);
+		if ((val & GENMASK(3, 0)) > 10)
+			break;
+	}
+	if (i == 7)
+		dev_warn(priv->dev, "AN7552 TDC did not settle: %#x\n", val);
+	usleep_range(3000, 3100);
+	airoha_xpon_phy_rmw(priv, AN7552_PON_SYS_CTRL1,
+			    AN7552_PON_TX_RESET_N, 0);
+	udelay(1);
+	airoha_xpon_phy_rmw(priv, AN7552_PON_SYS_CTRL1,
+			    AN7552_PON_TX_RESET_N, AN7552_PON_TX_RESET_N);
+	usleep_range(1000, 1100);
+	priv->ever_ready = true;
+	priv->recovery_attempts = 0;
+}
+
+static void an7552_xpon_phy_kband(struct airoha_xpon_phy *priv)
+{
+	u32 ncpo, target;
+	int i;
+
+	target = priv->submode == AIROHA_XPON_PHY_SUBMODE_GPON ?
+		0x63886595 : 0x64000000;
+	for (i = 0; i < 9; i++) {
+		usleep_range(1000, 1100);
+		ncpo = airoha_xpon_phy_read(priv, AN7552_LCPLL_NCPO);
+		if (ncpo > target - 0x10000 && ncpo < target + 0x10000)
+			break;
+	}
+	airoha_xpon_phy_rmw(priv, 0x4614, BIT(27), BIT(27));
+	udelay(1);
+	airoha_xpon_phy_rmw(priv, 0x4620, BIT(21), 0);
+	udelay(1);
+	airoha_xpon_phy_rmw(priv, 0x4620, BIT(21), BIT(21));
+	usleep_range(9000, 9100);
+	airoha_xpon_phy_rmw(priv, 0x4620, BIT(21), 0);
+	udelay(1);
+	airoha_xpon_phy_rmw(priv, 0x4614, BIT(27), 0);
+	usleep_range(5000, 5100);
+	airoha_xpon_phy_rmw(priv, 0x4614, BIT(5), BIT(5));
+	udelay(1);
+	airoha_xpon_phy_rmw(priv, 0x4614, BIT(6), BIT(6));
+	udelay(1);
+	airoha_xpon_phy_rmw(priv, 0x461c, BIT(26), BIT(26));
+	udelay(1);
+	airoha_xpon_phy_rmw(priv, 0x461c, BIT(27), BIT(27));
+	usleep_range(5000, 5100);
+	airoha_xpon_phy_rmw(priv, 0x461c, BIT(27), 0);
+	usleep_range(1000, 1100);
+	airoha_xpon_phy_rmw(priv, 0x461c, BIT(26), 0);
+	airoha_xpon_phy_rmw(priv, AN7552_PON_SYS_CTRL1, GENMASK(27, 26), 0);
+	udelay(1);
+	airoha_xpon_phy_rmw(priv, AN7552_PON_SYS_CTRL1, GENMASK(27, 26),
+			    GENMASK(27, 26));
+}
+
+static void an7552_xpon_phy_reset_rx(struct airoha_xpon_phy *priv)
+{
+	u32 val;
+
+	/* xPON_Pll_Reset() gates the AN7552 PLL reset with 0x417c[16]. */
+	airoha_xpon_phy_rmw(priv, AN7552_PLL_RESET_GATE,
+			    AN7552_PLL_RESET_GATE_EN, 0);
+	val = airoha_xpon_phy_read(priv, XPON_PHYSET3);
+	airoha_xpon_phy_write(priv, XPON_PHYSET3,
+			      val | XPON_PHYSET3_PLL_RST | XPON_PHYSET3_COUNTER_RST);
+	usleep_range(1000, 1100);
+	airoha_xpon_phy_write(priv, XPON_PHYSET3, val);
+	airoha_xpon_phy_rmw(priv, AN7552_PLL_RESET_GATE,
+			    AN7552_PLL_RESET_GATE_EN, AN7552_PLL_RESET_GATE_EN);
+
+	/* The stock recovery recalibrates immediately before the first READY,
+	 * then after ten unsuccessful polls. Alternate XTAL needs no K-band.
+	 */
+	if (priv->needs_kband &&
+	    (!priv->ever_ready || ++priv->recovery_attempts >= 10)) {
+		priv->recovery_attempts = 0;
+		an7552_xpon_phy_kband(priv);
+	}
 }
 
 static int airoha_en7528_xpon_phy_configure(struct airoha_xpon_phy *priv)
@@ -1668,7 +2436,9 @@ static int airoha_xpon_phy_configure(struct airoha_xpon_phy *priv)
 
 static void airoha_xpon_phy_complete_ready(struct airoha_xpon_phy *priv)
 {
-	if (priv->soc->has_integrated_pma) {
+	if (priv->soc->complete_ready) {
+		priv->soc->complete_ready(priv);
+	} else if (priv->soc->has_integrated_pma) {
 		/* EN7523 phy_ready_handler() retriggers PMA_CTRL8 bit 0. */
 		airoha_xpon_phy_rmw(priv, XPON_PMA_CTRL8, BIT(0), 0);
 		udelay(1);
@@ -1709,12 +2479,16 @@ static void airoha_xpon_phy_ready_work(struct work_struct *work)
 		 */
 		if (state == XPON_PHYSTA1_SYNCING &&
 		    !airoha_xpon_phy_los(priv)) {
-			val = airoha_xpon_phy_read(priv, XPON_PHYSET3);
-			airoha_xpon_phy_write(priv, XPON_PHYSET3,
-					      val | XPON_PHYSET3_PLL_RST |
-					       XPON_PHYSET3_COUNTER_RST);
-			mdelay(1);
-			airoha_xpon_phy_write(priv, XPON_PHYSET3, val);
+			if (priv->soc->reset_rx) {
+				priv->soc->reset_rx(priv);
+			} else {
+				val = airoha_xpon_phy_read(priv, XPON_PHYSET3);
+				airoha_xpon_phy_write(priv, XPON_PHYSET3,
+						      val | XPON_PHYSET3_PLL_RST |
+					 XPON_PHYSET3_COUNTER_RST);
+				mdelay(1);
+				airoha_xpon_phy_write(priv, XPON_PHYSET3, val);
+			}
 			dev_dbg(priv->dev,
 				"reset RX PLL while LOS=0 and PHY_READY=0\n");
 		}
@@ -1928,6 +2702,21 @@ static int airoha_xpon_phy_probe(struct platform_device *pdev)
 		return dev_err_probe(dev, PTR_ERR(priv->scu),
 				     "failed to get SCU regmap\n");
 
+	if (soc->has_an7552_pma) {
+		struct regmap *chip_scu;
+		u32 val;
+
+		chip_scu = syscon_regmap_lookup_by_phandle(dev->of_node,
+							   "airoha,chip-scu");
+		if (IS_ERR(chip_scu))
+			return dev_err_probe(dev, PTR_ERR(chip_scu),
+					     "failed to get AN7552 chip SCU\n");
+		ret = regmap_read(chip_scu, AN7552_CHIP_SCU_XTAL, &val);
+		if (ret)
+			return ret;
+		priv->needs_kband = !(val & AN7552_CHIP_SCU_XTAL_ALT);
+	}
+
 	priv->reset = devm_reset_control_get_exclusive(dev, "phy");
 	if (IS_ERR(priv->reset))
 		return dev_err_probe(dev, PTR_ERR(priv->reset),
@@ -1981,6 +2770,20 @@ static const struct airoha_xpon_phy_soc_data econet_en751221_xpon_phy_data = {
 	.configure = econet_en751221_xpon_phy_configure,
 };
 
+static const struct airoha_xpon_phy_soc_data airoha_an7552_xpon_phy_data = {
+	.name = "AN7552",
+	.min_size = AN7552_XPON_PHY_MIN_SIZE,
+	.gpon_bit_delay_reg = XPON_GPON_TX_BIT_DELAY,
+	.gpon_bit_delay_mask = XPON_GPON_TX_BIT_DELAY_MASK,
+	.has_integrated_pma = true,
+	.has_an7552_pma = true,
+	.manages_fw_ready = true,
+	.has_gpon_bip = true,
+	.configure = airoha_an7552_xpon_phy_configure,
+	.complete_ready = an7552_xpon_phy_complete_ready,
+	.reset_rx = an7552_xpon_phy_reset_rx,
+};
+
 static const struct airoha_xpon_phy_soc_data airoha_en7523_xpon_phy_data = {
 	.name = "EN7523",
 	.min_size = EN7523_XPON_PHY_MIN_SIZE,
@@ -2008,6 +2811,10 @@ static const struct airoha_xpon_phy_soc_data airoha_en7580_xpon_phy_data = {
 };
 
 static const struct of_device_id airoha_xpon_phy_of_match[] = {
+	{
+		.compatible = "airoha,an7552-xpon-phy",
+		.data = &airoha_an7552_xpon_phy_data,
+	},
 	{
 		.compatible = "airoha,en7580-xpon-phy",
 		.data = &airoha_en7580_xpon_phy_data,
