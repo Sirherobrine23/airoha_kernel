@@ -1633,11 +1633,24 @@ static void econet_init_en751221_qdma(struct airoha_qdma_mips *qdma)
 		queue_max = 204;
 	} else if (qdma->fwd_buf_size == 2048 && qdma->qdma->id == 1 &&
 		   qdma->num_fwd_descs == 4096) {
-		total_min = 819;
+		/*
+		 * Upstream FoE flows enter this QDMA from a 1 Gbit/s LAN port
+		 * and leave through GPON grants that drain at the line rate
+		 * only in bursts. With the shipping thresholds (total min 819,
+		 * channel min 160, queue 24..819) the dynamic congestion
+		 * control drops ~0.9 % of a saturated upload at the HWF ingress
+		 * (CDMA2_RXHWF_DROP_CNT), which halves TCP throughput for
+		 * higher-RTT clients. Raise the minimum thresholds so line-rate
+		 * bursts fit, while keeping the queue well inside the 4096
+		 * descriptor pool and the drops enabled, so a stalled GPON
+		 * link cannot back-pressure the frame engine.
+		 */
+		total_min = 4096;
 		total_max = 15360;
-		channel_min = 160;
+		channel_min = 2048;
 		channel_max = 15360;
-		queue_max = 819;
+		queue_min = 2048;
+		queue_max = 4095;
 	}
 
 	airoha_wr((void __iomem *)&qdma->regs->tx_congest_thr, 0,
