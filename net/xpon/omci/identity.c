@@ -306,7 +306,16 @@ int omci_identity_normalize_config(u16 key, const void *value, size_t len,
 		required = OMCI_OLT_EQUIPMENT_ID_LEN;
 		if (*output_len < required)
 			return -ENOSPC;
-		ret = omci_normalize_string(value, len, output, required);
+		/*
+		 * The EquipmentIdentifier attribute is space padded and the
+		 * Nokia/ALCL OLT audits it byte for byte, so do not trim the
+		 * leading spaces like the version strings above.
+		 */
+		if (!len || len > required)
+			return -EINVAL;
+		memset(output, ' ', required);
+		memcpy(output, value, len);
+		ret = 0;
 		break;
 	default:
 		return -EOPNOTSUPP;

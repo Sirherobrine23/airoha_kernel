@@ -934,7 +934,7 @@ static bool omci_agent_profile_has_quirk(const struct omci_agent *agent,
 
 static bool omci_agent_fakes_unsupported(const struct omci_agent *agent)
 {
-	return agent->fake_omci ||
+	return agent->fake_omci || agent->permissive ||
 	       omci_agent_profile_has_quirk(
 		       agent, OMCI_OLT_QUIRK_FAKE_UNSUPPORTED_SUCCESS);
 }
@@ -1728,9 +1728,14 @@ static int omci_agent_populate_defaults(struct omci_device *odev)
 		memset(data, 0, sizeof(data));
 		memcpy(data, agent->config.software_version[i],
 		       OMCI_SOFTWARE_VERSION_LEN);
-		data[14] = i == 0; /* Committed image. */
-		data[15] = i == 0; /* Active image. */
-		data[16] = 1; /* Valid image. */
+		/* The Nokia/ALCL OLT audits the software images and stops
+		 * provisioning data GEMs when the answer does not match the
+		 * stock ONU: image 0 is 0/0/0 and the running image 1 is
+		 * committed/active/valid.
+		 */
+		data[14] = i == 1; /* Committed image. */
+		data[15] = i == 1; /* Active image. */
+		data[16] = i == 1; /* Valid image. */
 		ret = omci_mib_add_default_mask(agent,
 						OMCI_CLASS_SOFTWARE_IMAGE, i,
 						GENMASK(15, 12), data,
@@ -3225,7 +3230,8 @@ static u8 omci_agent_create_locked(struct omci_device *odev, u16 class_id,
 		return OMCI_RESULT_UNKNOWN_ME;
 	if (!omci_me_action_allowed(agent, class_id, OMCI_MSG_TYPE_CREATE))
 		return OMCI_RESULT_NOT_SUPPORTED;
-	if (omci_mib_lookup(agent, class_id, entity_id))
+	stored = omci_mib_lookup(agent, class_id, entity_id);
+	if (stored && stored->origin == OMCI_MIB_ORIGIN_OLT)
 		return OMCI_RESULT_INSTANCE_EXISTS;
 
 	desc = omci_me_lookup(agent, class_id);
@@ -3265,6 +3271,24 @@ static u8 omci_agent_create_locked(struct omci_device *odev, u16 class_id,
 		goto out;
 	}
 	hardware_applied = true;
+	if (stored) {
+		/*
+		 * The Nokia/ALCL profile seeds MEs (bridge profiles and ports,
+		 * mappers) that the OLT then re-creates.  Merge the OLT's
+		 * attributes into the seeded instance instead of returning
+		 * INSTANCE_EXISTS, which aborts the OLT provisioning sequence.
+		 */
+		memcpy(stored->data, object->data, sizeof(stored->data));
+		stored->data_len = object->data_len;
+		stored->attr_mask = object->attr_mask;
+		stored->origin = OMCI_MIB_ORIGIN_OLT;
+		kfree(object);
+		if (omci_agent_datapath_class(agent, class_id) &&
+		    omci_agent_reconcile_services_locked(odev))
+			return OMCI_RESULT_PROCESSING_ERROR;
+		omci_agent_increment_mib_sync_locked(agent);
+		return OMCI_RESULT_SUCCESS;
+	}
 	ret = omci_mib_store_locked(agent, object);
 	if (ret) {
 		result = OMCI_RESULT_DEVICE_BUSY;
@@ -3842,6 +3866,7 @@ static void omci_agent_log_wire(struct omci_device *odev, const char *direction,
 
 	action = request.message_type & 0x1f;
 	response = request.message_type & 0x20;
+
 	if (action == OMCI_MSG_TYPE_MIB_UPLOAD && response &&
 	    request.payload_len >= 2) {
 		dev_dbg(odev->parent,
