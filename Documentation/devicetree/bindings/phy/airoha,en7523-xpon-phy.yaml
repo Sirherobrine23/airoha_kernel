@@ -13,10 +13,14 @@ description: |
   Airoha EN7523/EN7528 and EcoNet EN751221 contain a digital xPON PHY shared by the
   GPON and EPON MAC engines. The generations share the GPON/EPON digital
   register block; EN7523 and EN7528 additionally integrate PMA/SerDes controls.
+  AN7552 has a separate optical SerDes and LCPLL/CDR programming sequence.
+  The optical PHY and the Ethernet PON PCS share the AN7552 SerDes and cannot
+  be enabled simultaneously.
 
 properties:
   compatible:
     enum:
+      - airoha,an7552-xpon-phy
       - airoha,en7523-xpon-phy
       - airoha,en751627-xpon-phy
       - airoha,en7528-xpon-phy
@@ -27,7 +31,7 @@ properties:
 
   interrupts:
     maxItems: 1
-    description: Optional EN7528 digital PHY interrupt.
+    description: Optional digital PHY interrupt; the driver may poll link state.
 
   interrupt-names:
     const: phy
@@ -42,6 +46,12 @@ properties:
     $ref: /schemas/types.yaml#/definitions/phandle
     description:
       Phandle to the SoC system-controller syscon used by the xPON PHY.
+
+  airoha,chip-scu:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description:
+      Phandle to the chip SCU. AN7552 uses offset 0x258 bit 19 to select
+      whether its optical PLL needs K-band recovery.
 
   tx-disable-gpios:
     maxItems: 1
@@ -97,13 +107,23 @@ allOf:
   - if:
       properties:
         compatible:
-          const: econet,en751221-xpon-phy
+          enum:
+            - econet,en751221-xpon-phy
+            - airoha,an7552-xpon-phy
     then:
       required:
         - airoha,chip-scu
     else:
       properties:
         airoha,chip-scu: false
+
+  - if:
+      properties:
+        compatible:
+          const: airoha,an7552-xpon-phy
+    then:
+      required:
+        - tx-disable-gpios
 
 additionalProperties: false
 
