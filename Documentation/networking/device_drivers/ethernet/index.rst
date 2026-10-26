@@ -60,6 +60,7 @@ Contents:
    ti/am65_nuss_cpsw_switchdev
    ti/tlan
    ti/icssg_prueth
+   ux3320
    wangxun/txgbe
    wangxun/txgbevf
    wangxun/ngbe

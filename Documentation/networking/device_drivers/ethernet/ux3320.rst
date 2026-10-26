@@ -1,0 +1,111 @@
+.. SPDX-License-Identifier: GPL-2.0-only
+
+Xiamen UX UX3320B1 optical frontend
+=================================
+
+``CONFIG_OPTICAL_FRONTEND_UX3320`` builds an independent I2C provider of
+``optical_frontend``. It does not depend on an Airoha SoC or the EN757x LDDLA
+core. The initial backend implements the UX3320B1 GPON configuration used by
+the Nokia AOT4221NK. It does not claim UX3320S, EPON mode switching or 10G PON.
+
+The board declares the A2 I2C client using ``ux,ux3320b1`` and connects the
+protocol MAC to it, for example::
+
+  &i2c0 {
+          status = "okay";
+          bosa: optical-frontend@51 {
+                  compatible = "ux,ux3320b1";
+                  reg = <0x51>;
+                  #optical-frontend-cells = <0>;
+                  firmware-name = "ux/aot4221nk-ux3320b1-hwconfig.bin";
+          };
+  };
+
+  &xpon {
+          optical-frontends = <&bosa>;
+          optical-frontend-names = "pon";
+  };
+
+I2C muxing, power rails, enabling the SoC PON nodes and MAC datapath remain
+board-specific. TX_DISABLE and burst enable remain owned by the digital PHY.
+The I2C driver controls the chip's independent soft-disable bit at A2 0x6e[6].
+It does not take over the PHY GPIOs.
+
+Calibration format
+------------------
+
+Calibration must come from the same optical assembly. There are no generic
+laser-bias, modulation or APD defaults in this driver. The input is the final
+calibrated register image exported by stock ``bosa_ux3320`` command 3, with
+this exact layout (all entries contain raw I2C bytes)::
+
+  Image offset   A2 registers     Selected upper bank
+  0x000..0x07f   0x00..0x7f      lower/common half
+  0x080..0x0ff   0x80..0xff      0: user settings
+  0x100..0x17f   0x80..0xff      3: device settings and ADC calibration
+  0x180..0x1ff   0x80..0xff      4: bias LUT
+  0x200..0x27f   0x80..0xff      5: modulation LUT
+  0x280..0x2ff   0x80..0xff      6: APD LUT
+
+The native dump layout and register-write ranges were recovered from the
+AOT4221NK Linux 5.4.55 ``bosa_ux3320.ko``. Register 0x7f selects an upper
+bank; 0x80 is its first register, not an indexed-data port. These bytes are
+independent of host CPU endianness. Each image is exactly 768 bytes.
+
+The vendor's 128-byte ``cfg.bob`` and 256-byte ``modlut.bob``/``biaslut.bob``
+files are manufacturing inputs which require additional chip templates and
+vendor calculations. They are not accepted as final register images. A dump
+of the factory-record partition cannot be substituted for the format above.
+
+Obtain an image while the original firmware has initialized its own BOSA::
+
+  ./ux3320-stock-dump /tmp/ux3320b1-hwconfig.bin
+
+Build the tool with the board's userspace cross compiler, for example::
+
+  $CC -Os -static -o ux3320-stock-dump tools/net/optical/ux3320-stock-dump.c
+
+The tool is in ``tools/net/optical``. It uses the exact little-endian
+AOT4221NK vendor ABI, ioctl 0x40044265 with an 0x2214-byte argument. Command 3
+reads the common half and the five banks under the vendor semaphore. It only
+writes the bank selector and does not issue the laser-adjustment commands.
+Run it on the original firmware; it is not an interface of this Linux driver.
+Export while the original firmware is otherwise idle so a separate command
+cannot change calibration between initialization and capture.
+
+Place the result in ``/lib/firmware`` under the board's ``firmware-name``, or
+supply it as a dedicated NVMEM cell named ``calibration``. NVMEM takes
+precedence; a declared but unreadable cell is an error, not a reason to use a
+possibly unrelated firmware file. With no explicit name the default is
+``ux/ux3320b1-hwconfig.bin``. After adding an initially missing image,
+reprobe the I2C device to load it.
+
+Programming and diagnostics
+---------------------------
+
+The driver holds soft TX_DISABLE throughout image loading. It programs the
+native lower-register range and bank order, loads the final single-loop LUTs
+after the device controls, then reads back the user, bias, modulation and APD
+tables. I2C errors, a readback mismatch, missing calibration, or an unsupported
+mode prevent transmitter enable. The pulse used to rearm TX is performed
+only for an explicit enable or when rearming an already enabled transmitter.
+A disabled transmitter stays disabled on a rearm request.
+
+The chip handles closed-loop operation and temperature-table lookup. There
+is no guessed periodic software bias servo. The generic frontend exposes
+identity and state below ``/sys/class/optical_frontend``; its hwmon bridge
+exposes temperature, voltage, bias current and TX/RX optical power in standard
+units. An I2C error is returned as an error, rather than a zero measurement.
+Missing calibration permits I2C/status diagnostics but does not make an
+uninitialized chip supply valid optical measurements or release TX.
+
+The register-image restore was checked against images obtained by emulating
+the original ARM initializer for single/double loop and APD/PIN inputs. These
+are synthetic test fixtures, not calibration files for an actual board. The
+new driver's I2C fault paths were exercised separately. Live laser power,
+temperature behavior, chip readback semantics and OLT operation still need
+validation on a UX3320B1 board with its own image.
+
+Use this provider in place of the experimental EN757x-core UX3320 provider
+in PR #99; the new compatible is ``ux,ux3320b1`` rather than
+``airoha,ux3320``. Other MAC/PHY commits from that PR are independent.
