@@ -163,6 +163,10 @@
 			#address-cells = <0>;
 
 			pcie0_rst_pins: pcie0-rst-pins {
+				mux {
+					function = "pcie_reset";
+					groups = "pcie_reset0";
+				};
 				conf {
 					pins = "pcie_reset0";
 					drive-open-drain = <1>;
@@ -170,6 +174,10 @@
 			};
 
 			pcie1_rst_pins: pcie1-rst-pins {
+				mux {
+					function = "pcie_reset";
+					groups = "pcie_reset1";
+				};
 				conf {
 					pins = "pcie_reset1";
 					drive-open-drain = <1>;
@@ -355,13 +363,17 @@
 		#phy-cells = <1>;
 	};
 
+	pbus_csr: syscon@1fbe3400 {
+		compatible = "airoha,an7552-pbus-csr", "syscon";
+		reg = <0x1fbe3400 0xfc>;
+	};
+
 	pciephy: phy@1fa93700 {
 		compatible = "airoha,an7552-pcie-phy";
 		reg = <0x1fa93700 0x568>,
 		      <0x1fa95700 0x568>;
 		reg-names = "pcie0", "pcie1";
 		#phy-cells = <0>;
-		airoha,chip_scu = <&chip_scu>;
 	};
 
 	pcie0: pcie@1fa91000 {
@@ -383,10 +395,10 @@
 		pinctrl-names = "default";
 		pinctrl-0 = <&pcie0_rst_pins>;
 
-		airoha,npu = <&npu>;
+		mediatek,pbus-csr = <&pbus_csr 0x0 0x4>;
 
 		phys = <&pciephy>;
-		phy-names = "pcie-phy";
+		phy-names = "pcie-phy0";
 
 		#interrupt-cells = <1>;
 		interrupt-map-mask = <0 0 0 7>;
@@ -420,10 +432,10 @@
 		pinctrl-names = "default";
 		pinctrl-0 = <&pcie1_rst_pins>;
 
-		airoha,npu = <&npu>;
+		mediatek,pbus-csr = <&pbus_csr 0x8 0xc>;
 
 		phys = <&pciephy>;
-		phy-names = "pcie-phy";
+		phy-names = "pcie-phy1";
 
 		#interrupt-cells = <1>;
 		interrupt-map-mask = <0 0 0 7>;
