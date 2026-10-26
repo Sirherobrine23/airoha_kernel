@@ -50,7 +50,7 @@
 
 #include "airoha_eth.h"
 #include "airoha_xpon.h"
-#include "airoha_gpon_omci.h"
+#include "airoha_omci.h"
 #include "airoha_regs.h"
 #include "airoha_ploam.h"
 

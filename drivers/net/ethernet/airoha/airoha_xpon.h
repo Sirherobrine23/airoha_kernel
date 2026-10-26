@@ -15,7 +15,7 @@
 #include <net/xpon/oam.h>
 
 #include "airoha_eth.h"
-#include "airoha_gpon_omci.h"
+#include "airoha_omci.h"
 #include "airoha_ploam.h"
 
 #define V1_XPON_REGION_SIZE		0x00010000

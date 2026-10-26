@@ -1,10 +1,9 @@
 # SPDX-License-Identifier: GPL-2.0-only
 config NET_VENDOR_AIROHA
-	bool "Airoha/EcoNet devices"
+	bool "Airoha devices"
 	depends on ARCH_AIROHA || ECONET || COMPILE_TEST
 	help
-	  Enable Ethernet drivers for the Airoha ARM and EcoNet MIPS frame
-	  engines.
+	  If you have a Airoha or Econet SoC with ethernet, say Y.
 
 if NET_VENDOR_AIROHA
 
@@ -26,22 +25,8 @@ config NET_AIROHA
 	select PAGE_POOL
 	imply NET_AIROHA_NPU if ARCH_AIROHA
 	help
-	  Support the shared Airoha/EcoNet frame-engine Ethernet datapath,
-	  including generation-1 EN751221/EN7528 and generation-2
-	  EN7523/AN7552/AN7563/EN7581/AN7583 SoCs. The hardware generation is selected
-	  from the device-tree compatible and SoC data at runtime. QDMA, GDM,
-	  PPE and phylink infrastructure are built as one driver so both
-	  generations follow the same lifecycle and common interfaces.
-
-config NET_AIROHA_KUNIT_TEST
-	bool "Airoha xPON service table tests" if !KUNIT_ALL_TESTS
-	depends on KUNIT=y && NET_AIROHA=y
-	default KUNIT_ALL_TESTS
-	help
-	  Test shared classifier rules, cookie lifetime, full-table updates
-	  and failed replacements without Ethernet or optical hardware.
-	  Include cookie bucket compaction after fragmented deletions.
-	  These tests do not validate QDMA descriptors or PON activation.
+	  This driver supports the gigabit ethernet MACs in the
+	  Airoha and Econet SoC family.
 
 config NET_AIROHA_PPE_DEBUGFS
 	bool
@@ -59,74 +44,48 @@ config NET_AIROHA_FLOW_STATS
 	  Enable Airoha flowtable statistic counters.
 
 config NET_AIROHA_SOC_WED
-	bool "Airoha WED v1 support"
-	depends on NET_AIROHA && PCI
+	bool "Airoha WED support"
+	depends on NET_AIROHA && !NET_AIROHA_WHNAT && PCI
 	select NET_MEDIATEK_WED_COMMON
 	help
-	  Enable WiFi Ethernet Datapath (WED) hardware offload for the
-	  EN751221, EN7528 and EN7523 SoCs. When enabled, mt76 WiFi drivers can
-	  offload wireless transmit processing through the WED engine rather
-	  than taking the CPU path.
+	  Enable WiFi Ethernet Datapath (WED) hardware offload.
+	  When enabled, mt76 WiFi drivers can offload wireless
+	  transmit processing through the WED engine rather than
+	  taking the slow path through the CPU.
 
 	  If unsure, say N.
 
 config NET_AIROHA_WHNAT
-	bool "EcoNet EN751221 WHNAT (PPE offload for WiFi without WED)"
-	depends on NET_AIROHA && (ECONET || COMPILE_TEST)
+	bool "EcoNet PPE WHNAT"
+	depends on NET_AIROHA && (SOC_ECONET_EN751221 || COMPILE_TEST)
 	select CFG80211_HEADERS
 	help
-	  Let the EN751221 PPE forward NAT flows from and to WiFi netdevs
-	  whose radios have no WED support (MT7603, MT76x2), like the vendor
-	  WHNAT driver: mt76 hands received frames to the PPE through the LAN
-	  QDMA, and the PPE returns frames of flows bound towards a WiFi
-	  interface to the CPU, which queues them straight to that interface.
-	  Netdevice events give the WiFi interfaces their slots, so mt76 only
-	  offers received frames through en75_whnat_upstream_early(). Setting
-	  the whnat_auto_vifs module parameter to 0 makes the slots come from
-	  en75_whnat_register_vif() calls instead. The offload is on whenever
-	  a PPE is active; clearing whnat_enable stops offering new frames.
+	  Let PPE forward NAT flows from and to WiFi netdevs
+	  whose radios have no WED support.
 
 	  If unsure, say N.
 
-config AIROHA_XPON_V1
-	tristate "Airoha/EcoNet xPON MAC driver"
+config AIROHA_XPON
+	tristate "Airoha xPON MAC driver"
 	depends on ARCH_AIROHA || ECONET || COMPILE_TEST
 	depends on NET_AIROHA
 	depends on OF
 	depends on SFP
-	depends on OPTICAL_FRONTEND || OPTICAL_FRONTEND=n
+	depends on OPTICAL_FRONTEND
 	depends on MFD_SYSCON
 	select PHY_AIROHA_XPON
 	select XPON
 	select XPON_OMCI
 	select XPON_OAM
 	help
-	  Driver for the shared xPON MAC complex found in Airoha/EcoNet SoCs.
-	  GPON and EPON are implemented by one platform driver and exposed
-	  through the generic xPON subsystem. GPON includes ITU-T G.984.3
-	  activation/PLOAM and uses the in-kernel OMCI agent; EPON includes
-	  IEEE 802.3 MPCP LLID registration and security support.
-
-	  EN7580 XGS-PON support currently prepares the 10G MAC in O1 and
-	  exposes its register status through debugfs. PHY/PMA initialization,
-	  authenticated PLOAM activation and the 10G datapath are not implemented
-	  yet; the driver keeps automatic upstream replies and MAC interrupts
-	  disabled and does not register an OMCI transport for this mode.
+	  Enable support for PON on ethernet driver for SoC familys support
 
 config AIROHA_XDSL
-	tristate "EcoNet EN7512/EN7516 xDSL/PTM frontend"
-	depends on ECONET || COMPILE_TEST
+	tristate "EcoNet xDSL frontend"
+	depends on SOC_ECONET_EN751221 || SOC_ECONET_EN751627 || COMPILE_TEST
 	depends on NET_AIROHA
 	depends on OF
 	help
-	  Build the initial xDSL frontend for the EcoNet EN751221 (EN7512)
-	  and EN751627 (EN7516) SoC families. The driver owns the DMT and PTM-TC
-	  resources and connects their reset, interrupt and netdev
-	  lifecycle to the GDM2 Ethernet datapath.
-
-	  The proprietary legacy module embeds the complete G.hs/ADSL/VDSL
-	  training and DSP implementation. Until a clean-room line engine is
-	  implemented, this driver keeps the DMT interrupts masked and carrier
-	  down after preparing the PTM datapath.
+	  Add support for xDSL Ethernet support on SoC Family have xDSL controllers
 
 endif # NET_VENDOR_AIROHA
