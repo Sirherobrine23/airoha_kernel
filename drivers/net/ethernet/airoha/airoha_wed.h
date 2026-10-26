@@ -12,15 +12,18 @@
 struct mtk_wed_hw;
 #endif
 
+struct airoha_eth;
+
 #if IS_ENABLED(CONFIG_NET_AIROHA_SOC_WED)
-int airoha_wed_add_hw(struct device_node *np, int index);
+int airoha_wed_add_hw(struct airoha_eth *eth, struct device_node *np, int index);
 void airoha_wed_exit(void);
 int airoha_wed_flow_add(int index);
 void airoha_wed_flow_remove(int index);
 void airoha_wed_fe_reset(void);
 void airoha_wed_fe_reset_complete(void);
 #else
-static inline int airoha_wed_add_hw(struct device_node *np, int index)
+static inline int airoha_wed_add_hw(struct airoha_eth *eth,
+				    struct device_node *np, int index)
 {
 	of_node_put(np);
 	return 0;

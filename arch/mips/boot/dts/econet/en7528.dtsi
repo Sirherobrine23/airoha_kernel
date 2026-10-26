@@ -705,7 +705,7 @@
 		/* <GIC_SHARED 56 IRQ_TYPE_LEVEL_HIGH> => WIFI DMA 1 port 1 */
 		/* <GIC_SHARED 58 IRQ_TYPE_LEVEL_HIGH> => WIFI DMA 1 for WOE */
 		wed0: wed@1fa02000 {
-			compatible = "airoha,en7523-wed", "syscon";
+			compatible = "econet,en7528-wed", "syscon";
 			reg = <0x1fa02000 0xb00>,
 			      <0x1fa06000 0x400>;
 			reg-names = "wed", "wdma";
@@ -714,7 +714,7 @@
 		};
 
 		wed1: wed@1fa03000 {
-			compatible = "airoha,en7523-wed", "syscon";
+			compatible = "econet,en7528-wed", "syscon";
 			reg = <0x1fa03000 0xb00>,
 			      <0x1fa06400 0x400>;
 			reg-names = "wed", "wdma";

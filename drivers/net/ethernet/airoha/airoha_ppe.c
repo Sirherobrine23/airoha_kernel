@@ -43,12 +43,12 @@ static const struct rhashtable_params airoha_l2_flow_table_params = {
 	.automatic_shrinking = true,
 };
 
-static int airoha_ppe_v1_flow_offload_replace(struct net_device *dev,
-					       struct flow_cls_offload *f,
-					       const void *owner);
-static int airoha_ppe_v1_flow_offload_destroy(struct net_device *dev,
-					       struct flow_cls_offload *f);
-static int airoha_ppe_v1_flow_offload_stats(struct net_device *dev,
+static int airoha_ppe_v1_flow_offload_replace(struct airoha_ppe *ppe,
+					      struct flow_cls_offload *f,
+					      const void *owner);
+static int airoha_ppe_v1_flow_offload_destroy(struct airoha_ppe *ppe,
+					      struct flow_cls_offload *f);
+static int airoha_ppe_v1_flow_offload_stats(struct airoha_ppe *ppe,
 					    struct flow_cls_offload *f);
 static void airoha_ppe_v1_hw_init(struct airoha_ppe *ppe);
 
@@ -575,11 +575,15 @@ static int airoha_ppe_get_wdma_info(struct net_device *dev, const u8 *addr,
 	if (err)
 		return err;
 
+	if (!stack.num_paths)
+		return -ENODEV;
+
 	path = &stack.path[stack.num_paths - 1];
 	if (path->type != DEV_PATH_MTK_WDMA)
 		return -EINVAL;
 
 	info->idx = path->mtk_wdma.wdma_idx;
+	info->queue = path->mtk_wdma.queue;
 	info->bss = path->mtk_wdma.bss;
 	info->wcid = path->mtk_wdma.wcid;
 
@@ -663,6 +667,20 @@ static int airoha_ppe_foe_entry_prepare(struct airoha_eth *eth,
 
 		if (!airoha_ppe_get_wdma_info(netdev, data->eth.h_dest,
 					      &info)) {
+			if (airoha_is(eth, airoha_en7523)) {
+				u8 ring = info.idx * 2 + info.queue;
+
+				if (info.idx > 1 || info.queue > 1 ||
+				    info.wcid > 0xff || info.bss > 0x3f)
+					return -EOPNOTSUPP;
+				val |= FIELD_PREP(AIROHA_FOE_IB2_NBQ, ring) |
+				       FIELD_PREP(AIROHA_FOE_IB2_PSE_PORT,
+						  FE_PSE_PORT_GDM3) |
+				       AIROHA_FOE_IB2_PSE_QOS;
+				qdata |= FIELD_PREP(AIROHA_FOE_CHANNEL, 6 + ring);
+				wlan_etype = (info.wcid << 6) | info.bss;
+				goto wlan_done;
+			}
 			val |= FIELD_PREP(AIROHA_FOE_IB2_NBQ, info.idx) |
 			       FIELD_PREP(AIROHA_FOE_IB2_PSE_PORT,
 					  airoha_is(eth, airoha_en7523) ?
@@ -758,6 +776,7 @@ static int airoha_ppe_foe_entry_prepare(struct airoha_eth *eth,
 		}
 	}
 
+wlan_done:
 	if (is_multicast_ether_addr(data->eth.h_dest))
 		val |= AIROHA_FOE_IB2_MULTICAST;
 
@@ -2243,13 +2262,13 @@ static int airoha_ppe_flow_offload_cmd(struct airoha_eth *eth,
 
 	switch (f->command) {
 	case FLOW_CLS_REPLACE:
-		return v1 ? airoha_ppe_v1_flow_offload_replace(dev, f, owner) :
+		return v1 ? airoha_ppe_v1_flow_offload_replace(eth->ppe, f, owner) :
 			    airoha_ppe_flow_offload_replace(eth, f);
 	case FLOW_CLS_DESTROY:
-		return v1 ? airoha_ppe_v1_flow_offload_destroy(dev, f) :
+		return v1 ? airoha_ppe_v1_flow_offload_destroy(eth->ppe, f) :
 			    airoha_ppe_flow_offload_destroy(eth, f);
 	case FLOW_CLS_STATS:
-		return v1 ? airoha_ppe_v1_flow_offload_stats(dev, f) :
+		return v1 ? airoha_ppe_v1_flow_offload_stats(eth->ppe, f) :
 			    airoha_ppe_flow_offload_stats(eth, f);
 	default:
 		return -EOPNOTSUPP;
@@ -3956,12 +3975,16 @@ static struct airoha_ppe *airoha_ppe_from_netdev(struct net_device *netdev)
 	return gdm->ppe->priv;
 }
 
-static int airoha_ppe_v1_flow_set_output(struct airoha_foe_entry *entry,
-				  struct net_device *odev, bool vlan_valid,
-				  u16 vlan_id, u8 vlan_prio, bool *xpon,
-				  struct xpon_endpoint_config *endpoint)
+static int airoha_ppe_v1_flow_set_output(struct airoha_ppe *ppe,
+					 struct airoha_foe_entry *entry,
+					 struct net_device *odev, bool vlan_valid,
+					 u16 vlan_id, u8 vlan_prio, bool *xpon,
+					 struct xpon_endpoint_config *endpoint)
 {
+	struct airoha_wdma_info info = {};
 	struct airoha_gdm_common *gdm;
+	u8 dmac[ETH_ALEN];
+	u32 *l2 = airoha_foe_v1_l2(entry);
 	struct dsa_port *dp;
 	int dsa_port = -1;
 	int wifi_idx;
@@ -3970,6 +3993,28 @@ static int airoha_ppe_v1_flow_set_output(struct airoha_foe_entry *entry,
 	*xpon = false;
 	if (!odev)
 		return -EOPNOTSUPP;
+
+	put_unaligned_be32(l2[1], dmac);
+	put_unaligned_be16(FIELD_GET(AIROHA_FOE_L2_DMAC_LO, l2[2]), dmac + 4);
+	if (!airoha_ppe_get_wdma_info(odev, dmac, &info)) {
+		u8 ring = info.idx * 2 + info.queue;
+		u32 *data = airoha_foe_v1_data(entry);
+
+		if (!airoha_is(ppe->common.eth, econet_en7528) ||
+		    vlan_valid || info.idx > 1 || info.queue > 1 ||
+		    info.wcid > 0xff || info.bss > 0x3f)
+			return -EOPNOTSUPP;
+
+		/* The vendor LAN arbiter maps the fourth WDMA queue to channel 0. */
+		airoha_foe_v1_entry_set_pse_port(entry, AIROHA_FOE_V1_FP_QDMA_LAN);
+		airoha_foe_v1_entry_set_queue(entry, 0);
+		*data &= ~(AIROHA_FOE_V1_CHANNEL | AIROHA_FOE_V1_SHAPER_ID);
+		*data |= FIELD_PREP(AIROHA_FOE_V1_CHANNEL, ring == 3 ? 0 : 5 + ring) |
+			 FIELD_PREP(AIROHA_FOE_V1_SHAPER_ID, 0x7f);
+		airoha_foe_v1_l2_set(entry, 0, AIROHA_FOE_L2_ETYPE,
+				     (info.wcid << 6) | info.bss);
+		return 0;
+	}
 
 	wifi_idx = airoha_whnat_active() ? airoha_whnat_vif_index(odev) : -1;
 	if (wifi_idx >= 0) {
@@ -4126,7 +4171,7 @@ static int airoha_ppe_v1_l2_flow_replace(struct airoha_ppe *ppe,
 		if (err)
 			return err;
 	}
-	err = airoha_ppe_v1_flow_set_output(&entry, odev, vlan_push, vlan_id,
+	err = airoha_ppe_v1_flow_set_output(ppe, &entry, odev, vlan_push, vlan_id,
 					    vlan_prio, &xpon, &endpoint);
 	if (err)
 		return err;
@@ -4171,11 +4216,10 @@ static int airoha_ppe_v1_l2_flow_replace(struct airoha_ppe *ppe,
 	return 0;
 }
 
-static int airoha_ppe_v1_flow_offload_replace(struct net_device *dev,
-				       struct flow_cls_offload *cls,
-				       const void *owner)
+static int airoha_ppe_v1_flow_offload_replace(struct airoha_ppe *ppe,
+					      struct flow_cls_offload *cls,
+					      const void *owner)
 {
-	struct airoha_ppe *ppe = airoha_ppe_from_netdev(dev);
 	struct flow_rule *rule = flow_cls_offload_flow_rule(cls);
 	struct flow_match_basic basic;
 	struct flow_match_ports ports;
@@ -4363,8 +4407,8 @@ static int airoha_ppe_v1_flow_offload_replace(struct net_device *dev,
 	if (pppoe_sid)
 		airoha_foe_v1_entry_set_pppoe(&entry, pppoe_sid);
 
-	err = airoha_ppe_v1_flow_set_output(&entry, odev, vlan_push, vlan_id,
-				     vlan_prio, &xpon, &endpoint);
+	err = airoha_ppe_v1_flow_set_output(ppe, &entry, odev, vlan_push, vlan_id,
+					    vlan_prio, &xpon, &endpoint);
 	if (err)
 		return err;
 	if (vlan_push && !xpon)
@@ -4409,10 +4453,9 @@ static int airoha_ppe_v1_flow_offload_replace(struct net_device *dev,
 	return 0;
 }
 
-static int airoha_ppe_v1_flow_offload_destroy(struct net_device *dev,
-					       struct flow_cls_offload *cls)
+static int airoha_ppe_v1_flow_offload_destroy(struct airoha_ppe *ppe,
+					      struct flow_cls_offload *cls)
 {
-	struct airoha_ppe *ppe = airoha_ppe_from_netdev(dev);
 	struct airoha_flow_table_entry *flow;
 
 	if (!ppe)
@@ -4483,10 +4526,9 @@ static unsigned long airoha_ppe_v1_flow_lastused(struct airoha_ppe *ppe,
 	return flow->v1_lastused;
 }
 
-static int airoha_ppe_v1_flow_offload_stats(struct net_device *dev,
+static int airoha_ppe_v1_flow_offload_stats(struct airoha_ppe *ppe,
 					    struct flow_cls_offload *cls)
 {
-	struct airoha_ppe *ppe = airoha_ppe_from_netdev(dev);
 	struct airoha_flow_table_entry *flow;
 	unsigned long lastused;
 
@@ -4532,6 +4574,7 @@ static int airoha_ppe_v1_flow_offload_stats(struct net_device *dev,
  */
 struct airoha_ppe_block_priv {
 	struct net_device *dev;
+	struct airoha_ppe *ppe;
 };
 
 static void airoha_ppe_block_priv_release(void *cb_priv)
@@ -4544,19 +4587,22 @@ static int airoha_ppe_tc_block_cb(enum tc_setup_type type, void *type_data,
 {
 	struct airoha_ppe_block_priv *priv = cb_priv;
 	struct net_device *dev = priv->dev;
-	struct airoha_ppe *ppe = airoha_ppe_from_netdev(dev);
+	struct airoha_ppe *ppe = priv->ppe;
 
 	if (!ppe || type != TC_SETUP_CLSFLOWER)
 		return -EOPNOTSUPP;
+
+	if (ppe->common.eth->soc->foe_format != AIROHA_FOE_FORMAT_V1)
+		return airoha_ppe_setup_tc_block_cb(&ppe->common.dev, type_data);
 
 	return airoha_ppe_flow_offload_cmd(ppe->common.eth, dev, type_data,
 					   priv);
 }
 
-static int airoha_ppe_setup_tc_block(struct net_device *dev,
-				 struct flow_block_offload *offload)
+static int airoha_ppe_setup_tc_block(struct airoha_ppe *ppe,
+				     struct net_device *dev,
+				     struct flow_block_offload *offload)
 {
-	struct airoha_ppe *ppe = airoha_ppe_from_netdev(dev);
 	flow_setup_cb_t *cb = airoha_ppe_tc_block_cb;
 	struct airoha_ppe_block_priv *priv;
 	struct flow_block_cb *block_cb;
@@ -4573,12 +4619,15 @@ static int airoha_ppe_setup_tc_block(struct net_device *dev,
 			flow_block_cb_incref(block_cb);
 			return 0;
 		}
-		err = airoha_ppe_v1_engine_arm(ppe);
+		err = 0;
+		if (ppe->common.eth->soc->foe_format == AIROHA_FOE_FORMAT_V1)
+			err = airoha_ppe_v1_engine_arm(ppe);
 		if (err)
 			return err;
 		priv = kzalloc(sizeof(*priv), GFP_KERNEL);
 		if (priv) {
 			priv->dev = dev;
+			priv->ppe = ppe;
 			block_cb = flow_block_cb_alloc(cb, dev, priv,
 						       airoha_ppe_block_priv_release);
 		} else {
@@ -4626,10 +4675,21 @@ static int airoha_ppe_setup_tc(struct airoha_ppe_dev *ppe_dev,
 	switch (type) {
 	case TC_SETUP_BLOCK:
 	case TC_SETUP_FT:
-		return airoha_ppe_setup_tc_block(dev, type_data);
+		return airoha_ppe_setup_tc_block(ppe_dev->priv, dev, type_data);
 	default:
 		return -EOPNOTSUPP;
 	}
+}
+
+int airoha_ppe_setup_tc_wed(struct airoha_eth *eth, struct net_device *dev,
+			    enum tc_setup_type type, void *type_data)
+{
+	if (!eth->ppe || !test_bit(DEV_STATE_REGISTERED, &eth->state))
+		return -ENODEV;
+	if (type != TC_SETUP_BLOCK && type != TC_SETUP_FT)
+		return -EOPNOTSUPP;
+
+	return airoha_ppe_setup_tc_block(eth->ppe, dev, type_data);
 }
 
 static int airoha_ppe_v1_init(struct airoha_eth *eth)

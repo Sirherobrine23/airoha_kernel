@@ -13,6 +13,7 @@
 #include "mediatek/mtk_wed_regs.h"
 
 struct mtk_eth;
+struct airoha_eth;
 struct mtk_wed_wo;
 
 struct mtk_wed_soc_data {
@@ -35,6 +36,7 @@ struct mtk_wed_hw {
 	const struct mtk_wed_soc_data *soc;
 	struct device_node *node;
 	struct mtk_eth *eth;
+	struct airoha_eth *airoha;
 	struct regmap *regs;
 	struct regmap *hifsys;
 	struct device *dev;

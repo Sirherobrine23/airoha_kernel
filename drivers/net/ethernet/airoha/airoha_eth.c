@@ -10827,7 +10827,7 @@ static int airoha_eth_probe(struct platform_device *pdev)
 		wed_np = of_parse_phandle(pdev->dev.of_node, "airoha,wed", i);
 		if (!wed_np)
 			break;
-		err = airoha_wed_add_hw(wed_np, i);
+		err = airoha_wed_add_hw(eth, wed_np, i);
 		if (err)
 			goto error;
 	}
