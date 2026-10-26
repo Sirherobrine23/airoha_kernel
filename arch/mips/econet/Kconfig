@@ -11,34 +11,46 @@ choice
 
 	config SOC_ECONET_EN751221
 		bool "EN751221 family"
-		select COMMON_CLK
 		select CPU_BIG_ENDIAN
 		select ECONET_EN751221_INTC
-		select HAVE_PCI
-		select IRQ_MIPS_CPU
-		select PCI_DRIVERS_GENERIC
-		select SYS_SUPPORTS_MULTITHREADING
+		select PINCTRL
+		select PINCTRL_AIROHA
+		select PINCTRL_AIROHA_EN751221
 		help
-		  The EN751221 family includes EN7512, RN7513, EN7521, EN7526.
+		  The EN751221 family includes EN7512, EN7513, EN7521, EN7526.
 		  They are based on single core MIPS 34Kc processors. To boot
 		  this kernel, you will need a device tree such as
 		  MIPS_RAW_APPENDED_DTB=y, and a root filesystem.
 
-	config SOC_ECONET_EN7528
-		bool "EN7528 family"
-		select COMMON_CLK
-		select COMMON_CLK_EN7523
-		select CPU_LITTLE_ENDIAN
-		select HAVE_PCI
-		select IRQ_MIPS_CPU
+	config SOC_ECONET_EN751627
+		bool "EN751627 family"
+		select CPU_BIG_ENDIAN
 		select MIPS_CPU_SCACHE
 		select MIPS_GIC
-		select PCI_DRIVERS_GENERIC
+		select PINCTRL
+		select PINCTRL_AIROHA
+		select PINCTRL_AIROHA_EN7528
 		select SMP
 		select SMP_UP
 		select SYS_SUPPORTS_HIGHMEM
 		select SYS_SUPPORTS_MIPS_CPS
-		select SYS_SUPPORTS_MULTITHREADING
+		select SYS_SUPPORTS_SMP
+		help
+		  The EN751627 family with dual-core MIPS 1004Kc.
+		  Requires MIPS_RAW_APPENDED_DTB=y for boot.
+
+	config SOC_ECONET_EN7528
+		bool "EN7528 family"
+		select CPU_LITTLE_ENDIAN
+		select MIPS_CPU_SCACHE
+		select MIPS_GIC
+		select PINCTRL
+		select PINCTRL_AIROHA
+		select PINCTRL_AIROHA_EN7528
+		select SMP
+		select SMP_UP
+		select SYS_SUPPORTS_HIGHMEM
+		select SYS_SUPPORTS_MIPS_CPS
 		select SYS_SUPPORTS_SMP
 		help
 		  The EN7528 family with dual-core MIPS 1004Kc.
@@ -46,14 +58,9 @@ choice
 
 	config SOC_ECONET_EN7580
 		bool "EN7580 family"
-		select COMMON_CLK
-		select COMMON_CLK_EN7523
 		select CPU_LITTLE_ENDIAN
-		select HAVE_PCI
-		select IRQ_MIPS_CPU
 		select MIPS_CPU_SCACHE
 		select MIPS_GIC
-		select PCI_DRIVERS_GENERIC
 		select PINCTRL
 		select PINCTRL_AIROHA
 		select PINCTRL_AIROHA_EN7580
@@ -61,7 +68,6 @@ choice
 		select SMP_UP
 		select SYS_SUPPORTS_HIGHMEM
 		select SYS_SUPPORTS_MIPS_CPS
-		select SYS_SUPPORTS_MULTITHREADING
 		select SYS_SUPPORTS_SMP
 		help
 		  The EN7580 family with dual-core MIPS interAptiv.

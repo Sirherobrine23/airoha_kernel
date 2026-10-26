@@ -393,6 +393,8 @@ config ECONET
 	bool "EcoNet MIPS family"
 	select BOOT_RAW
 	select CPU_SUPPORTS_CPUFREQ
+	select COMMON_CLK
+	select COMMON_CLK_EN7523
 	select DMA_NONCOHERENT
 	select DEBUG_ZBOOT if DEBUG_KERNEL
 	select EARLY_PRINTK_8250
@@ -409,6 +411,10 @@ config ECONET
 	select SYS_SUPPORTS_MIPS16
 	select SYS_SUPPORTS_ZBOOT_UART16550
 	select USE_GENERIC_EARLY_PRINTK_8250
+	select HAVE_PCI
+	select IRQ_MIPS_CPU
+	select PCI_DRIVERS_GENERIC
+	select SYS_SUPPORTS_MULTITHREADING
 	select USE_OF
 	help
 	  EcoNet EN75xx MIPS devices are big endian MIPS machines used
