@@ -6613,38 +6613,22 @@ static void airoha_fe_pse_iq_init(struct airoha_eth *eth)
 		      FIELD_PREP(PSE_IQ_RES2_P4_MASK, 0x34));
 }
 
-/* AN7552/AN7563 share the EN7523 datapath, with a revised PSE. */
-static int an7552_fe_init(struct airoha_eth *eth)
+static void airoha_fe_pse_init(struct airoha_eth *eth)
 {
-	airoha_fe_maccr_init(eth);
+	u32 reset = FE_RST_CORE_MASK;
+
+	/* Map the GDMP SRAM to the FE and add its 0x100 pages to the PSE. */
 	airoha_wr(eth->gdmp_regs, 0x74, 3);
 	airoha_fe_wr(eth, eth->soc->pse_fq_cfg, 0x500);
-	airoha_fe_wr(eth, REG_FE_RST_GLO_CFG, FE_RST_CORE_MASK);
+
+	if (!airoha_is(eth, airoha_an7552))
+		reset |= FE_RST_GDM3_MBI_ARB_MASK | FE_RST_GDM4_MBI_ARB_MASK;
+	airoha_fe_wr(eth, REG_FE_RST_GLO_CFG, reset);
 	usleep_range(1000, 2000);
 
-	/* The SDK leaves the OQ reservations at their silicon defaults. */
-	airoha_fe_wr(eth, AN7552_PSE_SHARE_USED_THD, 0x01e001f4);
-	airoha_fe_wr(eth, REG_FE_PCE_CFG, 0);
-	airoha_fe_vip_setup(eth);
-	airoha_fe_crsn_qsel_init(eth);
-	airoha_fe_rmw(eth, REG_CDM_FWD_CFG(1), CDM_VIP_QSEL_MASK,
-		      FIELD_PREP(CDM_VIP_QSEL_MASK, 4));
-	airoha_fe_rmw(eth, REG_CDM_FWD_CFG(2),
-		      CDM_VIP_QSEL_MASK | CDM_OAM_QSEL_MASK,
-		      FIELD_PREP(CDM_VIP_QSEL_MASK, 4) |
-		      FIELD_PREP(CDM_OAM_QSEL_MASK, 15));
-
-	/* Match fe_set_qdma_fc_map(); PSE port 2, OQs 10 and 11. */
-	airoha_fe_wr(eth, AN7552_QDMA2_FC_MAPPING5, 0x004b004a);
-	airoha_fe_clear(eth, REG_FE_CPORT_CFG, FE_CPORT_QUEUE_XFC_MASK);
-	airoha_fe_set(eth, REG_FE_CPORT_CFG, FE_CPORT_PORT_XFC_MASK);
-	airoha_fe_clear(eth, REG_FE_CSR_IFC_CFG, FE_IFC_EN_MASK);
-	airoha_set_gdm_port_fwd_cfg(eth, REG_GDM_FWD_CFG(AIROHA_GDM1_IDX),
-				    FE_PSE_PORT_CDM1);
-	airoha_set_gdm_port_fwd_cfg(eth, REG_GDM_FWD_CFG(AIROHA_GDM2_IDX),
-				    FE_PSE_PORT_DROP);
-
-	return 0;
+	/* AN7552 uses a fixed threshold and keeps silicon OQ reservations. */
+	if (airoha_is(eth, airoha_an7552))
+		airoha_fe_wr(eth, AN7552_PSE_SHARE_USED_THD, 0x01e001f4);
 }
 
 static int airoha_fe_init(struct airoha_eth *eth)
@@ -6680,8 +6664,6 @@ static int airoha_fe_init(struct airoha_eth *eth)
 	}
 
 	airoha_fe_pse_iq_init(eth);
-	if (airoha_is(eth, airoha_an7552))
-		return an7552_fe_init(eth);
 
 	/* VIP classification is shared by the EcoNet and Airoha FEs.
 	 * EN7516/EN7527/EN7528 additionally use the same 4-bit CRSN layout
@@ -6700,8 +6682,13 @@ static int airoha_fe_init(struct airoha_eth *eth)
 
 	airoha_fe_maccr_init(eth);
 
-	/* enable FE copy engine for KA/DPI */
-	airoha_fe_wr(eth, REG_FE_PCE_CFG, PCE_DPI_EN_MASK | PCE_KA_EN_MASK);
+	/* AN7552 programs its PSE before the classifier and keeps PCE disabled. */
+	if (airoha_is(eth, airoha_an7552))
+		airoha_fe_pse_init(eth);
+
+	/* enable FE copy engine for KA/DPI where supported */
+	airoha_fe_wr(eth, REG_FE_PCE_CFG,
+		     airoha_is(eth, airoha_an7552) ? 0 : PCE_DPI_EN_MASK | PCE_KA_EN_MASK);
 	/* set vip queue selection to ring 1 */
 	airoha_fe_rmw(eth, REG_CDM_FWD_CFG(1),
 		      airoha_is(eth, airoha_en7523) ?
@@ -6715,49 +6702,46 @@ static int airoha_fe_init(struct airoha_eth *eth)
 		      airoha_is(eth, airoha_en7523) ?
 		      FIELD_PREP(EN7523_CDM_VIP_QSEL_MASK, 0x4) :
 		      FIELD_PREP(CDM_VIP_QSEL_MASK, 0x4));
-	/* set GDM4 source interface offset to 8 */
-	if (!airoha_is(eth, airoha_en7523))
-		airoha_fe_rmw(eth, REG_GDM_SRC_PORT_SET(4),
-		      GDM_SPORT_OFF2_MASK |
-		      GDM_SPORT_OFF1_MASK |
-		      GDM_SPORT_OFF0_MASK,
-		      FIELD_PREP(GDM_SPORT_OFF2_MASK, 8) |
-		      FIELD_PREP(GDM_SPORT_OFF1_MASK, 8) |
-		      FIELD_PREP(GDM_SPORT_OFF0_MASK, 8));
+	/* Leave AN7552's DMA page mode and CDM OQ maps unchanged. */
+	if (!airoha_is(eth, airoha_an7552)) {
+		/* set GDM4 source interface offset to 8 */
+		if (!airoha_is(eth, airoha_en7523))
+			airoha_fe_rmw(eth, REG_GDM_SRC_PORT_SET(4),
+				      GDM_SPORT_OFF2_MASK |
+				      GDM_SPORT_OFF1_MASK |
+				      GDM_SPORT_OFF0_MASK,
+				      FIELD_PREP(GDM_SPORT_OFF2_MASK, 8) |
+				      FIELD_PREP(GDM_SPORT_OFF1_MASK, 8) |
+				      FIELD_PREP(GDM_SPORT_OFF0_MASK, 8));
 
-	/* set PSE Page as 128B */
-	airoha_fe_rmw(eth, REG_FE_DMA_GLO_CFG,
-		      FE_DMA_GLO_L2_SPACE_MASK | FE_DMA_GLO_PG_SZ_MASK,
-		      FIELD_PREP(FE_DMA_GLO_L2_SPACE_MASK, airoha_is(eth, airoha_en7523) ? 3 : 2) |
-		      FE_DMA_GLO_PG_SZ_MASK);
+		/* set PSE Page as 128B */
+		airoha_fe_rmw(eth, REG_FE_DMA_GLO_CFG,
+			      FE_DMA_GLO_L2_SPACE_MASK | FE_DMA_GLO_PG_SZ_MASK,
+			      FIELD_PREP(FE_DMA_GLO_L2_SPACE_MASK, airoha_is(eth, airoha_en7523) ? 3 : 2) |
+			      FE_DMA_GLO_PG_SZ_MASK);
 
-	/* map GDMP sram to fe */
-	airoha_wr(eth->gdmp_regs, 0x74, 3);
-	/* set PSE buffer to 0x500 = 0x400(pse itself) + 0x100(GDMP buffer) */
-	airoha_fe_wr(eth, eth->soc->pse_fq_cfg, 0x500);
+		airoha_fe_pse_init(eth);
 
-	airoha_fe_wr(eth, REG_FE_RST_GLO_CFG,
-		     FE_RST_CORE_MASK | FE_RST_GDM3_MBI_ARB_MASK |
-		     FE_RST_GDM4_MBI_ARB_MASK);
-	usleep_range(1000, 2000);
-
-	/* connect RxRing1 and RxRing15 to PSE Port0 OQ-1
-	 * connect other rings to PSE Port0 OQ-0
-	 */
-	airoha_fe_wr(eth, REG_FE_CDM1_OQ_MAP0, BIT(4));
-	airoha_fe_wr(eth, REG_FE_CDM1_OQ_MAP1, BIT(28));
-	airoha_fe_wr(eth, REG_FE_CDM1_OQ_MAP2, BIT(4));
-	airoha_fe_wr(eth, REG_FE_CDM1_OQ_MAP3, BIT(28));
+		/* connect RxRing1 and RxRing15 to PSE Port0 OQ-1
+		 * connect other rings to PSE Port0 OQ-0
+		 */
+		airoha_fe_wr(eth, REG_FE_CDM1_OQ_MAP0, BIT(4));
+		airoha_fe_wr(eth, REG_FE_CDM1_OQ_MAP1, BIT(28));
+		airoha_fe_wr(eth, REG_FE_CDM1_OQ_MAP2, BIT(4));
+		airoha_fe_wr(eth, REG_FE_CDM1_OQ_MAP3, BIT(28));
+	}
 
 	airoha_fe_vip_setup(eth);
-	airoha_fe_pse_ports_init(eth);
+	/* AN7552 retains silicon OQ reservations and the fixed share threshold. */
+	if (!airoha_is(eth, airoha_an7552))
+		airoha_fe_pse_ports_init(eth);
 
 	/* The vendor SDK enables these GDM2 handshake modes only on the
-	 * EN7581-class FE. EN7523 uses the legacy GPON release mode alone;
-	 * enabling the EN7581 handshake there can prevent GDM2 from releasing
-	 * received frames into the PSE.
+	 * EN7581-class FE. EN7523 and AN7552 keep their existing GPON release
+	 * handshake; do not enable these bits just because they share other
+	 * FE register layouts.
 	 */
-	if (!airoha_is(eth, airoha_en7523))
+	if (airoha_is(eth, airoha_en7581, airoha_an7583))
 		airoha_fe_set(eth, REG_GDM_MISC_CFG,
 			      GDM2_RDM_ACK_WAIT_PREF_MASK |
 			      GDM2_CHN_VLD_MODE_MASK);
@@ -6789,29 +6773,33 @@ static int airoha_fe_init(struct airoha_eth *eth)
 		      FIELD_PREP(IP_ASSEMBLE_NBQ_MASK, 22));
 	}
 
-	airoha_fe_set(eth, REG_GDM_FWD_CFG(AIROHA_GDM3_IDX),
-		      GDM_PAD_EN_MASK | GDM_STRIP_CRC_MASK);
-	airoha_fe_set(eth, REG_GDM_FWD_CFG(AIROHA_GDM4_IDX),
-		      GDM_PAD_EN_MASK | GDM_STRIP_CRC_MASK);
+	if (!airoha_is(eth, airoha_an7552)) {
+		airoha_fe_set(eth, REG_GDM_FWD_CFG(AIROHA_GDM3_IDX),
+			      GDM_PAD_EN_MASK | GDM_STRIP_CRC_MASK);
+		airoha_fe_set(eth, REG_GDM_FWD_CFG(AIROHA_GDM4_IDX),
+			      GDM_PAD_EN_MASK | GDM_STRIP_CRC_MASK);
+	}
 
 	/*
-	 * GDM2 is used as the EN7523 xPON datapath. Short Ethernet
+	 * GDM2 is used as the EN7523/AN7552 xPON datapath. Short Ethernet
 	 * packets such as ARP replies and PPPoE discovery frames must
 	 * be padded to ETH_ZLEN before being handed to the GPON MAC.
 	 * Without this, the upstream transmits runt frames which are
 	 * discarded by the OLT or the peer.
 	 */
-	if (airoha_is(eth, airoha_en7523))
+	if (airoha_is(eth, airoha_en7523, airoha_an7552))
 		airoha_fe_set(eth, REG_GDM_FWD_CFG(AIROHA_GDM2_IDX),
 			      GDM_PAD_EN_MASK);
 
-	/* Enable split for MIB counters for GDM3 and GDM4 */
-	airoha_fe_set(eth, REG_FE_GDM_MIB_CFG(AIROHA_GDM3_IDX),
-		      FE_GDM_TX_MIB_SPLIT_EN_MASK |
-		      FE_GDM_RX_MIB_SPLIT_EN_MASK);
-	airoha_fe_set(eth, REG_FE_GDM_MIB_CFG(AIROHA_GDM4_IDX),
-		      FE_GDM_TX_MIB_SPLIT_EN_MASK |
-		      FE_GDM_RX_MIB_SPLIT_EN_MASK);
+	if (!airoha_is(eth, airoha_an7552)) {
+		/* Enable split for MIB counters for GDM3 and GDM4 */
+		airoha_fe_set(eth, REG_FE_GDM_MIB_CFG(AIROHA_GDM3_IDX),
+			      FE_GDM_TX_MIB_SPLIT_EN_MASK |
+			      FE_GDM_RX_MIB_SPLIT_EN_MASK);
+		airoha_fe_set(eth, REG_FE_GDM_MIB_CFG(AIROHA_GDM4_IDX),
+			      FE_GDM_TX_MIB_SPLIT_EN_MASK |
+			      FE_GDM_RX_MIB_SPLIT_EN_MASK);
+	}
 
 	airoha_fe_crsn_qsel_init(eth);
 
@@ -6827,6 +6815,10 @@ static int airoha_fe_init(struct airoha_eth *eth)
 		airoha_fe_wr(eth, REG_CDM_FAQ_THR_CFG(2), 0xc40003f0);
 	}
 
+	/* AN7552 QDMA2 flow control uses PSE port 2, OQs 10 and 11. */
+	if (airoha_is(eth, airoha_an7552))
+		airoha_fe_wr(eth, AN7552_QDMA2_FC_MAPPING5, 0x004b004a);
+
 	airoha_fe_clear(eth, REG_FE_CPORT_CFG, FE_CPORT_QUEUE_XFC_MASK);
 	if (!airoha_is(eth, airoha_en7523))
 		airoha_fe_set(eth, REG_FE_CPORT_CFG, FE_CPORT_PORT_XFC_MASK);
@@ -6836,11 +6828,12 @@ static int airoha_fe_init(struct airoha_eth *eth)
 			      FIELD_PREP(FE_CPORT_FE2SW_IPG, 2));
 	}
 
-	/* default aging mode for mbi unlock issue */
-	airoha_fe_rmw(eth, REG_GDM_CHN_RLS(2),
-		      MBI_RX_AGE_SEL_MASK | MBI_TX_AGE_SEL_MASK,
-		      FIELD_PREP(MBI_RX_AGE_SEL_MASK, 3) |
-		      FIELD_PREP(MBI_TX_AGE_SEL_MASK, 3));
+	/* Configure MBI unlock aging without changing AN7552's release mode. */
+	if (!airoha_is(eth, airoha_an7552))
+		airoha_fe_rmw(eth, REG_GDM_CHN_RLS(2),
+			      MBI_RX_AGE_SEL_MASK | MBI_TX_AGE_SEL_MASK,
+			      FIELD_PREP(MBI_RX_AGE_SEL_MASK, 3) |
+			      FIELD_PREP(MBI_TX_AGE_SEL_MASK, 3));
 
 	/* disable IFC by default */
 	airoha_fe_clear(eth, REG_FE_CSR_IFC_CFG, FE_IFC_EN_MASK);
@@ -6849,8 +6842,15 @@ static int airoha_fe_init(struct airoha_eth *eth)
 	if (airoha_is(eth, airoha_en7523))
 		airoha_fe_set(eth, GDM1_BASE_STAG_EN, CPORT_TX_STAG_EN | CPORT_RX_STAG_EN | GDM1_RX_LAN_SPORT);
 
-	/* enable 1:N vlan action, init vlan table */
-	airoha_fe_set(eth, REG_MC_VLAN_EN, MC_VLAN_EN_MASK);
+	if (airoha_is(eth, airoha_an7552)) {
+		airoha_set_gdm_port_fwd_cfg(eth, REG_GDM_FWD_CFG(AIROHA_GDM1_IDX),
+					    FE_PSE_PORT_CDM1);
+		airoha_set_gdm_port_fwd_cfg(eth, REG_GDM_FWD_CFG(AIROHA_GDM2_IDX),
+					    FE_PSE_PORT_DROP);
+	} else {
+		/* enable 1:N vlan action, init vlan table */
+		airoha_fe_set(eth, REG_MC_VLAN_EN, MC_VLAN_EN_MASK);
+	}
 
 	/* enable Frame Engine interrupts */
 	if (airoha_is(eth, airoha_en7523))
@@ -6860,6 +6860,8 @@ static int airoha_fe_init(struct airoha_eth *eth)
 		      GDM2_TX_INTR2_MASK | GDM2_TX_INTR1_MASK |
 		      GDM2_TX_INTR0_MASK | PSE_FQ_EMPTY_MASK);
 
+	if (airoha_is(eth, airoha_an7552))
+		return 0;
 	return airoha_fe_mc_vlan_clear(eth);
 }
 
