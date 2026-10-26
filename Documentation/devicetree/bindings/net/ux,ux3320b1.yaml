@@ -1,0 +1,70 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/net/ux,ux3320b1.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Xiamen UX UX3320B1 optical frontend
+
+maintainers:
+  - Matheus Sampaio Queiroga <srherobrine20@gmail.com>
+
+description: |
+  UX3320B1 is an optical transceiver controller used with an external BOSA.
+  Its SFF-8472 A2 interface uses an 8-bit bank selector at 0x7f for the upper
+  128-byte register window. The chip handles the calibrated optical loops.
+  TX_DISABLE, RX_LOS and burst-enable board signals belong to the digital
+  PHY consumer, not this I2C provider.
+
+properties:
+  compatible:
+    const: ux,ux3320b1
+
+  reg:
+    maxItems: 1
+
+  '#optical-frontend-cells':
+    const: 0
+
+  nvmem-cells:
+    maxItems: 1
+    description:
+      Board-specific calibrated register image in the 768-byte format exported
+      by the AOT4221NK stock driver. This is not its cfg.bob factory record.
+
+  nvmem-cell-names:
+    items:
+      - const: calibration
+
+  firmware-name:
+    $ref: /schemas/types.yaml#/definitions/string
+    description: |
+      Board-specific final calibrated register image. The 768 bytes contain
+      the A2 lower half followed by upper banks 0, 3, 4, 5 and 6, each in a
+      128-byte slot. NVMEM takes precedence. If absent, request
+      ux/ux3320b1-hwconfig.bin. Missing calibration leaves TX disabled.
+
+required:
+  - compatible
+  - reg
+  - '#optical-frontend-cells'
+
+dependencies:
+  nvmem-cells: [nvmem-cell-names]
+  nvmem-cell-names: [nvmem-cells]
+
+additionalProperties: false
+
+examples:
+  - |
+    i2c {
+        #address-cells = <1>;
+        #size-cells = <0>;
+
+        optical-frontend@51 {
+            compatible = "ux,ux3320b1";
+            reg = <0x51>;
+            #optical-frontend-cells = <0>;
+            firmware-name = "ux/aot4221nk-ux3320b1-hwconfig.bin";
+        };
+    };

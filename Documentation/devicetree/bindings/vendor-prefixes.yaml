@@ -1711,6 +1711,8 @@ patternProperties:
     description: Ultratronik GmbH
   "^utoo,.*":
     description: Aigo Digital Technology Co., Ltd.
+  "^ux,.*":
+    description: Xiamen UX IC Co., Ltd.
   "^v3,.*":
     description: V3 Semiconductor
   "^vaisala,.*":
