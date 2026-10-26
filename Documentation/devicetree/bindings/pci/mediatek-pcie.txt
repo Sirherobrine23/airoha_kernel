@@ -8,6 +8,8 @@ Required properties:
 	"mediatek,mt7623-pcie"
 	"mediatek,mt7629-pcie"
 	"airoha,en7523-pcie"
+	"airoha,an7552-pcie"
+	"airoha,an7563-pcie"
 - device_type: Must be "pci"
 - reg: Base addresses and lengths of the root ports.
 - reg-names: Names of the above areas to use during resource lookup.
@@ -54,6 +56,30 @@ Required properties for MT2712/MT7622/MT7629:
 - interrupt-names: Must include the following entries:
 	- "pcie_irq": The interrupt that is asserted when an MSI/INTX is received
 - linux,pci-domain: PCI domain ID. Should be unique for each host controller
+
+AN7552/AN7563 use one host node per physical port. Each host exposes its
+root port at device zero; linux,pci-domain selects the physical port, not
+the root port device number. Required properties for these SoCs:
+- linux,pci-domain: Must be 0 for the port at 0x1fa91000, or 1 for the port
+  at 0x1fa92000.
+- reg-names: Must be "port0" or "port1", matching linux,pci-domain.
+- clock-names: Must be "sys_ck0" or "sys_ck1", matching linux,pci-domain.
+- phys: A reference to the shared AN7552/AN7563 PCIe PHY provider.
+- phy-names: Must be "pcie-phy0" or "pcie-phy1", matching linux,pci-domain.
+- interrupts and interrupt-names: One interrupt named "pcie_irq".
+- mediatek,pbus-csr: A phandle to the PBUS syscon with two arguments: the
+  base address register offset and the address mask register offset. Use
+  <&pbus_csr 0x0 0x4> for port 0 and <&pbus_csr 0x8 0xc> for port 1.
+- ranges: Exactly one identity-mapped, 32-bit memory window. Its size must
+  be a power of two from 128 bytes to 2 GiB, with its base aligned to that size.
+- bus-range: Must start at zero.
+- #interrupt-cells, interrupt-map-mask and interrupt-map: Standard PCI IRQ
+  mapping properties, with a child interrupt controller for the four INTx
+  interrupts, as in the MT2712 examples below.
+
+AN7552ST packages do not provide usable PCIe ports; keep both host nodes
+disabled on boards using these packages. Other boards enable only the
+ports that are physically connected and supply their reset pad pinctrl.
 
 In addition, the device tree node must have sub-nodes describing each
 PCIe port interface, having the following mandatory properties:

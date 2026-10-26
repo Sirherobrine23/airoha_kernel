@@ -27,6 +27,7 @@ select:
     compatible:
       contains:
         enum:
+          - airoha,an7552-pbus-csr
           - airoha,en7581-pbus-csr
           - airoha,scu-efuse
           - al,alpine-sysfabric-service
@@ -139,6 +140,7 @@ properties:
   compatible:
     items:
       - enum:
+          - airoha,an7552-pbus-csr
           - airoha,en7581-pbus-csr
           - airoha,scu-efuse
           - al,alpine-sysfabric-service
