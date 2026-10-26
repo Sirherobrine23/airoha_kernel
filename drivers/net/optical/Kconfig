@@ -29,5 +29,6 @@ endif
 
 source "drivers/net/optical/airoha/Kconfig"
 source "drivers/net/optical/semtech/Kconfig"
+source "drivers/net/optical/ux/Kconfig"
 
 endmenu

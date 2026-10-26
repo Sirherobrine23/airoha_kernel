@@ -5,3 +5,4 @@ optical_frontend-$(CONFIG_OPTICAL_FRONTEND_HWMON) += hwmon.o
 
 obj-y += airoha/
 obj-y += semtech/
+obj-y += ux/

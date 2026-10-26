@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: GPL-2.0-only
+config OPTICAL_FRONTEND_UX3320
+	tristate "Xiamen UX UX3320B1 optical frontend"
+	depends on I2C
+	select FW_LOADER
+	select OPTICAL_FRONTEND
+	help
+	  Support the UX3320B1 laser driver / limiting amplifier as an independent
+	  optical frontend provider. Expose SFF-8472 telemetry and calibrated GPON
+	  burst transmitter control. Load the board's final 768-byte register
+	  image from NVMEM or firmware; no generic laser/APD calibration is used.
+	  Missing calibration permits diagnostics but keeps the transmitter off.
+	  UX3320S and EPON mode programming are not implemented.
