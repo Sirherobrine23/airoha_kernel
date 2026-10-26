@@ -34,6 +34,7 @@ enum airoha_pcie_port_gen {
  * struct airoha_pcie_phy - PCIe phy driver main structure
  * @dev: pointer to device
  * @phy: pointer to generic phy
+ * @chip_scu: chip system controller used by the EN7523 PHY
  * @pcie0_base: en7523 PCIe0 lane IO mapped register base address
  * @pcie1_base: en7523 PCIe1 lane IO mapped register base address
  * @csr_2l: Analogic lane IO mapped register base address
@@ -1337,6 +1338,24 @@ power_saving:
 	return 0;
 }
 
+static int airoha_en7523_map_lanes(struct airoha_pcie_phy *pcie_phy,
+				    struct platform_device *pdev)
+{
+	struct device *dev = &pdev->dev;
+
+	pcie_phy->pcie0_base = devm_platform_ioremap_resource_byname(pdev, "pcie0");
+	if (IS_ERR(pcie_phy->pcie0_base))
+		return dev_err_probe(dev, PTR_ERR(pcie_phy->pcie0_base),
+				     "Failed to map pcie0 base\n");
+
+	pcie_phy->pcie1_base = devm_platform_ioremap_resource_byname(pdev, "pcie1");
+	if (IS_ERR(pcie_phy->pcie1_base))
+		return dev_err_probe(dev, PTR_ERR(pcie_phy->pcie1_base),
+				     "Failed to map pcie1 base\n");
+
+	return 0;
+}
+
 static int airoha_en7523_probe(struct airoha_pcie_phy *pcie_phy, struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
@@ -1351,18 +1370,34 @@ static int airoha_en7523_probe(struct airoha_pcie_phy *pcie_phy, struct platform
 	if (!pcie_phy->chip_scu)
 		return dev_err_probe(dev, -ENOMEM, "Failed to map scu base\n");
 
-	pcie_phy->pcie0_base = devm_platform_ioremap_resource_byname(pdev, "pcie0");
-	if (IS_ERR(pcie_phy->pcie0_base))
-		return dev_err_probe(dev, PTR_ERR(pcie_phy->pcie0_base),
-				     "Failed to map pcie0 base\n");
+	return airoha_en7523_map_lanes(pcie_phy, pdev);
+}
 
-	pcie_phy->pcie1_base = devm_platform_ioremap_resource_byname(pdev, "pcie1");
-	if (IS_ERR(pcie_phy->pcie1_base))
-		return dev_err_probe(dev, PTR_ERR(pcie_phy->pcie1_base),
-				     "Failed to map pcie1 base\n");
+static int airoha_pcie_phy_an7552_init(struct phy *phy)
+{
+	struct airoha_pcie_phy *pcie_phy = phy_get_drvdata(phy);
+	void __iomem *lanes[] = { pcie_phy->pcie0_base, pcie_phy->pcie1_base };
+	int i;
+
+	/* AN7552/AN7563 SDK sequence, including the RX jitter tolerance fix. */
+	for (i = 0; i < ARRAY_SIZE(lanes); i++) {
+		writel(0x0c010000, lanes[i] + 0x418);
+		writel(0x60080007, lanes[i] + 0x404);
+		writel(0x04100803, lanes[i] + 0x318);
+	}
 
 	return 0;
 }
+
+static const struct phy_ops airoha_pcie_phy_an7552_ops = {
+	.init = airoha_pcie_phy_an7552_init,
+	.owner = THIS_MODULE,
+};
+
+static const struct airoha_pcie_probe_data airoha_an7552_data = {
+	.ops = &airoha_pcie_phy_an7552_ops,
+	.probe = airoha_en7523_map_lanes,
+};
 
 static const struct phy_ops airoha_pcie_phy_en7523_ops = {
 	.init = airoha_pcie_phy_en7523_init,
@@ -1412,6 +1447,7 @@ static int airoha_pcie_phy_probe(struct platform_device *pdev)
 }
 
 static const struct of_device_id airoha_pcie_phy_of_match[] = {
+	{ .compatible = "airoha,an7552-pcie-phy", .data = &airoha_an7552_data },
 	{ .compatible = "airoha,en7581-pcie-phy", .data = &airoha_an7581_data },
 	{ .compatible = "airoha,en7523-pcie-phy", .data = &airoha_en7523_data },
 	{ /* sentinel */ }

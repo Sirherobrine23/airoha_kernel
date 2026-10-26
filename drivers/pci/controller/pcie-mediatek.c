@@ -103,6 +103,9 @@
 #define AHB2PCIE_SIZE(x)	((x) & GENMASK(4, 0))
 #define PCIE_AXI_WINDOW0	0x448
 #define WIN_ENABLE		BIT(7)
+#define PCIE_MMIO_CTRL		0x564
+#define AN7552_MMIO_COHERENCE_FIX	BIT(0)
+#define AN7552_HOST_MODE		0x00804201
 /*
  * Define PCIe to AHB window size as 2^33 to support max 8GB address space
  * translate, support least 4GB DRAM size access from EP DMA(physical DRAM
@@ -160,6 +163,7 @@ struct mtk_pcie_port;
  * @MTK_PCIE_PHY_BEFORE_SYS_CK: Initialize the port PHY before sys_ck
  * @MTK_PCIE_RETRAIN: Retrain link to bridge after startup because some
  *                    Gen2-capable devices start as Gen1.
+ * @MTK_PCIE_INDEPENDENT_PORT: Each host has one root port at device zero
  */
 enum mtk_pcie_quirks {
 	MTK_PCIE_FIX_CLASS_ID = BIT(0),
@@ -168,6 +172,7 @@ enum mtk_pcie_quirks {
 	MTK_PCIE_SKIP_RSTB = BIT(3),
 	MTK_PCIE_RETRAIN = BIT(4),
 	MTK_PCIE_PHY_BEFORE_SYS_CK = BIT(5),
+	MTK_PCIE_INDEPENDENT_PORT = BIT(6),
 };
 
 /**
@@ -176,6 +181,7 @@ enum mtk_pcie_quirks {
  * @ops: pointer to configuration access functions
  * @startup: pointer to controller setting functions
  * @setup_irq: pointer to initialize IRQ functions
+ * @parse_port: optional per-port resource parsing callback
  * @quirks: PCIe device quirks.
  */
 struct mtk_pcie_soc {
@@ -183,6 +189,7 @@ struct mtk_pcie_soc {
 	struct pci_ops *ops;
 	int (*startup)(struct mtk_pcie_port *port);
 	int (*setup_irq)(struct mtk_pcie_port *port, struct device_node *node);
+	int (*parse_port)(struct mtk_pcie_port *port);
 	enum mtk_pcie_quirks quirks;
 };
 
@@ -202,6 +209,8 @@ struct mtk_pcie_soc {
  * @obff_ck: pointer to OBFF functional block operating clock
  * @pipe_ck: pointer to LTSSM and PHY/MAC layer operating clock
  * @phy: pointer to PHY control block
+ * @pbus: PBUS address decoder regmap
+ * @pbus_regs: offsets of the PBUS base and mask registers
  * @slot: port slot
  * @irq: GIC irq
  * @irq_domain: legacy INTx IRQ domain
@@ -222,6 +231,8 @@ struct mtk_pcie_port {
 	struct clk *obff_ck;
 	struct clk *pipe_ck;
 	struct phy *phy;
+	struct regmap *pbus;
+	u32 pbus_regs[2];
 	u32 slot;
 	int irq;
 	struct irq_domain *irq_domain;
@@ -366,6 +377,15 @@ static struct mtk_pcie_port *mtk_pcie_find_port(struct pci_bus *bus,
 	struct mtk_pcie *pcie = bus->sysdata;
 	struct mtk_pcie_port *port;
 	struct pci_dev *dev = NULL;
+
+	/* Independent hosts use device zero regardless of their PCI domain. */
+	if (pcie->soc->quirks & MTK_PCIE_INDEPENDENT_PORT) {
+		if (pci_is_root_bus(bus) && PCI_SLOT(devfn))
+			return NULL;
+
+		return list_first_entry_or_null(&pcie->ports,
+					       struct mtk_pcie_port, list);
+	}
 
 	/*
 	 * Walk the bus hierarchy to get the devfn value
@@ -769,6 +789,93 @@ static int mtk_pcie_startup_port_v2(struct mtk_pcie_port *port)
 	/* Set PCIe to AXI translation memory space.*/
 	val = PCIE2AHB_SIZE | WIN_ENABLE;
 	writel(val, port->base + PCIE_AXI_WINDOW0);
+
+	return 0;
+}
+
+static int mtk_pcie_parse_port_an7552(struct mtk_pcie_port *port)
+{
+	struct device *dev = port->pcie->dev;
+
+	if (port->slot > 1 || !port->phy)
+		return dev_err_probe(dev, -EINVAL,
+				     "AN7552 requires domain 0/1 and a PCIe PHY\n");
+
+	/* Resolve suppliers here, so -EPROBE_DEFER reaches the probe caller. */
+	port->pbus = syscon_regmap_lookup_by_phandle_args(dev->of_node,
+						       "mediatek,pbus-csr", 2,
+						       port->pbus_regs);
+	if (IS_ERR(port->pbus))
+		return dev_err_probe(dev, PTR_ERR(port->pbus),
+				     "failed to get PBUS address decoder\n");
+
+	if ((port->pbus_regs[0] | port->pbus_regs[1]) & 3 ||
+	    port->pbus_regs[0] == port->pbus_regs[1])
+		return -EINVAL;
+
+	return 0;
+}
+
+static int mtk_pcie_startup_port_an7552(struct mtk_pcie_port *port)
+{
+	struct mtk_pcie *pcie = port->pcie;
+	struct pci_host_bridge *host = pci_host_bridge_from_priv(pcie);
+	struct resource_entry *entry;
+	struct resource *mem = NULL;
+	u64 size;
+	u32 val;
+	int err;
+
+	/* The hardware has one outbound, identity-mapped memory window. */
+	resource_list_for_each_entry(entry, &host->windows) {
+		if (resource_type(entry->res) == IORESOURCE_BUS)
+			continue;
+		if (resource_type(entry->res) != IORESOURCE_MEM || mem || entry->offset)
+			return dev_err_probe(pcie->dev, -EINVAL,
+					     "unsupported AN7552 PCIe ranges\n");
+		mem = entry->res;
+	}
+	if (!mem)
+		return -EINVAL;
+
+	size = resource_size(mem);
+	if (size < 128 || size > BIT_ULL(31) || !is_power_of_2(size) ||
+	    (mem->start & (size - 1)) || mem->end > U32_MAX)
+		return dev_err_probe(pcie->dev, -EINVAL,
+				     "invalid AN7552 PCIe memory window\n");
+
+	err = regmap_write(port->pbus, port->pbus_regs[0], mem->start);
+	if (err)
+		return err;
+	err = regmap_write(port->pbus, port->pbus_regs[1], ~(u32)(size - 1));
+	if (err)
+		return err;
+
+	/* Clock preparation supplies the shared SCU reset/PERST sequence. */
+	writel(AN7552_HOST_MODE, port->base + PCIE_SYS_CFG_V2);
+	writel(PCIE_CLASS_CODE | PCIE_REVISION_ID,
+	       port->base + PCIE_CONF_REV_CLASS);
+
+	err = readl_poll_timeout(port->base + PCIE_LINK_STATUS_V2, val,
+				val & PCIE_PORT_LINKUP_V2, 20,
+				100 * USEC_PER_MSEC);
+	if (err)
+		return err;
+
+	val = readl(port->base + PCIE_INT_MASK) & ~INTX_MASK;
+	writel(val, port->base + PCIE_INT_MASK);
+	if (IS_ENABLED(CONFIG_PCI_MSI))
+		mtk_pcie_enable_msi(port);
+
+	/* The size field is log2(bytes), as in the SDK's post-scan fixup. */
+	writel(lower_32_bits(mem->start) | AHB2PCIE_SIZE(ilog2(size)),
+	       port->base + PCIE_AHB_TRANS_BASE0_L);
+	writel(0, port->base + PCIE_AHB_TRANS_BASE0_H);
+	writel(WIN_ENABLE, port->base + PCIE_AXI_WINDOW0);
+
+	/* SDK workaround for AN7563 with Kite endpoints. */
+	val = readl(port->base + PCIE_MMIO_CTRL);
+	writel(val | AN7552_MMIO_COHERENCE_FIX, port->base + PCIE_MMIO_CTRL);
 
 	return 0;
 }
@@ -1209,6 +1316,12 @@ static int mtk_pcie_parse_port(struct mtk_pcie *pcie,
 	port->slot = slot;
 	port->pcie = pcie;
 
+	if (pcie->soc->parse_port) {
+		err = pcie->soc->parse_port(port);
+		if (err)
+			return err;
+	}
+
 	if (pcie->soc->setup_irq) {
 		err = pcie->soc->setup_irq(port, node);
 		if (err)
@@ -1477,6 +1590,15 @@ static const struct mtk_pcie_soc mtk_pcie_soc_mt7629 = {
 	.quirks = MTK_PCIE_FIX_CLASS_ID | MTK_PCIE_FIX_DEVICE_ID,
 };
 
+static const struct mtk_pcie_soc mtk_pcie_soc_an7552 = {
+	.ops = &mtk_pcie_ops_v2,
+	.startup = mtk_pcie_startup_port_an7552,
+	.setup_irq = mtk_pcie_setup_irq,
+	.parse_port = mtk_pcie_parse_port_an7552,
+	.quirks = MTK_PCIE_INDEPENDENT_PORT | MTK_PCIE_RETRAIN |
+		  MTK_PCIE_PHY_BEFORE_SYS_CK,
+};
+
 static const struct mtk_pcie_soc mtk_pcie_soc_en7528 = {
 	.ops = &mtk_pcie_ops_v2,
 	.startup = mtk_pcie_startup_port_en7528,
@@ -1499,6 +1621,7 @@ DECLARE_PCI_FIXUP_EARLY(PCI_VENDOR_ID_MEDIATEK,
 			mtk_pcie_en7523_bar_quirk);
 
 static const struct of_device_id mtk_pcie_ids[] = {
+	{ .compatible = "airoha,an7552-pcie", .data = &mtk_pcie_soc_an7552 },
 	{ .compatible = "airoha,an7583-pcie", .data = &mtk_pcie_soc_an7583 },
 	{ .compatible = "econet,en7528-pcie", .data = &mtk_pcie_soc_en7528 },
 	{ .compatible = "mediatek,mt2701-pcie", .data = &mtk_pcie_soc_v1 },
