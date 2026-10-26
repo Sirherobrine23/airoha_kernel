@@ -3074,12 +3074,19 @@ static int airoha_qdma_tx_napi_poll(struct napi_struct *napi, int budget)
 		e->skb = NULL;
 		list_add_tail(&e->list, &q->tx_list);
 
-		WRITE_ONCE(desc->ctrl, 0);
-		WRITE_ONCE(desc->addr, 0);
-		WRITE_ONCE(desc->data, 0);
+		/*
+		 * Match EN7523 vendor recycling: software dma_addr/skb mark
+		 * ownership, while the completed DMA descriptor is retained.
+		 * Submission rewrites ctrl, addr and next before publishing it.
+		 */
+		if (!airoha_is(eth, airoha_en7523)) {
+			WRITE_ONCE(desc->ctrl, 0);
+			WRITE_ONCE(desc->addr, 0);
+			WRITE_ONCE(desc->data, 0);
+			WRITE_ONCE(desc->msg2, 0);
+		}
 		WRITE_ONCE(desc->msg0, 0);
 		WRITE_ONCE(desc->msg1, 0);
-		WRITE_ONCE(desc->msg2, 0);
 		q->queued--;
 
 		if (skb) {
@@ -7778,6 +7785,9 @@ static void airoha_gdm_dev_get_stats64(struct net_device *netdev,
 			storage->rx_crc_errors = dev->stats.rx_crc_error;
 		}
 	} while (u64_stats_fetch_retry(&dev->stats.syncp, start));
+
+	/* Include drops that happened before a descriptor reached the hardware. */
+	storage->tx_dropped += READ_ONCE(netdev->stats.tx_dropped);
 }
 
 static int airoha_gdm_dev_change_mtu(struct net_device *netdev, int mtu)
@@ -7840,6 +7850,13 @@ int airoha_get_fe_port(struct airoha_gdm_dev *dev)
 					   : port->id;
 }
 
+static bool airoha_gdm2_needs_linear_tx(const struct airoha_gdm_dev *dev)
+{
+	return airoha_is(dev->eth, airoha_en7523) &&
+	       (dev->flags & AIROHA_PRIV_F_XPON_MANAGED) &&
+	       dev->port->id == AIROHA_GDM2_IDX;
+}
+
 static netdev_features_t airoha_dev_fix_features(struct net_device *netdev,
 					 netdev_features_t features)
 {
@@ -7851,6 +7868,9 @@ static netdev_features_t airoha_dev_fix_features(struct net_device *netdev,
 	 */
 	if (dev->common.family == AIROHA_ETH_FAMILY_ECONET)
 		return features;
+
+	if (airoha_gdm2_needs_linear_tx(dev))
+		features &= ~AIROHA_QDMA_TSO_HW_FEATURES;
 
 	qdma = airoha_qdma_deref(dev);
 	if (qdma->users > 1)
@@ -8115,6 +8135,15 @@ static netdev_tx_t __airoha_dev_xmit(struct sk_buff *skb,
 			goto error;
 		xpon = &classified;
 	}
+	/* Logical xPON endpoints can submit directly, bypassing the core's
+	 * feature checks. Keep their packets within the same single-buffer
+	 * contract as ordinary GDM2 TX; GSO must be segmented before entry.
+	 */
+	if (!xpon_oam && airoha_gdm2_needs_linear_tx(dev)) {
+		if (unlikely(skb_is_gso(skb)) || skb_linearize(skb))
+			goto error;
+	}
+
 	qid = airoha_qdma_get_txq(qdma, xpon ? xpon->queue :
 				    skb_get_queue_mapping(skb));
 	if (xpon) {
@@ -9784,6 +9813,17 @@ static int airoha_alloc_gdm_device(struct airoha_eth *eth,
 	dev->port = port;
 	dev->eth = eth;
 	dev->nbq = nbq;
+	/* EN7523 GDM2 stalls with SG chains submitted to the WAN QDMA.
+	 * The vendor TSO v2 path handles nonlinear packets through a separate
+	 * PDMA engine. Use software segmentation and linearization until that
+	 * path is implemented, including for VLAN upper devices.
+	 */
+	if (airoha_gdm2_needs_linear_tx(dev)) {
+		netdev->hw_features &= ~AIROHA_QDMA_TSO_HW_FEATURES;
+		netdev->features &= ~AIROHA_QDMA_TSO_HW_FEATURES;
+		netdev->vlan_features &= ~AIROHA_QDMA_TSO_HW_FEATURES;
+	}
+
 	mutex_init(&dev->xpon_lock);
 	spin_lock_init(&dev->xpon_state_lock);
 	spin_lock_init(&dev->xpon_service_lock);
