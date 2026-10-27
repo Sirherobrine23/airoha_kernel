@@ -54,7 +54,6 @@
 
 struct airoha_wed_soc_data {
 	phys_addr_t pcie_base[2];
-	u32 wpdma_base[2];
 	bool set_lan_arb;
 };
 
@@ -82,18 +81,15 @@ static const struct mtk_wed_soc_data airoha_wed_v1_data = {
 
 static const struct airoha_wed_soc_data en751221_wed_data = {
 	.pcie_base = { 0x1fb81000, 0x1fb83000 },
-	.wpdma_base = { 0x20000000, 0x20100000 },
 };
 
 static const struct airoha_wed_soc_data en7528_wed_data = {
 	.pcie_base = { 0x1fb81000, 0x1fb83000 },
-	.wpdma_base = { 0x20000000, 0x20100000 },
 	.set_lan_arb = true,
 };
 
 static const struct airoha_wed_soc_data en7523_wed_data = {
 	.pcie_base = { 0x1fa91000, 0x1fa92000 },
-	.wpdma_base = { 0x20000000, 0x20100000 },
 };
 
 static const struct of_device_id airoha_wed_of_match[] = {
@@ -103,21 +99,6 @@ static const struct of_device_id airoha_wed_of_match[] = {
 	{ .compatible = "airoha,en7523-wed", .data = &en7523_wed_data },
 	{ /* sentinel */ }
 };
-
-static void airoha_wed_rebase_wpdma(struct mtk_wed_device *dev)
-{
-	u32 old_base = dev->wlan.phy_base;
-	u32 new_base = dev->hw->wpdma_base;
-
-	dev->wlan.wpdma_int = new_base + dev->wlan.wpdma_int - old_base;
-	dev->wlan.wpdma_mask = new_base + dev->wlan.wpdma_mask - old_base;
-	dev->wlan.wpdma_phys = new_base + dev->wlan.wpdma_phys - old_base;
-	dev->wlan.wpdma_tx = new_base + dev->wlan.wpdma_tx - old_base;
-	dev->wlan.wpdma_txfree = new_base + dev->wlan.wpdma_txfree - old_base;
-	dev->wlan.wpdma_rx_glo = new_base + dev->wlan.wpdma_rx_glo - old_base;
-	dev->wlan.wpdma_rx[0] = new_base + dev->wlan.wpdma_rx[0] - old_base;
-	dev->wlan.phy_base = new_base;
-}
 
 /* -------------------------------------------------------------------------
  * Low-level register helpers
@@ -714,6 +695,7 @@ mtk_wed_detach(struct mtk_wed_device *dev)
 static void
 mtk_wed_set_wpdma(struct mtk_wed_device *dev)
 {
+	/* Preserve the PCI BAR assigned by Linux, including on the second port. */
 	wed_w32(dev, MTK_WED_WPDMA_CFG_BASE, dev->wlan.wpdma_phys);
 	/* The WiFi driver supplies BAR-relative addresses for each chip. */
 	wed_w32(dev, AIROHA_WED_WPDMA_OFST0,
@@ -1175,7 +1157,6 @@ mtk_wed_attach(struct mtk_wed_device *dev)
 	dev->irq = hw->irq;
 	dev->wdma_idx = hw->index;
 	dev->version = hw->version;
-	airoha_wed_rebase_wpdma(dev);
 
 	ret = dma_set_mask_and_coherent(hw->dev, DMA_BIT_MASK(32));
 	dev_dbg(device,
@@ -1648,7 +1629,6 @@ int airoha_wed_add_hw(struct airoha_eth *eth, struct device_node *np, int index)
 	hw->dev = &pdev->dev;
 	hw->pcie = pcie;
 	hw->pcie_base = soc->pcie_base[index];
-	hw->wpdma_base = soc->wpdma_base[index];
 	hw->wdma_phy = wdma_phy;
 	hw->wdma = wdma;
 	hw->index = index;
