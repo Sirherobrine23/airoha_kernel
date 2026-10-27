@@ -125,6 +125,10 @@
 #define REG_GPIO_L_PU				0x004c
 #define REG_GPIO_L_PD				0x0050
 
+#define REG_PCIE_RESET_OD			0x018c
+#define PCIE1_RESET_OD_MASK			BIT(1)
+#define PCIE0_RESET_OD_MASK			BIT(0)
+
 /* PWM MODE CONF */
 #define REG_GPIO_FLASH_MODE_CFG			0x0034
 #define GPIO15_FLASH_MODE_CFG			BIT(15)
@@ -1102,6 +1106,11 @@ static const struct airoha_pinctrl_conf pinctrl_drive_e4_conf[] = {
 	PINCTRL_CONF_DESC(41, REG_I2C_SDA_E4, PCIE1_RESET_E4_MASK),
 };
 
+static const struct airoha_pinctrl_conf pinctrl_pcie_rst_od_conf[] = {
+	PINCTRL_CONF_DESC(40, REG_PCIE_RESET_OD, PCIE0_RESET_OD_MASK),
+	PINCTRL_CONF_DESC(41, REG_PCIE_RESET_OD, PCIE1_RESET_OD_MASK),
+};
+
 static const struct airoha_pinctrl_hwinit_regs hwinit_regs[] = {
 	{ REG_GPIO_2ND_I2C_MODE, 0 },
 	{ REG_GPIO_SPI_CS1_MODE, 0 },
@@ -1140,6 +1149,10 @@ static const struct airoha_pinctrl_match_data pinctrl_match_data = {
 		[AIROHA_PINCTRL_CONFS_DRIVE_E4] = {
 			.confs = pinctrl_drive_e4_conf,
 			.num_confs = ARRAY_SIZE(pinctrl_drive_e4_conf),
+		},
+		[AIROHA_PINCTRL_CONFS_PCIE_RST_OD] = {
+			.confs = pinctrl_pcie_rst_od_conf,
+			.num_confs = ARRAY_SIZE(pinctrl_pcie_rst_od_conf),
 		},
 	},
 };

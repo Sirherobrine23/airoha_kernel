@@ -283,6 +283,10 @@
 			gpio-ranges = <&pinctrl 0 12 28>;
 
 			pcie0_rst_pins: pcie0-rst-pins {
+				mux {
+					function = "pcie_reset";
+					groups = "pcie_reset0";
+				};
 				conf {
 					pins = "pcie_reset0";
 					drive-open-drain = <1>;
@@ -290,6 +294,10 @@
 			};
 
 			pcie1_rst_pins: pcie1-rst-pins {
+				mux {
+					function = "pcie_reset";
+					groups = "pcie_reset1";
+				};
 				conf {
 					pins = "pcie_reset1";
 					drive-open-drain = <1>;
