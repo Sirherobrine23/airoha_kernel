@@ -43,6 +43,19 @@ properties:
       - description: FE error irq
       - description: PDMA irq
 
+  interrupt-names:
+    items:
+      - const: lan0
+      - const: lan1
+      - const: lan2
+      - const: lan3
+      - const: wan0
+      - const: wan1
+      - const: wan2
+      - const: wan3
+      - const: fe-error
+      - const: pdma
+
   resets:
     maxItems: 8
 
