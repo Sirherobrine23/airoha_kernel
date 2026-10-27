@@ -3735,13 +3735,12 @@ static void airoha_ppe_v1_flush_owner(struct airoha_ppe *ppe,
 
 /*
  * EN751221 vendor hw_nat (PPE type 3) programs the otherwise unnamed
- * generation-1 GLO_CFG bits 1 and 8 together with byte-swap/hash-offset
+ * generation-1 GLO_CFG bits 1 and 8 together with hash-offset
  * and flow-drop-update. Bit 10 is not touched by hw_nat itself, but it is set
  * in the production FE state (GLO_CFG = 0x763); the consolidated Linux driver
  * owns the FE reset, so restore that steady-state bit explicitly on enable.
  */
 #define EN751221_PPE_GLO_CFG_VENDOR_SET	(BIT(1) | BIT(8) | \
-					 PPE_GLO_CFG_PPE_BSWAP_MASK | \
 					 PPE_GLO_CFG_PSE_HASH_OFS_MASK | \
 					 PPE_GLO_CFG_FLOW_DROP_UPDATE_MASK)
 #define EN751221_PPE_GLO_CFG_STOCK_BIT10	BIT(10)
@@ -3856,14 +3855,19 @@ static int airoha_ppe_v1_engine_set(struct airoha_ppe *ppe, bool enable)
 
 		/* Match FUN_00013f50(1) from the stock hw_nat module. */
 		val = readl(reg);
-		val &= ~EN751221_PPE_GLO_CFG_VENDOR_CLEAR;
+		val &= ~(EN751221_PPE_GLO_CFG_VENDOR_CLEAR |
+			 PPE_GLO_CFG_PPE_BSWAP_MASK);
 		val |= EN751221_PPE_GLO_CFG_VENDOR_SET |
 		       EN751221_PPE_GLO_CFG_STOCK_BIT10 | PPE_GLO_CFG_EN_MASK;
+		/* FoE words are native endian on both EN751221 and EN7528. */
+		if (IS_ENABLED(CONFIG_CPU_BIG_ENDIAN))
+			val |= PPE_GLO_CFG_PPE_BSWAP_MASK;
 		writel(val, reg);
 	} else {
 		/* Match FUN_00013f50(0), preserving unrelated FE-owned bits. */
 		val = readl(reg);
 		val &= ~(EN751221_PPE_GLO_CFG_VENDOR_SET |
+			 PPE_GLO_CFG_PPE_BSWAP_MASK |
 			 PPE_GLO_CFG_TTL_DROP_MASK | PPE_GLO_CFG_EN_MASK);
 		val |= PPE_GLO_CFG_IP4_CS_DROP_MASK |
 		       PPE_GLO_CFG_IP4_L4_CS_DROP_MASK;
