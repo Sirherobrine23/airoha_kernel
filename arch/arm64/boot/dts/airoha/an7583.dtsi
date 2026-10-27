@@ -691,10 +691,13 @@
 			resets = <&scuclk AN7583_FE_RST>,
 				 <&scuclk AN7583_FE_PDMA_RST>,
 				 <&scuclk AN7583_FE_QDMA_RST>,
+				 <&scuclk AN7583_GDMP_RST>,
+				 <&scuclk AN7583_TDMA_RST>,
 				 <&scuclk AN7583_DUAL_HSI0_MAC_RST>,
 				 <&scuclk AN7583_DUAL_HSI1_MAC_RST>,
 				 <&scuclk AN7583_XFP_MAC_RST>;
 			reset-names = "fe", "pdma", "qdma",
+				      "gdmp", "tdma",
 				      "hsi0-mac", "hsi1-mac",
 				      "xfp-mac";
 

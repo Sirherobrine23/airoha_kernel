@@ -59,6 +59,7 @@
 
 #include "airoha_eth.h"
 #include "airoha_regs.h"
+#include "airoha_tso.h"
 #include "airoha_wed.h"
 #include "airoha_whnat.h"
 
@@ -860,6 +861,18 @@ static irqreturn_t econet_irq_handler(int irq_num, void *dev_instance)
 	return IRQ_HANDLED;
 }
 
+static void econet_tx_unmap(struct airoha_qdma_mips *qdma,
+			    struct econet_q_tx_ent *e)
+{
+	if (e->dma_map_page)
+		dma_unmap_page(qdma->qdma->eth->dev, e->dma_addr, e->dma_len,
+			       DMA_TO_DEVICE);
+	else
+		dma_unmap_single(qdma->qdma->eth->dev, e->dma_addr, e->dma_len,
+				 DMA_TO_DEVICE);
+	e->dma_len = 0;
+}
+
 static int econet_poll_tx_complete(struct napi_struct *napi, int budget)
 {
 	struct qregs_doneq_state state;
@@ -883,43 +896,40 @@ static int econet_poll_tx_complete(struct napi_struct *napi, int budget)
 		u32 index, qid, val = done_q->q[head];
 		struct econet_q_tx_ent *e;
 		struct econet_q_tx *q;
-		struct netdev_queue *txq;
 		struct sk_buff *skb;
 		struct desc desc;
 
 		if (val == 0xffffffffU)
 			break;
 
-		done_q->q[head] = 0xffffffffU; /* mark as done */
-		head = (head + 1) % done_q->size;
-		irq_queued--;
-		done++;
-
 		qid = FIELD_GET(EN751221_QDMA_IRQ_RING_IDX_MASK, val);
 		if (WARN_ON_ONCE(qid >= ARRAY_SIZE(qdma->q_tx)))
-			continue;
+			goto consume;
 
 		q = &qdma->q_tx[qid];
 		if (WARN_ON_ONCE(!q->ndesc))
-			continue;
+			goto consume;
 
 		index = FIELD_GET(EN751221_QDMA_IRQ_DESC_IDX_MASK, val);
 		if (WARN_ON_ONCE(index >= q->ndesc))
-			continue;
+			goto consume;
 
-		guard(spinlock)(&q->lock_bh);
-
-		desc = q->desc[index];
-
-		if (WARN_ON_ONCE(!is_desc_info_done(&desc.info) &&
-				 !is_desc_info_dropped(&desc.info)))
-			continue;
+		spin_lock(&q->lock_bh);
 
 		e = &q->entry[index];
+		if (WARN_ON_ONCE(!e->dma_len))
+			goto unlock_consume;
+		desc.info = READ_ONCE(q->desc[index].info);
+		if (!is_desc_info_done(&desc.info) &&
+		    !is_desc_info_dropped(&desc.info)) {
+			/* Keep this completion queued until writeback is visible. */
+			spin_unlock(&q->lock_bh);
+			break;
+		}
+		dma_rmb();
 		skb = e->skb;
 
-		dma_unmap_single(qdma->qdma->eth->dev, e->dma_addr, e->dma_len,
-				 DMA_TO_DEVICE);
+		econet_tx_unmap(qdma, e);
 		memset(e, 0, sizeof(*e));
 
 		/* Completion ring can report out of order when hw QoS is
@@ -932,16 +942,18 @@ static int econet_poll_tx_complete(struct napi_struct *napi, int budget)
 		q->freelist_tail = index;
 		q->free_count++;
 
+		/* Intermediate TSO/SG descriptors do not own the skb. */
+		if (!skb)
+			goto unlock_consume;
+
 		/* Frames handed to the PPE by WHNAT have no netdev. */
 		if (!skb->dev) {
 			airoha_whnat_complete();
 			dev_kfree_skb_any(skb);
-			continue;
+			goto unlock_consume;
 		}
 
-		txq = netdev_get_tx_queue(skb->dev,
-					  skb_get_queue_mapping(skb));
-		netdev_tx_completed_queue(txq, 1, skb->len);
+		airoha_tx_complete(skb);
 		/* Every net_device TX queue of this conduit (one per DSA user
 		 * port through tag_mtk's queue_mapping, hashed for the rest)
 		 * funnels into the same hardware ring, so the gating resource
@@ -955,6 +967,13 @@ static int econet_poll_tx_complete(struct napi_struct *napi, int budget)
 		wake_dev = skb->dev;
 
 		dev_kfree_skb_any(skb);
+unlock_consume:
+		spin_unlock(&q->lock_bh);
+consume:
+		WRITE_ONCE(done_q->q[head], U32_MAX);
+		head = (head + 1) % done_q->size;
+		irq_queued--;
+		done++;
 	}
 
 	/* Freed at least one ring slot: wake every TX queue of the conduit so
@@ -1003,50 +1022,66 @@ static int econet_qdma_xmit_mips(struct airoha_qdma_mips *qdma, struct sk_buff *
 		   union desc_msg *msg, int qid)
 {
 	struct econet_q_tx *q = &qdma->q_tx[qid];
-	int len = skb_headlen(skb);
-	struct econet_q_tx_ent *e;
+	unsigned int n = 1 + skb_shinfo(skb)->nr_frags, i, j;
+	unsigned int reserve = airoha_tso_version(qdma->qdma->eth) ==
+			       AIROHA_TSO_V1 ? MAX_SKB_FRAGS + 1 : 1;
+	u16 indices[MAX_SKB_FRAGS + 1];
 	u16 index, next_index;
-	struct desc *desc;
-	dma_addr_t addr;
-	int ret;
 
 	guard(spinlock_bh)(&q->lock_bh);
 
-	/*
-	 * Only a completion of a netdev's own frame wakes its stopped queue,
-	 * so frames without a netdev (WHNAT) must leave it some descriptors.
-	 */
-	if (!skb->dev && q->free_count <= AIROHA_WHNAT_TX_RESERVE)
+	if (!skb_headlen(skb) || skb_has_frag_list(skb))
+		return -EINVAL;
+	if (n > 1 && airoha_tso_version(qdma->qdma->eth) != AIROHA_TSO_V1)
+		return -EOPNOTSUPP;
+	/* Leave one sentinel, plus a reserve for netdevs when WHNAT sends. */
+	if (!skb->dev && q->free_count <= AIROHA_WHNAT_TX_RESERVE + n - 1)
 		return -EAGAIN;
+	if (q->free_count <= n)
+		return -EBUSY;
 
 	index = q->freelist_head;
-	if (index == 0xffff)
-		return -EBUSY;
+	/* Walk the free chain without publishing anything. A failed map must
+	 * leave the sentinel, free list, CPU index and BQL unchanged.
+	 */
+	for (i = 0; i < n; i++) {
+		struct econet_q_tx_ent *e = &q->entry[index];
+		struct desc *desc = &q->desc[index];
+		u32 info;
 
-	e = &q->entry[index];
-	next_index = e->freelist_next;
-	if (next_index == 0xffff)
-		return -EBUSY;
+		indices[i] = index;
+		next_index = e->freelist_next;
+		e->dma_map_page = i != 0;
+		if (i) {
+			skb_frag_t *frag = &skb_shinfo(skb)->frags[i - 1];
 
-	addr = dma_map_single(qdma->qdma->eth->dev, skb->data, len, DMA_TO_DEVICE);
-	ret = dma_mapping_error(qdma->qdma->eth->dev, addr);
-	if (unlikely(ret))
-		return ret;
-
-	desc = &q->desc[index];
-	WRITE_ONCE(desc->pkt_addr, addr);
-	WRITE_ONCE(desc->info, ((struct desc_info) {
-		.word = FIELD_PREP(DESC_INFO_PKT_LEN_MASK, len)
-	}));
-	WRITE_ONCE(desc->next_idx, next_index);
-	for (int i = 0; i < ARRAY_SIZE(desc->msg.raw); i++)
-		WRITE_ONCE(desc->msg.raw[i], msg->raw[i]);
-
-	e->skb = skb;
-	e->dma_addr = addr;
-	e->dma_len = len;
-	q->freelist_head = next_index;
-	q->free_count--;
+			e->dma_len = skb_frag_size(frag);
+			e->dma_addr = skb_frag_dma_map(qdma->qdma->eth->dev, frag,
+						       0, e->dma_len, DMA_TO_DEVICE);
+		} else {
+			e->dma_len = skb_headlen(skb);
+			e->dma_addr = dma_map_single(qdma->qdma->eth->dev,
+						     skb->data, e->dma_len,
+						     DMA_TO_DEVICE);
+		}
+		if (dma_mapping_error(qdma->qdma->eth->dev, e->dma_addr)) {
+			e->dma_addr = 0;
+			e->dma_len = 0;
+			goto unmap;
+		}
+		info = FIELD_PREP(DESC_INFO_PKT_LEN_MASK, e->dma_len);
+		if (i + 1 < n)
+			info |= DESC_INFO_NLS;
+		WRITE_ONCE(desc->pkt_addr, lower_32_bits(e->dma_addr));
+		WRITE_ONCE(desc->info, ((struct desc_info) { .word = info }));
+		WRITE_ONCE(desc->next_idx, next_index);
+		for (j = 0; j < ARRAY_SIZE(desc->msg.raw); j++)
+			WRITE_ONCE(desc->msg.raw[j], msg->raw[j]);
+		e->skb = i + 1 == n ? skb : NULL;
+		index = next_index;
+	}
+	q->freelist_head = index;
+	q->free_count -= n;
 
 	if (skb->dev) {
 		/*
@@ -1067,10 +1102,18 @@ static int econet_qdma_xmit_mips(struct airoha_qdma_mips *qdma, struct sk_buff *
 	 * MIPS even though the descriptor ring itself is dma_alloc_coherent().
 	 */
 	dma_wmb();
-	econet_wreg((u32)next_index, &q->qchain_regs->tx_cpui);
+	econet_wreg((u32)index, &q->qchain_regs->tx_cpui);
 
-	return q->entry[next_index].freelist_next == 0xffff ?
-		EBUSY : 0;
+	return q->free_count <= reserve ? EBUSY : 0;
+unmap:
+	while (i--) {
+		struct econet_q_tx_ent *e = &q->entry[indices[i]];
+
+		econet_tx_unmap(qdma, e);
+		e->dma_addr = 0;
+		e->skb = NULL;
+	}
+	return -ENOMEM;
 }
 
 /* Init functions, no locks, assumed non-concurrent */
@@ -1936,11 +1979,10 @@ static void econet_qdma_cleanup_tx(struct airoha_qdma_mips *qdma)
 		for (j = 0; j < q->ndesc; j++) {
 			struct econet_q_tx_ent *e = &q->entry[j];
 
-			if (!e->dma_addr)
+			if (!e->dma_len)
 				continue;
 
-			dma_unmap_single(qdma->qdma->eth->dev, e->dma_addr,
-					 e->dma_len, DMA_TO_DEVICE);
+			econet_tx_unmap(qdma, e);
 			dev_kfree_skb_any(e->skb);
 			memset(e, 0, sizeof(*e));
 
@@ -3090,10 +3132,7 @@ static int airoha_qdma_tx_napi_poll(struct napi_struct *napi, int budget)
 		q->queued--;
 
 		if (skb) {
-			struct netdev_queue *txq;
-
-			txq = skb_get_tx_queue(skb->dev, skb);
-			netdev_tx_completed_queue(txq, 1, skb->len);
+			airoha_tx_complete(skb);
 			dev_kfree_skb_any(skb);
 		}
 
@@ -4173,10 +4212,18 @@ static netdev_tx_t __econet_qdma_xmit(struct sk_buff *skb, struct net_device *de
 
 	txq = netdev_get_tx_queue(dev, qid);
 
-	/* Non-linear skbs are unsupported, we shouldn't get them but
-	 * if we do, we'll attempt to linearize. */
-	if (skb_linearize(skb))
+	/* Only the v1 engines accept chained payload descriptors. */
+	if ((airoha_tso_version(port->eth) != AIROHA_TSO_V1 ||
+	     (xpon && xpon_info.oam) || skb_has_frag_list(skb)) &&
+	    skb_linearize(skb))
 		goto drop;
+	if (skb_is_gso(skb)) {
+		if (airoha_tso_version(port->eth) != AIROHA_TSO_V1 ||
+		    (xpon && xpon_info.oam) || airoha_tso_prepare(skb))
+			goto drop;
+		/* EN7528: TSO is word 1 bit 28, not word 0 bit 10. */
+		msg.etx.bitfield_1 |= EN7528_ETX_TSO | ETX_TCO | ETX_ICO;
+	}
 
 	/*
 	 * Keep the EN751221 PWAN descriptor layout unchanged, but make sure
@@ -5129,7 +5176,9 @@ static int airoha_retire_channel(struct net_device *netdev,
 {
 	struct airoha_gdm_common *common = airoha_gdm_common_from_netdev(netdev);
 	struct airoha_retire_txbuf txbuf;
+	struct airoha_gdm_dev *dev;
 	struct airoha_eth *eth;
+	bool stopped;
 	u32 hwf;
 	int ret;
 
@@ -5138,6 +5187,7 @@ static int airoha_retire_channel(struct net_device *netdev,
 	if (channel >= 32)
 		return -EINVAL;
 
+	dev = container_of(common, struct airoha_gdm_dev, common);
 	eth = common->eth;
 	if (airoha_is(eth, econet_en751221) && airoha_pse_iq_abnormal(eth)) {
 		netdev_info(netdev,
@@ -5146,6 +5196,12 @@ static int airoha_retire_channel(struct net_device *netdev,
 		return 0;
 	}
 
+	stopped = READ_ONCE(dev->xpon_tx_stopped);
+	if (airoha_tso_version(eth) == AIROHA_TSO_V2) {
+		WRITE_ONCE(dev->xpon_tx_stopped, true);
+		synchronize_net();
+		airoha_tso_flush(eth, NULL);
+	}
 	hwf = airoha_fe_rr(eth, REG_CDM_HWF_CHN_EN(2));
 	airoha_fe_wr(eth, REG_CDM_HWF_CHN_EN(2), hwf & ~BIT(channel));
 	airoha_retire_txbuf_limit(eth, &txbuf);
@@ -5156,6 +5212,8 @@ static int airoha_retire_channel(struct net_device *netdev,
 	airoha_retire_txbuf_restore(eth, &txbuf);
 	airoha_fe_wr(eth, REG_CDM_HWF_CHN_EN(2), hwf);
 
+	if (airoha_tso_version(eth) == AIROHA_TSO_V2)
+		WRITE_ONCE(dev->xpon_tx_stopped, stopped);
 	return ret;
 }
 
@@ -5255,6 +5313,7 @@ static void airoha_retire_all(struct net_device *netdev)
 	 */
 	WRITE_ONCE(dev->xpon_tx_stopped, true);
 	synchronize_net();
+	airoha_tso_flush(eth, NULL);
 
 	if (eth->channel_retire)
 		airoha_retire_release_all(eth, netdev,
@@ -7455,6 +7514,7 @@ static int airoha_dev_stop(struct net_device *netdev)
 	airoha_gdm_xdsl_stop(dev);
 	airoha_gdm_xpon_stop(dev);
 	netif_tx_disable(netdev);
+	airoha_tso_flush(dev->eth, netdev);
 	qdma = airoha_qdma_deref(dev);
 	airoha_gdm_update_hw_stats(dev);
 
@@ -7853,8 +7913,8 @@ int airoha_get_fe_port(struct airoha_gdm_dev *dev)
 static bool airoha_gdm2_needs_linear_tx(const struct airoha_gdm_dev *dev)
 {
 	return airoha_is(dev->eth, airoha_en7523) &&
-	       (dev->flags & AIROHA_PRIV_F_XPON_MANAGED) &&
-	       dev->port->id == AIROHA_GDM2_IDX;
+	        dev->port->id == AIROHA_GDM2_IDX &&
+	        airoha_tso_version(dev->eth) != AIROHA_TSO_V2;
 }
 
 static netdev_features_t airoha_dev_fix_features(struct net_device *netdev,
@@ -8190,7 +8250,8 @@ static netdev_tx_t __airoha_dev_xmit(struct sk_buff *skb,
 
 	/* TSO: fill MSS info in tcp checksum field */
 	if (!xpon_oam && skb_is_gso(skb)) {
-		if (skb_cow_head(skb, 0))
+		if (airoha_tso_version(dev->eth) != AIROHA_TSO_NONE ?
+		    airoha_tso_prepare(skb) : skb_cow_head(skb, 0))
 			goto error;
 
 		if (skb_shinfo(skb)->gso_type & (SKB_GSO_TCPV4 |
@@ -8226,6 +8287,15 @@ static netdev_tx_t __airoha_dev_xmit(struct sk_buff *skb,
 
 	if (xpon_oam)
 		msg1 |= QDMA_ETH_TXMSG_NO_DROP;
+
+	if (!xpon_oam && airoha_tso_version(dev->eth) == AIROHA_TSO_V2 &&
+	    (skb_is_nonlinear(skb) || skb_is_gso(skb))) {
+		netdev_tx_t ret;
+
+		ret = airoha_tso_xmit(skb, netdev, qdma->id, msg0, msg1);
+		rcu_read_unlock();
+		return ret;
+	}
 
 	q = &qdma->q_tx[qid];
 	if (WARN_ON_ONCE(!q->ndesc))
@@ -8305,6 +8375,7 @@ static netdev_tx_t __airoha_dev_xmit(struct sk_buff *skb,
 		q->txq_stopped = true;
 	}
 
+	dma_wmb();
 	if (netif_xmit_stopped(txq) || !netdev_xmit_more())
 		airoha_qdma_rmw(qdma, REG_TX_CPU_IDX(qid),
 				TX_RING_CPU_IDX_MASK,
@@ -8419,7 +8490,9 @@ static int airoha_xpon_xmit_oam(struct net_device *netdev, struct sk_buff *skb,
 	 */
 	skb->dev = netdev;
 	skb_set_queue_mapping(skb, 7);
+	__netif_tx_lock_bh(skb_get_tx_queue(netdev, skb));
 	ret = __airoha_dev_xmit(skb, netdev, &info);
+	__netif_tx_unlock_bh(netdev_get_tx_queue(netdev, 7));
 	return ret == NETDEV_TX_BUSY ? -EBUSY : 0;
 }
 
@@ -9459,6 +9532,7 @@ static const struct net_device_ops airoha_netdev_ops = {
 	.ndo_change_mtu		= airoha_gdm_dev_change_mtu,
 	.ndo_select_queue	= airoha_dev_select_queue,
 	.ndo_fix_features	= airoha_dev_fix_features,
+	.ndo_features_check	= airoha_tso_features_check,
 	.ndo_set_features	= airoha_dev_set_features,
 	.ndo_start_xmit		= airoha_dev_xmit,
 	.ndo_get_stats64	= airoha_gdm_dev_get_stats64,
@@ -9774,6 +9848,12 @@ static int airoha_alloc_gdm_device(struct airoha_eth *eth,
 		netdev->features &= ~unsupported;
 		netdev->vlan_features &= ~unsupported;
 	}
+	if (airoha_tso_version(eth) != AIROHA_TSO_NONE) {
+		netdev->hw_features |= AIROHA_QDMA_TSO_HW_FEATURES;
+		netdev->features |= AIROHA_QDMA_TSO_HW_FEATURES;
+		netdev->vlan_features |= AIROHA_QDMA_TSO_HW_FEATURES;
+		netif_set_tso_max_size(netdev, U16_MAX);
+	}
 
 	netdev->watchdog_timeo = 5 * HZ;
 	SET_NETDEV_DEV(netdev, eth->dev);
@@ -9812,11 +9892,12 @@ static int airoha_alloc_gdm_device(struct airoha_eth *eth,
 	u64_stats_init(&dev->stats.syncp);
 	dev->port = port;
 	dev->eth = eth;
+	spin_lock_init(&dev->tx_complete_lock);
 	dev->nbq = nbq;
 	/* EN7523 GDM2 stalls with SG chains submitted to the WAN QDMA.
 	 * The vendor TSO v2 path handles nonlinear packets through a separate
-	 * PDMA engine. Use software segmentation and linearization until that
-	 * path is implemented, including for VLAN upper devices.
+	 * PDMA engine. Keep software segmentation and linearization when the
+	 * TSO v2 option is disabled, including for VLAN upper devices.
 	 */
 	if (airoha_gdm2_needs_linear_tx(dev)) {
 		netdev->hw_features &= ~AIROHA_QDMA_TSO_HW_FEATURES;
@@ -10100,6 +10181,7 @@ static void airoha_eth_cleanup(struct airoha_eth *eth)
 		}
 	}
 
+	airoha_tso_cleanup(eth);
 	if (test_bit(DEV_STATE_INITIALIZED, &eth->state))
 		airoha_hw_cleanup(eth);
 
@@ -10850,6 +10932,10 @@ static int airoha_eth_probe(struct platform_device *pdev)
 		}
 	}
 
+	err = airoha_tso_init(eth);
+	if (err)
+		goto error;
+
 	/* FE error is a distinct interrupt on EN7516/EN7527/EN7528 and the
 	 * newer Airoha FE. Do not depend on its positional index in the IRQ
 	 * array; EN751221 legitimately has no separate FE-error line.
@@ -11205,7 +11291,6 @@ void airoha_eth_xdsl_update_link(struct net_device *netdev,
 EXPORT_SYMBOL_GPL(airoha_eth_xdsl_update_link);
 
 static const struct of_device_id airoha_eth_of_match[] = {
-	{ .compatible = "airoha,an7552-eth", .data = &an7552_soc_data },
 	{ .compatible = "econet,en751221-eth", .data = &econet_en751221_soc_data },
 	{ .compatible = "econet,en751627-eth", .data = &econet_en7528_soc_data },
 	{ .compatible = "econet,en7528-eth", .data = &econet_en7528_soc_data },
@@ -11213,6 +11298,7 @@ static const struct of_device_id airoha_eth_of_match[] = {
 	{ .compatible = "airoha,en7523-eth", .data = &airoha_en7523_soc_data },
 	{ .compatible = "airoha,en7581-eth", .data = &airoha_en7581_soc_data },
 	{ .compatible = "airoha,an7583-eth", .data = &airoha_an7583_soc_data },
+	{ .compatible = "airoha,an7552-eth", .data = &an7552_soc_data },
 	{ /* sentinel */ }
 };
 MODULE_DEVICE_TABLE(of, airoha_eth_of_match);

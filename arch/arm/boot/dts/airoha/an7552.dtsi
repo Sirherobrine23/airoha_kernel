@@ -601,8 +601,11 @@
 
 		resets = <&scuclk EN7523_FE_RST>,
 			 <&scuclk EN7523_FE_PDMA_RST>,
-			 <&scuclk EN7523_FE_QDMA_RST>;
-		reset-names = "fe", "pdma", "qdma";
+			 <&scuclk EN7523_FE_QDMA_RST>,
+			 <&scuclk EN7523_GDMP_RST>,
+			 <&scuclk EN7523_TDMA_RST>;
+		reset-names = "fe", "pdma", "qdma",
+			      "gdmp", "tdma";
 
 		interrupts = <GIC_SPI 37 IRQ_TYPE_LEVEL_HIGH>,
 			     <GIC_SPI 55 IRQ_TYPE_LEVEL_HIGH>,

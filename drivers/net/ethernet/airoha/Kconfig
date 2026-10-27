@@ -28,6 +28,12 @@ config NET_AIROHA
 	  This driver supports the gigabit ethernet MACs in the
 	  Airoha and Econet SoC family.
 
+config NET_AIROHA_TSO
+	bool "TSO transmit offload"
+	depends on NET_AIROHA
+	help
+	  Enable TCP segmentation and scatter-gather on TSO v1 and the TSO v2.
+
 config NET_AIROHA_PPE_DEBUGFS
 	bool
 	default y

@@ -1103,6 +1103,8 @@ struct airoha_gdm_dev {
 		struct gdm __iomem *econet_regs;
 	};
 	spinlock_t reg_lock;
+	/* QDMA and TSO v2 can complete the same netdev queue concurrently. */
+	spinlock_t tx_complete_lock;
 	bool g2_stats;
 	u8 fport;
 
@@ -1337,6 +1339,14 @@ struct airoha_eth_soc_data {
 	} ops;
 };
 
+struct airoha_tso;
+
+enum airoha_tso_version {
+	AIROHA_TSO_NONE,
+	AIROHA_TSO_V1,
+	AIROHA_TSO_V2,
+};
+
 struct airoha_eth {
 	struct device *dev;
 
@@ -1357,6 +1367,7 @@ struct airoha_eth {
 	struct reset_control_bulk_data *xsi_rsts;
 
 	struct net_device *napi_dev;
+	struct airoha_tso *tso;
 	int fe_irq;
 
 	struct airoha_qdma qdma[AIROHA_MAX_NUM_QDMA];
@@ -1413,19 +1424,20 @@ static inline bool airoha_is_lan_gdm_dev(struct airoha_gdm_dev *dev)
 	return !(dev->flags & AIROHA_PRIV_F_WAN);
 }
 
-#define airoha_is(eth, ...)                                        \
+#define get_airoha_target(_eth)		(_eth)->soc->version
+#define airoha_is(_eth, ...)                                        \
 	({                                                         \
 		const enum airoha_ids _ids[] = { __VA_ARGS__, 0 }; \
 		bool _found = false;                               \
 		for (int _i = 0; _ids[_i] != 0; _i++) {            \
-			if (_ids[_i] == (eth)->soc->version) {     \
+			if (_ids[_i] == get_airoha_target(_eth)) {     \
 				_found = true;                     \
 				break;                             \
 			}                                          \
 		}                                                  \
 		_found;                                            \
 	})
-
+	
 static inline bool airoha_is_econet(struct airoha_eth *eth)
 {
 	return airoha_is(eth, econet_en751221, econet_en7528, econet_en7580);
@@ -1725,6 +1737,8 @@ enum etx_vlan_type {
 #define ETX_UCO BIT(30)
 #define ETX_TCO BIT(29)
 #define ETX_SCO BIT(28)
+/* EN7528 reuses bit 28 for TSO v1. */
+#define EN7528_ETX_TSO BIT(28)
 #define ETX_UDF_PMAP_MASK GENMASK(27, 22)
 #define ETX_FPORT_MASK GENMASK(21, 19)
 #define ETX_VLAN_EN BIT(18)
@@ -5047,6 +5061,7 @@ struct econet_q_tx_ent {
 	dma_addr_t dma_addr;
 	u16 dma_len;
 	u16 freelist_next;
+	bool dma_map_page;
 };
 
 struct econet_q_tx {
