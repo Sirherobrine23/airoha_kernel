@@ -6895,6 +6895,11 @@ static int airoha_fe_init(struct airoha_eth *eth)
 	}
 
 	airoha_fe_vip_setup(eth);
+	/* EN7581 TDMA flow control uses the PSE shared buffer. */
+	if (airoha_is(eth, airoha_en7581))
+		airoha_fe_clear(eth, REG_PSE_FC_CFG,
+				EN7581_PSE_TDMA_SHARE_DIS_MASK);
+
 	/* AN7552 retains silicon OQ reservations and the fixed share threshold. */
 	if (!airoha_is(eth, airoha_an7552))
 		airoha_fe_pse_ports_init(eth);
