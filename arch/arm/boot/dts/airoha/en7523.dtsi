@@ -968,6 +968,9 @@
 		             <GIC_SPI 60 IRQ_TYPE_LEVEL_HIGH>,
 		             <GIC_SPI 49 IRQ_TYPE_LEVEL_HIGH>,
 		             <GIC_SPI 64 IRQ_TYPE_LEVEL_HIGH>;
+		interrupt-names = "lan0", "lan1", "lan2", "lan3",
+				  "wan0", "wan1", "wan2", "wan3",
+				  "fe-error", "pdma";
 
 		memory-region = <&qdma0_buf>, <&qdma1_buf>;
 		memory-region-names = "qdma0-buf", "qdma1-buf";
