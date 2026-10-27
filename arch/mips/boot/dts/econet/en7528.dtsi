@@ -19,7 +19,6 @@
 
 	chosen {
 		stdout-path = "serial0:115200n8";
-		linux,usable-memory-range = <0x00020000 0x1fe00000>;
 	};
 
 	aliases {
@@ -228,16 +227,16 @@
 				gpio-ranges = <&pinctrl 0 0 42>;
 
 				pcie0_rst_pins: pcie0-rst-pins {
-					conf {
-						pins = "pcie_reset0";
-						drive-open-drain = <1>;
+					mux {
+						function = "pcie_reset";
+						groups = "pcie_reset0";
 					};
 				};
 
 				pcie1_rst_pins: pcie1-rst-pins {
-					conf {
-						pins = "pcie_reset1";
-						drive-open-drain = <1>;
+					mux {
+						function = "pcie_reset";
+						groups = "pcie_reset1";
 					};
 				};
 
@@ -591,6 +590,8 @@
 			clock-names = "sys_ck0";
 			phys = <&pcie_phy0>;
 			phy-names = "pcie-phy0";
+			pinctrl-names = "default";
+			pinctrl-0 = <&pcie0_rst_pins>;
 			bus-range = <0x00 0xff>;
 			ranges = <0x01000000 0 0x00000000 0x1f600000 0 0x00010000>,
 				 <0x82000000 0 0x20000000 0x20000000 0 0x08000000>;
@@ -631,6 +632,8 @@
 			clock-names = "sys_ck1";
 			phys = <&pcie_phy1>;
 			phy-names = "pcie-phy1";
+			pinctrl-names = "default";
+			pinctrl-0 = <&pcie1_rst_pins>;
 			bus-range = <0x00 0xff>;
 			ranges = <0x01000000 0 0x00000000 0x1f610000 0 0x00010000>,
 				 <0x82000000 0 0x28000000 0x28000000 0 0x08000000>;
