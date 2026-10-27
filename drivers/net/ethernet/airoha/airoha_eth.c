@@ -6697,9 +6697,106 @@ static void airoha_fe_pse_init(struct airoha_eth *eth)
 		airoha_fe_wr(eth, AN7552_PSE_SHARE_USED_THD, 0x01e001f4);
 }
 
+static irqreturn_t airoha_fe_irq_handler(int irq, void *data)
+{
+	struct airoha_eth *eth = data;
+	u32 status, events;
+	int bit;
+
+	status = airoha_fe_rr(eth, REG_FE_INT_STATUS);
+	status &= airoha_fe_rr(eth, REG_FE_INT_ENABLE) & eth->fe_irq_mask;
+	if (!status)
+		return IRQ_NONE;
+
+	/* W1C: acknowledge only the enabled events that were observed. */
+	airoha_fe_wr(eth, REG_FE_INT_STATUS, status);
+	airoha_fe_rr(eth, REG_FE_INT_STATUS);
+
+	for (events = status; events; events &= events - 1) {
+		bit = __ffs(events);
+		atomic64_inc(&eth->fe_irq_stats[bit]);
+	}
+
+	/* The SDK resets the PSE core here. That requires coordinated DMA
+	 * recovery; mask this source until reprobe instead of resetting live
+	 * queues or repeatedly interrupting on an unrecovered exception.
+	 */
+	if (status & FE_INT_PSE_EXCEPTION) {
+		airoha_fe_clear(eth, REG_FE_INT_ENABLE, FE_INT_PSE_EXCEPTION);
+		airoha_fe_rr(eth, REG_FE_INT_ENABLE);
+		dev_err_ratelimited(eth->dev,
+				    "PSE exception; FE exception interrupt masked\n");
+	}
+
+	/* MBI auto-aging events also occur during normal channel retirement. */
+	if (status & ~(GDM2_RX_INTR1_MASK | GDM2_TX_INTR2_MASK |
+		       FE_INT_PSE_EXCEPTION))
+		dev_warn_ratelimited(eth->dev, "FE interrupt status %#08x\n", status);
+
+	return IRQ_HANDLED;
+}
+
+static int airoha_fe_irq_init(struct platform_device *pdev,
+			      struct airoha_eth *eth)
+{
+	u32 mask = eth->soc->fe_irq_mask;
+	int irq, err;
+
+	/* Keep generations with unverified event maps disabled. */
+	if (!mask)
+		return 0;
+
+	irq = platform_get_irq_byname_optional(pdev, "fe-error");
+	if (irq == -ENXIO) {
+		dev_warn(eth->dev, "FE error IRQ missing; event monitoring disabled\n");
+		return 0;
+	}
+	if (irq < 0)
+		return dev_err_probe(eth->dev, irq,
+				     "failed to get FE error IRQ\n");
+
+	/* FE TSO alerts are separate from PDMA TX completion interrupts. The
+	 * SDK does not document the individual meanings of bits 12 through 15.
+	 */
+	if (airoha_tso_version(eth) == AIROHA_TSO_V2)
+		mask |= FE_INT_TSO_MASK;
+	eth->fe_irq_mask = mask;
+
+	err = request_irq(irq, airoha_fe_irq_handler, 0, "airoha-fe-error", eth);
+	if (err)
+		return dev_err_probe(eth->dev, err,
+				     "failed to request FE error IRQ\n");
+	eth->fe_irq = irq;
+
+	/* Discard stale status before unmasking the registered handler. */
+	airoha_fe_wr(eth, REG_FE_INT_STATUS, mask);
+	airoha_fe_wr(eth, REG_FE_INT_ENABLE, mask);
+	airoha_fe_rr(eth, REG_FE_INT_ENABLE);
+	return 0;
+}
+
+static void airoha_fe_irq_cleanup(struct airoha_eth *eth)
+{
+	if (!eth->fe_irq)
+		return;
+
+	/* Stop and synchronize the handler before it can race the mask write. */
+	disable_irq(eth->fe_irq);
+	airoha_fe_wr(eth, REG_FE_INT_ENABLE, 0);
+	airoha_fe_rr(eth, REG_FE_INT_ENABLE);
+	free_irq(eth->fe_irq, eth);
+	eth->fe_irq = 0;
+}
+
 static int airoha_fe_init(struct airoha_eth *eth)
 {
 	int err;
+
+	/* No FE event may be unmasked before airoha_fe_irq_init(). */
+	if (eth->soc->fe_irq_mask) {
+		airoha_fe_wr(eth, REG_FE_INT_ENABLE, 0);
+		airoha_fe_rr(eth, REG_FE_INT_ENABLE);
+	}
 
 	/*
 	 * The EN7528 SCU assigns the shared GDMP SRAM to the FE before the
@@ -6917,14 +7014,6 @@ static int airoha_fe_init(struct airoha_eth *eth)
 		/* enable 1:N vlan action, init vlan table */
 		airoha_fe_set(eth, REG_MC_VLAN_EN, MC_VLAN_EN_MASK);
 	}
-
-	/* enable Frame Engine interrupts */
-	if (airoha_is(eth, airoha_en7523))
-		airoha_fe_set(eth, REG_FE_INT_ENABLE,
-		      GDM2_RX_INTR3_MASK | GDM2_RX_INTR2_MASK |
-		      GDM2_RX_INTR1_MASK | GDM2_RX_INTR0_MASK |
-		      GDM2_TX_INTR2_MASK | GDM2_TX_INTR1_MASK |
-		      GDM2_TX_INTR0_MASK | PSE_FQ_EMPTY_MASK);
 
 	if (airoha_is(eth, airoha_an7552))
 		return 0;
@@ -8496,6 +8585,57 @@ static int airoha_xpon_xmit_oam(struct net_device *netdev, struct sk_buff *skb,
 	return ret == NETDEV_TX_BUSY ? -EBUSY : 0;
 }
 
+/* These counters belong to the FE, rather than to an individual GDM. */
+static const char airoha_fe_irq_names[32][ETH_GSTRING_LEN] = {
+	[8] = "fe_irq_pse_fq_empty",
+	[12] = "fe_irq_tso_bit12",
+	[13] = "fe_irq_tso_bit13",
+	[14] = "fe_irq_tso_bit14",
+	[15] = "fe_irq_tso_bit15",
+	[16] = "fe_irq_gdm2_tx_mbi_mac",
+	[17] = "fe_irq_gdm2_tx_mbi_csr",
+	[18] = "fe_irq_gdm2_tx_mbi_aging",
+	[20] = "fe_irq_gdm2_rx_mbi_csr",
+	[21] = "fe_irq_gdm2_rx_mbi_aging",
+	[22] = "fe_irq_gdm2_rx_fifo_overflow",
+	[23] = "fe_irq_gdm2_rx_gemport_issue",
+	[28] = "fe_irq_pse_exception",
+};
+
+static int airoha_get_sset_count(struct net_device *netdev, int sset)
+{
+	struct airoha_gdm_dev *dev = netdev_priv(netdev);
+
+	if (sset != ETH_SS_STATS)
+		return -EOPNOTSUPP;
+
+	return hweight32(dev->eth->fe_irq_mask);
+}
+
+static void airoha_get_strings(struct net_device *netdev, u32 sset, u8 *data)
+{
+	struct airoha_gdm_dev *dev = netdev_priv(netdev);
+	int i;
+
+	if (sset != ETH_SS_STATS)
+		return;
+
+	for (i = 0; i < ARRAY_SIZE(airoha_fe_irq_names); i++)
+		if (dev->eth->fe_irq_mask & BIT(i))
+			ethtool_puts(&data, airoha_fe_irq_names[i]);
+}
+
+static void airoha_get_ethtool_stats(struct net_device *netdev,
+				     struct ethtool_stats *stats, u64 *data)
+{
+	struct airoha_gdm_dev *dev = netdev_priv(netdev);
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(airoha_fe_irq_names); i++)
+		if (dev->eth->fe_irq_mask & BIT(i))
+			*data++ = atomic64_read(&dev->eth->fe_irq_stats[i]);
+}
+
 static void airoha_ethtool_get_mac_stats(struct net_device *netdev,
 					 struct ethtool_eth_mac_stats *stats)
 {
@@ -9542,6 +9682,9 @@ static const struct net_device_ops airoha_netdev_ops = {
 
 static const struct ethtool_ops airoha_ethtool_ops = {
 	.get_drvinfo		= airoha_eth_get_drvinfo,
+	.get_sset_count		= airoha_get_sset_count,
+	.get_strings		= airoha_get_strings,
+	.get_ethtool_stats	= airoha_get_ethtool_stats,
 	.get_eth_mac_stats	= airoha_ethtool_get_mac_stats,
 	.get_rmon_stats		= airoha_ethtool_get_rmon_stats,
 	.get_link_ksettings	= airoha_ethtool_get_link_ksettings,
@@ -10143,6 +10286,7 @@ static void airoha_eth_cleanup(struct airoha_eth *eth)
 {
 	int i;
 
+	airoha_fe_irq_cleanup(eth);
 	airoha_wed_exit();
 	if (test_and_clear_bit(DEV_STATE_NAPI_STARTED, &eth->state)) {
 		for (i = 0; i < AIROHA_MAX_NUM_QDMA; i++) {
@@ -10687,6 +10831,7 @@ const struct airoha_eth_soc_data econet_en7528_soc_data = {
 
 const struct airoha_eth_soc_data econet_en7580_soc_data = {
 	.version = econet_en7580,
+	.fe_irq_mask = FE_INT_ERROR_MASK,
 	.xpon_ops = &en7580_xpon_ops,
 	.num_ppe = 1,
 	.tx_ring = 8,
@@ -10710,6 +10855,7 @@ const struct airoha_eth_soc_data econet_en7580_soc_data = {
 
 const struct airoha_eth_soc_data airoha_en7581_soc_data = {
 	.version = airoha_en7581,
+	.fe_irq_mask = FE_INT_ERROR_MASK,
 	.xsi_rsts_names = en7581_xsi_rsts_names,
 	.num_xsi_rsts = ARRAY_SIZE(en7581_xsi_rsts_names),
 	.num_ppe = 2,
@@ -10731,6 +10877,7 @@ const struct airoha_eth_soc_data airoha_en7581_soc_data = {
 
 const struct airoha_eth_soc_data airoha_an7583_soc_data = {
 	.version = airoha_an7583,
+	.fe_irq_mask = FE_INT_ERROR_MASK,
 	.xsi_rsts_names = an7583_xsi_rsts_names,
 	.num_xsi_rsts = ARRAY_SIZE(an7583_xsi_rsts_names),
 	.num_ppe = 1,
@@ -10752,6 +10899,7 @@ const struct airoha_eth_soc_data airoha_an7583_soc_data = {
 
 const struct airoha_eth_soc_data airoha_en7523_soc_data = {
 	.version = airoha_en7523,
+	.fe_irq_mask = FE_INT_ERROR_MASK,
 	.xpon_ops = &airoha_xpon_ops,
 	.xsi_rsts_names = en7523_xsi_rsts_names,
 	.num_xsi_rsts = ARRAY_SIZE(en7523_xsi_rsts_names),
@@ -10777,6 +10925,7 @@ const struct airoha_eth_soc_data airoha_en7523_soc_data = {
 
 static const struct airoha_eth_soc_data an7552_soc_data = {
 	.version = airoha_an7552,
+	.fe_irq_mask = FE_INT_ERROR_MASK | FE_INT_PSE_EXCEPTION,
 	.xpon_ops = &airoha_xpon_ops,
 	// .xsi_rsts_names = en7523_xsi_rsts_names,
 	// .num_xsi_rsts = ARRAY_SIZE(en7523_xsi_rsts_names),
@@ -10820,6 +10969,8 @@ static int airoha_eth_probe(struct platform_device *pdev)
 
 	eth->dev = &pdev->dev;
 	eth->soc = soc;
+	for (i = 0; i < ARRAY_SIZE(eth->fe_irq_stats); i++)
+		atomic64_set(&eth->fe_irq_stats[i], 0);
 	/* fe.c: EN7580 retires the GDM2 channels, every other SoC drops them */
 	eth->channel_retire = airoha_is(eth, econet_en7580);
 	eth->ppe_host_ops = &airoha_ppe_host_ops;
@@ -10936,16 +11087,9 @@ static int airoha_eth_probe(struct platform_device *pdev)
 	if (err)
 		goto error;
 
-	/* FE error is a distinct interrupt on EN7516/EN7527/EN7528 and the
-	 * newer Airoha FE. Do not depend on its positional index in the IRQ
-	 * array; EN751221 legitimately has no separate FE-error line.
-	 */
-	eth->fe_irq = platform_get_irq_byname_optional(pdev, "fe-error");
-	if (eth->fe_irq < 0 && eth->fe_irq != -ENXIO) {
-		err = dev_err_probe(eth->dev, eth->fe_irq,
-				    "failed to get FE error IRQ\n");
+	err = airoha_fe_irq_init(pdev, eth);
+	if (err)
 		goto error;
-	}
 
 	for (i = 0; ; i++) {
 		struct device_node *wed_np;

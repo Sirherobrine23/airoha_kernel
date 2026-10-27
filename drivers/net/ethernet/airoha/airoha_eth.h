@@ -1324,6 +1324,7 @@ struct airoha_eth_soc_data {
 	int max_gdm_ports;
 	bool legacy_qdma;
 	bool ppe_datapath;
+	u32 fe_irq_mask;
 	u32 pse_fq_cfg;
 	u32 ppe_stats_entries;
 	u32 ppe_sram_entries;
@@ -1369,6 +1370,9 @@ struct airoha_eth {
 	struct net_device *napi_dev;
 	struct airoha_tso *tso;
 	int fe_irq;
+	u32 fe_irq_mask;
+	/* Shared FE event counts, indexed by FE_INT_STATUS bit. */
+	atomic64_t fe_irq_stats[32];
 
 	struct airoha_qdma qdma[AIROHA_MAX_NUM_QDMA];
 	struct airoha_gdm_port **ports;
