@@ -8609,7 +8609,8 @@ static int airoha_get_sset_count(struct net_device *netdev, int sset)
 	if (sset != ETH_SS_STATS)
 		return -EOPNOTSUPP;
 
-	return hweight32(dev->eth->fe_irq_mask);
+	return hweight32(dev->eth->fe_irq_mask) +
+	       airoha_tso_get_sset_count(dev->eth);
 }
 
 static void airoha_get_strings(struct net_device *netdev, u32 sset, u8 *data)
@@ -8623,6 +8624,7 @@ static void airoha_get_strings(struct net_device *netdev, u32 sset, u8 *data)
 	for (i = 0; i < ARRAY_SIZE(airoha_fe_irq_names); i++)
 		if (dev->eth->fe_irq_mask & BIT(i))
 			ethtool_puts(&data, airoha_fe_irq_names[i]);
+	airoha_tso_get_strings(dev->eth, data);
 }
 
 static void airoha_get_ethtool_stats(struct net_device *netdev,
@@ -8634,6 +8636,7 @@ static void airoha_get_ethtool_stats(struct net_device *netdev,
 	for (i = 0; i < ARRAY_SIZE(airoha_fe_irq_names); i++)
 		if (dev->eth->fe_irq_mask & BIT(i))
 			*data++ = atomic64_read(&dev->eth->fe_irq_stats[i]);
+	airoha_tso_get_stats(dev->eth, data);
 }
 
 static void airoha_ethtool_get_mac_stats(struct net_device *netdev,

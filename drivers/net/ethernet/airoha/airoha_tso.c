@@ -1,9 +1,12 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /* EcoNet QDMA TSO v1 and EN7523 PDMA TSO v2. */
 #include <linux/delay.h>
+#include <linux/ethtool.h>
 #include <linux/hrtimer.h>
+#include <linux/interrupt.h>
 #include <linux/ip.h>
 #include <linux/ipv6.h>
+#include <linux/moduleparam.h>
 #include <linux/reset.h>
 #include <linux/tcp.h>
 #include <net/ip.h>
@@ -23,7 +26,34 @@
 #define TSO_DELAY_INT		0xa0c
 #define TSO_INT_STATUS		0xa20
 #define TSO_INT_MASK		0xa28
+#define TSO_TX_DONE		GENMASK(1, 0)
 #define TSO_POLL_NS		(100 * NSEC_PER_USEC)
+#define TSO_IRQ_GUARD_NS		NSEC_PER_MSEC
+
+enum airoha_tso_stat {
+	TSO_STAT_IRQ_MODE,
+	TSO_STAT_IRQ_EVENTS,
+	TSO_STAT_IRQ_TX0,
+	TSO_STAT_IRQ_TX1,
+	TSO_STAT_TIMER_FIRES,
+	TSO_STAT_IRQ_RECLAIMED,
+	TSO_STAT_POLL_RECLAIMED,
+	TSO_STAT_TX_PACKETS,
+	TSO_STAT_GSO_PACKETS,
+	TSO_STAT_COUNT,
+};
+
+static const char airoha_tso_stat_names[TSO_STAT_COUNT][ETH_GSTRING_LEN] = {
+	"pdma_irq_mode",
+	"pdma_irq_events",
+	"pdma_irq_tx0",
+	"pdma_irq_tx1",
+	"pdma_timer_fires",
+	"pdma_irq_reclaimed",
+	"pdma_poll_reclaimed",
+	"pdma_tx_packets",
+	"pdma_gso_packets",
+};
 
 struct airoha_tso_entry {
 	dma_addr_t dma;
@@ -49,11 +79,37 @@ struct airoha_tso {
 	struct hrtimer timer;
 	/* Serialize flush and reset of the shared PDMA engine. */
 	struct mutex mutex;
+	/* Serialize IRQ masking, NAPI scheduling and stop/restart. */
+	spinlock_t irq_lock;
+	atomic64_t stats[TSO_STAT_COUNT];
+	int irq;
+	bool poll_from_irq;
 	bool running;
 	bool napi_enabled;
 	bool programmed;
 	u8 next_ring;
 };
+
+int airoha_tso_get_sset_count(struct airoha_eth *eth)
+{
+	return eth->tso ? TSO_STAT_COUNT : 0;
+}
+
+void airoha_tso_get_strings(struct airoha_eth *eth, u8 *data)
+{
+	if (eth->tso)
+		memcpy(data, airoha_tso_stat_names, sizeof(airoha_tso_stat_names));
+}
+
+void airoha_tso_get_stats(struct airoha_eth *eth, u64 *data)
+{
+	int i;
+
+	if (!eth->tso)
+		return;
+	for (i = 0; i < TSO_STAT_COUNT; i++)
+		data[i] = atomic64_read(&eth->tso->stats[i]);
+}
 
 enum airoha_tso_version airoha_tso_version(struct airoha_eth *eth)
 {
@@ -223,18 +279,90 @@ static void airoha_tso_wake(struct airoha_tso *tso,
 	}
 }
 
+static void airoha_tso_mask_irq(struct airoha_tso *tso)
+{
+	airoha_fe_wr(tso->eth, TSO_INT_MASK, 0);
+	airoha_fe_rr(tso->eth, TSO_INT_MASK);
+}
+
+static void airoha_tso_ack_irq(struct airoha_tso *tso, u32 status)
+{
+	airoha_fe_wr(tso->eth, TSO_INT_STATUS, status);
+	airoha_fe_rr(tso->eth, TSO_INT_STATUS);
+}
+
+/* Called with irq_lock held and local IRQs disabled. */
+static void airoha_tso_schedule(struct airoha_tso *tso, bool from_irq)
+{
+	if (!tso->running)
+		return;
+	if (tso->irq)
+		airoha_tso_mask_irq(tso);
+	if (napi_schedule_prep(&tso->napi)) {
+		tso->poll_from_irq = from_irq;
+		__napi_schedule(&tso->napi);
+	}
+}
+
+static void airoha_tso_arm_timer(struct airoha_tso *tso)
+{
+	if (!hrtimer_active(&tso->timer))
+		hrtimer_start(&tso->timer,
+			      ns_to_ktime(tso->irq ? TSO_IRQ_GUARD_NS : TSO_POLL_NS),
+			      HRTIMER_MODE_REL);
+}
+
+static irqreturn_t airoha_tso_irq(int irq, void *data)
+{
+	struct airoha_tso *tso = data;
+	unsigned long flags;
+	u32 status;
+
+	spin_lock_irqsave(&tso->irq_lock, flags);
+	status = airoha_fe_rr(tso->eth, TSO_INT_STATUS) & TSO_TX_DONE;
+	status &= airoha_fe_rr(tso->eth, TSO_INT_MASK);
+	if (!status) {
+		spin_unlock_irqrestore(&tso->irq_lock, flags);
+		return IRQ_NONE;
+	}
+	airoha_tso_mask_irq(tso);
+	airoha_tso_ack_irq(tso, status);
+	atomic64_inc(&tso->stats[TSO_STAT_IRQ_EVENTS]);
+	if (status & BIT(0))
+		atomic64_inc(&tso->stats[TSO_STAT_IRQ_TX0]);
+	if (status & BIT(1))
+		atomic64_inc(&tso->stats[TSO_STAT_IRQ_TX1]);
+	airoha_tso_schedule(tso, true);
+	spin_unlock_irqrestore(&tso->irq_lock, flags);
+	return IRQ_HANDLED;
+}
+
 static enum hrtimer_restart airoha_tso_timer(struct hrtimer *timer)
 {
 	struct airoha_tso *tso = container_of(timer, struct airoha_tso, timer);
+	unsigned long flags;
 
-	if (READ_ONCE(tso->running))
-		napi_schedule(&tso->napi);
+	spin_lock_irqsave(&tso->irq_lock, flags);
+	if (tso->running && airoha_tso_pending(tso)) {
+		atomic64_inc(&tso->stats[TSO_STAT_TIMER_FIRES]);
+		if (tso->irq) {
+			u32 status;
+
+			airoha_tso_mask_irq(tso);
+			status = airoha_fe_rr(tso->eth, TSO_INT_STATUS) & TSO_TX_DONE;
+			airoha_tso_ack_irq(tso, status);
+		}
+		airoha_tso_schedule(tso, false);
+	}
+	spin_unlock_irqrestore(&tso->irq_lock, flags);
 	return HRTIMER_NORESTART;
 }
 
 static int airoha_tso_poll(struct napi_struct *napi, int budget)
 {
 	struct airoha_tso *tso = container_of(napi, struct airoha_tso, napi);
+	bool from_irq = tso->poll_from_irq;
+	unsigned long flags;
 	int done = 0, i;
 
 	if (!budget)
@@ -243,11 +371,30 @@ static int airoha_tso_poll(struct napi_struct *napi, int budget)
 		done += airoha_tso_reap(tso, (tso->next_ring + i) % TSO_RINGS,
 				       budget - done);
 	tso->next_ring ^= 1;
-	if (done)
+	if (done) {
+		atomic64_add(done, &tso->stats[from_irq ? TSO_STAT_IRQ_RECLAIMED :
+						       TSO_STAT_POLL_RECLAIMED]);
 		airoha_tso_wake(tso, NULL);
-	if (done < budget && napi_complete_done(napi, 0) &&
-	    READ_ONCE(tso->running) && airoha_tso_pending(tso))
-		hrtimer_start(&tso->timer, ns_to_ktime(TSO_POLL_NS), HRTIMER_MODE_REL);
+	}
+	spin_lock_irqsave(&tso->irq_lock, flags);
+	if (done < budget && napi_complete_done(napi, done) && tso->running) {
+		if (tso->irq) {
+			u32 status;
+
+			airoha_fe_wr(tso->eth, TSO_INT_MASK, TSO_TX_DONE);
+			airoha_fe_rr(tso->eth, TSO_INT_MASK);
+			/* Catch events latched while NAPI owned the masked rings. */
+			status = airoha_fe_rr(tso->eth, TSO_INT_STATUS) & TSO_TX_DONE;
+			if (status) {
+				airoha_tso_mask_irq(tso);
+				airoha_tso_ack_irq(tso, status);
+				airoha_tso_schedule(tso, false);
+			}
+		}
+		if (airoha_tso_pending(tso))
+			airoha_tso_arm_timer(tso);
+	}
+	spin_unlock_irqrestore(&tso->irq_lock, flags);
 	return done;
 }
 
@@ -259,6 +406,7 @@ netdev_tx_t airoha_tso_xmit(struct sk_buff *skb, struct net_device *dev,
 	struct netdev_queue *txq = skb_get_tx_queue(dev, skb);
 	struct airoha_tso_ring *q;
 	unsigned int n = 1 + skb_shinfo(skb)->nr_frags, i;
+	unsigned long flags;
 	u16 index;
 
 	if (unlikely(!tso || ring >= TSO_RINGS || !skb_headlen(skb) ||
@@ -310,6 +458,9 @@ netdev_tx_t airoha_tso_xmit(struct sk_buff *skb, struct net_device *dev,
 	dev_hold(dev);
 	q->head = index;
 	q->queued += n;
+	atomic64_inc(&tso->stats[TSO_STAT_TX_PACKETS]);
+	if (skb_is_gso(skb))
+		atomic64_inc(&tso->stats[TSO_STAT_GSO_PACKETS]);
 	skb_tx_timestamp(skb);
 	netdev_tx_sent_queue(txq, skb->len);
 	if (TSO_DESCS - q->queued <= MAX_SKB_FRAGS + 1)
@@ -317,7 +468,14 @@ netdev_tx_t airoha_tso_xmit(struct sk_buff *skb, struct net_device *dev,
 	dma_wmb();
 	airoha_fe_wr(tso->eth, TSO_RING_CPU(ring), q->head);
 	spin_unlock_bh(&q->lock);
-	napi_schedule(&tso->napi);
+	spin_lock_irqsave(&tso->irq_lock, flags);
+	if (tso->running) {
+		if (tso->irq)
+			airoha_tso_arm_timer(tso);
+		else
+			airoha_tso_schedule(tso, false);
+	}
+	spin_unlock_irqrestore(&tso->irq_lock, flags);
 	return NETDEV_TX_OK;
 
 unmap:
@@ -361,15 +519,59 @@ static void airoha_tso_program(struct airoha_tso *tso)
 	tso->programmed = true;
 }
 
+static int airoha_tso_request_irq(struct airoha_tso *tso)
+{
+	struct device *dev = tso->eth->dev;
+	int irq, err;
+
+	irq = platform_get_irq_byname_optional(to_platform_device(dev), "pdma");
+	if (irq == -EPROBE_DEFER)
+		return irq;
+	if (irq < 0) {
+		dev_warn(dev, "PDMA IRQ unavailable (%d); using TX polling\n", irq);
+		return 0;
+	}
+	err = request_irq(irq, airoha_tso_irq, 0, "airoha-pdma", tso);
+	if (err) {
+		dev_warn(dev, "PDMA IRQ request failed (%d); using TX polling\n", err);
+		return 0;
+	}
+	tso->irq = irq;
+	atomic64_set(&tso->stats[TSO_STAT_IRQ_MODE], 1);
+	dev_info(dev, "PDMA TX IRQ enabled, IRQ %d, 1 ms polling guard\n", irq);
+	return 0;
+}
+
+static void airoha_tso_start(struct airoha_tso *tso)
+{
+	unsigned long flags;
+
+	napi_enable(&tso->napi);
+	tso->napi_enabled = true;
+	spin_lock_irqsave(&tso->irq_lock, flags);
+	WRITE_ONCE(tso->running, true);
+	if (tso->irq) {
+		airoha_fe_wr(tso->eth, TSO_INT_MASK, TSO_TX_DONE);
+		airoha_fe_rr(tso->eth, TSO_INT_MASK);
+	}
+	spin_unlock_irqrestore(&tso->irq_lock, flags);
+}
+
 /* Stop producers before draining, including during ndo_stop/BQL reset and
  * GPON retirement. A timed-out engine is reset before any map is released.
  */
 static int airoha_tso_quiesce(struct airoha_tso *tso)
 {
 	unsigned long timeout = jiffies + msecs_to_jiffies(100);
+	unsigned long flags;
 	int i, err;
 
+	spin_lock_irqsave(&tso->irq_lock, flags);
 	WRITE_ONCE(tso->running, false);
+	airoha_tso_mask_irq(tso);
+	spin_unlock_irqrestore(&tso->irq_lock, flags);
+	if (tso->irq)
+		synchronize_irq(tso->irq);
 	for (i = 0; i < TSO_RINGS; i++) {
 		spin_lock_bh(&tso->ring[i].lock);
 		spin_unlock_bh(&tso->ring[i].lock);
@@ -428,9 +630,7 @@ void airoha_tso_flush(struct airoha_eth *eth, struct net_device *stopping)
 		goto out;
 	}
 	airoha_tso_program(tso);
-	napi_enable(&tso->napi);
-	tso->napi_enabled = true;
-	WRITE_ONCE(tso->running, true);
+	airoha_tso_start(tso);
 	airoha_tso_wake(tso, stopping);
 out:
 	mutex_unlock(&tso->mutex);
@@ -439,11 +639,15 @@ out:
 void airoha_tso_cleanup(struct airoha_eth *eth)
 {
 	struct airoha_tso *tso = eth->tso;
-	int i;
+	int i, err = 0;
 
 	if (!tso)
 		return;
-	if (tso->programmed && airoha_tso_quiesce(tso)) {
+	if (tso->programmed)
+		err = airoha_tso_quiesce(tso);
+	if (tso->irq)
+		free_irq(tso->irq, tso);
+	if (err) {
 		/* Retain DMA buffers rather than free memory still owned by a
 		 * controller which could not be stopped/reset.
 		 */
@@ -484,6 +688,9 @@ int airoha_tso_init(struct airoha_eth *eth)
 	tso->rst = rst;
 	eth->tso = tso;
 	mutex_init(&tso->mutex);
+	spin_lock_init(&tso->irq_lock);
+	for (i = 0; i < TSO_STAT_COUNT; i++)
+		atomic64_set(&tso->stats[i], 0);
 	hrtimer_setup(&tso->timer, airoha_tso_timer, CLOCK_MONOTONIC,
 		      HRTIMER_MODE_REL);
 	netif_napi_add_tx(eth->napi_dev, &tso->napi, airoha_tso_poll);
@@ -506,9 +713,10 @@ int airoha_tso_init(struct airoha_eth *eth)
 	if (err)
 		goto error;
 	airoha_tso_program(tso);
-	napi_enable(&tso->napi);
-	tso->napi_enabled = true;
-	WRITE_ONCE(tso->running, true);
+	err = airoha_tso_request_irq(tso);
+	if (err)
+		goto error;
+	airoha_tso_start(tso);
 	return 0;
 error:
 	airoha_tso_cleanup(eth);

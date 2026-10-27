@@ -9,6 +9,9 @@
 /* Build airoha_tso.o only when CONFIG_NET_AIROHA_TSO is enabled. */
 #ifdef CONFIG_NET_AIROHA_TSO
 enum airoha_tso_version airoha_tso_version(struct airoha_eth *eth);
+int airoha_tso_get_sset_count(struct airoha_eth *eth);
+void airoha_tso_get_strings(struct airoha_eth *eth, u8 *data);
+void airoha_tso_get_stats(struct airoha_eth *eth, u64 *data);
 netdev_features_t airoha_tso_features_check(struct sk_buff *skb,
 					    struct net_device *dev,
 					    netdev_features_t features);
@@ -20,6 +23,19 @@ void airoha_tso_flush(struct airoha_eth *eth, struct net_device *stopping);
 netdev_tx_t airoha_tso_xmit(struct sk_buff *skb, struct net_device *dev,
 			    unsigned int ring, u32 msg0, u32 msg1);
 #else
+static inline int airoha_tso_get_sset_count(struct airoha_eth *eth)
+{
+	return 0;
+}
+
+static inline void airoha_tso_get_strings(struct airoha_eth *eth, u8 *data)
+{
+}
+
+static inline void airoha_tso_get_stats(struct airoha_eth *eth, u64 *data)
+{
+}
+
 static inline enum airoha_tso_version
 airoha_tso_version(struct airoha_eth *eth)
 {
