@@ -215,7 +215,6 @@
 				compatible = "econet,en7528-pinctrl";
 				airoha,chip-scu = <&chip_scu>;
 
-				interrupt-parent = <&gic>;
 				interrupts = <GIC_SHARED 10 IRQ_TYPE_LEVEL_HIGH>;
 
 				gpio-controller;
@@ -471,7 +470,7 @@
 			clocks = <&hpt_clock>;
 		};
 
-		spi: spi@1fa10000 {
+		spi0: spi@1fa10000 {
 			compatible = "airoha,en7523-spi";
 			reg = <0x1fa10000 0x140>,
 			      <0x1fa11000 0x160>;
@@ -522,7 +521,7 @@
 			#phy-cells = <1>;
 		};
 
-		usb: usb@1fb90000 {
+		usb0: usb@1fb90000 {
 			compatible = "econet,en7528-xhci";
 			reg = <0x1fb90000 0x3e00>,
 			      <0x1fb93e00 0x100>;
@@ -538,20 +537,19 @@
 			reg = <0x1fbf0000 0x30>;
 			reg-io-width = <4>;
 			reg-shift = <2>;
+			native-endian;
+			clock-frequency = <20000000>;
 
 			interrupts = <GIC_SHARED 2 IRQ_TYPE_LEVEL_HIGH>;
-
-			/*
-			 * The EcoNet/Airoha UART uses the vendor XYD fractional divider.
-			 * The generic 8250 driver does not program XYD, so keep the bootloader
-			 * XYD setup and expose a fixed 115200 baud base clock.
-			 */
-			clock-frequency = <1843200>;
 		};
 
 		uart2: serial@1fbf0300 {
 			compatible = "airoha,en7523-uart";
 			reg = <0x1fbf0300 0x30>;
+			reg-io-width = <4>;
+			reg-shift = <2>;
+			native-endian;
+			clock-frequency = <20000000>;
 			interrupts = <GIC_SHARED 16 IRQ_TYPE_LEVEL_HIGH>;
 
 			pinctrl-names = "default";
@@ -563,6 +561,10 @@
 		uart3: serial@1fbe1000 {
 			compatible = "airoha,en7523-uart";
 			reg = <0x1fbe1000 0x30>;
+			reg-io-width = <4>;
+			reg-shift = <2>;
+			native-endian;
+			clock-frequency = <20000000>;
 			interrupts = <GIC_SHARED 38 IRQ_TYPE_LEVEL_HIGH>;
 
 			pinctrl-names = "default";
@@ -610,7 +612,7 @@
 				#interrupt-cells = <1>;
 			};
 
-			slot0: pcie@0,0 {
+			pcie0_slot0: pcie@0,0 {
 				reg = <0x0000 0 0 0 0>;
 				#address-cells = <3>;
 				#size-cells = <2>;
@@ -652,7 +654,7 @@
 				#interrupt-cells = <1>;
 			};
 
-			slot1: pcie@1,0 {
+			pcie1_slot1: pcie@1,0 {
 				reg = <0x0800 0 0 0 0>;
 				#address-cells = <3>;
 				#size-cells = <2>;

@@ -555,17 +555,20 @@
 	};
 
 	uart1: serial@1fbf0000 {
-		compatible = "ns16550";
+		compatible = "airoha,en7523-uart";
 		reg = <0x1fbf0000 0x30>;
 		reg-io-width = <4>;
 		reg-shift = <2>;
+		clock-frequency = <20000000>;
 		interrupts = <GIC_SPI 18 IRQ_TYPE_LEVEL_HIGH>;
-		clock-frequency = <1843200>;
 	};
 
 	uart2: serial@1fbf0300 {
 		compatible = "airoha,en7523-uart";
 		reg = <0x1fbf0300 0x30>;
+		reg-io-width = <4>;
+		reg-shift = <2>;
+		clock-frequency = <20000000>;
 		interrupts = <GIC_SPI 32 IRQ_TYPE_LEVEL_HIGH>;
 
 		pinctrl-names = "default";
@@ -668,12 +671,16 @@
 		reg = <0x1fa91000 0x1000>;
 		reg-names = "port0";
 		linux,pci-domain = <0>;
+
 		#address-cells = <3>;
 		#size-cells = <2>;
+
 		interrupts = <GIC_SPI 39 IRQ_TYPE_LEVEL_HIGH>;
 		interrupt-names = "pcie_irq";
+
 		clocks = <&scuclk EN7523_CLK_PCIE>;
 		clock-names = "sys_ck0";
+
 		bus-range = <0x00 0xff>;
 		ranges = <0x82000000 0 0x20000000 0x20000000 0 0x2000000>;
 		status = "disabled";
@@ -692,10 +699,18 @@
 				<0 0 0 2 &pcie_intc0 1>,
 				<0 0 0 3 &pcie_intc0 2>,
 				<0 0 0 4 &pcie_intc0 3>;
+
 		pcie_intc0: interrupt-controller {
 			interrupt-controller;
 			#address-cells = <0>;
 			#interrupt-cells = <1>;
+		};
+
+		pcie0_slot0: pcie@0,0 {
+			reg = <0x0000 0 0 0 0>;
+			#address-cells = <3>;
+			#size-cells = <2>;
+			ranges;
 		};
 	};
 
@@ -705,12 +720,16 @@
 		reg = <0x1fa92000 0x1000>;
 		reg-names = "port1";
 		linux,pci-domain = <1>;
+
 		#address-cells = <3>;
 		#size-cells = <2>;
+
 		interrupts = <GIC_SPI 40 IRQ_TYPE_LEVEL_HIGH>;
 		interrupt-names = "pcie_irq";
+
 		clocks = <&scuclk EN7523_CLK_PCIE>;
 		clock-names = "sys_ck1";
+
 		bus-range = <0x00 0xff>;
 		ranges = <0x82000000 0 0x22000000 0x22000000 0 0x2000000>;
 		status = "disabled";
@@ -729,10 +748,18 @@
 				<0 0 0 2 &pcie_intc1 1>,
 				<0 0 0 3 &pcie_intc1 2>,
 				<0 0 0 4 &pcie_intc1 3>;
+
 		pcie_intc1: interrupt-controller {
 			interrupt-controller;
 			#address-cells = <0>;
 			#interrupt-cells = <1>;
+		};
+
+		pcie1_slot1: pcie@1,0 {
+			reg = <0x0800 0 0 0 0>;
+			#address-cells = <3>;
+			#size-cells = <2>;
+			ranges;
 		};
 	};
 

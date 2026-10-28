@@ -262,17 +262,20 @@
 	};
 
 	uart1: serial@1fbf0000 {
-		compatible = "ns16550";
+		compatible = "airoha,en7523-uart";
 		reg = <0x1fbf0000 0x30>;
 		reg-io-width = <4>;
 		reg-shift = <2>;
+		clock-frequency = <20000000>;
 		interrupts = <GIC_SPI 18 IRQ_TYPE_LEVEL_HIGH>;
-		clock-frequency = <1843200>;
 	};
 
 	uart2: serial@1fbf0300 {
 		compatible = "airoha,en7523-uart";
 		reg = <0x1fbf0300 0x30>;
+		reg-io-width = <4>;
+		reg-shift = <2>;
+		clock-frequency = <20000000>;
 		interrupts = <GIC_SPI 32 IRQ_TYPE_LEVEL_HIGH>;
 
 		pinctrl-names = "default";
@@ -411,6 +414,13 @@
 			#address-cells = <0>;
 			#interrupt-cells = <1>;
 		};
+
+		pcie0_slot0: pcie@0,0 {
+			reg = <0x0000 0 0 0 0>;
+			#address-cells = <3>;
+			#size-cells = <2>;
+			ranges;
+		};
 	};
 
 	pcie1: pcie@1fa92000 {
@@ -447,6 +457,13 @@
 			interrupt-controller;
 			#address-cells = <0>;
 			#interrupt-cells = <1>;
+		};
+
+		pcie1_slot1: pcie@1,0 {
+			reg = <0x0800 0 0 0 0>;
+			#address-cells = <3>;
+			#size-cells = <2>;
+			ranges;
 		};
 	};
 

@@ -124,7 +124,6 @@
 				compatible = "econet,en751627-pinctrl";
 				airoha,chip-scu = <&chip_scu>;
 
-				interrupt-parent = <&gic>;
 				interrupts = <GIC_SHARED 10 IRQ_TYPE_LEVEL_HIGH>;
 
 				gpio-controller;
@@ -136,16 +135,16 @@
 				gpio-ranges = <&pinctrl 0 0 42>;
 
 				pcie0_rst_pins: pcie0-rst-pins {
-					conf {
-						pins = "pcie_reset0";
-						drive-open-drain = <1>;
+					mux {
+						function = "pcie_reset";
+						groups = "pcie_reset0";
 					};
 				};
 
 				pcie1_rst_pins: pcie1-rst-pins {
-					conf {
-						pins = "pcie_reset1";
-						drive-open-drain = <1>;
+					mux {
+						function = "pcie_reset";
+						groups = "pcie_reset1";
 					};
 				};
 
@@ -292,7 +291,7 @@
 			#phy-cells = <1>;
 		};
 
-		usb: usb@1fb90000 {
+		usb0: usb@1fb90000 {
 			compatible = "econet,en751627-xhci";
 			reg = <0x1fb90000 0x3e00>,
 			      <0x1fb93e00 0x100>;
@@ -308,20 +307,19 @@
 			reg = <0x1fbf0000 0x30>;
 			reg-io-width = <4>;
 			reg-shift = <2>;
+			native-endian;
+			clock-frequency = <20000000>;
 
 			interrupts = <GIC_SHARED 2 IRQ_TYPE_LEVEL_HIGH>;
-
-			/*
-			 * The EcoNet/Airoha UART uses the vendor XYD fractional divider.
-			 * The generic 8250 driver does not program XYD, so keep the bootloader
-			 * XYD setup and expose a fixed 115200 baud base clock.
-			 */
-			clock-frequency = <1843200>;
 		};
 
 		uart2: serial@1fbf0300 {
 			compatible = "airoha,en7523-uart";
 			reg = <0x1fbf0300 0x30>;
+			reg-io-width = <4>;
+			reg-shift = <2>;
+			native-endian;
+			clock-frequency = <20000000>;
 			interrupts = <GIC_SHARED 16 IRQ_TYPE_LEVEL_HIGH>;
 
 			pinctrl-names = "default";
@@ -333,6 +331,10 @@
 		uart3: serial@1fbe1000 {
 			compatible = "airoha,en7523-uart";
 			reg = <0x1fbe1000 0x30>;
+			reg-io-width = <4>;
+			reg-shift = <2>;
+			native-endian;
+			clock-frequency = <20000000>;
 			interrupts = <GIC_SHARED 38 IRQ_TYPE_LEVEL_HIGH>;
 
 			pinctrl-names = "default";
@@ -352,17 +354,26 @@
 			reg = <0x1fb81000 0x1000>;
 			reg-names = "port0";
 			linux,pci-domain = <0>;
+
 			#address-cells = <3>;
 			#size-cells = <2>;
+
 			interrupts = <GIC_SHARED 23 IRQ_TYPE_LEVEL_HIGH>;
 			interrupt-names = "pcie_irq";
+
 			clocks = <&scuclk EN7523_CLK_PCIE>;
 			clock-names = "sys_ck0";
+
 			phys = <&pcie_phy0>;
 			phy-names = "pcie-phy0";
+
 			bus-range = <0x00 0xff>;
 			ranges = <0x01000000 0 0x00000000 0x1f600000 0 0x00010000>,
 				 <0x82000000 0 0x20000000 0x20000000 0 0x08000000>;
+
+			pinctrl-names = "default";
+			pinctrl-0 = <&pcie0_rst_pins>;
+
 			status = "disabled";
 
 			#interrupt-cells = <1>;
@@ -378,7 +389,7 @@
 				#interrupt-cells = <1>;
 			};
 
-			slot0: pcie@0,0 {
+			pcie0_slot0: pcie@0,0 {
 				reg = <0x0000 0 0 0 0>;
 				#address-cells = <3>;
 				#size-cells = <2>;
@@ -392,17 +403,26 @@
 			reg = <0x1fb83000 0x1000>;
 			reg-names = "port1";
 			linux,pci-domain = <1>;
+
 			#address-cells = <3>;
 			#size-cells = <2>;
+
 			interrupts = <GIC_SHARED 24 IRQ_TYPE_LEVEL_HIGH>;
 			interrupt-names = "pcie_irq";
+
 			clocks = <&scuclk EN7523_CLK_PCIE>;
 			clock-names = "sys_ck1";
+
 			phys = <&pcie_phy1>;
 			phy-names = "pcie-phy1";
+
 			bus-range = <0x00 0xff>;
 			ranges = <0x01000000 0 0x00000000 0x1f610000 0 0x00010000>,
 				 <0x82000000 0 0x28000000 0x28000000 0 0x08000000>;
+
+			pinctrl-names = "default";
+			pinctrl-0 = <&pcie0_rst_pins>;
+
 			status = "disabled";
 
 			#interrupt-cells = <1>;
@@ -418,7 +438,7 @@
 				#interrupt-cells = <1>;
 			};
 
-			slot1: pcie@1,0 {
+			pcie1_slot1: pcie@1,0 {
 				reg = <0x0800 0 0 0 0>;
 				#address-cells = <3>;
 				#size-cells = <2>;

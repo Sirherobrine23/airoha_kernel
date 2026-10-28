@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
-/dts-v1/;
+
+#include <dt-bindings/clock/en7523-clk.h>
 
 #include <dt-bindings/interrupt-controller/irq.h>
 #include <dt-bindings/interrupt-controller/mips-gic.h>
-#include <dt-bindings/clock/en7523-clk.h>
 #include <dt-bindings/phy/phy.h>
 #include <dt-bindings/reset/econet,en7580-scu.h>
 #include <dt-bindings/leds/common.h>
@@ -607,7 +607,7 @@
 			nvmem-cell-names = "u2-intr", "u3-intr", "tx-imp", "rx-imp";
 		};
 
-		usb: usb0: usb@1fb90000 {
+		usb0: usb@1fb90000 {
 			compatible = "econet,en7580-xhci";
 			reg = <0x1fb90000 0x4000>,
 			      <0x1fa84700 0x100>;
@@ -638,15 +638,10 @@
 			reg = <0x1fbf0000 0x30>;
 			reg-io-width = <4>;
 			reg-shift = <2>;
+			native-endian;
+			clock-frequency = <20000000>;
 
 			interrupts = <GIC_SHARED 2 IRQ_TYPE_LEVEL_HIGH>;
-
-			/*
-			 * The EcoNet/Airoha UART uses the vendor XYD fractional divider.
-			 * The generic 8250 driver does not program XYD, so keep the bootloader
-			 * XYD setup and expose a fixed 115200 baud base clock.
-			 */
-			clock-frequency = <1843200>;
 		};
 
 		uart2: serial@1fbf0300 {
@@ -654,14 +649,11 @@
 			reg = <0x1fbf0300 0x30>;
 			reg-io-width = <4>;
 			reg-shift = <2>;
+			native-endian;
+			clock-frequency = <20000000>;
 
 			interrupts = <GIC_SHARED 16 IRQ_TYPE_LEVEL_HIGH>;
 
-			/*
-			 * Keep the XYD configuration programmed by the bootloader.
-			 * 1.8432 MHz gives the standard 115200 baud 8250 divisor.
-			 */
-			clock-frequency = <1843200>;
 
 			pinctrl-names = "default";
 			pinctrl-0 = <&uart2_pins>;
@@ -674,13 +666,11 @@
 			reg = <0x1fbe1000 0x30>;
 			reg-io-width = <4>;
 			reg-shift = <2>;
+			native-endian;
+			clock-frequency = <20000000>;
 
 			interrupts = <GIC_SHARED 38 IRQ_TYPE_LEVEL_HIGH>;
 
-			/*
-			 * Keep the XYD configuration programmed by the bootloader.
-			 */
-			clock-frequency = <1843200>;
 
 			pinctrl-names = "default";
 			pinctrl-0 = <&uart3_pins>;
@@ -693,13 +683,11 @@
 			reg = <0x1fbf0600 0x30>;
 			reg-io-width = <4>;
 			reg-shift = <2>;
+			native-endian;
+			clock-frequency = <20000000>;
 
 			interrupts = <GIC_SHARED 45 IRQ_TYPE_LEVEL_HIGH>;
 
-			/*
-			 * Keep the XYD configuration programmed by the bootloader.
-			 */
-			clock-frequency = <1843200>;
 
 			pinctrl-names = "default";
 			pinctrl-0 = <&uart4_pins>;
@@ -712,13 +700,11 @@
 			reg = <0x1fbf0700 0x30>;
 			reg-io-width = <4>;
 			reg-shift = <2>;
+			native-endian;
+			clock-frequency = <20000000>;
 
 			interrupts = <GIC_SHARED 46 IRQ_TYPE_LEVEL_HIGH>;
 
-			/*
-			 * Keep the XYD configuration programmed by the bootloader.
-			 */
-			clock-frequency = <1843200>;
 
 			pinctrl-names = "default";
 			pinctrl-0 = <&uart5_pins>;
@@ -763,7 +749,7 @@
 				#interrupt-cells = <1>;
 			};
 
-			slot0: pcie@0,0 {
+			pcie0_slot0: pcie@0,0 {
 				reg = <0x0000 0 0 0 0>;
 				#address-cells = <3>;
 				#size-cells = <2>;
@@ -803,7 +789,7 @@
 				#interrupt-cells = <1>;
 			};
 
-			slot1: pcie@1,0 {
+			pcie1_slot1: pcie@1,0 {
 				reg = <0x0800 0 0 0 0>;
 				#address-cells = <3>;
 				#size-cells = <2>;
