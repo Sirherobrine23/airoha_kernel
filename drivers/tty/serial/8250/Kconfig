@@ -360,11 +360,11 @@ config SERIAL_8250_AIROHA
 	tristate "Airoha UART support"
 	depends on (ARCH_AIROHA || ECONET || COMPILE_TEST) && OF && SERIAL_8250
 	help
-	  Selecting this option enables an Airoha SoC specific baud rate
-	  calculation routine on an otherwise 16550 compatible UART hardware.
-
-	  If you have an Airoha based board and want to use the serial port,
-	  say Y to this option. If unsure, say N.
+	  Say Y to enable the Airoha/EcoNet 16550-compatible UART platform
+	  driver with fractional baud rate programming. The driver binds
+	  to devices with the "airoha,en7523-uart" or "airoha,en7581-hsuart"
+	  compatible string, including high-speed UARTs up to 921600 baud.
+	  Select Y when the UART is used as the system console.
 
 config SERIAL_8250_BCM2835AUX
 	tristate "BCM2835 auxiliar mini UART support"

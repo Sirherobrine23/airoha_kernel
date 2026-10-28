@@ -1,0 +1,243 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/serial/airoha,en7523-uart.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Airoha and EcoNet UART
+
+maintainers:
+  - Benjamin Larsson <benjamin.larsson@genexis.eu>
+  - Matheus Sampaio Queiroga <srherobrine20@gmail.com>
+
+allOf:
+  - $ref: serial.yaml#
+
+properties:
+  compatible:
+    enum:
+      - airoha,en7523-uart
+      - airoha,en7581-hsuart
+
+  reg:
+    maxItems: 1
+
+  reg-io-width:
+    const: 4
+
+  reg-shift:
+    const: 2
+
+  big-endian: true
+  little-endian: true
+  native-endian: true
+
+  interrupts:
+    maxItems: 1
+
+  clock-frequency:
+    description: |
+      Crystal frequency. Older firmware may describe the effective clock
+      after the fractional divider instead of the 20 MHz reference.
+
+  clocks:
+    minItems: 1
+    maxItems: 2
+
+  clock-names:
+    minItems: 1
+    items:
+      - const: core
+      - const: bus
+
+  resets:
+    maxItems: 1
+
+  fifo-size:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    minimum: 1
+
+  auto-flow-control:
+    type: boolean
+    description: |
+      Enable automatic RTS/CTS support. The board must route the RTS and
+      CTS signals and select their pin multiplexing as well as TX and RX.
+
+  no-loopback-test:
+    type: boolean
+
+  cts-gpios: true
+  rts-gpios: true
+  dtr-gpios: true
+  dsr-gpios: true
+  dcd-gpios: true
+  rng-gpios: true
+
+required:
+  - compatible
+  - reg
+  - reg-io-width
+  - reg-shift
+  - interrupts
+
+unevaluatedProperties: false
+
+examples:
+  - |
+    serial@1fbe1000 {
+      compatible = "airoha,en7581-hsuart";
+      reg = <0x1fbe1000 0x40>;
+      reg-io-width = <4>;
+      reg-shift = <2>;
+      interrupts = <54>;
+      clock-frequency = <20000000>;
+    };
+  - |
+    serial@1fbf0300 {
+      compatible = "airoha,en7523-uart";
+      reg = <0x1fbf0300 0x30>;
+      reg-io-width = <4>;
+      reg-shift = <2>;
+      interrupts = <16>;
+      clock-frequency = <20000000>;
+    };
+  - |
+    #include <dt-bindings/interrupt-controller/arm-gic.h>
+
+    pinctrl {
+      uart2_pins: uart2 {
+        mux {
+          function = "uart";
+          groups = "uart2";
+        };
+      };
+    };
+
+    uart1: serial@1fbf0000 {
+      compatible = "airoha,en7523-uart";
+      reg = <0x1fbf0000 0x30>;
+      reg-io-width = <4>;
+      reg-shift = <2>;
+      clock-frequency = <20000000>;
+      interrupts = <GIC_SPI 18 IRQ_TYPE_LEVEL_HIGH>;
+    };
+
+    uart2: serial@1fbf0300 {
+      compatible = "airoha,en7523-uart";
+      reg = <0x1fbf0300 0x30>;
+      reg-io-width = <4>;
+      reg-shift = <2>;
+      clock-frequency = <20000000>;
+      interrupts = <GIC_SPI 32 IRQ_TYPE_LEVEL_HIGH>;
+
+      pinctrl-names = "default";
+      pinctrl-0 = <&uart2_pins>;
+
+      status = "disabled";
+    };
+  - |
+    #include <dt-bindings/interrupt-controller/mips-gic.h>
+
+    pinctrl {
+      uart2_pins: uart2 {
+        mux {
+          function = "uart";
+          groups = "uart2";
+        };
+      };
+
+      uart3_pins: uart3 {
+        mux {
+          function = "uart";
+          groups = "uart3";
+        };
+      };
+
+      uart4_pins: uart4 {
+        mux {
+          function = "uart";
+          groups = "uart4";
+        };
+      };
+
+      uart5_pins: uart5 {
+        mux {
+          function = "uart";
+          groups = "uart5";
+        };
+      };
+    };
+
+    uart1: serial@1fbf0000 {
+      compatible = "airoha,en7523-uart";
+      reg = <0x1fbf0000 0x30>;
+      reg-io-width = <4>;
+      reg-shift = <2>;
+      native-endian;
+      clock-frequency = <20000000>;
+
+      interrupts = <GIC_SHARED 2 IRQ_TYPE_LEVEL_HIGH>;
+    };
+
+    uart2: serial@1fbf0300 {
+      compatible = "airoha,en7523-uart";
+      reg = <0x1fbf0300 0x30>;
+      reg-io-width = <4>;
+      reg-shift = <2>;
+      native-endian;
+      clock-frequency = <20000000>;
+
+      interrupts = <GIC_SHARED 16 IRQ_TYPE_LEVEL_HIGH>;
+
+      pinctrl-names = "default";
+      pinctrl-0 = <&uart2_pins>;
+
+      status = "disabled";
+    };
+
+    uart3: serial@1fbe1000 {
+      compatible = "airoha,en7523-uart";
+      reg = <0x1fbe1000 0x30>;
+      reg-io-width = <4>;
+      reg-shift = <2>;
+      native-endian;
+      clock-frequency = <20000000>;
+
+      interrupts = <GIC_SHARED 38 IRQ_TYPE_LEVEL_HIGH>;
+
+      pinctrl-names = "default";
+      pinctrl-0 = <&uart3_pins>;
+
+      status = "disabled";
+    };
+
+    uart4: serial@1fbf0600 {
+      compatible = "airoha,en7523-uart";
+      reg = <0x1fbf0600 0x30>;
+      reg-io-width = <4>;
+      reg-shift = <2>;
+      native-endian;
+      clock-frequency = <20000000>;
+
+      interrupts = <GIC_SHARED 45 IRQ_TYPE_LEVEL_HIGH>;
+
+      pinctrl-names = "default";
+      pinctrl-0 = <&uart4_pins>;
+
+      status = "disabled";
+    };
+
+    uart5: serial@1fbf0700 {
+      compatible = "airoha,en7523-uart";
+      reg = <0x1fbf0700 0x30>;
+      reg-io-width = <4>;
+      reg-shift = <2>;
+      native-endian;
+      clock-frequency = <20000000>;
+      interrupts = <GIC_SHARED 46 IRQ_TYPE_LEVEL_HIGH>;
+
+      pinctrl-names = "default";
+      pinctrl-0 = <&uart5_pins>;
+
+      status = "disabled";
+    };

@@ -2791,12 +2791,6 @@ serial8250_do_set_termios(struct uart_port *port, struct ktermios *termios,
 	baud = serial8250_get_baud_rate(port, termios, old);
 	quot = serial8250_get_divisor(port, baud, &frac);
 
-#ifdef CONFIG_SERIAL_8250_AIROHA
-	/* Airoha SoCs have custom registers for baud rate settings */
-	if (port->type == PORT_AIROHA)
-		en7523_set_uart_baud_rate(port, baud);
-#endif
-
 	/*
 	 * Ok, we're now changing the port state. Do it with interrupts disabled.
 	 *
