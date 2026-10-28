@@ -372,7 +372,7 @@ void airoha_qdma_skb_get_mtk_meta(struct sk_buff *skb,
 static int econet_rx_headroom(struct airoha_qdma_mips *qdma)
 {
 	if (!IS_ENABLED(CONFIG_NET_AIROHA_WHNAT) || qdma->qdma->id ||
-	    !airoha_is(qdma->qdma->eth, econet_en751221))
+	    !airoha_whnat_supported(qdma->qdma->eth))
 		return 0;
 
 	return AIROHA_WHNAT_RX_HEADROOM;
@@ -481,7 +481,7 @@ static void econet_qdma_rx_process_one(struct econet_q_rx *q, u32 cpu_i,
 	 * duplicate keepalive copy through the network stack a second time.
 	 * Process it first so the PPE can invalidate a changed ingress GEM.
 	 */
-	if (airoha_is(eth, econet_en751221) && reason ==
+	if (eth->soc->foe_format == AIROHA_FOE_FORMAT_V1 && reason ==
 	    AIROHA_PPE_CPU_REASON_KEEPALIVE_DUP_OLD_HDR) {
 		airoha_ppe_dev_check_skb_reason(eth->ppe_dev, skb, hash,
 						reason, ingress_gem);
@@ -2060,6 +2060,58 @@ static int airoha_qdma_mips_xmit(struct airoha_qdma *qdma,
 }
 
 #if IS_ENABLED(CONFIG_NET_AIROHA_WHNAT)
+static int airoha_whnat_modern_xmit(struct airoha_qdma *qdma,
+				    struct sk_buff *skb)
+{
+	struct airoha_queue *q = &qdma->q_tx[0];
+	struct airoha_queue_entry *e, *next;
+	struct airoha_qdma_desc *desc;
+	dma_addr_t addr;
+	u32 msg0, msg1;
+	u16 index;
+
+	if (!airoha_is(qdma->eth, econet_en7580) || !q->ndesc ||
+	    skb_is_nonlinear(skb) || !skb_headlen(skb))
+		return -EOPNOTSUPP;
+
+	guard(spinlock_bh)(&q->lock);
+	if (q->ndesc - q->queued <= AIROHA_WHNAT_TX_RESERVE + 1)
+		return -EAGAIN;
+
+	addr = dma_map_single(qdma->eth->dev, skb->data, skb->len,
+			      DMA_TO_DEVICE);
+	if (dma_mapping_error(qdma->eth->dev, addr))
+		return -ENOMEM;
+
+	e = list_first_entry(&q->tx_list, struct airoha_queue_entry, list);
+	desc = &q->desc[e - q->entry];
+	list_del_init(&e->list);
+	next = list_first_entry(&q->tx_list, struct airoha_queue_entry, list);
+	index = next - q->entry;
+	e->skb = skb;
+	e->dma_addr = addr;
+	e->dma_len = skb->len;
+	e->dma_map_page = false;
+
+	/* LAN QDMA channel 7 feeds the PPE; no netdev/BQL owns this skb. */
+	msg0 = FIELD_PREP(QDMA_ETH_TXMSG_CHAN_MASK, 7);
+	msg1 = FIELD_PREP(EN7580_QDMA_ETH_TXMSG_FPORT_MASK, FE_PSE_PORT_PPE1) |
+	       FIELD_PREP(QDMA_ETH_TXMSG_METER_MASK, 0x7f) | GENMASK(9, 0);
+	WRITE_ONCE(desc->ctrl,
+		   cpu_to_le32(FIELD_PREP(EN7523_QDMA_DESC_LEN_MASK, skb->len)));
+	WRITE_ONCE(desc->addr, cpu_to_le32(addr));
+	WRITE_ONCE(desc->data,
+		   cpu_to_le32(FIELD_PREP(QDMA_DESC_NEXT_ID_MASK, index)));
+	WRITE_ONCE(desc->msg0, cpu_to_le32(msg0));
+	WRITE_ONCE(desc->msg1, cpu_to_le32(msg1));
+	q->queued++;
+	dma_wmb();
+	airoha_qdma_rmw(qdma, REG_TX_CPU_IDX(0), TX_RING_CPU_IDX_MASK,
+			FIELD_PREP(TX_RING_CPU_IDX_MASK, index));
+
+	return 0;
+}
+
 /*
  * Hand a WHNAT frame to the PPE the way the vendor driver does: LAN QDMA,
  * channel 7, queue 0. A return value >= 0 means the frame was queued.
@@ -2069,8 +2121,10 @@ int airoha_whnat_qdma_xmit(struct airoha_qdma *qdma, struct sk_buff *skb)
 	union desc_msg msg = {};
 	int ret;
 
-	if (qdma->id || !qdma->econet || !READ_ONCE(qdma->users))
+	if (qdma->id || !READ_ONCE(qdma->users))
 		return -EOPNOTSUPP;
+	if (!qdma->econet)
+		return airoha_whnat_modern_xmit(qdma, skb);
 
 	set_etx_channel(&msg.etx, 7);
 	set_etx_queue(&msg.etx, 0);
@@ -2807,6 +2861,21 @@ static int airoha_qdma_rx_process(struct airoha_queue *q, int budget)
 			airoha_ppe_check_skb(&eth->ppe->common.dev, q->skb, hash,
 					     false);
 
+		if (airoha_whnat_active()) {
+			bool consumed;
+
+			skb_push(q->skb, ETH_HLEN);
+			consumed = airoha_whnat_rx(q->skb, &q->napi, q->qdma->id,
+						   airoha_qdma_get_rx_sport(eth, desc),
+						   reason, NULL);
+			if (consumed) {
+				q->skb = NULL;
+				done++;
+				continue;
+			}
+			skb_pull(q->skb, ETH_HLEN);
+		}
+
 		done++;
 		napi_gro_receive(&q->napi, q->skb);
 		q->skb = NULL;
@@ -3132,7 +3201,10 @@ static int airoha_qdma_tx_napi_poll(struct napi_struct *napi, int budget)
 		q->queued--;
 
 		if (skb) {
-			airoha_tx_complete(skb);
+			if (skb->dev)
+				airoha_tx_complete(skb);
+			else
+				airoha_whnat_complete();
 			dev_kfree_skb_any(skb);
 		}
 
@@ -3937,7 +4009,7 @@ void airoha_qdma_start(struct airoha_qdma *qdma)
 		econet_wreg(qcfg, &qdma->econet->regs->qdma_cfg);
 
 		/* WHNAT was validated with the vendor's LAN QDMA TX done mode. */
-		if (!qdma->id && airoha_is(qdma->eth, econet_en751221) &&
+		if (!qdma->id && airoha_whnat_supported(qdma->eth) &&
 		    is_qregs_qcfg_tx_immediate_done(&qcfg))
 			airoha_whnat_set_qdma(qdma);
 		return;
@@ -3949,6 +4021,8 @@ void airoha_qdma_start(struct airoha_qdma *qdma)
 	airoha_qdma_set(qdma, REG_QDMA_GLOBAL_CFG,
 			GLOBAL_CFG_TX_DMA_EN_MASK |
 			GLOBAL_CFG_RX_DMA_EN_MASK);
+	if (!qdma->id && airoha_whnat_supported(qdma->eth))
+		airoha_whnat_set_qdma(qdma);
 }
 
 void airoha_qdma_stop(struct airoha_qdma *qdma)
@@ -3982,6 +4056,7 @@ void airoha_qdma_stop(struct airoha_qdma *qdma)
 		return;
 	if (--qdma->users > 0)
 		return;
+	airoha_whnat_clear_qdma(qdma);
 
 	airoha_qdma_clear(qdma, REG_QDMA_GLOBAL_CFG,
 			  GLOBAL_CFG_TX_DMA_EN_MASK |

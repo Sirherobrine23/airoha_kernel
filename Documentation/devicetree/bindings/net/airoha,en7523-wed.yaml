@@ -22,13 +22,15 @@ properties:
           - econet,en751221-wed
           - econet,en751627-wed
           - econet,en7528-wed
+          - econet,en7580-wed
           - airoha,en7523-wed
       - const: syscon
 
   airoha,scu:
     $ref: /schemas/types.yaml#/definitions/phandle
     description:
-      System controller used to select LAN arbitration mode on EN7528.
+      System controller used to select LAN arbitration mode on EN751627
+      and EN7528.
 
   reg:
     items:

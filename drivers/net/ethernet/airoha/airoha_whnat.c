@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * EN751221 WHNAT: PPE flow offload for WiFi netdevs without WED support.
+ * EcoNet WHNAT: PPE flow offload for WiFi netdevs without WED support.
  *
- * MT7603 and MT76x2 radios have no WED, so the vendor driver lets the PPE
- * handle their NAT flows through the CPU instead:
+ * Radios without a WED integration, including MT7603, MT7663 and MT76x2,
+ * can use the PPE through a CPU-assisted path:
  *
  * - Upstream, mt76 offers each received Ethernet frame to
  *   en75_whnat_upstream_early() before GRO. The frame gets an 802.1Q tag
@@ -57,7 +57,7 @@ static struct notifier_block airoha_whnat_netdev_notifier = {
 
 static bool whnat_enable = true;
 module_param(whnat_enable, bool, 0644);
-MODULE_PARM_DESC(whnat_enable, "Hand WiFi frames to the EN751221 PPE");
+MODULE_PARM_DESC(whnat_enable, "Hand WiFi frames to the EcoNet PPE");
 
 static atomic_t handed = ATOMIC_INIT(0);
 static atomic_t completed = ATOMIC_INIT(0);
@@ -86,6 +86,19 @@ module_param_cb(whnat_returned, &counter_ops, &returned, 0444);
 module_param_cb(whnat_downstream, &counter_ops, &downstream, 0444);
 module_param_cb(whnat_fallback, &counter_ops, &fallback, 0444);
 
+bool airoha_whnat_supported(struct airoha_eth *eth)
+{
+	switch(get_airoha_target(eth)) {
+	case econet_en751221:
+	case econet_en751627:
+	case econet_en7528:
+		return true;
+	default:
+		break;
+	}
+	return false;
+}
+
 bool airoha_whnat_active(void)
 {
 	return READ_ONCE(whnat_enable) && rcu_access_pointer(active_ppe);
@@ -99,6 +112,9 @@ void airoha_whnat_complete(void)
 void airoha_whnat_set_ppe(struct airoha_ppe *ppe)
 {
 	int err;
+
+	if (!airoha_whnat_supported(ppe->common.eth))
+		return;
 
 	rcu_assign_pointer(active_ppe, ppe);
 	if (!whnat_auto_vifs)
@@ -316,7 +332,10 @@ bool en75_whnat_upstream_early(struct sk_buff *skb)
 	rcu_read_lock_bh();
 	ppe = rcu_dereference_bh(active_ppe);
 	qdma = rcu_dereference_bh(active_qdma);
-	if (!ppe || !qdma || !READ_ONCE(ppe->v1.armed))
+	if (!ppe || !qdma)
+		goto out;
+	if (ppe->common.eth->soc->foe_format == AIROHA_FOE_FORMAT_V1 ?
+	    !READ_ONCE(ppe->v1.armed) : !READ_ONCE(ppe->offload_setup_done))
 		goto out;
 
 	if ((skb_is_nonlinear(skb) && skb_linearize(skb)) ||
@@ -447,11 +466,17 @@ bool airoha_whnat_rx(struct sk_buff *skb, struct napi_struct *napi,
 		rcu_read_unlock_bh();
 		return false;
 	}
+	if (bound && skb_cow_head(skb, AIROHA_WHNAT_RX_HEADROOM)) {
+		rcu_read_unlock_bh();
+		dev_kfree_skb_any(skb);
+		return true;
+	}
 
 	/* Drop the tag. */
 	memmove(skb->data + VLAN_HLEN, skb->data, 2 * ETH_ALEN);
 	skb_pull(skb, VLAN_HLEN);
 	skb->dev = dev;
+	skb_dst_drop(skb);
 
 	if (bound) {
 		skb_reset_mac_header(skb);

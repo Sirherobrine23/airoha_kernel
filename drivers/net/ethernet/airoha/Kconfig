@@ -51,7 +51,7 @@ config NET_AIROHA_FLOW_STATS
 
 config NET_AIROHA_SOC_WED
 	bool "Airoha WED support"
-	depends on NET_AIROHA && !NET_AIROHA_WHNAT && PCI
+	depends on NET_AIROHA && PCI
 	select NET_MEDIATEK_WED_COMMON
 	help
 	  Enable WiFi Ethernet Datapath (WED) hardware offload.
@@ -63,7 +63,8 @@ config NET_AIROHA_SOC_WED
 
 config NET_AIROHA_WHNAT
 	bool "EcoNet PPE WHNAT"
-	depends on NET_AIROHA && (SOC_ECONET_EN751221 || COMPILE_TEST)
+	depends on NET_AIROHA
+	depends on SOC_ECONET_EN751221 || SOC_ECONET_EN751627 || SOC_ECONET_EN7528 || COMPILE_TEST
 	select CFG80211_HEADERS
 	help
 	  Let PPE forward NAT flows from and to WiFi netdevs

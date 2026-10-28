@@ -59,6 +59,88 @@ struct airoha_wed_soc_data {
 
 static struct mtk_wed_hw *hw_list[2];
 static DEFINE_MUTEX(hw_lock);
+static DEFINE_MUTEX(lan_arb_lock);
+
+static u32 lan_sel;
+
+static struct {
+	u32 msi_mask;
+	bool saved;
+} pcie_irq[ARRAY_SIZE(hw_list)];
+
+static struct {
+	struct regmap *scu;
+	bool active;
+} lan_arb[ARRAY_SIZE(hw_list)];
+
+static int airoha_wed_set_lan_arb(struct mtk_wed_hw *hw, bool enable)
+{
+	struct regmap *scu = lan_arb[hw->index].scu;
+	bool shared = false;
+	int i, err;
+
+	if (!scu)
+		return 0;
+
+	guard(mutex)(&lan_arb_lock);
+	if (lan_arb[hw->index].active == enable)
+		return 0;
+
+	/* Both WED instances share the LAN mux. Restore it after the last user. */
+	for (i = 0; i < ARRAY_SIZE(lan_arb); i++)
+		if (i != hw->index && lan_arb[i].active)
+			shared = true;
+
+	if (!shared) {
+		if (enable) {
+			err = regmap_read(scu, ECONET_SCU_LAN_SEL, &lan_sel);
+			if (err)
+				return err;
+		}
+		err = regmap_update_bits(scu, ECONET_SCU_LAN_SEL,
+					 ECONET_SCU_LAN_SEL_MASK,
+					 enable ? ECONET_SCU_LAN_SEL_ARB : lan_sel);
+		if (err)
+			return err;
+	}
+	lan_arb[hw->index].active = enable;
+
+	return 0;
+}
+
+static void airoha_wed_restore_lan(struct mtk_wed_hw *hw)
+{
+	int err = airoha_wed_set_lan_arb(hw, false);
+
+	if (err)
+		dev_err(hw->dev, "failed to restore LAN mux: %d\n", err);
+}
+
+static void airoha_wed_mask_pcie_msi(struct mtk_wed_hw *hw)
+{
+	u32 mask = readl(hw->pcie + AIROHA_PCIE_INT_MASK);
+
+	/* Repeated starts must retain the mask from before WED took ownership. */
+	if (!pcie_irq[hw->index].saved) {
+		pcie_irq[hw->index].msi_mask = mask & AIROHA_PCIE_MSI_MASK;
+		pcie_irq[hw->index].saved = true;
+	}
+	writel(mask | AIROHA_PCIE_MSI_MASK, hw->pcie + AIROHA_PCIE_INT_MASK);
+}
+
+static void airoha_wed_restore_pcie_msi(struct mtk_wed_hw *hw)
+{
+	u32 mask;
+
+	if (!pcie_irq[hw->index].saved)
+		return;
+
+	mask = readl(hw->pcie + AIROHA_PCIE_INT_MASK);
+	mask &= ~AIROHA_PCIE_MSI_MASK;
+	mask |= pcie_irq[hw->index].msi_mask;
+	writel(mask, hw->pcie + AIROHA_PCIE_INT_MASK);
+	pcie_irq[hw->index].saved = false;
+}
 
 #define airoha_wed_info(_dev, _fmt, ...) \
 	dev_dbg((_dev)->hw->dev, "wed%d: " _fmt, \
@@ -88,6 +170,11 @@ static const struct airoha_wed_soc_data en7528_wed_data = {
 	.set_lan_arb = true,
 };
 
+/* EN7580 feeds WDMA through GDM3, without switching the LAN arbiter. */
+static const struct airoha_wed_soc_data en7580_wed_data = {
+	.pcie_base = { 0x1fb81000, 0x1fb83000 },
+};
+
 static const struct airoha_wed_soc_data en7523_wed_data = {
 	.pcie_base = { 0x1fa91000, 0x1fa92000 },
 };
@@ -96,6 +183,7 @@ static const struct of_device_id airoha_wed_of_match[] = {
 	{ .compatible = "econet,en751221-wed", .data = &en751221_wed_data },
 	{ .compatible = "econet,en751627-wed", .data = &en7528_wed_data },
 	{ .compatible = "econet,en7528-wed", .data = &en7528_wed_data },
+	{ .compatible = "econet,en7580-wed", .data = &en7580_wed_data },
 	{ .compatible = "airoha,en7523-wed", .data = &en7523_wed_data },
 	{ /* sentinel */ }
 };
@@ -628,6 +716,10 @@ mtk_wed_stop(struct mtk_wed_device *dev)
 			       dev->running, wed_r32(dev, MTK_WED_INT_MASK),
 			       wed_r32(dev, MTK_WED_INT_STATUS));
 
+	wlan_w32(dev, dev->wlan.wpdma_mask, 0);
+	wed_w32(dev, MTK_WED_INT_MASK, 0);
+	wed_w32(dev, MTK_WED_WPDMA_INT_MASK, 0);
+	airoha_wed_restore_lan(dev->hw);
 	mtk_wed_dma_disable(dev);
 	mtk_wed_set_ext_int(dev, false, 0);
 
@@ -672,6 +764,7 @@ __mtk_wed_detach(struct mtk_wed_device *dev)
 	mtk_wed_reset(dev, MTK_WED_RESET_WED);
 	mtk_wed_free_tx_buffer(dev);
 	mtk_wed_free_tx_rings(dev);
+	airoha_wed_restore_pcie_msi(hw);
 
 	memset(dev, 0, sizeof(*dev));
 	module_put(THIS_MODULE);
@@ -854,6 +947,11 @@ mtk_wed_reset_dma(struct mtk_wed_device *dev)
 			       wed_r32(dev, MTK_WED_GLO_CFG),
 			       wed_r32(dev, MTK_WED_WPDMA_GLO_CFG),
 			       wdma_r32(dev, MTK_WDMA_GLO_CFG));
+
+	wlan_w32(dev, dev->wlan.wpdma_mask, 0);
+	wed_w32(dev, MTK_WED_INT_MASK, 0);
+	wed_w32(dev, MTK_WED_WPDMA_INT_MASK, 0);
+	airoha_wed_restore_lan(dev->hw);
 
 	/* 1. Reset WED TX DMA */
 	wed_clr(dev, MTK_WED_GLO_CFG, MTK_WED_GLO_CFG_TX_DMA_EN);
@@ -1081,14 +1179,12 @@ mtk_wed_dma_enable(struct mtk_wed_device *dev)
 static void
 mtk_wed_start(struct mtk_wed_device *dev, u32 irq_mask)
 {
-	u32 pcie_int_mask;
+	int err;
 
 	airoha_wed_info(dev, "start: irq_mask=%08x running=%d init_done=%d\n",
 			       irq_mask, dev->running, dev->init_done);
 
-	pcie_int_mask = readl(dev->hw->pcie + AIROHA_PCIE_INT_MASK);
-	pcie_int_mask |= AIROHA_PCIE_MSI_MASK;
-	writel(pcie_int_mask, dev->hw->pcie + AIROHA_PCIE_INT_MASK);
+	airoha_wed_mask_pcie_msi(dev->hw);
 
 	mtk_wed_hw_init(dev);
 	mtk_wed_configure_irq(dev, irq_mask);
@@ -1097,6 +1193,13 @@ mtk_wed_start(struct mtk_wed_device *dev, u32 irq_mask)
 	/* Airoha WED v1 has no PCIe mirror register. */
 
 	mtk_wed_dma_enable(dev);
+	/* The LAN arbiter needs a running WDMA, even for wired traffic. */
+	err = airoha_wed_set_lan_arb(dev->hw, true);
+	if (err) {
+		dev_err(dev->hw->dev, "failed to select LAN arbiter: %d\n", err);
+		mtk_wed_stop(dev);
+		return;
+	}
 	dev->running = true;
 	wed_w32(dev, MTK_WED_INT_MASK,
 		mtk_wed_core_irq_mask(dev, irq_mask));
@@ -1546,7 +1649,7 @@ int airoha_wed_add_hw(struct airoha_eth *eth, struct device_node *np, int index)
 	struct platform_device *pdev;
 	struct resource res;
 	struct mtk_wed_hw *hw;
-	struct regmap *scu;
+	struct regmap *scu = NULL;
 	struct regmap *regs;
 	void __iomem *pcie;
 	void __iomem *wdma;
@@ -1592,12 +1695,6 @@ int airoha_wed_add_hw(struct airoha_eth *eth, struct device_node *np, int index)
 			err = PTR_ERR(scu);
 			goto err_device_put;
 		}
-
-		err = regmap_update_bits(scu, ECONET_SCU_LAN_SEL,
-					 ECONET_SCU_LAN_SEL_MASK,
-					 ECONET_SCU_LAN_SEL_ARB);
-		if (err)
-			goto err_device_put;
 	}
 
 	wdma = of_iomap(np, 1);
@@ -1643,11 +1740,13 @@ int airoha_wed_add_hw(struct airoha_eth *eth, struct device_node *np, int index)
 		goto err_unlock;
 	}
 
+	lan_arb[index].scu = scu;
 	hw_list[index] = hw;
 	airoha_wed_hw_add_debugfs(hw);
 	err = mtk_wed_ops_register(&airoha_wed_ops);
 	if (err) {
 		hw_list[index] = NULL;
+		lan_arb[index].scu = NULL;
 		debugfs_remove(hw->debugfs_dir);
 		goto err_unlock;
 	}
@@ -1687,6 +1786,9 @@ void airoha_wed_exit(void)
 			continue;
 
 		WARN_ON_ONCE(hw->wed_dev);
+		airoha_wed_restore_lan(hw);
+		airoha_wed_restore_pcie_msi(hw);
+		lan_arb[i].scu = NULL;
 		hw_list[i] = NULL;
 		debugfs_remove(hw->debugfs_dir);
 		iounmap(hw->pcie);

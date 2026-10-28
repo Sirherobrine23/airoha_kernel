@@ -633,6 +633,38 @@ airoha_ppe_xpon_get_tx_info(struct airoha_eth *eth,
 	return eth->ppe_host_ops->xpon_get_tx_info(netdev, false, 0, false, 0, info);
 }
 
+/* EN7580 has a three-bit force port, followed immediately by FQOS. */
+#define EN7580_FOE_IB2_PSE_PORT	GENMASK(7, 5)
+#define EN7580_FOE_IB2_PSE_QOS	BIT(8)
+#define EN7580_FOE_IB2_MULTICAST	BIT(10)
+
+static int airoha_foe_entry_set_wdma(struct airoha_eth *eth,
+				     const struct airoha_wdma_info *info,
+				     u32 *ib2, u32 *qdata)
+{
+	u8 ring = info->idx * 2 + info->queue;
+
+	if (info->idx > 1 || info->queue > 1 ||
+	    info->wcid > 0xff || info->bss > 0x3f)
+		return -EOPNOTSUPP;
+
+	if (airoha_is(eth, airoha_en7523)) {
+		*ib2 |= FIELD_PREP(AIROHA_FOE_IB2_NBQ, ring) |
+			FIELD_PREP(AIROHA_FOE_IB2_PSE_PORT, FE_PSE_PORT_GDM3) |
+			AIROHA_FOE_IB2_PSE_QOS;
+		*qdata |= FIELD_PREP(AIROHA_FOE_CHANNEL, 6 + ring);
+	} else if (airoha_is(eth, econet_en7580)) {
+		/* The SDK routes the four WDMA RX rings through GDM3/NBQ. */
+		*ib2 = FIELD_PREP(AIROHA_FOE_IB2_NBQ, ring) |
+			FIELD_PREP(EN7580_FOE_IB2_PSE_PORT, FE_PSE_PORT_GDM3) |
+			EN7580_FOE_IB2_PSE_QOS;
+	} else {
+		return -EOPNOTSUPP;
+	}
+
+	return (info->wcid << 6) | info->bss;
+}
+
 static int airoha_ppe_foe_entry_prepare(struct airoha_eth *eth,
 					struct airoha_foe_entry *hwe,
 					struct net_device *netdev, int type,
@@ -642,6 +674,7 @@ static int airoha_ppe_foe_entry_prepare(struct airoha_eth *eth,
 	struct airoha_xpon_tx_info xpon = {};
 	u32 qdata = FIELD_PREP(AIROHA_FOE_SHAPER_ID, 0x7f), ports_pad, val;
 	int wlan_etype = -EINVAL, dsa_port = airoha_get_dsa_port(&netdev);
+	int wifi_idx = -1;
 	struct airoha_foe_mac_info_common *l2;
 	bool xpon_flow = false;
 	u8 smac_id = 0xf;
@@ -667,18 +700,11 @@ static int airoha_ppe_foe_entry_prepare(struct airoha_eth *eth,
 
 		if (!airoha_ppe_get_wdma_info(netdev, data->eth.h_dest,
 					      &info)) {
-			if (airoha_is(eth, airoha_en7523)) {
-				u8 ring = info.idx * 2 + info.queue;
-
-				if (info.idx > 1 || info.queue > 1 ||
-				    info.wcid > 0xff || info.bss > 0x3f)
-					return -EOPNOTSUPP;
-				val |= FIELD_PREP(AIROHA_FOE_IB2_NBQ, ring) |
-				       FIELD_PREP(AIROHA_FOE_IB2_PSE_PORT,
-						  FE_PSE_PORT_GDM3) |
-				       AIROHA_FOE_IB2_PSE_QOS;
-				qdata |= FIELD_PREP(AIROHA_FOE_CHANNEL, 6 + ring);
-				wlan_etype = (info.wcid << 6) | info.bss;
+			if (airoha_is(eth, airoha_en7523, econet_en7580)) {
+				wlan_etype = airoha_foe_entry_set_wdma(eth, &info,
+								       &val, &qdata);
+				if (wlan_etype < 0)
+					return wlan_etype;
 				goto wlan_done;
 			}
 			val |= FIELD_PREP(AIROHA_FOE_IB2_NBQ, info.idx) |
@@ -697,6 +723,21 @@ static int airoha_ppe_foe_entry_prepare(struct airoha_eth *eth,
 			struct airoha_gdm_dev *dev = netdev_priv(netdev);
 			struct airoha_gdm_port *port;
 			u8 pse_port, channel, priority;
+
+			if (airoha_whnat_active())
+				wifi_idx = airoha_whnat_vif_index(netdev);
+			if (wifi_idx >= 0) {
+				/* CPU-assisted WiFi egress retains the vif in a VLAN tag. */
+				if (data->vlan.num || data->pppoe.num ||
+				    type != PPE_PKT_TYPE_IPV4_HNAPT)
+					return -EOPNOTSUPP;
+				/* EN7580: disable both six-bit meter/account groups. */
+				val = GENMASK(23, 12);
+				wlan_etype = AIROHA_WHNAT_ETYPE;
+				hwe->ib1 |= FIELD_PREP(AIROHA_FOE_IB1_BIND_VPM, 1) |
+					    FIELD_PREP(AIROHA_FOE_IB1_BIND_VLAN_LAYER, 1);
+				goto wlan_done;
+			}
 
 			if (!eth->ppe_host_ops->is_valid_gdm_dev(eth, dev))
 				return -EINVAL;
@@ -778,7 +819,8 @@ static int airoha_ppe_foe_entry_prepare(struct airoha_eth *eth,
 
 wlan_done:
 	if (is_multicast_ether_addr(data->eth.h_dest))
-		val |= AIROHA_FOE_IB2_MULTICAST;
+		val |= airoha_is(eth, econet_en7580) ?
+			EN7580_FOE_IB2_MULTICAST : AIROHA_FOE_IB2_MULTICAST;
 
 	ports_pad = 0xa5a5a500 | (l4proto & 0xff);
 	if (type == PPE_PKT_TYPE_IPV4_ROUTE)
@@ -820,7 +862,9 @@ wlan_done:
 					    data->pppoe.sid);
 	}
 
-	if (data->vlan.num) {
+	if (wifi_idx >= 0) {
+		l2->vlan1 = wifi_idx;
+	} else if (data->vlan.num) {
 		l2->vlan1 = data->vlan.hdr[0].id;
 		if (data->vlan.num == 2)
 			l2->vlan2 = data->vlan.hdr[1].id;
@@ -2658,6 +2702,7 @@ static int airoha_ppe_datapath_init(struct airoha_eth *eth)
 
 	eth->ppe = ppe;
 	airoha_ppe_common_enable(&ppe->common);
+	airoha_whnat_set_ppe(ppe);
 	dev_info(eth->dev, "PPE Initialization completed successfully\n");
 	return 0;
 
@@ -2673,6 +2718,7 @@ static void airoha_ppe_datapath_deinit(struct airoha_eth *eth)
 {
 	struct airoha_npu *npu;
 
+	airoha_whnat_clear_ppe(eth->ppe);
 	mutex_lock(&flow_offload_mutex);
 
 	npu = rcu_replace_pointer(eth->npu, NULL,
@@ -3133,6 +3179,29 @@ static int airoha_ppe_v1_netdev_event(struct notifier_block *nb,
 void airoha_whnat_invalidate_vif(struct airoha_ppe *ppe, int idx)
 {
 	struct airoha_flow_table_entry *flow, *tmp;
+
+	if (ppe->common.eth->soc->foe_format != AIROHA_FOE_FORMAT_V1) {
+		u32 i;
+
+		spin_lock_bh(&ppe_lock);
+		for (i = 0; i < airoha_ppe_get_total_num_entries(ppe); i++) {
+			struct hlist_node *n;
+
+			hlist_for_each_entry_safe(flow, n, &ppe->foe_flow[i], list) {
+				struct airoha_foe_mac_info_common *l2;
+
+				if (flow->type != FLOW_TYPE_L4 ||
+				    FIELD_GET(AIROHA_FOE_IB1_BIND_PACKET_TYPE,
+					      flow->data.ib1) != PPE_PKT_TYPE_IPV4_HNAPT)
+					continue;
+				l2 = &flow->data.ipv4.l2.common;
+				if (l2->etype == AIROHA_WHNAT_ETYPE && l2->vlan1 == idx)
+					airoha_ppe_foe_remove_flow(ppe, flow);
+			}
+		}
+		spin_unlock_bh(&ppe_lock);
+		return;
+	}
 
 	spin_lock_bh(&ppe->v1.lock);
 	list_for_each_entry_safe(flow, tmp, &ppe->v1.flows, v1_list) {
@@ -4751,8 +4820,7 @@ static int airoha_ppe_v1_init(struct airoha_eth *eth)
 
 	dev_info(dev, "PPE FoE table at %pad, %u entries\n",
 		 &ppe->common.foe_dma, dram_entries);
-	if (airoha_is(eth, econet_en751221))
-		airoha_whnat_set_ppe(ppe);
+	airoha_whnat_set_ppe(ppe);
 	return 0;
 
 error_notifier:

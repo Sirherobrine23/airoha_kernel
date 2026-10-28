@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /*
- * EN751221 WHNAT: PPE flow offload for WiFi netdevs without WED support.
+ * EcoNet WHNAT: PPE flow offload for WiFi netdevs without WED support.
  */
 #ifndef AIROHA_WHNAT_H
 #define AIROHA_WHNAT_H
@@ -10,6 +10,7 @@
 
 struct airoha_ppe;
 struct airoha_qdma;
+struct airoha_eth;
 
 #define AIROHA_WHNAT_VIFS		16
 /* Marker the PPE writes in the L2 tag of flows bound to a WiFi vif. */
@@ -26,6 +27,7 @@ struct airoha_whnat_batch {
 };
 
 #if IS_ENABLED(CONFIG_NET_AIROHA_WHNAT)
+bool airoha_whnat_supported(struct airoha_eth *eth);
 bool airoha_whnat_active(void);
 int airoha_whnat_vif_index(struct net_device *dev);
 void airoha_whnat_set_ppe(struct airoha_ppe *ppe);
@@ -48,6 +50,11 @@ int en75_whnat_register_vif(struct net_device *dev);
 void en75_whnat_unregister_vif(struct net_device *dev);
 bool en75_whnat_upstream_early(struct sk_buff *skb);
 #else
+static inline bool airoha_whnat_supported(struct airoha_eth *eth)
+{
+	return false;
+}
+
 static inline bool airoha_whnat_active(void)
 {
 	return false;
