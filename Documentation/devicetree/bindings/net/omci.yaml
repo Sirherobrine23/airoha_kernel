@@ -15,9 +15,6 @@ description: |
   through NVMEM cells. Direct properties are intended as board-level fallback
   values.
 
-allOf:
-  - $ref: /schemas/nvmem/nvmem-consumer.yaml#
-
 properties:
   nvmem-cells:
     minItems: 1
@@ -26,7 +23,6 @@ properties:
   nvmem-cell-names:
     minItems: 1
     maxItems: 5
-    uniqueItems: true
     items:
       enum:
         - gpon-serial-number
@@ -101,6 +97,7 @@ properties:
         maxItems: 20
 
 allOf:
+  - $ref: /schemas/nvmem/nvmem-consumer.yaml#
   - if:
       required: [omci-type]
       properties:

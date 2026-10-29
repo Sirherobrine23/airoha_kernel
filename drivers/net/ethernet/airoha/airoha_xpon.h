@@ -29,8 +29,8 @@
 #define EN751221_SCU_WAN_MODE_MASK	GENMASK(2, 0)
 #define XPON_SCU_WAN_MODE_GPON		0x00
 #define XPON_SCU_WAN_MODE_EPON		0x01
-#define XPON_SCU_WAN_MODE_XGSPON		0x0a
-#define EN7580_SCU_WAN_MODE_MASK		GENMASK(7, 0)
+#define XPON_SCU_WAN_MODE_XGSPON	0x0a
+#define EN7580_SCU_WAN_MODE_MASK	GENMASK(7, 0)
 #define XPON_SCU_DYING_GASP		0x084
 #define XPON_SCU_DYING_GASP_STATUS	BIT(16)
 
@@ -40,12 +40,15 @@ struct airoha_xpon_match_data {
 	u32 xpon_mode_comp;
 	enum airoha_xpon_mode default_mode;
 	u32 wan_mode_mask;
+	u32 gpon_irq_mask;
 	u8 gpon_fine_delay;
 	u16 gpon_rsp_time_activation;
 	u16 gpon_idle_gem_threshold;
 	u8 gpon_guard_bits_override;
 	u8 gpon_sn_tx_power_mode;
-	bool en7523_gpon_defaults;
+	bool gpon_defaults;
+	bool gpon_dbru_48b;
+	bool gpon_has_del_rx_stop;
 	bool gpon_reset_dbg_dly;
 	bool mac_irq_via_eth;
 	bool gpon_adjust_rx_delay;
@@ -325,6 +328,7 @@ struct airoha_xpon_match_data {
 
 /* G_MBI_MPI_STOP */
 #define MBI_RX_STOP		BIT(0)
+#define DEL_RX_STOP		BIT(4)
 #define MBI_TX_STOP		BIT(8)
 #define MPI_RX_STOP		BIT(16)
 #define MPI_TX_STOP		BIT(24)

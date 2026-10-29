@@ -16,18 +16,29 @@ description: |
   AN7552 has a separate optical SerDes and LCPLL/CDR programming sequence.
   The optical PHY and the Ethernet PON PCS share the AN7552 SerDes and cannot
   be enabled simultaneously.
+  AN7581 and AN7583 share the digital GEPON register block but have separate
+  PON analog and PMA resources for their optical SerDes.
 
 properties:
   compatible:
     enum:
       - airoha,an7552-xpon-phy
+      - airoha,an7581-xpon-phy
+      - airoha,an7583-xpon-phy
       - airoha,en7523-xpon-phy
       - airoha,en751627-xpon-phy
       - airoha,en7528-xpon-phy
       - econet,en751221-xpon-phy
 
   reg:
-    maxItems: 1
+    minItems: 1
+    maxItems: 3
+
+  reg-names:
+    items:
+      - const: pcs
+      - const: ana
+      - const: pma
 
   interrupts:
     maxItems: 1
@@ -108,6 +119,26 @@ allOf:
       properties:
         compatible:
           enum:
+            - airoha,an7581-xpon-phy
+            - airoha,an7583-xpon-phy
+    then:
+      properties:
+        reg:
+          minItems: 3
+          maxItems: 3
+      required:
+        - reg-names
+        - tx-disable-gpios
+    else:
+      properties:
+        reg:
+          maxItems: 1
+        reg-names: false
+
+  - if:
+      properties:
+        compatible:
+          enum:
             - econet,en751221-xpon-phy
             - airoha,an7552-xpon-phy
     then:
@@ -129,6 +160,23 @@ additionalProperties: false
 
 examples:
   - |
+    #include <dt-bindings/gpio/gpio.h>
+    #include <dt-bindings/reset/airoha,en7581-reset.h>
+
+    phy@1faf0000 {
+        compatible = "airoha,an7581-xpon-phy";
+        reg = <0x1faf0000 0x1000>,
+              <0x1fa8a000 0x1000>,
+              <0x1fa8b000 0x1000>;
+        reg-names = "pcs", "ana", "pma";
+        resets = <&scuclk EN7581_XPON_PHY_RST>;
+        reset-names = "phy";
+        airoha,scu = <&scuclk>;
+        tx-disable-gpios = <&pinctrl 38 GPIO_ACTIVE_HIGH>;
+        #phy-cells = <0>;
+    };
+
+  - |
     #include <dt-bindings/reset/airoha,en7523-reset.h>
 
     phy@1faf0000 {
@@ -149,6 +197,7 @@ examples:
         resets = <&scuclk EN751221_XPON_PHY_RST>;
         reset-names = "phy";
         airoha,scu = <&scuclk>;
+        airoha,chip-scu = <&chip_scu>;
         #phy-cells = <0>;
     };
 ...

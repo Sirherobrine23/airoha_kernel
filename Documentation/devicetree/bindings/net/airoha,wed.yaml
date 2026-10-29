@@ -19,7 +19,6 @@ properties:
   compatible:
     items:
       - enum:
-          - econet,en751221-wed
           - econet,en751627-wed
           - econet,en7528-wed
           - econet,en7580-wed

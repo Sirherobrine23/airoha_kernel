@@ -1323,6 +1323,8 @@ struct airoha_eth_soc_data {
 	int irq_banks;
 	int max_gdm_ports;
 	bool legacy_qdma;
+	/* GPON word 0 metadata; word 1 retains the SoC-specific RX layout. */
+	bool gpon_metadata;
 	bool ppe_datapath;
 	u32 fe_irq_mask;
 	u32 pse_fq_cfg;

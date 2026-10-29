@@ -8,6 +8,7 @@
 #include <dt-bindings/soc/airoha,scu-ssr.h>
 #include <dt-bindings/reset/airoha,en7581-reset.h>
 #include <dt-bindings/leds/common.h>
+#include <dt-bindings/gpio/gpio.h>
 #include <dt-bindings/thermal/thermal.h>
 
 / {
@@ -465,6 +466,9 @@
 			airoha,scu = <&scuclk>;
 
 			#pcs-cells = <0>;
+
+			/* Ethernet SerDes mode shares the native xPON PHY resources. */
+			status = "disabled";
 		};
 
 		eth_pcs: pcs@1fa09000 {
@@ -648,6 +652,13 @@
 
 				interrupt-controller;
 				#interrupt-cells = <2>;
+
+				pon_pinctrl: pon {
+					mux {
+						function = "pon";
+						groups = "pon";
+					};
+				};
 			};
 
 			en7581_pwm: pwm {
@@ -894,6 +905,50 @@
 
 			memory-region = <&npu_binary>;
 			memory-region-names = "binary";
+
+			status = "disabled";
+		};
+
+		xpon_phy: phy@1faf0000 {
+			compatible = "airoha,an7581-xpon-phy";
+			reg = <0x0 0x1faf0000 0x0 0x1000>,
+			      <0x0 0x1fa8a000 0x0 0x1000>,
+			      <0x0 0x1fa8b000 0x0 0x1000>;
+			reg-names = "pcs", "ana", "pma";
+
+			pinctrl-names = "default";
+			pinctrl-0 = <&pon_pinctrl>;
+
+			resets = <&scuclk EN7581_XPON_PHY_RST>;
+			reset-names = "phy";
+
+			airoha,scu = <&scuclk>;
+
+			tx-disable-gpios = <&pinctrl 38 GPIO_ACTIVE_HIGH>;
+
+			#phy-cells = <0>;
+
+			status = "disabled";
+		};
+
+		xpon: xmac@1fb60000 {
+			compatible = "airoha,an7581-xpon";
+
+			reg = <0x0 0x1fb60000 0x0 0x10000>;
+			reg-names = "mac";
+
+			interrupts = <GIC_SPI 42 IRQ_TYPE_LEVEL_HIGH>,
+			             <GIC_SPI 34 IRQ_TYPE_LEVEL_HIGH>;
+			interrupt-names = "mac", "dying-gasp";
+
+			resets = <&scuclk EN7581_XPON_MAC_RST>;
+			reset-names = "mac";
+
+			phys = <&xpon_phy>;
+			phy-names = "xpon";
+
+			ethernet = <&gdm2>;
+			airoha,scu = <&scuclk>;
 
 			status = "disabled";
 		};

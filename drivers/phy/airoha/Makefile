@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: GPL-2.0
 
+obj-y := xpon/
+
 obj-$(CONFIG_PHY_AIROHA_AN7583_PCIE)	+= phy-an7583-pcie.o
 obj-$(CONFIG_PHY_AIROHA_PCIE)		+= phy-airoha-pcie.o
 obj-$(CONFIG_PHY_AIROHA_USB)		+= phy-airoha-usb.o
 obj-$(CONFIG_PHY_AIROHA_AN7583_USB)	+= phy-airoha-an7583-usb.o
-obj-$(CONFIG_PHY_AIROHA_XPON)		+= phy-airoha-xpon.o

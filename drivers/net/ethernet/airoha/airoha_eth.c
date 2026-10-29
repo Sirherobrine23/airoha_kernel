@@ -2614,10 +2614,11 @@ airoha_qdma_rx_frame_desc(struct airoha_queue *q,
 			  struct airoha_qdma_desc *desc,
 			  struct airoha_qdma_desc *frame_desc)
 {
-	if (!airoha_is(q->qdma->eth, econet_en7580))
+	if (!airoha_is(q->qdma->eth, econet_en7580, airoha_en7581,
+		       airoha_an7583))
 		return desc;
 
-	/* EN7580 continuation descriptors can have a different SPORT and tag.
+	/* Continuation descriptors can have a different SPORT and tag.
 	 * Save the first descriptor's metadata across polls and ring refills.
 	 */
 	if (!q->skb) {
@@ -2679,7 +2680,7 @@ static int airoha_qdma_rx_process(struct airoha_queue *q, int budget)
 
 		desc = airoha_qdma_rx_frame_desc(q, desc, &frame_desc);
 		msg0 = le32_to_cpu(READ_ONCE(desc->msg0));
-		if (airoha_is(eth, airoha_en7523, airoha_an7552) &&
+		if (eth->soc->gpon_metadata &&
 		    q - &q->qdma->q_rx[0] == 15) {
 			u32 msg2 = le32_to_cpu(READ_ONCE(desc->msg2));
 			u32 msg3 = le32_to_cpu(READ_ONCE(desc->msg3));
@@ -2695,7 +2696,7 @@ static int airoha_qdma_rx_process(struct airoha_queue *q, int budget)
 					     channel, gem_port_id,
 					     !!(msg0 & EN7523_QDMA_ETH_RXMSG_NO_MIC_MASK));
 		}
-		xpon_oam = airoha_is(eth, airoha_en7523, airoha_an7552) &&
+		xpon_oam = eth->soc->gpon_metadata &&
 			   (msg0 & EN7523_QDMA_ETH_RXMSG_OAM_MASK);
 
 		/* GPON OAM descriptors are not required to carry an Ethernet
@@ -2736,7 +2737,7 @@ static int airoha_qdma_rx_process(struct airoha_queue *q, int budget)
 		if (FIELD_GET(QDMA_DESC_MORE_MASK, desc_ctrl))
 			continue;
 
-		if (airoha_is(eth, airoha_en7523, airoha_an7552)) {
+		if (eth->soc->gpon_metadata) {
 			struct airoha_xpon_oam_handler *handler;
 
 			if (xpon_oam) {
@@ -2800,7 +2801,7 @@ static int airoha_qdma_rx_process(struct airoha_queue *q, int budget)
 			}
 		}
 
-		if (airoha_is(eth, airoha_en7523, airoha_an7552) &&
+		if (eth->soc->gpon_metadata &&
 		    (READ_ONCE(dev->flags) & AIROHA_PRIV_F_XPON_MANAGED)) {
 			bool consumed;
 			u8 channel = FIELD_GET(EN7523_QDMA_ETH_RXMSG_CHAN_MASK, msg0);
@@ -2979,7 +2980,8 @@ static int airoha_qdma_init_rx_queue(struct airoha_queue *q,
 			FIELD_PREP(RX_RING_THR_MASK, thr));
 	airoha_qdma_rmw(qdma, REG_RX_DMA_IDX(qid), RX_RING_DMA_IDX_MASK,
 			FIELD_PREP(RX_RING_DMA_IDX_MASK, q->head));
-	if (lro_q || (airoha_is(eth, airoha_en7523) && qid == 15))
+	if (lro_q || (airoha_is(eth, airoha_en7523, airoha_en7581,
+				airoha_an7583) && qid == 15))
 		airoha_qdma_clear(qdma, REG_RX_SCATTER_CFG(qid),
 				  RX_RING_SG_EN_MASK);
 	else
@@ -3739,7 +3741,7 @@ static int airoha_qdma_modern_init_irqs(struct platform_device *pdev,
 		irq_bank->qdma = qdma;
 
 		if (airoha_is(eth, econet_en7580, airoha_an7552)) {
-			char irq_name[8];
+			char irq_name[16];
 			int j;
 
 			/* The EN7580 DT interleaves lan0/wan0 before lan1..3. */
@@ -5693,11 +5695,11 @@ static int airoha_validate_xpon_link_gdm2(struct net_device *netdev,
 		return -ENODEV;
 
 	/*
-	 * Link ownership is shared by EN7523, AN7552, EN7528 and EN7580. Their
+	 * Link ownership is shared by the supported GPON and XGS-PON MACs. Their
 	 * protocol-specific FE and descriptor operations remain separate.
 	 */
 	if (common->family == AIROHA_ETH_FAMILY_AIROHA) {
-		if (!airoha_is(common->eth, airoha_en7523, airoha_an7552))
+		if (!common->eth->soc->gpon_metadata)
 			return -EOPNOTSUPP;
 	} else if (common->family == AIROHA_ETH_FAMILY_ECONET) {
 		if (!airoha_is(common->eth, econet_en7528, econet_en7580))
@@ -5774,6 +5776,9 @@ static int airoha_xpon_set_mode(struct net_device *netdev,
 	if (mode != AIROHA_XPON_MODE_GPON &&
 	    mode != AIROHA_XPON_MODE_EPON)
 		return -EINVAL;
+	if (airoha_is(dev->eth, airoha_en7581, airoha_an7583) &&
+	    mode != AIROHA_XPON_MODE_GPON)
+		return -EOPNOTSUPP;
 
 	/* FE_API_SET_GDMA_MISC_CONFIG(FE_GDM_SEL_GDMA2, mode).
 	 * The vendor SDK sets GDMA2_RLS_MODE only for GPON.
@@ -5812,7 +5817,8 @@ static int airoha_xpon_set_mode(struct net_device *netdev,
 	 * eventually stops releasing frames towards GDM2 and transmit stalls
 	 * permanently, with no completion, no drop and no error reported.
 	 */
-	if (airoha_is(dev->eth, airoha_en7523) &&
+	if (airoha_is(dev->eth, airoha_en7523, airoha_en7581,
+		      airoha_an7583) &&
 	    mode == AIROHA_XPON_MODE_GPON)
 		airoha_qdma_set(&dev->eth->qdma[1], REG_PSE_BUF_USAGE_CFG,
 				PSE_BUF_ESTIMATE_EN_MASK);
@@ -6090,9 +6096,10 @@ static void airoha_eth_xpon_dump_rx_desc(struct net_device *netdev,
 	gem_port_id = FIELD_GET(EN7523_QDMA_ETH_RXMSG_GEM_MASK, msg0);
 
 	dev_info_ratelimited(&netdev->dev,
-			     "GPON OAM RX descriptor: index=%u dma=%#010x ctrl=%#010x done=%u len=%u msg=%#010x/%#010x/%#010x/%#010x oam=%u channel=%u gem=%u no-mic=%u\n",
+			     "GPON OAM RX descriptor: index=%u dma=%#010lx ctrl=%#010x done=%u len=%u msg=%#010x/%#010x/%#010x/%#010x oam=%u channel=%u gem=%u no-mic=%u\n",
 			     index,
-			     ring_base + index * sizeof(struct airoha_qdma_desc),
+			     (unsigned long)ring_base +
+				index * sizeof(struct airoha_qdma_desc),
 			     ctrl, !!(ctrl & QDMA_DESC_DONE_MASK), desc_len,
 			     msg0, msg1, msg2, msg3,
 			     !!(msg0 & EN7523_QDMA_ETH_RXMSG_OAM_MASK),
@@ -7030,7 +7037,7 @@ static int airoha_fe_init(struct airoha_eth *eth)
 	 * Without this, the upstream transmits runt frames which are
 	 * discarded by the OLT or the peer.
 	 */
-	if (airoha_is(eth, airoha_en7523, airoha_an7552))
+	if (eth->soc->gpon_metadata)
 		airoha_fe_set(eth, REG_GDM_FWD_CFG(AIROHA_GDM2_IDX),
 			      GDM_PAD_EN_MASK);
 
@@ -8248,7 +8255,14 @@ static u8 airoha_skb_ip_version(const struct sk_buff *skb)
 	return data ? *data >> 4 : 0;
 }
 
-static u32 airoha_qdma_tx_csum_flags(const struct sk_buff *skb)
+static u32 airoha_qdma_tx_ico_mask(struct airoha_eth *eth)
+{
+	return airoha_is(eth, airoha_an7583) ? AN7583_QDMA_ETH_TXMSG_ICO_MASK :
+					    QDMA_ETH_TXMSG_ICO_MASK;
+}
+
+static u32 airoha_qdma_tx_csum_flags(struct airoha_eth *eth,
+				     const struct sk_buff *skb)
 {
 	u32 flags = 0;
 
@@ -8256,14 +8270,16 @@ static u32 airoha_qdma_tx_csum_flags(const struct sk_buff *skb)
 		return 0;
 
 	if (airoha_skb_ip_version(skb) == 4)
-		flags |= QDMA_ETH_TXMSG_ICO_MASK;
+		flags |= airoha_qdma_tx_ico_mask(eth);
 
 	switch (skb->csum_offset) {
 	case offsetof(struct tcphdr, check):
 		flags |= QDMA_ETH_TXMSG_TCO_MASK;
 		break;
 	case offsetof(struct udphdr, check):
-		flags |= QDMA_ETH_TXMSG_UCO_MASK;
+		/* AN7583 shares the TCP/UDP checksum request in bit 11. */
+		flags |= airoha_is(eth, airoha_an7583) ?
+			 AN7583_QDMA_ETH_TXMSG_TUCO_MASK : QDMA_ETH_TXMSG_UCO_MASK;
 		break;
 	}
 
@@ -8376,7 +8392,7 @@ static netdev_tx_t __airoha_dev_xmit(struct sk_buff *skb,
 	qid = airoha_qdma_get_txq(qdma, xpon ? xpon->queue :
 				    skb_get_queue_mapping(skb));
 	if (xpon) {
-		if (!airoha_is(qdma->eth, airoha_en7523, airoha_an7552))
+		if (!qdma->eth->soc->gpon_metadata)
 			goto error;
 
 		msg0 = FIELD_PREP(QDMA_ETH_TXMSG_QUEUE_MASK, xpon->queue) |
@@ -8415,7 +8431,7 @@ static netdev_tx_t __airoha_dev_xmit(struct sk_buff *skb,
 		       FIELD_PREP(QDMA_ETH_TXMSG_SP_TAG_MASK, tag);
 	}
 	if (!xpon_oam)
-		msg0 |= airoha_qdma_tx_csum_flags(skb);
+		msg0 |= airoha_qdma_tx_csum_flags(qdma->eth, skb);
 
 	/* TSO: fill MSS info in tcp checksum field */
 	if (!xpon_oam && skb_is_gso(skb)) {
@@ -8431,7 +8447,7 @@ static netdev_tx_t __airoha_dev_xmit(struct sk_buff *skb,
 			msg0 |= QDMA_ETH_TXMSG_TCO_MASK |
 				QDMA_ETH_TXMSG_TSO_MASK;
 			if (skb_shinfo(skb)->gso_type & SKB_GSO_TCPV4)
-				msg0 |= QDMA_ETH_TXMSG_ICO_MASK;
+				msg0 |= airoha_qdma_tx_ico_mask(qdma->eth);
 		}
 	}
 
@@ -8451,7 +8467,8 @@ static netdev_tx_t __airoha_dev_xmit(struct sk_buff *skb,
 		       FIELD_PREP(QDMA_ETH_TXMSG_METER_MASK, 0x7f);
 	}
 
-	if (airoha_is(qdma->eth, airoha_an7552))
+	if (airoha_is(qdma->eth, airoha_an7552) ||
+	    (xpon && airoha_is(qdma->eth, airoha_en7581, airoha_an7583)))
 		msg1 |= GENMASK(10, 0);
 
 	if (xpon_oam)
@@ -10640,6 +10657,8 @@ static int airoha_en7581_get_sport(struct airoha_gdm_port *port, int nbq)
 static u32 airoha_en7581_get_vip_port(struct airoha_gdm_port *port, int nbq)
 {
 	switch (port->id) {
+	case AIROHA_GDM2_IDX:
+		return BIT(AIROHA_GDM2_IDX);
 	case AIROHA_GDM3_IDX:
 		if (nbq == 4)
 			return XSI_PCIE0_VIP_PORT_MASK;
@@ -10722,6 +10741,8 @@ static int airoha_an7583_get_sport(struct airoha_gdm_port *port, int nbq)
 static u32 airoha_an7583_get_vip_port(struct airoha_gdm_port *port, int nbq)
 {
 	switch (port->id) {
+	case AIROHA_GDM2_IDX:
+		return BIT(AIROHA_GDM2_IDX);
 	case AIROHA_GDM3_IDX:
 		if (!nbq)
 			return XSI_ETH_VIP_PORT_MASK;
@@ -10938,6 +10959,8 @@ const struct airoha_eth_soc_data econet_en7580_soc_data = {
 
 const struct airoha_eth_soc_data airoha_en7581_soc_data = {
 	.version = airoha_en7581,
+	.xpon_ops = &airoha_xpon_ops,
+	.gpon_metadata = true,
 	.fe_irq_mask = FE_INT_ERROR_MASK,
 	.xsi_rsts_names = en7581_xsi_rsts_names,
 	.num_xsi_rsts = ARRAY_SIZE(en7581_xsi_rsts_names),
@@ -10960,6 +10983,8 @@ const struct airoha_eth_soc_data airoha_en7581_soc_data = {
 
 const struct airoha_eth_soc_data airoha_an7583_soc_data = {
 	.version = airoha_an7583,
+	.xpon_ops = &airoha_xpon_ops,
+	.gpon_metadata = true,
 	.fe_irq_mask = FE_INT_ERROR_MASK,
 	.xsi_rsts_names = an7583_xsi_rsts_names,
 	.num_xsi_rsts = ARRAY_SIZE(an7583_xsi_rsts_names),
@@ -10984,6 +11009,7 @@ const struct airoha_eth_soc_data airoha_en7523_soc_data = {
 	.version = airoha_en7523,
 	.fe_irq_mask = FE_INT_ERROR_MASK,
 	.xpon_ops = &airoha_xpon_ops,
+	.gpon_metadata = true,
 	.xsi_rsts_names = en7523_xsi_rsts_names,
 	.num_xsi_rsts = ARRAY_SIZE(en7523_xsi_rsts_names),
 	.rx_ring = 16,
@@ -11010,6 +11036,7 @@ static const struct airoha_eth_soc_data an7552_soc_data = {
 	.version = airoha_an7552,
 	.fe_irq_mask = FE_INT_ERROR_MASK | FE_INT_PSE_EXCEPTION,
 	.xpon_ops = &airoha_xpon_ops,
+	.gpon_metadata = true,
 	// .xsi_rsts_names = en7523_xsi_rsts_names,
 	// .num_xsi_rsts = ARRAY_SIZE(en7523_xsi_rsts_names),
 	.rx_ring = 16,

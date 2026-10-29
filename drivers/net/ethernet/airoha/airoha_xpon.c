@@ -629,7 +629,7 @@ static int gpon_prepare_hardware(struct xpon_priv *priv)
 	 * additional DBA/BWmap defaults.  EN7528 also starts from the vendor
 	 * 0x4208 reset image, but does not use the EN7523 DBA/BWmap defaults.
 	 */
-	if (priv->match_data->en7523_gpon_defaults ||
+	if (priv->match_data->gpon_defaults ||
 	    priv->match_data->gpon_reset_dbg_dly)
 		gpon_write(priv, GPON_DBG_DLY, DBG_DLY_RESET_DEFAULT);
 	gpon_rmw(priv, GPON_DBG_DLY, DBG_DLY_FINE_INT_MASK,
@@ -638,12 +638,13 @@ static int gpon_prepare_hardware(struct xpon_priv *priv)
 	gpon_rmw(priv, GPON_DBG_IDLE_GEM_THLD, GENMASK(15, 0),
 		 priv->match_data->gpon_idle_gem_threshold);
 
-	if (priv->match_data->en7523_gpon_defaults) {
+	if (priv->match_data->gpon_defaults ||
+	    priv->match_data->gpon_dbru_48b)
 		gpon_rmw(priv, GPON_GBL_CFG, GBL_CFG_SR_BLK_SIZE_MASK,
 			 GPON_DBRU_BLOCK_SIZE_48B);
+	if (priv->match_data->gpon_defaults)
 		gpon_clear_bits(priv, GPON_DBG_BWM_FILTER_CTRL,
 				BWM_FILTER_LEN_VALID_CHECK_EN);
-	}
 
 	mbi = gpon_read(priv, GPON_MBI_MPI_STOP);
 	if (priv->match_data->gpon_has_mpi)
@@ -2428,6 +2429,8 @@ static void gpon_cb_state_changed(void *hw_priv, enum gpon_state state)
 				 msecs_to_jiffies(GPON_TO1_MS));
 		break;
 	case GPON_O5_OPERATION:
+		if (priv->match_data->gpon_has_del_rx_stop)
+			gpon_clear_bits(priv, GPON_MBI_MPI_STOP, DEL_RX_STOP);
 		/* Cancel TO1 and start periodic BER reporting only in O5. */
 		cancel_delayed_work(&priv->to1_work);
 		if (priv->ber_interval_ms)
@@ -2627,13 +2630,14 @@ static int gpon_enable(struct xpon_priv *priv)
 	 * them continuously while GEM delineation is being acquired; counters
 	 * remain available through the diagnostic paths.
 	 */
-	irq_mask = GPON_INT_DEFAULT_MASK;
+	irq_mask = priv->match_data->gpon_irq_mask ?: GPON_INT_DEFAULT_MASK;
+	known = irq_mask;
 	if (priv->dying_gasp_irq >= 0)
 		irq_mask &= ~INT_DYING_GASP;
 
 	pending = gpon_read(priv, GPON_INT_STATUS);
-	known = pending & (u32)GPON_INT_DEFAULT_MASK;
-	unknown = pending & ~(u32)GPON_INT_DEFAULT_MASK;
+	unknown = pending & ~known;
+	known &= pending;
 	fifo_depth = gpon_read(priv, GPON_PLOAMd_FIFO_STS) &
 		     PLOAMd_FIFO_USED_MASK;
 	if (pending || fifo_depth)
@@ -5240,6 +5244,10 @@ static int airoha_xpon_probe(struct platform_device *pdev)
 		else if (strcmp(mode, "gpon"))
 			return -EINVAL;
 	}
+	if (!(XPON_MODE_CAP(airoha_xpon_core_mode(priv->mode)) &
+	      data->xpon_mode_comp))
+		return dev_err_probe(dev, -EOPNOTSUPP,
+				     "unsupported xPON mode\n");
 	INIT_DELAYED_WORK(&priv->phy_link_work, airoha_xpon_phy_link_work_fn);
 
 	dev_info(dev, "xPON initial mode: %s\n",
@@ -5602,7 +5610,7 @@ static const struct airoha_xpon_match_data en7523_xpon_data = {
 	.gpon_fine_delay = DBG_DLY_FINE_INT_DEFAULT,
 	.gpon_rsp_time_activation = GPON_RSP_TIME_ACT_EN7523,
 	.gpon_idle_gem_threshold = GPON_IDLE_GEM_THLD_EN7523,
-	.en7523_gpon_defaults = true,
+	.gpon_defaults = true,
 	.gpon_reset_on_start = true,
 	.xpon_mode_comp = XPON_MODE_GPON |
 			  XPON_MODE_EPON,
@@ -5618,9 +5626,43 @@ static const struct airoha_xpon_match_data an7552_xpon_data = {
 	.gpon_fine_delay = DBG_DLY_FINE_INT_DEFAULT,
 	.gpon_rsp_time_activation = GPON_RSP_TIME_ACT_EN7523,
 	.gpon_idle_gem_threshold = GPON_IDLE_GEM_THLD_AN7552,
-	.en7523_gpon_defaults = true,
+	.gpon_defaults = true,
 	.gpon_reset_on_start = true,
 	.xpon_mode_comp = XPON_MODE_GPON | XPON_MODE_EPON,
+};
+
+/* AN7581 uses the 1G GPON MAC with its own PCS/PMA PHY backend. */
+static const struct airoha_xpon_match_data an7581_xpon_data = {
+	.version = airoha_en7581,
+	.wan_mode_mask = EN7523_SCU_WAN_MODE_MASK,
+	.gpon_fine_delay = DBG_DLY_FINE_INT_DEFAULT,
+	.gpon_rsp_time_activation = GPON_RSP_TIME_ACT_EN7523,
+	.gpon_idle_gem_threshold = GPON_IDLE_GEM_THLD_EN7523,
+	/* Bit 15 reports a zero grant on AN7581, not grant calculation done. */
+	.gpon_irq_mask = GPON_INT_DEFAULT_MASK & ~INT_CAL_GNT_SIZE_DONE,
+	.gpon_dbru_48b = true,
+	.gpon_has_del_rx_stop = true,
+	.gpon_reset_on_start = true,
+	.gpon_rearm_tx_on_overhead = true,
+	.scu_dying_gasp_status = true,
+	.xpon_mode_comp = XPON_MODE_GPON,
+};
+
+/* AN7583 asymmetric GPON retains the shared 1G MAC interface. */
+static const struct airoha_xpon_match_data an7583_xpon_data = {
+	.version = airoha_an7583,
+	.wan_mode_mask = EN7523_SCU_WAN_MODE_MASK,
+	.gpon_fine_delay = DBG_DLY_FINE_INT_DEFAULT,
+	.gpon_rsp_time_activation = GPON_RSP_TIME_ACT_EN7523,
+	.gpon_idle_gem_threshold = GPON_IDLE_GEM_THLD_EN7523,
+	/* Leave the unhandled grant-calculation interrupt masked. */
+	.gpon_irq_mask = GPON_INT_DEFAULT_MASK & ~INT_CAL_GNT_SIZE_DONE,
+	.gpon_dbru_48b = true,
+	.gpon_has_del_rx_stop = true,
+	.gpon_reset_on_start = true,
+	.gpon_rearm_tx_on_overhead = true,
+	.scu_dying_gasp_status = true,
+	.xpon_mode_comp = XPON_MODE_GPON,
 };
 
 static const struct of_device_id airoha_xpon_of_match[] = {
@@ -5630,6 +5672,8 @@ static const struct of_device_id airoha_xpon_of_match[] = {
 	{ .compatible = "airoha,en7580-xpon", .data = &en7580_xpon_data },
 	{ .compatible = "airoha,en7523-xpon", .data = &en7523_xpon_data },
 	{ .compatible = "airoha,an7552-xpon", .data = &an7552_xpon_data },
+	{ .compatible = "airoha,an7581-xpon", .data = &an7581_xpon_data },
+	{ .compatible = "airoha,an7583-xpon", .data = &an7583_xpon_data },
 	{}
 };
 MODULE_DEVICE_TABLE(of, airoha_xpon_of_match);

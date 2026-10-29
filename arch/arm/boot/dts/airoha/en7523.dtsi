@@ -846,9 +846,8 @@
 	xpon: xmac@1fb60000 {
 		compatible = "airoha,en7523-xpon";
 
-		reg = <0x1fb60000 0x10000>,
-		      <0x1fa2ff24 0x4>;
-		reg-names = "mac", "tx-off";
+		reg = <0x1fb60000 0x10000>;
+		reg-names = "mac";
 
 		interrupts = <GIC_SPI 42 IRQ_TYPE_LEVEL_HIGH>,
 		             <GIC_SPI 34 IRQ_TYPE_LEVEL_HIGH>;

@@ -681,6 +681,46 @@
 			#pcs-cells = <0>;
 		};
 
+		xpon_phy: phy@1faf0000 {
+			compatible = "airoha,an7583-xpon-phy";
+			reg = <0x0 0x1faf0000 0x0 0x1000>,
+			      <0x0 0x1fa8f000 0x0 0x1000>,
+			      <0x0 0x1fa8e000 0x0 0x1000>;
+			reg-names = "pcs", "ana", "pma";
+
+			resets = <&scuclk AN7583_XPON_PHY_RST>;
+			reset-names = "phy";
+			airoha,scu = <&scuclk>;
+			#phy-cells = <0>;
+
+			tx-disable-gpios = <&pinctrl 38 GPIO_ACTIVE_HIGH>;
+
+			status = "disabled";
+		};
+
+		xpon: xmac@1fb60000 {
+			compatible = "airoha,an7583-xpon";
+			reg = <0x0 0x1fb60000 0x0 0x10000>;
+			reg-names = "mac";
+
+			interrupts = <GIC_SPI 42 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 34 IRQ_TYPE_LEVEL_HIGH>;
+			interrupt-names = "mac", "dying-gasp";
+
+			resets = <&scuclk AN7583_XPON_MAC_RST>;
+			reset-names = "mac";
+			phys = <&xpon_phy>;
+			phy-names = "xpon";
+			ethernet = <&gdm2>;
+			airoha,scu = <&scuclk>;
+
+			/* Add the optical frontend before enabling.
+			 * Native GPON also requires GDM2 in internal mode, with the
+			 * competing pon_pcs disabled to release the shared resets.
+			 */
+			status = "disabled";
+		};
+
 		eth: ethernet@1fb50000 {
 			compatible = "airoha,an7583-eth";
 			reg = <0 0x1fb50000 0 0x2600>,
