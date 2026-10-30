@@ -467,20 +467,20 @@
 		};
 	};
 
-	thermal: thermal-sensor@1efbd800 {
-		compatible = "airoha,en7552-thermal";
-		reg = <0x1efbd000 0x0fff>;
+	thermal: thermal-sensor@1efbd000 {
+		compatible = "airoha,an7552-thermal";
+		reg = <0x1efbd000 0x1000>;
 		interrupts = <GIC_SPI 23 IRQ_TYPE_LEVEL_HIGH>;
 		airoha,chip-scu = <&chip_scu>;
 
-		#thermal-sensor-cells = <1>;
+		#thermal-sensor-cells = <0>;
 	};
 
 	thermal-zones {
 		cpu_thermal: cpu-thermal {
 			polling-delay-passive = <200>;
 			polling-delay = <1000>;
-			thermal-sensors = <&thermal 0>;
+			thermal-sensors = <&thermal>;
 			trips {
 				cpu_passive: cpu-passive {
 					temperature = <105000>;
