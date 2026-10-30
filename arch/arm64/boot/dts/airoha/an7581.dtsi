@@ -137,7 +137,7 @@
 	};
 
 	cpufreq: cpufreq {
-		compatible = "airoha,en7581-cpufreq";
+		compatible = "airoha,en7581-cpufreq", "airoha,an7581-cpufreq";
 
 		operating-points-v2 = <&cpu_smcc_opp_table>;
 
@@ -639,7 +639,7 @@
 			reg = <0x0 0x1fbf0200 0x0 0xc0>;
 
 			pinctrl: pinctrl {
-				compatible = "airoha,an7581-pinctrl";
+				compatible = "airoha,an7581-pinctrl", "airoha,en7581-pinctrl";
 
 				interrupt-parent = <&gic>;
 				interrupts = <GIC_SPI 26 IRQ_TYPE_LEVEL_HIGH>;
@@ -657,6 +657,62 @@
 					mux {
 						function = "pon";
 						groups = "pon";
+					};
+				};
+
+				swp1_led0: switch_port-1-led0 {
+					mux {
+						function = "phy1_led0";
+						pins = "gpio22";
+					};
+				};
+	
+				swp1_led1: switch_port-1-led1 {
+					mux {
+						function = "phy1_led1";
+						pins = "gpio7";
+					};
+				};
+	
+				swp2_led0: switch_port-2-led0 {
+					mux {
+						function = "phy2_led0";
+						pins = "gpio23";
+					};
+				};
+	
+				swp2_led1: switch_port-2-led1 {
+					mux {
+						function = "phy2_led1";
+						pins = "gpio6";
+					};
+				};
+	
+				swp3_led0: switch_port-3-led0 {
+					mux {
+						function = "phy3_led0";
+						pins = "gpio24";
+					};
+				};
+	
+				swp3_led1: switch_port-3-led1 {
+					mux {
+						function = "phy3_led1";
+						pins = "gpio5";
+					};
+				};
+	
+				swp4_led0: switch_port-4-led0 {
+					mux {
+						function = "phy4_led0";
+						pins = "gpio25";
+					};
+				};
+	
+				swp4_led1: switch_port-4-led1 {
+					mux {
+						function = "phy4_led1";
+						pins = "gpio4";
 					};
 				};
 			};
@@ -705,7 +761,7 @@
 		};
 
 		snfi: spi@1fa10000 {
-			compatible = "airoha,en7581-snand";
+			compatible = "airoha,en7523-spi";
 			reg = <0x0 0x1fa10000 0x0 0x140>,
 			      <0x0 0x1fa11000 0x0 0x160>;
 
@@ -881,7 +937,7 @@
 		};
 
 		npu: npu@1e900000 {
-			compatible = "airoha,en7581-npu";
+			compatible = "airoha,en7581-npu", "airoha,airoha_en7581-npu";
 			reg = <0x0 0x1e900000 0x0 0x313000>;
 
 			interrupts = <GIC_SPI 125 IRQ_TYPE_LEVEL_HIGH>,
@@ -1101,84 +1157,116 @@
 					phy-mode = "internal";
 					status = "disabled";
 
+					pinctrl-names = "gbe-led";
+					pinctrl-0 = <&swp1_led0 &swp1_led1>;
+					airoha,scu = <&scuclk>;
+
 					leds {
 						#address-cells = <1>;
 						#size-cells = <0>;
 
-						gsw_phy1_led0: led@0 {
+						gsw_phy1_led0: led0@0 {
 							reg = <0>;
+							function = LED_FUNCTION_LAN;
 							status = "disabled";
+							active-low;
 						};
 
-						gsw_phy1_led1: led@1 {
+						gsw_phy1_led1: led1@1 {
 							reg = <1>;
 							status = "disabled";
+							function = LED_FUNCTION_ACTIVITY;
+							active-low;
 						};
 					};
 				};
 
-				gsw_phy2: ethernet-phy@a {
+				gsw_phy2: ethernet-phy@10 {
 					compatible = "ethernet-phy-ieee802.3-c22";
 					reg = <10>;
 					phy-mode = "internal";
 					status = "disabled";
 
+					pinctrl-names = "gbe-led";
+					pinctrl-0 = <&swp2_led0 &swp2_led1>;
+					airoha,scu = <&scuclk>;
+
 					leds {
 						#address-cells = <1>;
 						#size-cells = <0>;
 
-						gsw_phy2_led0: led@0 {
+						gsw_phy2_led0: led0@0 {
 							reg = <0>;
+							function = LED_FUNCTION_LAN;
 							status = "disabled";
+							active-low;
 						};
 
-						gsw_phy2_led1: led@1 {
+						gsw_phy2_led1: led1@1 {
 							reg = <1>;
 							status = "disabled";
+							function = LED_FUNCTION_ACTIVITY;
+							active-low;
 						};
 					};
 				};
 
-				gsw_phy3: ethernet-phy@b {
+				gsw_phy3: ethernet-phy@11 {
 					compatible = "ethernet-phy-ieee802.3-c22";
 					reg = <11>;
 					phy-mode = "internal";
 					status = "disabled";
 
+					pinctrl-names = "gbe-led";
+					pinctrl-0 = <&swp3_led0 &swp3_led1>;
+					airoha,scu = <&scuclk>;
+
 					leds {
 						#address-cells = <1>;
 						#size-cells = <0>;
 
-						gsw_phy3_led0: led@0 {
+						gsw_phy3_led0: led0@0 {
 							reg = <0>;
+							function = LED_FUNCTION_LAN;
 							status = "disabled";
+							active-low;
 						};
 
-						gsw_phy3_led1: led@1 {
+						gsw_phy3_led1: led1@1 {
 							reg = <1>;
 							status = "disabled";
+							function = LED_FUNCTION_ACTIVITY;
+							active-low;
 						};
 					};
 				};
 
-				gsw_phy4: ethernet-phy@c {
+				gsw_phy4: ethernet-phy@12 {
 					compatible = "ethernet-phy-ieee802.3-c22";
 					reg = <12>;
 					phy-mode = "internal";
 					status = "disabled";
 
+					pinctrl-names = "gbe-led";
+					pinctrl-0 = <&swp4_led0 &swp4_led1>;
+					airoha,scu = <&scuclk>;
+
 					leds {
 						#address-cells = <1>;
 						#size-cells = <0>;
 
-						gsw_phy4_led0: led@0 {
+						gsw_phy4_led0: led0@0 {
 							reg = <0>;
+							function = LED_FUNCTION_LAN;
 							status = "disabled";
+							active-low;
 						};
 
-						gsw_phy4_led1: led@1 {
+						gsw_phy4_led1: led1@1 {
 							reg = <1>;
 							status = "disabled";
+							function = LED_FUNCTION_ACTIVITY;
+							active-low;
 						};
 					};
 				};
