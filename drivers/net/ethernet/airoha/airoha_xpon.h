@@ -428,6 +428,8 @@ struct epon_llid {
 	u16 value;
 };
 
+struct airoha_xpon_tod;
+
 struct xpon_priv {
 	void __iomem *base;
 	void __iomem *gpon_reg;
@@ -456,6 +458,7 @@ struct xpon_priv {
 	struct xpon_device *xpon;
 	struct xpon_oam *oam;
 	struct airoha_gpon_omci omci;
+	struct airoha_xpon_tod *tod;
 	struct airoha_xpon_oam_handler omci_handler;
 	struct sfp_bus *sfp_bus;
 	struct optical_frontend *frontend;

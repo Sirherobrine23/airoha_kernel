@@ -934,12 +934,14 @@
 		xpon: xmac@1fb60000 {
 			compatible = "airoha,an7581-xpon";
 
-			reg = <0x0 0x1fb60000 0x0 0x10000>;
-			reg-names = "mac";
+			reg = <0x0 0x1fb60000 0x0 0x10000>,
+			      <0x0 0x1fbe2300 0x0 0xd4>;
+			reg-names = "mac", "tod";
 
 			interrupts = <GIC_SPI 42 IRQ_TYPE_LEVEL_HIGH>,
-			             <GIC_SPI 34 IRQ_TYPE_LEVEL_HIGH>;
-			interrupt-names = "mac", "dying-gasp";
+				     <GIC_SPI 34 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 78 IRQ_TYPE_LEVEL_HIGH>;
+			interrupt-names = "mac", "dying-gasp", "tod";
 
 			resets = <&scuclk EN7581_XPON_MAC_RST>;
 			reset-names = "mac";

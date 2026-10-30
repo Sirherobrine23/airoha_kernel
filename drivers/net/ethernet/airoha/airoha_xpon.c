@@ -50,6 +50,7 @@
 
 #include "airoha_eth.h"
 #include "airoha_xpon.h"
+#include "airoha_xpon_tod.h"
 #include "airoha_omci.h"
 #include "airoha_regs.h"
 #include "airoha_ploam.h"
@@ -2372,8 +2373,11 @@ static void gpon_cb_state_changed(void *hw_priv, enum gpon_state state)
 	}
 
 	mutex_lock(&priv->link_state_lock);
-	priv->gpon_o5 = state == GPON_O5_OPERATION;
+	WRITE_ONCE(priv->gpon_o5, state == GPON_O5_OPERATION);
 	mutex_unlock(&priv->link_state_lock);
+	if (state == GPON_O1_INITIAL || state == GPON_O2_STANDBY ||
+	    state == GPON_O7_EMERGENCY_STOP)
+		airoha_xpon_tod_stop(priv);
 	gpon_refresh_netdev_link(priv, false);
 
 	if (state != GPON_O5_OPERATION)
@@ -2713,6 +2717,7 @@ static void gpon_disable(struct xpon_priv *priv)
 	 * remains enabled so no activation edge is lost across a restart.
 	 */
 	WRITE_ONCE(priv->mac_enabled, false);
+	airoha_xpon_tod_stop(priv);
 	gpon_bip_set_active(priv, false);
 	if (mac_enabled) {
 		gpon_write(priv, GPON_INT_ENABLE, 0);
@@ -4510,7 +4515,7 @@ static int airoha_xpon_register_gpon_omci(struct xpon_priv *priv)
 
 	dev_info(priv->dev, "EN7528 test: registering OMCI device\n");
 	ret = airoha_gpon_omci_register(&priv->omci, priv->xpon, priv->gdm_dev,
-					priv, &priv->identity);
+					priv, &priv->identity, !!priv->tod);
 	dev_info(priv->dev, "EN7528 test: OMCI register returned %d\n", ret);
 	if (ret)
 		goto err_unregister_oam;
@@ -5424,18 +5429,17 @@ static int airoha_xpon_probe(struct platform_device *pdev)
 	}
 
 	link_ops = airoha_xpon_get_link_ops(priv);
-	dev_info(dev, "EN7528 test: registering Ethernet xPON provider on %s\n",
-		 priv->gdm_dev->name);
 	ret = airoha_eth_register_xpon(priv->gdm_dev, priv->mode, link_ops,
 				       priv);
-	dev_info(dev, "EN7528 test: Ethernet xPON registration returned %d\n",
-		 ret);
 	if (ret)
 		goto err_del_upstream;
 
 	airoha_xpon_update_netdev_link(priv, false);
 
 	if (airoha_xpon_is_gpon(priv)) {
+		ret = airoha_xpon_tod_init(pdev, priv);
+		if (ret)
+			goto err_unregister_xpon;
 		ret = airoha_xpon_register_gpon_omci(priv);
 		if (ret) {
 			ret = dev_err_probe(dev, ret, "error on register OMCI");
@@ -5477,6 +5481,7 @@ err_put_sfp:
 	if (priv->sfp_bus)
 		sfp_bus_put(priv->sfp_bus);
 err_unregister_core:
+	airoha_xpon_tod_remove(priv);
 	airoha_xpon_unregister_epon_oam(priv);
 	xpon_device_unregister(priv->xpon);
 	priv->xpon = NULL;
@@ -5538,6 +5543,7 @@ static void airoha_xpon_remove(struct platform_device *pdev)
 		cancel_delayed_work_sync(&priv->to2_work);
 	}
 
+	airoha_xpon_tod_remove(priv);
 	airoha_xpon_unregister_epon_oam(priv);
 	xpon_device_unregister(priv->xpon);
 	priv->xpon = NULL;

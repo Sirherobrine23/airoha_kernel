@@ -147,6 +147,15 @@ airoha_gpon_omci_config_changed(struct omci_device *odev, u16 key,
 	airoha_gpon_omci_hw_config_changed(omci->hw_priv, key, identity);
 }
 
+static int
+airoha_gpon_omci_set_time_of_day(struct omci_device *odev,
+				const struct omci_time_of_day *time)
+{
+	struct airoha_gpon_omci *omci = omci_device_priv(odev);
+
+	return airoha_gpon_omci_hw_set_time_of_day(omci->hw_priv, time);
+}
+
 static const struct omci_device_ops airoha_gpon_omci_ops = {
 	.start = airoha_gpon_omci_start_transport,
 	.stop = airoha_gpon_omci_stop_transport,
@@ -168,15 +177,18 @@ int airoha_gpon_omci_register(struct airoha_gpon_omci *omci,
 			      struct xpon_device *xpon,
 			      struct net_device *gdm_dev,
 			      void *hw_priv,
-			      const struct omci_identity *identity)
+			      const struct omci_identity *identity, bool has_tod)
 {
 	int ret;
 
 	omci->gdm_dev = gdm_dev;
 	omci->hw_priv = hw_priv;
+	omci->ops = airoha_gpon_omci_ops;
+	if (has_tod)
+		omci->ops.set_time_of_day = airoha_gpon_omci_set_time_of_day;
 	omci->odev = omci_device_register(xpon,
 					  OMCI_CAP_HW_MIC | OMCI_CAP_TELEMETRY,
-					  &airoha_gpon_omci_ops, omci);
+					  &omci->ops, omci);
 	if (IS_ERR(omci->odev))
 		return PTR_ERR(omci->odev);
 

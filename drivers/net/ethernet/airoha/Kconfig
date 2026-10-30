@@ -80,6 +80,7 @@ config AIROHA_XPON
 	depends on SFP
 	depends on OPTICAL_FRONTEND
 	depends on MFD_SYSCON
+	depends on PTP_1588_CLOCK_OPTIONAL
 	select PHY_AIROHA_XPON
 	select XPON
 	select XPON_OMCI

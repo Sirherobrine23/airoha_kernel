@@ -3,6 +3,7 @@
 #define _AIROHA_GPON_OMCI_H
 
 #include <linux/types.h>
+#include <net/xpon/omci.h>
 
 struct device;
 struct net_device;
@@ -17,6 +18,7 @@ struct xpon_device;
 
 struct airoha_gpon_omci {
 	struct omci_device *odev;
+	struct omci_device_ops ops;
 	struct net_device *gdm_dev;
 	void *hw_priv;
 };
@@ -25,7 +27,7 @@ int airoha_gpon_omci_register(struct airoha_gpon_omci *omci,
 			      struct xpon_device *xpon,
 			      struct net_device *gdm_dev,
 			      void *hw_priv,
-			      const struct omci_identity *identity);
+			      const struct omci_identity *identity, bool has_tod);
 int airoha_gpon_omci_start(struct airoha_gpon_omci *omci);
 void airoha_gpon_omci_stop(struct airoha_gpon_omci *omci);
 void airoha_gpon_omci_unregister(struct airoha_gpon_omci *omci);
@@ -59,6 +61,8 @@ int airoha_gpon_omci_hw_get_telemetry(void *hw_priv,
 				      struct omci_telemetry *telemetry);
 int airoha_gpon_omci_hw_set_olt_profile(void *hw_priv,
 					const struct omci_olt_profile_state *state);
+int airoha_gpon_omci_hw_set_time_of_day(void *hw_priv,
+				     const struct omci_time_of_day *time);
 void airoha_gpon_omci_hw_set_operational(void *hw_priv, bool operational);
 void airoha_gpon_omci_hw_config_changed(void *hw_priv, u16 key,
 					const struct omci_identity *identity);

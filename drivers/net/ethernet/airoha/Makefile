@@ -11,5 +11,5 @@ airoha-eth-$(CONFIG_NET_AIROHA_WHNAT) += airoha_whnat.o
 airoha-eth-$(CONFIG_NET_AIROHA_TSO) += airoha_tso.o
 obj-$(CONFIG_NET_AIROHA_NPU) += airoha_npu.o
 obj-$(CONFIG_AIROHA_XPON) += airoha-xpon.o
-airoha-xpon-y := airoha_xpon.o airoha_ploam.o airoha_omci.o
+airoha-xpon-y := airoha_xpon.o airoha_ploam.o airoha_omci.o airoha_xpon_tod.o
 obj-$(CONFIG_AIROHA_XDSL) += airoha_xdsl.o

@@ -20,6 +20,7 @@
 #include <linux/reboot.h>
 #include <linux/slab.h>
 #include <linux/string.h>
+#include <linux/time64.h>
 #include <linux/unaligned.h>
 #include <net/netlink.h>
 #include <net/xpon.h>
@@ -292,8 +293,13 @@ static int omci_olt_g_parse_set(struct omci_mib_object *object, u16 mask,
 	if (mask & OMCI_OLT_G_TIME_OF_DAY_MASK) {
 		value = omci_olt_g_consume(&data, &len,
 					   OMCI_OLT_G_TIME_OF_DAY_LEN);
-		if (!value)
+		if (!value || get_unaligned_be32(value + 10) >= NSEC_PER_SEC)
 			return -EINVAL;
+		olt->time_of_day.superframe = get_unaligned_be32(value);
+		olt->time_of_day.seconds = (u64)get_unaligned_be16(value + 4) << 32 |
+					   get_unaligned_be32(value + 6);
+		olt->time_of_day.nanoseconds = get_unaligned_be32(value + 10);
+		olt->time_of_day_valid = true;
 	}
 	olt->valid = olt->vendor_id_valid || olt->equipment_id_valid ||
 		     olt->version_valid;
@@ -3404,6 +3410,13 @@ static u8 omci_agent_set_locked(struct omci_device *odev, u16 class_id,
 	hardware_applied = true;
 	if (omci_agent_datapath_class(agent, class_id)) {
 		ret = omci_agent_reconcile_services_locked(odev);
+		if (ret)
+			goto rollback_processing;
+	}
+	/* Apply only a fresh OLT-G SET, after all other fallible work. */
+	if (class_id == OMCI_CLASS_OLT_G &&
+	    (mask & OMCI_OLT_G_TIME_OF_DAY_MASK) && odev->ops->set_time_of_day) {
+		ret = odev->ops->set_time_of_day(odev, &object->olt_g.time_of_day);
 		if (ret)
 			goto rollback_processing;
 	}

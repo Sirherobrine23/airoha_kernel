@@ -68,13 +68,27 @@ enum omci_gem_port_direction {
 };
 
 /**
- * struct omci_olt_g - parsed OLT-G identification attributes
+ * struct omci_time_of_day - OLT time at a GPON superframe boundary
+ * @superframe: GPON superframe at which the timestamp becomes valid
+ * @seconds: unsigned 48-bit seconds since the Unix epoch
+ * @nanoseconds: fractional second, less than one billion
+ */
+struct omci_time_of_day {
+	u32 superframe;
+	u64 seconds;
+	u32 nanoseconds;
+};
+
+/**
+ * struct omci_olt_g - parsed OLT-G identification and time attributes
  * @vendor_id: four-character OLT vendor identifier
  * @equipment_id: OLT equipment or model identifier
  * @version: OLT software or hardware version identifier
  * @vendor_id_valid: @vendor_id has been received from the OLT
  * @equipment_id_valid: @equipment_id has been received from the OLT
  * @version_valid: @version has been received from the OLT
+ * @time_of_day: latest time synchronization request from the OLT
+ * @time_of_day_valid: @time_of_day has been received from the OLT
  * @valid: at least one identification attribute is available
  */
 struct omci_olt_g {
@@ -84,6 +98,8 @@ struct omci_olt_g {
 	bool vendor_id_valid;
 	bool equipment_id_valid;
 	bool version_valid;
+	struct omci_time_of_day time_of_day;
+	bool time_of_day_valid;
 	bool valid;
 };
 
@@ -304,6 +320,7 @@ struct omci_ani_topology {
  * @delete_service: remove a normalized upstream service by cookie
  * @get_telemetry: refresh PON FEC and optical telemetry
  * @set_olt_profile: apply a resolved OLT interoperability profile
+ * @set_time_of_day: optional hardware synchronization to an OLT timestamp
  * @set_operational: report whether the in-kernel OMCI agent is operational
  * @config_changed: report a normalized runtime OMCI configuration change
  */
@@ -330,6 +347,8 @@ struct omci_device_ops {
 			     struct omci_telemetry *telemetry);
 	int (*set_olt_profile)(struct omci_device *odev,
 			       const struct omci_olt_profile_state *state);
+	int (*set_time_of_day)(struct omci_device *odev,
+			       const struct omci_time_of_day *time);
 	void (*set_operational)(struct omci_device *odev, bool operational);
 	void (*config_changed)(struct omci_device *odev, u16 key,
 			       const struct omci_identity *identity);
