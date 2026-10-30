@@ -45,8 +45,7 @@ config PHY_AIROHA_XPON_AN7581
 	depends on ARCH_AIROHA || COMPILE_TEST
 
 config PHY_AIROHA_XPON_AN7583
-	tristate "xPON PHY for AN7583"
-	depends on BROKEN
+	tristate "GPON PHY for AN7583"
 	default y
 	depends on PHY_AIROHA_XPON
 	depends on ARCH_AIROHA || COMPILE_TEST

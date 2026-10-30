@@ -20,25 +20,28 @@
 
 #include "xpon.h"
 
+static void __iomem *airoha_xpon_phy_reg(struct airoha_xpon_phy *priv, u32 reg)
+{
+	/* AN7583 places ANA after PMA; select the highest matching window. */
+	if (priv->soc->pma_offset && reg >= priv->soc->pma_offset &&
+	    (priv->soc->pma_offset > priv->soc->ana_offset ||
+	     reg < priv->soc->ana_offset))
+		return priv->pma_base + reg - priv->soc->pma_offset;
+	if (priv->soc->ana_offset && reg >= priv->soc->ana_offset)
+		return priv->ana_base + reg - priv->soc->ana_offset;
+	return priv->base + reg;
+}
+
 u32 airoha_xpon_phy_read(struct airoha_xpon_phy *priv, u32 reg)
 {
-	if (priv->soc->pma_offset && reg >= priv->soc->pma_offset)
-		return readl(priv->pma_base + reg - priv->soc->pma_offset);
-	if (priv->soc->ana_offset && reg >= priv->soc->ana_offset)
-		return readl(priv->ana_base + reg - priv->soc->ana_offset);
-	return readl(priv->base + reg);
+	return readl(airoha_xpon_phy_reg(priv, reg));
 }
 EXPORT_SYMBOL_GPL(airoha_xpon_phy_read);
 
 void airoha_xpon_phy_write(struct airoha_xpon_phy *priv, u32 reg,
 			   u32 val)
 {
-	if (priv->soc->pma_offset && reg >= priv->soc->pma_offset)
-		writel(val, priv->pma_base + reg - priv->soc->pma_offset);
-	else if (priv->soc->ana_offset && reg >= priv->soc->ana_offset)
-		writel(val, priv->ana_base + reg - priv->soc->ana_offset);
-	else
-		writel(val, priv->base + reg);
+	writel(val, airoha_xpon_phy_reg(priv, reg));
 }
 EXPORT_SYMBOL_GPL(airoha_xpon_phy_write);
 
