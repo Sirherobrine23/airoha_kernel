@@ -259,6 +259,7 @@ static const struct airoha_hw_data airoha_an7581 = {
 static const struct of_device_id airoha_cpufreq_match_list[] __initconst = {
 	{ .compatible = "airoha,an7581", .data = &airoha_an7581 },
 	{ .compatible = "airoha,an7583", .data = &airoha_an7581 },
+	{ .compatible = "airoha,en7581", .data = &airoha_an7581 },
 	{ .compatible = "airoha,en7523", .data = &airoha_en7523 },
 	{},
 };
