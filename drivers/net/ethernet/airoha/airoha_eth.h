@@ -1386,7 +1386,7 @@ struct airoha_eth {
 
 	unsigned long state;
 	void __iomem *fe_regs;
-	void __iomem *gdmp_regs;
+	void __iomem *gdmp_regs; /* use gdmp to expand pse buffer */
 
 	struct airoha_npu __rcu *npu;
 

@@ -6786,9 +6786,11 @@ static void airoha_fe_pse_init(struct airoha_eth *eth)
 {
 	u32 reset = FE_RST_CORE_MASK;
 
-	/* Map the GDMP SRAM to the FE and add its 0x100 pages to the PSE. */
-	airoha_wr(eth->gdmp_regs, 0x74, 3);
-	airoha_fe_wr(eth, eth->soc->pse_fq_cfg, 0x500);
+	/* Only EN7523 and AN7552 extend the PSE pool with GDMP SRAM. */
+	if (airoha_is(eth, airoha_en7523, airoha_an7552)) {
+		airoha_wr(eth->gdmp_regs, 0x74, 3);
+		airoha_fe_wr(eth, eth->soc->pse_fq_cfg, 0x500);
+	}
 
 	if (!airoha_is(eth, airoha_an7552))
 		reset |= FE_RST_GDM3_MBI_ARB_MASK | FE_RST_GDM4_MBI_ARB_MASK;
@@ -10965,10 +10967,6 @@ const struct airoha_eth_soc_data econet_en7580_soc_data = {
 	.ops = {
 		.get_sport = airoha_en7580_get_sport,
 		.get_dev_from_sport = airoha_en7580_get_dev_from_sport,
-
-		// .get_sport = airoha_en7523_get_sport,
-		// .get_vip_port = airoha_en7523_get_vip_port,
-		// .get_dev_from_sport = airoha_en7523_get_dev_from_sport,
 	},
 };
 
@@ -11113,11 +11111,13 @@ static int airoha_eth_probe(struct platform_device *pdev)
 		goto error;
 	}
 
-	eth->gdmp_regs = devm_platform_ioremap_resource_byname(pdev, "gdmp");
-	if (IS_ERR(eth->gdmp_regs)) {
-		err = dev_err_probe(eth->dev, PTR_ERR(eth->gdmp_regs),
-				    "failed to iomap gdmp regs\n");
-		goto error;
+	if (airoha_is(eth, airoha_en7523, airoha_an7552)) {
+		eth->gdmp_regs = devm_platform_ioremap_resource_byname(pdev, "gdmp");
+		if (IS_ERR(eth->gdmp_regs)) {
+			err = dev_err_probe(eth->dev, PTR_ERR(eth->gdmp_regs),
+					    "failed to iomap gdmp regs\n");
+			goto error;
+		}
 	}
 
 	/* These are global FE reset domains on every supported generation.

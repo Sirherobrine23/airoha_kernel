@@ -11,6 +11,7 @@
 
 #include "airoha_eth.h"
 #include "airoha_omci.h"
+#include "airoha_xpon_tod.h"
 
 static int airoha_gpon_omci_start_transport(struct omci_device *odev)
 {

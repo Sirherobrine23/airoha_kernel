@@ -418,6 +418,7 @@ int airoha_xpon_tod_init(struct platform_device *pdev, struct xpon_priv *priv)
 	struct airoha_xpon_tod *tod;
 	struct timespec64 now;
 	struct resource *res;
+	void *group;
 	int ret;
 
 	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "tod");
@@ -429,34 +430,48 @@ int airoha_xpon_tod_init(struct platform_device *pdev, struct xpon_priv *priv)
 		return dev_err_probe(dev, -EOPNOTSUPP, "unsupported ToD integration\n");
 	if (resource_size(res) < TOD_RESOURCE_SIZE)
 		return dev_err_probe(dev, -EINVAL, "ToD register resource is too small\n");
-	tod = devm_kzalloc(dev, sizeof(*tod), GFP_KERNEL);
-	if (!tod)
+	/* A failed optional initialization must not retain MMIO or an IRQ. */
+	group = devres_open_group(dev, NULL, GFP_KERNEL);
+	if (!group)
 		return -ENOMEM;
+	tod = devm_kzalloc(dev, sizeof(*tod), GFP_KERNEL);
+	if (!tod) {
+		ret = -ENOMEM;
+		goto err_release;
+	}
 	tod->priv = priv;
 	mutex_init(&tod->lock);
 	spin_lock_init(&tod->irq_lock);
 	init_completion(&tod->load_done);
 	tod->base = devm_ioremap_resource(dev, res);
-	if (IS_ERR(tod->base))
-		return PTR_ERR(tod->base);
+	if (IS_ERR(tod->base)) {
+		ret = PTR_ERR(tod->base);
+		goto err_release;
+	}
 	tod->irq = platform_get_irq_byname(pdev, "tod");
-	if (tod->irq < 0)
-		return tod->irq;
+	if (tod->irq < 0) {
+		ret = tod->irq;
+		goto err_release;
+	}
 	tod_write(tod, TOD_INT_ENABLE, 0);
 	tod_write(tod, TOD_INT_STATUS, TOD_INT_ALL);
 	ret = devm_request_irq(dev, tod->irq, tod_interrupt, 0, "xpon-tod", tod);
-	if (ret)
-		return dev_err_probe(dev, ret, "failed to request ToD interrupt\n");
+	if (ret) {
+		dev_err_probe(dev, ret, "failed to request ToD interrupt\n");
+		goto err_release;
+	}
 	ret = devm_add_action_or_reset(dev, tod_unregister, tod);
 	if (ret)
-		return ret;
+		goto err_release;
 	tod_write(tod, TOD_INT_ENABLE, TOD_INT_LOAD_DONE);
 	ktime_get_real_ts64(&now);
 	mutex_lock(&tod->lock);
 	ret = tod_load_time(tod, &now, false, 0);
 	mutex_unlock(&tod->lock);
-	if (ret)
-		return dev_err_probe(dev, ret, "failed to initialize ToD clock\n");
+	if (ret) {
+		dev_err_probe(dev, ret, "failed to initialize ToD clock\n");
+		goto err_release;
+	}
 
 	tod->info = (struct ptp_clock_info) {
 		.owner = THIS_MODULE,
@@ -472,10 +487,16 @@ int airoha_xpon_tod_init(struct platform_device *pdev, struct xpon_priv *priv)
 	if (IS_ERR(tod->clock)) {
 		ret = PTR_ERR(tod->clock);
 		tod->clock = NULL;
-		return dev_err_probe(dev, ret, "failed to register ToD PHC\n");
+		dev_err_probe(dev, ret, "failed to register ToD PHC\n");
+		goto err_release;
 	}
 	priv->tod = tod;
+	devres_remove_group(dev, group);
 	dev_info(dev, "ToD initialized, PTP clock index %d\n",
 		 tod->clock ? ptp_clock_index(tod->clock) : -1);
 	return 0;
+
+err_release:
+	devres_release_group(dev, group);
+	return ret;
 }

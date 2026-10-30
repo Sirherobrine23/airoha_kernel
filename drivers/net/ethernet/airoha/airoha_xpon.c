@@ -5438,8 +5438,10 @@ static int airoha_xpon_probe(struct platform_device *pdev)
 
 	if (airoha_xpon_is_gpon(priv)) {
 		ret = airoha_xpon_tod_init(pdev, priv);
-		if (ret)
+		if (ret == -EPROBE_DEFER)
 			goto err_unregister_xpon;
+		if (ret)
+			dev_warn(dev, "ToD unavailable (%d), continuing without it\n", ret);
 		ret = airoha_xpon_register_gpon_omci(priv);
 		if (ret) {
 			ret = dev_err_probe(dev, ret, "error on register OMCI");

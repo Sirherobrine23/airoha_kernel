@@ -61,8 +61,6 @@ int airoha_gpon_omci_hw_get_telemetry(void *hw_priv,
 				      struct omci_telemetry *telemetry);
 int airoha_gpon_omci_hw_set_olt_profile(void *hw_priv,
 					const struct omci_olt_profile_state *state);
-int airoha_gpon_omci_hw_set_time_of_day(void *hw_priv,
-				     const struct omci_time_of_day *time);
 void airoha_gpon_omci_hw_set_operational(void *hw_priv, bool operational);
 void airoha_gpon_omci_hw_config_changed(void *hw_priv, u16 key,
 					const struct omci_identity *identity);
