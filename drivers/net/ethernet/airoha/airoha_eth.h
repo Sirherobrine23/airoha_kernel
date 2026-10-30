@@ -1461,7 +1461,8 @@ static inline bool airoha_qdma_is_lro_queue(struct airoha_queue *q)
 
 	switch (qdma->eth->soc->version) {
 	case airoha_en7523:
-		/* EN7523 11-14 */
+	case airoha_an7552:
+		/* EN7523 and AN7552 support four LRO RX queues (11-14). */
 		BUILD_BUG_ON(hweight32(EN7523_AIROHA_RXQ_LRO_EN_MASK) >
 			     EN7523_AIROHA_MAX_NUM_LRO_QUEUES);
 

@@ -2554,7 +2554,7 @@ static struct sk_buff *airoha_qdma_build_rx_skb(struct airoha_queue *q,
 	int qid = q - &q->qdma->q_rx[0];
 	struct sk_buff *skb;
 
-	if (!raw && !airoha_is(q->qdma->eth, airoha_an7552) &&
+	if (!raw &&
 	    FIELD_GET(QDMA_ETH_RXMSG_AGG_COUNT_MASK, msg2) > 1) { /* LRO */
 		skb = airoha_qdma_lro_rx_skb(q, desc, e);
 		if (!skb)
@@ -2951,7 +2951,8 @@ static int airoha_qdma_init_rx_queue(struct airoha_queue *q,
 		return -ENOMEM;
 
 	pp_params.order = lro_q ?
-		(airoha_is(eth, airoha_en7523) ? EN7523_AIROHA_LRO_PAGE_ORDER :
+		(airoha_is(eth, airoha_en7523, airoha_an7552) ?
+		 EN7523_AIROHA_LRO_PAGE_ORDER :
 		 AIROHA_LRO_PAGE_ORDER) : 0;
 	pp_params.max_len = PAGE_SIZE << pp_params.order;
 
@@ -2965,6 +2966,9 @@ static int airoha_qdma_init_rx_queue(struct airoha_queue *q,
 
 	if (lro_q && airoha_is(eth, airoha_en7523))
 		q->buf_size = SKB_HEAD_ALIGN(EN7523_AIROHA_RXQ_LRO_MAX_AGG_SIZE);
+	else if (lro_q && airoha_is(eth, airoha_an7552))
+		q->buf_size = SKB_HEAD_ALIGN(EN7523_AIROHA_RXQ_LRO_MAX_AGG_SIZE +
+					   sizeof(struct skb_shared_info));
 	else
 		q->buf_size = lro_q ? pp_params.max_len : pp_params.max_len / 2;
 	q->ndesc = ndesc;
@@ -6616,7 +6620,7 @@ static void airoha_fe_lro_rxq_enable(struct airoha_eth *eth, int qdma_id,
 				     int lro_queue_index, int qid,
 				     int buf_size)
 {
-	u32 agg_count = airoha_is(eth, airoha_en7523) ?
+	u32 agg_count = airoha_is(eth, airoha_en7523, airoha_an7552) ?
 			EN7523_AIROHA_RXQ_LRO_MAX_AGG_COUNT :
 			AIROHA_RXQ_LRO_MAX_AGG_COUNT;
 	int id = qdma_id + 1;
@@ -6647,7 +6651,6 @@ static void airoha_fe_lro_rxq_enable(struct airoha_eth *eth, int qdma_id,
 					   qid));
 		break;
 	case airoha_an7552:
-		break;
 	case airoha_en7581:
 	case airoha_an7583:
 		airoha_fe_rmw(eth, REG_CDM_LRO_RXQ(id, lro_queue_index),
@@ -6673,6 +6676,11 @@ static void airoha_fe_lro_disable(struct airoha_eth *eth, int qdma_id)
 			EN7523_LRO_RXQ_EN_MASK | EN7523_LRO_ALL_RXQ_MASK);
 		break;
 	case airoha_an7552:
+		/* Only the first RXQ map exists on this four-ring variant. */
+		airoha_fe_clear(eth, REG_CDM_LRO_EN(id), AN7552_LRO_RXQ_EN_MASK);
+		for (i = 0; i < EN7523_AIROHA_MAX_NUM_LRO_QUEUES; i++)
+			airoha_fe_clear(eth, REG_CDM_LRO_RXQ(id, i),
+					LRO_RXQ_MASK(i));
 		break;
 	case airoha_en7581:
 	case airoha_an7583:
@@ -6695,6 +6703,9 @@ static bool airoha_fe_lro_is_enabled(struct airoha_eth *eth, int qdma_id)
 	case airoha_en7523:
 		return airoha_fe_get(eth, REG_CDM_LRO_EN(qdma_id + 1),
 				     EN7523_LRO_RXQ_EN_MASK);
+	case airoha_an7552:
+		return airoha_fe_get(eth, REG_CDM_LRO_EN(qdma_id + 1),
+				     AN7552_LRO_RXQ_EN_MASK);
 	case airoha_en7581:
 	case airoha_an7583:
 		return airoha_fe_get(eth, REG_CDM_LRO_EN(qdma_id + 1),
@@ -6722,7 +6733,7 @@ static void airoha_dev_lro_enable(struct airoha_gdm_dev *dev)
 			continue;
 
 		size = SKB_WITH_OVERHEAD(q->buf_size);
-		if (airoha_is(eth, airoha_en7523))
+		if (airoha_is(eth, airoha_en7523, airoha_an7552))
 			size = min_t(u32, size,
 				     EN7523_AIROHA_RXQ_LRO_MAX_AGG_SIZE);
 		size = min_t(u32, size, CDM_LRO_AGG_SIZE_MASK);
@@ -10082,14 +10093,6 @@ static int airoha_alloc_gdm_device(struct airoha_eth *eth,
 		netdev->hw_features = AIROHA_HW_FEATURES | NETIF_F_GRO_HW;
 		netdev->features |= AIROHA_HW_FEATURES;
 		netdev->vlan_features = AIROHA_HW_FEATURES;
-	}
-	if (airoha_is(eth, airoha_an7552)) {
-		/* Keep HW_TC available for the PPE flow-offload callback. */
-		netdev_features_t unsupported = NETIF_F_GRO_HW;
-
-		netdev->hw_features &= ~unsupported;
-		netdev->features &= ~unsupported;
-		netdev->vlan_features &= ~unsupported;
 	}
 	if (airoha_tso_version(eth) != AIROHA_TSO_NONE) {
 		netdev->hw_features |= AIROHA_QDMA_TSO_HW_FEATURES;
