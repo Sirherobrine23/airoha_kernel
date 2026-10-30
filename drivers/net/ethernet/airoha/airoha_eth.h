@@ -619,6 +619,24 @@ struct airoha_foe_bridge {
 	struct airoha_foe_mac_info l2;
 };
 
+/* AN7552 L2 entries retain a 24-byte ingress key before the action. */
+struct an7552_foe_bridge {
+	u32 dest_mac_hi;
+	u32 vlan_dest_mac_lo;
+	u32 hsk;
+	u32 src_mac_hi;
+	u32 src_mac_lo;
+	u32 rsv1[4];
+	u32 data;
+	u32 ib2;
+	u32 vlan1_etype;
+	u32 rsv2;
+	u32 vlan2;
+	u32 rsv3;
+	u32 meter;
+	u32 rsv4[3];
+};
+
 struct airoha_foe_ipv4_tuple {
 	u32 src_ip;
 	u32 dest_ip;
@@ -693,6 +711,7 @@ struct airoha_foe_entry {
 			u32 ib1;
 			union {
 				struct airoha_foe_bridge bridge;
+				struct an7552_foe_bridge an7552_bridge;
 				struct airoha_foe_ipv4 ipv4;
 				struct airoha_foe_ipv4_dslite dslite;
 				struct airoha_foe_ipv6 ipv6;
@@ -1223,6 +1242,12 @@ struct airoha_ppe_v1 {
 	u32 rx_gem_changed;
 };
 
+struct airoha_ppe_lro_entry {
+	struct airoha_foe_entry entry;
+	u16 hash;
+	bool valid;
+};
+
 struct airoha_ppe {
 	struct airoha_ppe_common common;
 
@@ -1245,6 +1270,10 @@ struct airoha_ppe {
 	 * the airoha-npu module) on every flow.
 	 */
 	bool offload_setup_done;
+
+	/* Protected by ppe_lock; one TCP connection per LRO queue. */
+	struct airoha_ppe_lro_entry
+		lro[AIROHA_MAX_NUM_QDMA][EN7523_AIROHA_MAX_NUM_LRO_QUEUES];
 
 	struct airoha_ppe_v1 v1;
 };
@@ -1557,6 +1586,9 @@ void airoha_ppe_set_cpu_port(struct airoha_gdm_dev *dev, u8 ppe_id, u8 fport);
 bool airoha_ppe_is_enabled(struct airoha_eth *eth, int index);
 void airoha_ppe_check_skb(struct airoha_ppe_dev *dev, struct sk_buff *skb,
 			  u16 hash, bool rx_wlan);
+void airoha_ppe_check_lro(struct airoha_qdma *qdma, struct sk_buff *skb,
+			  u16 hash);
+void airoha_ppe_lro_flush(struct airoha_eth *eth, unsigned int qdma_id);
 int airoha_ppe_setup_tc_wed(struct airoha_eth *eth, struct net_device *dev,
 			    enum tc_setup_type type, void *type_data);
 int airoha_ppe_setup_tc_block_cb(struct airoha_ppe_dev *dev, void *type_data);
@@ -1564,8 +1596,6 @@ int airoha_ppe_init(struct airoha_eth *eth);
 void airoha_ppe_deinit(struct airoha_eth *eth);
 void airoha_ppe_init_upd_mem(struct airoha_gdm_dev *dev, const u8 *addr);
 u32 airoha_ppe_get_total_num_entries(struct airoha_ppe *ppe);
-struct airoha_foe_entry *airoha_ppe_foe_get_entry(struct airoha_ppe *ppe,
-						  u32 hash);
 void airoha_ppe_foe_entry_get_stats(struct airoha_ppe *ppe, u32 hash,
 				    struct airoha_foe_stats64 *stats);
 void airoha_ppe_v1_read_entry(struct airoha_ppe *ppe, u16 hash,

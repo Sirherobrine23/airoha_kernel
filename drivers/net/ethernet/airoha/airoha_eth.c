@@ -2602,7 +2602,7 @@ static bool airoha_qdma_should_check_ppe_skb(struct airoha_eth *eth,
 	if (reason == AIROHA_PPE_CPU_REASON_HIT_UNBIND_RATE_REACHED)
 		return true;
 
-	if (!airoha_is(eth, airoha_en7523))
+	if (!airoha_is(eth, airoha_en7523, airoha_an7552))
 		return false;
 
 	return reason == AIROHA_PPE_CPU_REASON_HIT_UNBIND ||
@@ -2799,6 +2799,15 @@ static int airoha_qdma_rx_process(struct airoha_queue *q, int budget)
 				done++;
 				continue;
 			}
+		}
+
+		if (airoha_is(eth, airoha_an7552)) {
+			msg1 = le32_to_cpu(READ_ONCE(desc->msg1));
+			hash = FIELD_GET(QDMA_ETH_RXMSG_PPE_ENTRY_MASK, msg1);
+			reason = FIELD_GET(QDMA_ETH_RXMSG_CRSN_MASK, msg1);
+			if (airoha_qdma_foe_entry_is_valid(eth, hash) &&
+			    reason == AIROHA_PPE_CPU_REASON_HIT_UNBIND_RATE_REACHED)
+				airoha_ppe_check_lro(q->qdma, q->skb, hash);
 		}
 
 		if (eth->soc->gpon_metadata &&
@@ -6678,6 +6687,7 @@ static void airoha_fe_lro_disable(struct airoha_eth *eth, int qdma_id)
 	case airoha_an7552:
 		/* Only the first RXQ map exists on this four-ring variant. */
 		airoha_fe_clear(eth, REG_CDM_LRO_EN(id), AN7552_LRO_RXQ_EN_MASK);
+		airoha_ppe_lro_flush(eth, qdma_id);
 		for (i = 0; i < EN7523_AIROHA_MAX_NUM_LRO_QUEUES; i++)
 			airoha_fe_clear(eth, REG_CDM_LRO_RXQ(id, i),
 					LRO_RXQ_MASK(i));
@@ -7704,6 +7714,8 @@ static int airoha_dev_stop(struct net_device *netdev)
 	airoha_tso_flush(dev->eth, netdev);
 	qdma = airoha_qdma_deref(dev);
 	airoha_gdm_update_hw_stats(dev);
+	if (airoha_is(dev->eth, airoha_an7552))
+		airoha_fe_lro_disable(dev->eth, qdma - dev->eth->qdma);
 
 	if (econet) {
 		scoped_guard(spinlock, &dev->reg_lock) {

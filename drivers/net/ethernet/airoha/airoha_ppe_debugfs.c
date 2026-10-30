@@ -126,12 +126,11 @@ static int airoha_ppe_debugfs_foe_json_show(struct seq_file *m, void *private)
 		unsigned char h_source[ETH_ALEN] = {};
 		struct airoha_foe_stats64 stats = {};
 		unsigned char h_dest[ETH_ALEN];
-		struct airoha_foe_entry *hwe;
+		struct airoha_foe_entry entry, *hwe = &entry;
 		u32 type, state, ib2, data;
 		bool ipv6 = false;
 
-		hwe = airoha_ppe_foe_get_entry(ppe, i);
-		if (!hwe)
+		if (airoha_ppe_debugfs_read_entry(ppe, i, hwe))
 			continue;
 
 		state = FIELD_GET(AIROHA_FOE_IB1_BIND_STATE, hwe->ib1);
@@ -247,12 +246,11 @@ static int airoha_ppe_debugfs_foe_show(struct seq_file *m, void *private,
 		unsigned char h_source[ETH_ALEN] = {};
 		struct airoha_foe_stats64 stats = {};
 		unsigned char h_dest[ETH_ALEN];
-		struct airoha_foe_entry *hwe;
+		struct airoha_foe_entry entry, *hwe = &entry;
 		u32 type, state, ib2, data;
 		bool ipv6 = false;
 
-		hwe = airoha_ppe_foe_get_entry(ppe, i);
-		if (!hwe)
+		if (airoha_ppe_debugfs_read_entry(ppe, i, hwe))
 			continue;
 
 		state = FIELD_GET(AIROHA_FOE_IB1_BIND_STATE, hwe->ib1);

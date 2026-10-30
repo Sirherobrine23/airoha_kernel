@@ -12,8 +12,12 @@
 #include <linux/rhashtable.h>
 #include <linux/rtnetlink.h>
 #include <linux/slab.h>
-#include <net/ipv6.h>
+#include <net/addrconf.h>
+#include <net/dsfield.h>
 #include <net/flow_offload.h>
+#include <net/inet_hashtables.h>
+#include <net/inet6_hashtables.h>
+#include <net/ipv6.h>
 #include <net/netlink.h>
 #include <net/pkt_cls.h>
 #include <net/route.h>
@@ -28,6 +32,12 @@
  */
 DEFINE_MUTEX(flow_offload_mutex);
 static DEFINE_SPINLOCK(ppe_lock);
+
+static_assert(sizeof(struct airoha_foe_entry) == AIROHA_FOE_ENTRY_SIZE);
+static_assert(offsetof(struct airoha_foe_entry, an7552_bridge.data) == 0x28);
+static_assert(offsetof(struct airoha_foe_entry, an7552_bridge.ib2) == 0x2c);
+static_assert(offsetof(struct airoha_foe_entry, an7552_bridge.vlan1_etype) == 0x30);
+static_assert(offsetof(struct airoha_foe_entry, an7552_bridge.meter) == 0x40);
 
 static const struct rhashtable_params airoha_flow_table_params = {
 	.head_offset = offsetof(struct airoha_flow_table_entry, node),
@@ -138,15 +148,70 @@ u32 airoha_ppe_get_total_num_entries(struct airoha_ppe *ppe)
 {
 	u32 sram_num_entries = airoha_ppe_get_total_sram_num_entries(ppe);
 
-	/* With TB_BASE pointing past the SRAM shadow, the AN7552 PPE accesses
-	 * the DRAM entry for hash h at TB_BASE + (h - sram_num_entries) * size,
-	 * so the table must cover the whole hash range up to the DRAM end.
-	 */
-	if (airoha_is(ppe->common.eth, airoha_an7552))
-		return AN7552_PPE_DRAM_IDX_BASE +
-		       ppe->common.eth->soc->ppe_dram_entries;
-
 	return sram_num_entries + ppe->common.eth->soc->ppe_dram_entries;
+}
+
+static void airoha_ppe_foe_decode_entry(struct airoha_eth *eth,
+					struct airoha_foe_entry *entry)
+{
+	struct an7552_foe_bridge br;
+
+	if (!airoha_is(eth, airoha_an7552) ||
+	    FIELD_GET(AIROHA_FOE_IB1_BIND_PACKET_TYPE, entry->ib1) !=
+	    PPE_PKT_TYPE_BRIDGE)
+		return;
+
+	br = entry->an7552_bridge;
+	memset(&entry->bridge, 0, sizeof(entry->bridge));
+	entry->bridge.dest_mac_hi = br.dest_mac_hi;
+	entry->bridge.dest_mac_lo = FIELD_GET(AIROHA_FOE_L2_DMAC_LO,
+					      br.vlan_dest_mac_lo);
+	entry->bridge.src_mac_hi = br.src_mac_hi >> 16;
+	entry->bridge.src_mac_lo = (br.src_mac_hi << 16) |
+		FIELD_GET(AIROHA_FOE_L2_SMAC_LO, br.src_mac_lo);
+	entry->bridge.data = br.data;
+	entry->bridge.ib2 = br.ib2;
+	entry->bridge.l2.common.vlan1 = FIELD_GET(AIROHA_FOE_L2_VLAN1,
+						  br.vlan1_etype);
+	entry->bridge.l2.common.etype = FIELD_GET(AIROHA_FOE_L2_ETYPE,
+						  br.vlan1_etype);
+	entry->bridge.l2.common.vlan2 = FIELD_GET(AIROHA_FOE_L2_VLAN2, br.vlan2);
+	entry->bridge.l2.common.dest_mac_hi = br.dest_mac_hi;
+	entry->bridge.l2.common.dest_mac_lo = entry->bridge.dest_mac_lo;
+	entry->bridge.l2.common.src_mac_hi = br.src_mac_hi;
+	entry->bridge.l2.src_mac_lo = FIELD_GET(AIROHA_FOE_L2_SMAC_LO, br.src_mac_lo);
+}
+
+static void airoha_ppe_foe_encode_entry(struct airoha_eth *eth,
+					struct airoha_foe_entry *dst,
+					const struct airoha_foe_entry *entry,
+					const struct airoha_foe_entry *old)
+{
+	const struct airoha_foe_bridge *br = &entry->bridge;
+	struct an7552_foe_bridge *hw = &dst->an7552_bridge;
+
+	*dst = *entry;
+	if (!airoha_is(eth, airoha_an7552) ||
+	    FIELD_GET(AIROHA_FOE_IB1_BIND_PACKET_TYPE, entry->ib1) !=
+	    PPE_PKT_TYPE_BRIDGE)
+		return;
+
+	memset(hw, 0, sizeof(*hw));
+	/* Preserve the hardware-learned VLAN/HSK ingress key and hop fields. */
+	if (FIELD_GET(AIROHA_FOE_IB1_BIND_PACKET_TYPE, old->ib1) ==
+	    PPE_PKT_TYPE_BRIDGE)
+		memcpy(hw, &old->an7552_bridge,
+		       offsetof(struct an7552_foe_bridge, data));
+	hw->dest_mac_hi = br->dest_mac_hi;
+	hw->vlan_dest_mac_lo &= ~AIROHA_FOE_L2_DMAC_LO;
+	hw->vlan_dest_mac_lo |= FIELD_PREP(AIROHA_FOE_L2_DMAC_LO, br->dest_mac_lo);
+	hw->src_mac_hi = (u32)br->src_mac_hi << 16 | br->src_mac_lo >> 16;
+	hw->src_mac_lo = FIELD_PREP(AIROHA_FOE_L2_SMAC_LO, br->src_mac_lo);
+	hw->data = br->data;
+	hw->ib2 = br->ib2;
+	hw->vlan1_etype = FIELD_PREP(AIROHA_FOE_L2_VLAN1, br->l2.common.vlan1) |
+			  FIELD_PREP(AIROHA_FOE_L2_ETYPE, br->l2.common.etype);
+	hw->vlan2 = FIELD_PREP(AIROHA_FOE_L2_VLAN2, br->l2.common.vlan2);
 }
 
 bool airoha_ppe_is_enabled(struct airoha_eth *eth, int index)
@@ -239,6 +304,10 @@ static void airoha_ppe_hw_init(struct airoha_ppe *ppe)
 	u32 sram_tb_size, dram_num_entries;
 	struct airoha_eth *eth = ppe->common.eth;
 	int i, sram_num_stats_entries;
+
+	if (airoha_is(eth, airoha_an7552) &&
+	    WARN_ON_ONCE(sram_ppe_num_data_entries != AN7552_PPE_DRAM_IDX_BASE))
+		return;
 
 	switch (eth->soc->foe_format) {
 	case AIROHA_FOE_FORMAT_V1:
@@ -422,6 +491,13 @@ static void airoha_ppe_hw_init(struct airoha_ppe *ppe)
 		if (airoha_is(eth, airoha_an7552))
 			airoha_fe_clear(eth, REG_PPE_TB_CFG(i),
 					PPE_TB_CFG_FIN_FAST_RP_MASK);
+		if (airoha_is(eth, airoha_an7552))
+			airoha_fe_set(eth, REG_PPE_TB_CFG(i),
+				      PPE_TB_CFG_AGE_TCP_FIN_MASK |
+				      PPE_TB_CFG_AGE_UDP_MASK |
+				      PPE_TB_CFG_AGE_TCP_MASK |
+				      PPE_TB_CFG_AGE_UNBIND_MASK |
+				      PPE_TB_CFG_AGE_NON_L4_MASK);
 
 		/* The bind limits reset to zero, which keeps the AN7552 PPE
 		 * from learning any entry. Use the AN7552 SDK values.
@@ -748,7 +824,7 @@ static int airoha_ppe_foe_entry_prepare(struct airoha_eth *eth,
 				return -EINVAL;
 			}
 
-			if (airoha_is(eth, airoha_en7523) &&
+			if (airoha_is(eth, airoha_en7523, airoha_an7552) &&
 			    (dev->flags & AIROHA_PRIV_F_XPON_MANAGED) &&
 			    dev->xpon_mode == AIROHA_XPON_MODE_GPON) {
 				int ret;
@@ -1160,6 +1236,9 @@ airoha_ppe_foe_get_entry_locked(struct airoha_ppe *ppe, u32 sw_idx)
 
 	lockdep_assert_held(&ppe_lock);
 
+	if (sw_idx >= airoha_ppe_get_total_num_entries(ppe))
+		return NULL;
+
 	if (sw_idx < sram_num_entries) {
 		u32 hw_idx = airoha_ppe_sw_to_hw_idx(ppe, sw_idx);
 		u32 *hwe = ppe->common.foe + sw_idx * AIROHA_FOE_ENTRY_SIZE;
@@ -1187,23 +1266,26 @@ airoha_ppe_foe_get_entry_locked(struct airoha_ppe *ppe, u32 sw_idx)
 	return ppe->common.foe + sw_idx * AIROHA_FOE_ENTRY_SIZE;
 }
 
-struct airoha_foe_entry *airoha_ppe_foe_get_entry(struct airoha_ppe *ppe,
-						  u32 hash)
+static int airoha_ppe_foe_read_entry_locked(struct airoha_ppe *ppe,
+					    u32 index,
+					    struct airoha_foe_entry *entry)
 {
 	struct airoha_foe_entry *hwe;
 
-	spin_lock_bh(&ppe_lock);
-	hwe = airoha_ppe_foe_get_entry_locked(ppe, hash);
-	spin_unlock_bh(&ppe_lock);
+	hwe = airoha_ppe_foe_get_entry_locked(ppe, index);
+	if (!hwe)
+		return -ETIMEDOUT;
 
-	return hwe;
+	dma_rmb();
+	memcpy(entry, hwe, sizeof(*entry));
+	airoha_ppe_foe_decode_entry(ppe->common.eth, entry);
+	return 0;
 }
 
 #if IS_ENABLED(CONFIG_NET_AIROHA_PPE_DEBUGFS)
 int airoha_ppe_debugfs_read_entry(struct airoha_ppe *ppe, u32 index,
 				  struct airoha_foe_entry *entry)
 {
-	struct airoha_foe_entry *hwe;
 	int err = 0;
 
 	if (ppe->common.eth->soc->foe_format == AIROHA_FOE_FORMAT_V1) {
@@ -1221,11 +1303,7 @@ int airoha_ppe_debugfs_read_entry(struct airoha_ppe *ppe, u32 index,
 
 	/* Keep the SRAM access and its shadow copy under the same lock. */
 	spin_lock_bh(&ppe_lock);
-	hwe = airoha_ppe_foe_get_entry_locked(ppe, index);
-	if (hwe)
-		memcpy(entry, hwe, sizeof(*entry));
-	else
-		err = -ETIMEDOUT;
+	err = airoha_ppe_foe_read_entry_locked(ppe, index, entry);
 	spin_unlock_bh(&ppe_lock);
 
 	return err;
@@ -1305,7 +1383,8 @@ static bool airoha_ppe_foe_compare_entry(struct airoha_flow_table_entry *e,
 	int type = FIELD_GET(AIROHA_FOE_IB1_BIND_PACKET_TYPE, e->data.ib1);
 	int len;
 
-	if ((hwe->ib1 ^ e->data.ib1) & AIROHA_FOE_IB1_BIND_UDP)
+	if ((hwe->ib1 ^ e->data.ib1) & (AIROHA_FOE_IB1_BIND_UDP |
+					AIROHA_FOE_IB1_BIND_PACKET_TYPE))
 		return false;
 
 	if (type > PPE_PKT_TYPE_IPV4_DSLITE)
@@ -1350,10 +1429,12 @@ static int airoha_ppe_foe_commit_entry(struct airoha_ppe *ppe,
 	struct airoha_foe_entry *hwe = ppe->common.foe + sw_idx * AIROHA_FOE_ENTRY_SIZE;
 	u32 ts = airoha_ppe_get_timestamp(ppe);
 	struct airoha_eth *eth = ppe->common.eth;
+	struct airoha_foe_entry encoded;
 	struct airoha_npu *npu;
 	int err = 0;
 
-	memcpy(&hwe->words[1], &e->words[1],
+	airoha_ppe_foe_encode_entry(eth, &encoded, e, hwe);
+	memcpy(&hwe->words[1], &encoded.words[1],
 	       AIROHA_FOE_ENTRY_SIZE - sizeof(hwe->words[0]));
 	wmb();
 
@@ -1435,12 +1516,11 @@ airoha_ppe_foe_commit_subflow_entry(struct airoha_ppe *ppe,
 				    u32 sw_idx, bool rx_wlan)
 {
 	u32 mask = AIROHA_FOE_IB1_BIND_PACKET_TYPE | AIROHA_FOE_IB1_BIND_UDP;
-	struct airoha_foe_entry *hwe_p, hwe;
+	struct airoha_foe_entry hwe;
 	struct airoha_flow_table_entry *f;
 	int type;
 
-	hwe_p = airoha_ppe_foe_get_entry_locked(ppe, sw_idx);
-	if (!hwe_p) {
+	if (airoha_ppe_foe_read_entry_locked(ppe, sw_idx, &hwe)) {
 		dev_err(ppe->common.eth->dev,
 			"Failed to get locked entry for subflow commit (hash: %u)\n",
 			sw_idx);
@@ -1457,7 +1537,6 @@ airoha_ppe_foe_commit_subflow_entry(struct airoha_ppe *ppe,
 	f->type = FLOW_TYPE_L2_SUBFLOW;
 	f->hash = sw_idx;
 
-	memcpy(&hwe, hwe_p, sizeof(*hwe_p));
 	hwe.ib1 = (hwe.ib1 & mask) | (e->data.ib1 & ~mask);
 
 	type = FIELD_GET(AIROHA_FOE_IB1_BIND_PACKET_TYPE, hwe.ib1);
@@ -1466,16 +1545,23 @@ airoha_ppe_foe_commit_subflow_entry(struct airoha_ppe *ppe,
 		hwe.ipv6.ib2 = e->data.bridge.ib2;
 		hwe.ipv6.l2.src_mac_hi = FIELD_PREP(AIROHA_FOE_MAC_SMAC_ID,
 						    0xf);
-	} else {
-		memcpy(&hwe.bridge.l2, &e->data.bridge.l2,
-		       sizeof(hwe.bridge.l2));
+	} else if (type == PPE_PKT_TYPE_BRIDGE) {
+		hwe.bridge.l2 = e->data.bridge.l2;
 		hwe.bridge.ib2 = e->data.bridge.ib2;
+	} else {
+		hwe.ipv4.l2 = e->data.bridge.l2;
+		hwe.ipv4.ib2 = e->data.bridge.ib2;
 		if (type == PPE_PKT_TYPE_IPV4_HNAPT)
 			memcpy(&hwe.ipv4.new_tuple, &hwe.ipv4.orig_tuple,
 			       sizeof(hwe.ipv4.new_tuple));
 	}
 
-	hwe.bridge.data = e->data.bridge.data;
+	if (type >= PPE_PKT_TYPE_IPV6_ROUTE_3T)
+		hwe.ipv6.data = e->data.bridge.data;
+	else if (type == PPE_PKT_TYPE_BRIDGE)
+		hwe.bridge.data = e->data.bridge.data;
+	else
+		hwe.ipv4.data = e->data.bridge.data;
 	airoha_ppe_foe_commit_entry(ppe, &hwe, sw_idx, rx_wlan);
 
 	return 0;
@@ -1761,6 +1847,256 @@ airoha_ppe_ipv6_tuple_match(const struct airoha_foe_ipv6 *foe,
 	       foe->dest_port == skb->dst_port;
 }
 
+static bool airoha_ppe_lro_local_socket(struct net_device *dev,
+					const struct airoha_ppe_skb_tuple *tuple)
+{
+#if IS_ENABLED(CONFIG_INET)
+	struct net *net = dev_net(dev);
+	struct sock *sk = NULL;
+	bool established;
+
+	if (tuple->family == AIROHA_PPE_TUPLE_IPV4) {
+		if (inet_addr_type(net, tuple->v4.dst) != RTN_LOCAL)
+			return false;
+		sk = inet_lookup_established(net, tuple->v4.src,
+					     htons(tuple->src_port), tuple->v4.dst,
+					     htons(tuple->dst_port), dev->ifindex);
+	}
+#if IS_REACHABLE(CONFIG_IPV6)
+	if (tuple->family == AIROHA_PPE_TUPLE_IPV6) {
+		if (!ipv6_chk_addr(net, &tuple->v6.dst, NULL, 0))
+			return false;
+		sk = __inet6_lookup_established(net, &tuple->v6.src,
+						htons(tuple->src_port), &tuple->v6.dst,
+						tuple->dst_port, dev->ifindex, 0);
+	}
+#endif
+	if (!sk)
+		return false;
+	established = READ_ONCE(sk->sk_state) == TCP_ESTABLISHED;
+	sock_gen_put(sk);
+	return established;
+#else
+	return false;
+#endif
+}
+
+static bool airoha_ppe_lro_parse(struct sk_buff *skb,
+				 struct airoha_flow_data *data,
+				 struct airoha_ppe_skb_tuple *tuple,
+				 u8 *dsfield)
+{
+	__be16 proto = eth_hdr(skb)->h_proto;
+	unsigned int off = 0, end, limit = skb->len;
+	struct tcphdr th;
+	unsigned int th_off;
+
+	data->eth = *eth_hdr(skb);
+	while (proto == htons(ETH_P_8021Q)) {
+		struct vlan_hdr vh;
+		unsigned int n = data->vlan.num;
+
+		if (n == ARRAY_SIZE(data->vlan.hdr) ||
+		    skb_copy_bits(skb, off, &vh, sizeof(vh)))
+			return false;
+		data->vlan.hdr[n].id = ntohs(vh.h_vlan_TCI);
+		data->vlan.num++;
+		proto = vh.h_vlan_encapsulated_proto;
+		off += sizeof(vh);
+	}
+	if (proto == htons(ETH_P_PPP_SES)) {
+		struct {
+			u8 ver_type, code;
+			__be16 sid, len, proto;
+		} ph;
+
+		if (skb_copy_bits(skb, off, &ph, sizeof(ph)) ||
+		    ph.ver_type != 0x11 || ph.code || ntohs(ph.len) < 2 ||
+		    off + sizeof(ph) - 2 + ntohs(ph.len) > skb->len)
+			return false;
+		limit = off + sizeof(ph) - 2 + ntohs(ph.len);
+		data->pppoe.num = 1;
+		data->pppoe.sid = ntohs(ph.sid);
+		if (ph.proto == htons(PPP_IP))
+			proto = htons(ETH_P_IP);
+		else if (ph.proto == htons(PPP_IPV6))
+			proto = htons(ETH_P_IPV6);
+		else
+			return false;
+		off += sizeof(ph);
+	}
+
+	if (proto == htons(ETH_P_IP)) {
+		struct iphdr iph;
+
+		if (skb_copy_bits(skb, off, &iph, sizeof(iph)) ||
+		    ip_is_fragment(&iph) ||
+		    !airoha_ppe_skb_read_ipv4_tuple_at(skb, off, tuple))
+			return false;
+		th_off = off + iph.ihl * 4;
+		end = off + ntohs(iph.tot_len);
+		*dsfield = ipv4_get_dsfield(&iph);
+	} else if (proto == htons(ETH_P_IPV6)) {
+		struct ipv6hdr iph;
+
+		if (skb_copy_bits(skb, off, &iph, sizeof(iph)) ||
+		    iph.nexthdr != IPPROTO_TCP || !iph.payload_len ||
+		    !airoha_ppe_skb_read_ipv6_tuple_at(skb, off, tuple))
+			return false;
+		th_off = off + sizeof(iph);
+		end = th_off + ntohs(iph.payload_len);
+		*dsfield = ipv6_get_dsfield(&iph);
+	} else {
+		return false;
+	}
+
+	if (tuple->l4proto != IPPROTO_TCP || !tuple->has_ports ||
+	    skb_copy_bits(skb, th_off, &th, sizeof(th)))
+		return false;
+	return th.ack && !th.syn && !th.fin && !th.rst && th.doff >= 5 &&
+	       th_off + th.doff * 4 <= end && end <= limit;
+}
+
+static bool airoha_ppe_lro_entry_matches(const struct airoha_foe_entry *entry,
+					 const struct airoha_foe_entry *owner)
+{
+	u32 type = FIELD_GET(AIROHA_FOE_IB1_BIND_PACKET_TYPE, owner->ib1);
+	u32 mask = AIROHA_FOE_IB1_BIND_PACKET_TYPE | AIROHA_FOE_IB1_BIND_UDP;
+
+	if (FIELD_GET(AIROHA_FOE_IB1_BIND_STATE, entry->ib1) !=
+	    AIROHA_FOE_STATE_BIND || ((entry->ib1 ^ owner->ib1) & mask))
+		return false;
+	if (type == PPE_PKT_TYPE_IPV4_HNAPT)
+		return entry->ipv4.ib2 == owner->ipv4.ib2 &&
+		       !memcmp(&entry->ipv4.orig_tuple, &owner->ipv4.orig_tuple,
+			       sizeof(entry->ipv4.orig_tuple));
+	return entry->ipv6.ib2 == owner->ipv6.ib2 &&
+	       !memcmp(&entry->ipv6, &owner->ipv6,
+		       offsetof(struct airoha_foe_ipv6, data));
+}
+
+void airoha_ppe_lro_flush(struct airoha_eth *eth, unsigned int qdma_id)
+{
+	struct airoha_ppe *ppe = eth->ppe;
+	unsigned int i;
+
+	if (!ppe || !airoha_is(eth, airoha_an7552) ||
+	    qdma_id >= AIROHA_MAX_NUM_QDMA)
+		return;
+
+	spin_lock_bh(&ppe_lock);
+	for (i = 0; i < ARRAY_SIZE(ppe->lro[qdma_id]); i++) {
+		struct airoha_ppe_lro_entry *slot = &ppe->lro[qdma_id][i];
+		struct airoha_foe_entry entry;
+
+		if (!slot->valid)
+			continue;
+		if (airoha_ppe_foe_read_entry_locked(ppe, slot->hash, &entry))
+			continue;
+		if (airoha_ppe_lro_entry_matches(&entry, &slot->entry)) {
+			entry.ib1 &= ~AIROHA_FOE_IB1_BIND_STATE;
+			if (airoha_ppe_foe_commit_entry(ppe, &entry, slot->hash, false))
+				continue;
+		}
+		slot->valid = false;
+	}
+	spin_unlock_bh(&ppe_lock);
+}
+
+void airoha_ppe_check_lro(struct airoha_qdma *qdma, struct sk_buff *skb,
+			  u16 hash)
+{
+	struct airoha_eth *eth = qdma->eth;
+	struct airoha_ppe *ppe = eth->ppe;
+	struct airoha_ppe_skb_tuple tuple;
+	struct airoha_flow_data data = {};
+	struct airoha_foe_entry entry, hwe;
+	u32 qdma_id = qdma - eth->qdma;
+	u32 sw_idx, type, ib2;
+	u8 dsfield;
+	int i, free_slot = -1;
+
+	if (!ppe || !airoha_is(eth, airoha_an7552) || skb->len <= 256 ||
+	    !(skb->dev->features & NETIF_F_GRO_HW) ||
+	    !airoha_fe_get(eth, REG_CDM_LRO_EN(qdma_id + 1),
+			   AN7552_LRO_RXQ_EN_MASK) ||
+	    airoha_ppe_hw_to_sw_idx(ppe, hash, &sw_idx))
+		return;
+	if (!airoha_ppe_lro_parse(skb, &data, &tuple, &dsfield) ||
+	    !airoha_ppe_lro_local_socket(skb->dev, &tuple))
+		return;
+
+	type = tuple.family == AIROHA_PPE_TUPLE_IPV4 ?
+		PPE_PKT_TYPE_IPV4_HNAPT : PPE_PKT_TYPE_IPV6_ROUTE_5T;
+	if (airoha_ppe_foe_entry_prepare(eth, &entry, NULL, type, &data,
+					 IPPROTO_TCP, dsfield))
+		return;
+	/* CPU delivery must preserve TTL and the ingress source MAC. */
+	entry.ib1 &= ~AIROHA_FOE_IB1_BIND_TTL;
+	if (type == PPE_PKT_TYPE_IPV6_ROUTE_5T)
+		entry.ipv6.l2.src_mac_hi =
+			FIELD_PREP(AIROHA_FOE_MAC_SMAC_ID, 0x10) | data.pppoe.sid;
+
+	spin_lock_bh(&ppe_lock);
+	/* Recheck under the same lock used to flush reservations on disable. */
+	if (READ_ONCE(qdma->users) != 1 ||
+	    !airoha_fe_get(eth, REG_CDM_LRO_EN(qdma_id + 1),
+			   AN7552_LRO_RXQ_EN_MASK) ||
+	    airoha_ppe_foe_read_entry_locked(ppe, sw_idx, &hwe))
+		goto unlock;
+	if (FIELD_GET(AIROHA_FOE_IB1_BIND_STATE, hwe.ib1) !=
+	    AIROHA_FOE_STATE_UNBIND ||
+	    FIELD_GET(AIROHA_FOE_IB1_BIND_PACKET_TYPE, hwe.ib1) != type ||
+	    (hwe.ib1 & AIROHA_FOE_IB1_BIND_UDP))
+		goto unlock;
+	if (type == PPE_PKT_TYPE_IPV4_HNAPT) {
+		if (!airoha_ppe_ipv4_tuple_match(&hwe.ipv4.orig_tuple, &tuple, true))
+			goto unlock;
+		entry.ipv4.orig_tuple = hwe.ipv4.orig_tuple;
+		entry.ipv4.new_tuple = hwe.ipv4.orig_tuple;
+	} else {
+		if (!airoha_ppe_ipv6_tuple_match(&hwe.ipv6, &tuple, true))
+			goto unlock;
+		memcpy(&entry.ipv6, &hwe.ipv6,
+		       offsetof(struct airoha_foe_ipv6, data));
+	}
+
+	for (i = 0; i < ARRAY_SIZE(ppe->lro[qdma_id]); i++) {
+		struct airoha_ppe_lro_entry *slot = &ppe->lro[qdma_id][i];
+		struct airoha_foe_entry old;
+
+		if (slot->valid) {
+			if (airoha_ppe_foe_read_entry_locked(ppe, slot->hash, &old))
+				continue;
+			if (airoha_ppe_lro_entry_matches(&old, &slot->entry))
+				continue;
+			slot->valid = false;
+		}
+		free_slot = i;
+		break;
+	}
+	if (free_slot < 0)
+		goto unlock;
+
+	/* FQOS=0 selects CPU RX, using the LAN or WAN CDM directly. */
+	ib2 = FIELD_PREP(AIROHA_FOE_IB2_PORT_AG, 0x1f) |
+	      FIELD_PREP(AIROHA_FOE_IB2_DSCP, dsfield) |
+	      FIELD_PREP(AIROHA_FOE_IB2_PSE_PORT,
+			 qdma_id ? FE_PSE_PORT_CDM2 : FE_PSE_PORT_CDM1) |
+	      FIELD_PREP(AIROHA_FOE_IB2_NBQ, 11 + free_slot);
+	if (type == PPE_PKT_TYPE_IPV4_HNAPT)
+		entry.ipv4.ib2 = ib2;
+	else
+		entry.ipv6.ib2 = ib2;
+	if (!airoha_ppe_foe_commit_entry(ppe, &entry, sw_idx, false)) {
+		ppe->lro[qdma_id][free_slot].entry = entry;
+		ppe->lro[qdma_id][free_slot].hash = sw_idx;
+		ppe->lro[qdma_id][free_slot].valid = true;
+	}
+unlock:
+	spin_unlock_bh(&ppe_lock);
+}
+
 static bool
 airoha_ppe_foe_entry_match_skb_tuple(struct airoha_flow_table_entry *e,
 				     const struct airoha_ppe_skb_tuple *skb)
@@ -1817,25 +2153,24 @@ static void airoha_ppe_foe_insert_entry(struct airoha_ppe *ppe,
 {
 	struct airoha_flow_table_entry *e;
 	struct airoha_foe_bridge br = {};
-	struct airoha_foe_entry *hwe;
+	struct airoha_foe_entry entry, *hwe = &entry;
 	bool commit_done = false;
 	struct hlist_node *n;
 	u32 index, state;
 
 	spin_lock_bh(&ppe_lock);
 
-	hwe = airoha_ppe_foe_get_entry_locked(ppe, sw_idx);
-	if (!hwe)
+	if (airoha_ppe_foe_read_entry_locked(ppe, sw_idx, hwe))
 		goto unlock;
 
 	state = FIELD_GET(AIROHA_FOE_IB1_BIND_STATE, hwe->ib1);
 	if (state == AIROHA_FOE_STATE_BIND)
 		goto unlock;
 
-	if (airoha_is(ppe->common.eth, airoha_en7523)) {
-		/* On EN7523 the offloaded flows live in ppe->pending_flows (the
-		 * SW hash does not match the HW hash), so they are matched by
-		 * skb tuple rather than via foe_flow[index]. The HW may present
+	if (airoha_is(ppe->common.eth, airoha_en7523, airoha_an7552)) {
+		/* Match EN7523/AN7552 flows by tuple, using the hardware-learned
+		 * slot instead of assuming the software and hardware hash modes
+		 * agree. The HW may present
 		 * the slot either as INVALID (FOE_UNHIT) or as an auto-created
 		 * UNBIND entry (HIT_UNBIND, when SRAM auto-learn is active);
 		 * both must drive the same UNBIND/INVALID -> BIND commit.
@@ -1854,7 +2189,8 @@ static void airoha_ppe_foe_insert_entry(struct airoha_ppe *ppe,
 			}
 		}
 
-		goto unlock;
+		if (e || !airoha_is(ppe->common.eth, airoha_an7552))
+			goto unlock;
 	}
 
 	if (state == AIROHA_FOE_STATE_INVALID)
@@ -1929,7 +2265,7 @@ static int airoha_ppe_foe_flow_commit_entry(struct airoha_ppe *ppe,
 	e->hash = 0xffff;
 
 	spin_lock_bh(&ppe_lock);
-	if (airoha_is(ppe->common.eth, airoha_en7523))
+	if (airoha_is(ppe->common.eth, airoha_en7523, airoha_an7552))
 		hlist_add_head(&e->list, &ppe->pending_flows);
 	else
 		hlist_add_head(&e->list, &ppe->foe_flow[hash]);
@@ -1968,12 +2304,11 @@ airoha_ppe_foe_flow_l2_entry_update(struct airoha_ppe *ppe,
 	lockdep_assert_held(&ppe_lock);
 
 	hlist_for_each_entry_safe(iter, n, &e->l2_flows, l2_subflow_node) {
-		struct airoha_foe_entry *hwe;
+		struct airoha_foe_entry entry, *hwe = &entry;
 		u32 ib1, state;
 		int idle;
 
-		hwe = airoha_ppe_foe_get_entry_locked(ppe, iter->hash);
-		if (!hwe)
+		if (airoha_ppe_foe_read_entry_locked(ppe, iter->hash, hwe))
 			continue;
 
 		ib1 = READ_ONCE(hwe->ib1);
@@ -1997,7 +2332,7 @@ airoha_ppe_foe_flow_l2_entry_update(struct airoha_ppe *ppe,
 static void airoha_ppe_foe_flow_entry_update(struct airoha_ppe *ppe,
 					     struct airoha_flow_table_entry *e)
 {
-	struct airoha_foe_entry *hwe_p, hwe = {};
+	struct airoha_foe_entry hwe = {};
 
 	spin_lock_bh(&ppe_lock);
 
@@ -2009,11 +2344,23 @@ static void airoha_ppe_foe_flow_entry_update(struct airoha_ppe *ppe,
 	if (e->hash == 0xffff)
 		goto unlock;
 
-	hwe_p = airoha_ppe_foe_get_entry_locked(ppe, e->hash);
-	if (!hwe_p)
+	if (airoha_ppe_foe_read_entry_locked(ppe, e->hash, &hwe))
 		goto unlock;
 
-	memcpy(&hwe, hwe_p, sizeof(*hwe_p));
+	if (airoha_is(ppe->common.eth, airoha_an7552) &&
+	    (!airoha_ppe_foe_compare_entry(e, &hwe) ||
+	     FIELD_GET(AIROHA_FOE_IB1_BIND_STATE, hwe.ib1) == AIROHA_FOE_STATE_INVALID ||
+	     FIELD_GET(AIROHA_FOE_IB1_BIND_STATE, hwe.ib1) == AIROHA_FOE_STATE_UNBIND)) {
+		/* Relearn expired or reused slots without keeping a stale index. */
+		e->hash = 0xffff;
+		e->data.ib1 &= ~AIROHA_FOE_IB1_BIND_STATE;
+		e->data.ib1 |= FIELD_PREP(AIROHA_FOE_IB1_BIND_STATE,
+					AIROHA_FOE_STATE_BIND);
+		hlist_del_init(&e->list);
+		hlist_add_head(&e->list, &ppe->pending_flows);
+		goto unlock;
+	}
+
 	if (!airoha_ppe_foe_compare_entry(e, &hwe)) {
 		e->hash = 0xffff;
 		goto unlock;
@@ -2701,6 +3048,11 @@ static int airoha_ppe_datapath_init(struct airoha_eth *eth)
 	}
 
 	eth->ppe = ppe;
+	/* AN7552 also learns CPU-local LRO flows without a TC flowtable. */
+	if (airoha_is(eth, airoha_an7552)) {
+		airoha_ppe_hw_init(ppe);
+		ppe->offload_setup_done = true;
+	}
 	airoha_ppe_common_enable(&ppe->common);
 	airoha_whnat_set_ppe(ppe);
 	dev_info(eth->dev, "PPE Initialization completed successfully\n");
