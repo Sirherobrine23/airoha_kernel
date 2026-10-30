@@ -3,7 +3,7 @@
 #define _UAPI_LINUX_OMCI_H
 
 #define OMCI_GENL_NAME		"omci"
-#define OMCI_GENL_VERSION	14
+#define OMCI_GENL_VERSION	15
 #define OMCI_MAX_PDU_LEN	1980
 #define OMCI_MAX_ATTR_DATA	64
 #define OMCI_MAX_CONFIG_VALUE	64
@@ -41,6 +41,9 @@ enum omci_cmd {
 	OMCI_CMD_MIB_NEXT,
 	OMCI_CMD_CLASS_GET,
 	OMCI_CMD_CLASS_NEXT,
+	/* Local access management; these commands do not send OMCI PDUs. */
+	OMCI_CMD_LINE_GET,
+	OMCI_CMD_LINE_RETRAIN,
 
 	__OMCI_CMD_MAX,
 };
@@ -112,11 +115,42 @@ enum omci_attr {
 	OMCI_ATTR_AGENT_OPERATIONAL,
 	OMCI_ATTR_AGENT_DYING_GASP,
 	OMCI_ATTR_ONU_TYPE,
+	OMCI_ATTR_LINE_ID,		/* u32, separate from OMCI_ATTR_DEV_ID */
+	OMCI_ATTR_ACCESS_TYPE,		/* u8, enum omci_access_type */
+	OMCI_ATTR_LINE_STATE,		/* u8, enum omci_line_state */
+	OMCI_ATTR_LINE_FLAGS,		/* u32, OMCI_LINE_F_* */
+	OMCI_ATTR_DOWNSTREAM_BPS,		/* u64, only when RATES_VALID */
+	OMCI_ATTR_UPSTREAM_BPS,		/* u64, only when RATES_VALID */
+	OMCI_ATTR_LINE_CAPABILITIES,	/* u32, OMCI_LINE_CAP_* */
 
 	__OMCI_ATTR_MAX,
 };
 
 #define OMCI_ATTR_MAX (__OMCI_ATTR_MAX - 1)
+
+/* Access technology is independent of the OMCI PDU framing format. */
+enum omci_access_type {
+	OMCI_ACCESS_UNSPEC,
+	OMCI_ACCESS_GPON,
+	OMCI_ACCESS_XGPON,
+	OMCI_ACCESS_XGSPON,
+	OMCI_ACCESS_XDSL,
+};
+
+enum omci_line_state {
+	OMCI_LINE_UNKNOWN,
+	OMCI_LINE_UNAVAILABLE,	/* e.g. no reconstructed DSL line engine */
+	OMCI_LINE_DOWN,
+	OMCI_LINE_TRAINING,
+	OMCI_LINE_UP,
+};
+
+#define OMCI_LINE_F_STARTED	(1U << 0)
+#define OMCI_LINE_F_CARRIER	(1U << 1)
+#define OMCI_LINE_F_RATES_VALID	(1U << 2)
+
+#define OMCI_LINE_CAP_OMCC	(1U << 0)
+#define OMCI_LINE_CAP_RETRAIN	(1U << 1)
 
 /**
  * enum omci_vlan_filter_attr - VLAN tagging filter data attributes

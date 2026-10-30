@@ -62,6 +62,10 @@ static const struct nla_policy omci_policy[OMCI_ATTR_MAX + 1] = {
 	[OMCI_ATTR_OLT_PROFILE_FORCED] = { .type = NLA_U8 },
 };
 
+static const struct nla_policy omci_line_policy[OMCI_ATTR_MAX + 1] = {
+	[OMCI_ATTR_LINE_ID] = NLA_POLICY_MIN(NLA_U32, 1),
+};
+
 static struct omci_device *omci_find_locked(u32 id)
 {
 	struct omci_device *odev;
@@ -169,6 +173,8 @@ static int omci_put_status(struct sk_buff *msg, struct omci_device *odev)
 		return -EMSGSIZE;
 
 	if (omci_put_telemetry(msg, odev))
+		return -EMSGSIZE;
+	if (odev->line_id && nla_put_u32(msg, OMCI_ATTR_LINE_ID, odev->line_id))
 		return -EMSGSIZE;
 
 	return omci_agent_put_status(msg, odev);
@@ -1046,7 +1052,29 @@ out:
 	return ret;
 }
 
+static int omci_cmd_line_get(struct sk_buff *skb, struct genl_info *info)
+{
+	return omci_line_cmd_get(skb, info, &omci_genl_family);
+}
+
+static int omci_cmd_line_dump(struct sk_buff *skb, struct netlink_callback *cb)
+{
+	return omci_line_dump(skb, cb, &omci_genl_family);
+}
+
 static const struct genl_ops omci_genl_ops[] = {
+	{
+		.cmd = OMCI_CMD_LINE_GET,
+		.policy = omci_line_policy,
+		.doit = omci_cmd_line_get,
+		.dumpit = omci_cmd_line_dump,
+	},
+	{
+		.cmd = OMCI_CMD_LINE_RETRAIN,
+		.flags = GENL_ADMIN_PERM,
+		.policy = omci_line_policy,
+		.doit = omci_line_cmd_retrain,
+	},
 	{
 		.cmd = OMCI_CMD_GET,
 		.policy = omci_policy,
@@ -1301,6 +1329,23 @@ static struct notifier_block omci_netlink_nb = {
 	.notifier_call = omci_netlink_notify,
 };
 
+static int omci_pon_get_line_status(void *priv, struct omci_line_status *status)
+{
+	struct omci_device *odev = priv;
+	struct xpon_state state;
+	unsigned long flags;
+
+	spin_lock_irqsave(&odev->xpon->state_lock, flags);
+	state = odev->xpon->state;
+	spin_unlock_irqrestore(&odev->xpon->state_lock, flags);
+	omci_line_status_from_xpon(&state, READ_ONCE(odev->started), status);
+	return 0;
+}
+
+static const struct omci_line_ops omci_pon_line_ops = {
+	.get_status = omci_pon_get_line_status,
+};
+
 struct omci_device *
 omci_device_register(struct xpon_device *xpon, u32 capabilities,
 		     const struct omci_device_ops *ops, void *priv)
@@ -1348,6 +1393,17 @@ omci_device_register(struct xpon_device *xpon, u32 capabilities,
 			kfree(odev);
 			return ERR_PTR(ret);
 		}
+		odev->line = omci_line_register(odev->parent, xpon->netdev,
+						&omci_pon_line_ops, odev);
+		if (IS_ERR(odev->line)) {
+			ret = PTR_ERR(odev->line);
+			omci_sysfs_unregister(odev);
+			xpon->omci = NULL;
+			omci_agent_cleanup(odev);
+			kfree(odev);
+			return ERR_PTR(ret);
+		}
+		odev->line_id = omci_line_id(odev->line);
 	}
 
 	mutex_lock(&omci_devices_lock);
@@ -1414,6 +1470,8 @@ void omci_device_unregister(struct omci_device *odev)
 	mutex_lock(&omci_devices_lock);
 	list_del_init(&odev->list);
 	mutex_unlock(&omci_devices_lock);
+	omci_line_unregister(odev->line);
+	odev->line = NULL;
 	omci_device_stop(odev);
 
 	cancel_work_sync(&odev->rx_work);

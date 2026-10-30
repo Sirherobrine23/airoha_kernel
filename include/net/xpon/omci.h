@@ -7,9 +7,50 @@
 #include <uapi/linux/omci.h>
 
 struct device;
+struct net_device;
 struct omci_device;
+struct omci_line;
 struct xpon_device;
 struct sk_buff;
+
+/**
+ * struct omci_line_status - technology-neutral access state
+ * @access: enum omci_access_type (the currently selected technology)
+ * @state: enum omci_line_state
+ * @flags: OMCI_LINE_F_*; unknown rates must not set RATES_VALID
+ * @downstream_bps: downstream line rate, in bits per second
+ * @upstream_bps: upstream line rate, in bits per second
+ */
+struct omci_line_status {
+	u8 access;
+	u8 state;
+	u32 flags;
+	u64 downstream_bps;
+	u64 upstream_bps;
+};
+
+/**
+ * struct omci_line_ops - local access management, independent of OMCC
+ * @get_status: fill a coherent snapshot; may sleep
+ * @retrain: optional DSL retrain request; may sleep, must return real errors
+ *
+ * Callbacks are serialized with each other and with unregister. They must
+ * not register/unregister a line or call the line registry recursively.
+ * Netlink calls hold RTNL; callbacks must not acquire RTNL themselves.
+ * The provider must unregister before freeing @priv or unloading its code.
+ */
+struct omci_line_ops {
+	int (*get_status)(void *priv, struct omci_line_status *status);
+	int (*retrain)(void *priv);
+};
+
+/* Registering a local DSL line does not instantiate an ONU or OMCC. */
+struct omci_line *omci_line_register(struct device *parent,
+				     struct net_device *netdev,
+				     const struct omci_line_ops *ops,
+				     void *priv);
+void omci_line_unregister(struct omci_line *line);
+u32 omci_line_id(const struct omci_line *line);
 
 #define OMCI_IDENTITY_F_SERIAL_NUMBER	BIT(0)
 #define OMCI_IDENTITY_F_VENDOR_ID	BIT(1)

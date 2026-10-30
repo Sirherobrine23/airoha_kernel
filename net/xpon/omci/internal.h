@@ -122,6 +122,8 @@ struct omci_agent {
 
 struct omci_device {
 	struct list_head list;
+	struct omci_line *line;
+	u32 line_id;
 	struct xpon_device *xpon;
 	struct device *parent;
 	const struct omci_device_ops *ops;
@@ -158,6 +160,23 @@ struct omci_device {
 
 	struct omci_agent agent;
 };
+
+struct genl_family;
+struct genl_info;
+struct netlink_callback;
+struct xpon_state;
+
+int omci_line_read(u32 id, struct omci_line_status *status);
+int omci_line_retrain(u32 id);
+int omci_line_put_status(struct sk_buff *msg,
+			 const struct omci_line_status *status);
+int omci_line_cmd_get(struct sk_buff *skb, struct genl_info *info,
+		      const struct genl_family *family);
+int omci_line_cmd_retrain(struct sk_buff *skb, struct genl_info *info);
+int omci_line_dump(struct sk_buff *skb, struct netlink_callback *cb,
+		   const struct genl_family *family);
+void omci_line_status_from_xpon(const struct xpon_state *state,
+				bool started, struct omci_line_status *status);
 
 int omci_validate_tx(struct omci_device *odev, struct sk_buff *skb);
 int omci_device_xmit(struct omci_device *odev, const void *data, size_t len);
