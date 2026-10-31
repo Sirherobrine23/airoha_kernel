@@ -8,6 +8,19 @@
 
 struct phy;
 
+struct airoha_xpon_phy_burst_profile {
+	u8 preamble[8];
+	u8 delimiter[8];
+	u8 index;
+	u8 preamble_len;
+	u8 delimiter_len;
+	u8 preamble_repeat;
+	bool fec;
+};
+
+int airoha_xpon_phy_set_xgspon_profile(struct phy *phy,
+				       const struct airoha_xpon_phy_burst_profile *profile);
+
 /* Driver-specific submodes used with PHY_MODE_ETHERNET. */
 enum airoha_xpon_phy_submode {
 	AIROHA_XPON_PHY_SUBMODE_GPON = 0,

@@ -1187,6 +1187,7 @@ static int en7580_xpon_phy_probe(struct airoha_xpon_phy *priv,
 
 static const struct airoha_xpon_phy_soc_data airoha_en7580_xpon_phy_data = {
 	.name = "EN7580",
+	.has_xgspon_profiles = true,
 	.pma_offset = EN7580_XPON_PHY_PMA_OFFSET,
 	.min_size = EN7580_XPON_PHY_PCS_MIN_SIZE,
 	.default_submode = AIROHA_XPON_PHY_SUBMODE_XGSPON,

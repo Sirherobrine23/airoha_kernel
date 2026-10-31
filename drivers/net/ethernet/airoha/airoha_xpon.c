@@ -47,6 +47,7 @@
 #include <linux/workqueue.h>
 #include <net/xpon/omci.h>
 #include <linux/rtnetlink.h>
+#include <kunit/static_stub.h>
 
 #include "airoha_eth.h"
 #include "airoha_xpon.h"
@@ -4515,6 +4516,54 @@ static void airoha_xpon_cleanup_epon(struct xpon_priv *priv)
 	priv->fsm_wq = NULL;
 }
 
+static int airoha_gpon_omci_transport_start(void *data)
+{
+	struct xpon_priv *priv = data;
+	int ret;
+
+	ret = airoha_eth_xpon_control_start(priv->gdm_dev);
+	if (ret)
+		return ret;
+	ret = airoha_gpon_omci_hw_start(priv);
+	if (ret)
+		airoha_eth_xpon_control_stop(priv->gdm_dev);
+	return ret;
+}
+
+static void airoha_gpon_omci_transport_stop(void *data)
+{
+	struct xpon_priv *priv = data;
+
+	airoha_gpon_omci_hw_stop(priv);
+	airoha_eth_xpon_control_stop(priv->gdm_dev);
+}
+
+static int airoha_gpon_omci_transport_xmit(void *data, struct sk_buff *skb,
+					   u16 port_id)
+{
+	struct xpon_priv *priv = data;
+
+	return airoha_eth_xmit_xpon_oam(priv->gdm_dev, skb, 0, port_id);
+}
+
+static const struct airoha_gpon_omci_hw_ops airoha_gpon_omci_hw_ops = {
+	.start = airoha_gpon_omci_transport_start,
+	.stop = airoha_gpon_omci_transport_stop,
+	.xmit = airoha_gpon_omci_transport_xmit,
+	.get_ani_topology = airoha_gpon_omci_hw_get_ani_topology,
+	.set_tcont = airoha_gpon_omci_hw_set_tcont,
+	.set_gem_port = airoha_gpon_omci_hw_set_gem_port,
+	.set_uni = airoha_gpon_omci_hw_set_uni,
+	.validate_services = airoha_gpon_omci_hw_validate_services,
+	.replace_service = airoha_gpon_omci_hw_replace_service,
+	.delete_service = airoha_gpon_omci_hw_delete_service,
+	.get_telemetry = airoha_gpon_omci_hw_get_telemetry,
+	.set_olt_profile = airoha_gpon_omci_hw_set_olt_profile,
+	.set_operational = airoha_gpon_omci_hw_set_operational,
+	.config_changed = airoha_gpon_omci_hw_config_changed,
+	.set_time_of_day = airoha_gpon_omci_hw_set_time_of_day,
+};
+
 static int airoha_xpon_register_gpon_omci(struct xpon_priv *priv)
 {
 	int ret;
@@ -4530,7 +4579,8 @@ static int airoha_xpon_register_gpon_omci(struct xpon_priv *priv)
 		return ret;
 
 	dev_info(priv->dev, "EN7528 test: registering OMCI device\n");
-	ret = airoha_gpon_omci_register(&priv->omci, priv->xpon, priv->gdm_dev,
+	ret = airoha_gpon_omci_register(&priv->omci, priv->xpon,
+					&airoha_gpon_omci_hw_ops,
 					priv, &priv->identity, !!priv->tod);
 	dev_info(priv->dev, "EN7528 test: OMCI register returned %d\n", ret);
 	if (ret)
@@ -4822,30 +4872,32 @@ static int airoha_xpon_register_core(struct xpon_priv *priv)
 
 static u32 airoha_xgspon_read(struct xpon_priv *pon, u32 reg)
 {
+	KUNIT_STATIC_STUB_REDIRECT(airoha_xgspon_read, pon, reg);
 	return readl(pon->xgspon_reg + reg);
 }
 
 static void airoha_xgspon_write(struct xpon_priv *pon, u32 reg, u32 value)
 {
+	KUNIT_STATIC_STUB_REDIRECT(airoha_xgspon_write, pon, reg, value);
 	writel(value, pon->xgspon_reg + reg);
 }
 
 static void airoha_xgspon_quiesce(struct xpon_priv *pon)
 {
-	airoha_xgspon_write(pon, EN7580_XGSPON_INT_ENABLE, 0);
+	airoha_xgspon_write(pon, XGSPON_MAC_INT_ENABLE, 0);
 	/* Disable automatic serial-number and registration responses. */
-	airoha_xgspon_write(pon, EN7580_XGSPON_PLOAMU_CTRL,
-			    EN7580_XGSPON_PLOAMU_SW_CTRL);
-	airoha_xgspon_write(pon, EN7580_XGSPON_DYING_GASP_CTRL, 0);
-	airoha_xgspon_write(pon, EN7580_XGSPON_US_PROF_VLD, 0);
-	airoha_xgspon_write(pon, EN7580_XGSPON_ONU_ID,
+	airoha_xgspon_write(pon, XGSPON_MAC_PLOAMU_CTRL,
+			    XGSPON_MAC_PLOAMU_SW_CTRL);
+	airoha_xgspon_write(pon, XGSPON_MAC_DYING_GASP_CTRL, 0);
+	airoha_xgspon_write(pon, XGSPON_MAC_US_PROF_VLD, 0);
+	airoha_xgspon_write(pon, XGSPON_MAC_ONU_ID,
 			    XGSPON_PLOAM_ONU_ID_UNASSIGNED);
-	airoha_xgspon_write(pon, EN7580_XGSPON_ACTIVATION_ST,
-			    EN7580_XGSPON_STATE_O1);
-	airoha_xgspon_write(pon, EN7580_XGSPON_MBI_MPI_STOP,
-			    EN7580_XGSPON_STOP_MASK);
+	airoha_xgspon_write(pon, XGSPON_MAC_ACTIVATION_ST,
+			    XGSPON_MAC_STATE_O1);
+	airoha_xgspon_write(pon, XGSPON_MAC_MBI_MPI_STOP,
+			    XGSPON_MAC_STOP_MASK);
 	/* Flush the posted writes before reset or resource teardown. */
-	airoha_xgspon_read(pon, EN7580_XGSPON_MBI_MPI_STOP);
+	airoha_xgspon_read(pon, XGSPON_MAC_MBI_MPI_STOP);
 }
 
 static void airoha_xgspon_reset(void *data)
@@ -4855,8 +4907,8 @@ static void airoha_xgspon_reset(void *data)
 
 	if (pon->xgspon_accessible) {
 		airoha_xgspon_quiesce(pon);
-		airoha_xgspon_write(pon, EN7580_XGSPON_SW_RST, 0);
-		airoha_xgspon_read(pon, EN7580_XGSPON_SW_RST);
+		airoha_xgspon_write(pon, XGSPON_MAC_SW_RST, 0);
+		airoha_xgspon_read(pon, XGSPON_MAC_SW_RST);
 	}
 	pon->xgspon_accessible = false;
 	ret = reset_control_assert(pon->mac_reset);
@@ -4869,8 +4921,9 @@ static int airoha_xgspon_wait(struct xpon_priv *pon, u32 reg,
 {
 	u32 value;
 
-	return readl_poll_timeout_atomic(pon->xgspon_reg + reg, value,
-					(value & mask) == mask, 1, timeout_us);
+	return read_poll_timeout_atomic(airoha_xgspon_read, value,
+					(value & mask) == mask, 1, timeout_us,
+					false, pon, reg);
 }
 
 static int airoha_xgspon_init_tables(struct xpon_priv *pon)
@@ -4880,50 +4933,50 @@ static int airoha_xgspon_init_tables(struct xpon_priv *pon)
 	int i, ret;
 
 	/* All 32 T-CONTs use the indirect command interface on EN7580. */
-	for (i = 0; i < EN7580_XGSPON_TCONTS; i++) {
-		command = EN7580_XGSPON_TCONT_WRITE |
-			  FIELD_PREP(EN7580_XGSPON_TCONT_INDEX, i) |
+	for (i = 0; i < XGSPON_MAC_TCONTS; i++) {
+		command = XGSPON_MAC_TCONT_WRITE |
+			  FIELD_PREP(XGSPON_MAC_TCONT_INDEX, i) |
 			  XGSPON_PLOAM_ONU_ID_UNASSIGNED;
-		airoha_xgspon_write(pon, EN7580_XGSPON_TCONT_ID_CFG, command);
-		ret = airoha_xgspon_wait(pon, EN7580_XGSPON_TCONT_ID_STS,
-					 EN7580_XGSPON_CMD_DONE,
-					EN7580_XGSPON_CMD_TIMEOUT_US);
+		airoha_xgspon_write(pon, XGSPON_MAC_TCONT_ID_CFG, command);
+		ret = airoha_xgspon_wait(pon, XGSPON_MAC_TCONT_ID_STS,
+					 XGSPON_MAC_CMD_DONE,
+					XGSPON_MAC_CMD_TIMEOUT_US);
 		if (ret)
 			return dev_err_probe(pon->dev, ret,
 					     "T-CONT %d clear timed out\n", i);
 	}
 
 	/* Follow gponDevResetGemInfo(), rather than the unused GEM_TBL_INIT. */
-	deadline = jiffies + msecs_to_jiffies(EN7580_XGSPON_GEM_TIMEOUT_MS);
-	for (i = 0; i < EN7580_XGSPON_GEM_IDS; i++) {
-		command = EN7580_XGSPON_GEM_WRITE |
-			  EN7580_XGSPON_GEM_UNICAST | i;
-		airoha_xgspon_write(pon, EN7580_XGSPON_GEM_PORT_CFG, command);
-		ret = airoha_xgspon_wait(pon, EN7580_XGSPON_GEM_PORT_STS,
-					 EN7580_XGSPON_CMD_DONE,
-					EN7580_XGSPON_CMD_TIMEOUT_US);
+	deadline = jiffies + msecs_to_jiffies(XGSPON_MAC_GEM_TIMEOUT_MS);
+	for (i = 0; i < XGSPON_MAC_GEM_IDS; i++) {
+		command = XGSPON_MAC_GEM_WRITE |
+			  XGSPON_MAC_GEM_UNICAST | i;
+		airoha_xgspon_write(pon, XGSPON_MAC_GEM_PORT_CFG, command);
+		ret = airoha_xgspon_wait(pon, XGSPON_MAC_GEM_PORT_STS,
+					 XGSPON_MAC_CMD_DONE,
+					XGSPON_MAC_CMD_TIMEOUT_US);
 		if (ret || time_after(jiffies, deadline))
 			return dev_err_probe(pon->dev, -ETIMEDOUT,
 					     "XGEM %d clear timed out (cfg %#x, status %#x)\n", i,
-					     airoha_xgspon_read(pon, EN7580_XGSPON_GEM_PORT_CFG),
-					     airoha_xgspon_read(pon, EN7580_XGSPON_GEM_PORT_STS));
+					     airoha_xgspon_read(pon, XGSPON_MAC_GEM_PORT_CFG),
+					     airoha_xgspon_read(pon, XGSPON_MAC_GEM_PORT_STS));
 		if (!(i & 0xff))
 			cond_resched();
 	}
 
 	/* Start both tables together, as in gponDevGemMibTablesInit(). */
-	airoha_xgspon_write(pon, EN7580_XGSPON_MIB_TBL_CONFIG,
-			    EN7580_XGSPON_TABLE_START);
-	airoha_xgspon_write(pon, EN7580_XGSPON_GPIDX_TBL_INIT,
-			    EN7580_XGSPON_TABLE_START);
-	ret = airoha_xgspon_wait(pon, EN7580_XGSPON_MIB_TBL_CONFIG,
-				 EN7580_XGSPON_TABLE_DONE,
-				EN7580_XGSPON_TABLE_TIMEOUT_US);
+	airoha_xgspon_write(pon, XGSPON_MAC_MIB_TBL_CONFIG,
+			    XGSPON_MAC_TABLE_START);
+	airoha_xgspon_write(pon, XGSPON_MAC_GPIDX_TBL_INIT,
+			    XGSPON_MAC_TABLE_START);
+	ret = airoha_xgspon_wait(pon, XGSPON_MAC_MIB_TBL_CONFIG,
+				 XGSPON_MAC_TABLE_DONE,
+				XGSPON_MAC_TABLE_TIMEOUT_US);
 	if (ret)
 		return dev_err_probe(pon->dev, ret, "MIB table init timed out\n");
-	ret = airoha_xgspon_wait(pon, EN7580_XGSPON_GPIDX_TBL_INIT,
-				 EN7580_XGSPON_TABLE_DONE,
-				EN7580_XGSPON_TABLE_TIMEOUT_US);
+	ret = airoha_xgspon_wait(pon, XGSPON_MAC_GPIDX_TBL_INIT,
+				 XGSPON_MAC_TABLE_DONE,
+				XGSPON_MAC_TABLE_TIMEOUT_US);
 	if (ret)
 		return dev_err_probe(pon->dev, ret, "GPIDX table init timed out\n");
 
@@ -4935,71 +4988,508 @@ static int airoha_xgspon_prepare(struct xpon_priv *pon)
 	u32 value;
 	int ret;
 
-	airoha_xgspon_write(pon, EN7580_XGSPON_SW_RST, 0);
-	airoha_xgspon_read(pon, EN7580_XGSPON_SW_RST);
+	airoha_xgspon_write(pon, XGSPON_MAC_SW_RST, 0);
+	airoha_xgspon_read(pon, XGSPON_MAC_SW_RST);
 	udelay(1);
-	airoha_xgspon_write(pon, EN7580_XGSPON_SW_RST, EN7580_XGSPON_RST_N);
-	ret = airoha_xgspon_wait(pon, EN7580_XGSPON_SW_RST,
-				 EN7580_XGSPON_RST_N,
-				EN7580_XGSPON_CMD_TIMEOUT_US);
+	airoha_xgspon_write(pon, XGSPON_MAC_SW_RST, XGSPON_MAC_RST_N);
+	ret = airoha_xgspon_wait(pon, XGSPON_MAC_SW_RST,
+				 XGSPON_MAC_RST_N,
+				XGSPON_MAC_CMD_TIMEOUT_US);
 	if (ret)
 		return dev_err_probe(pon->dev, ret, "MAC reset release timed out\n");
 
 	airoha_xgspon_quiesce(pon);
 	/* Reject an inaccessible or incorrectly mapped MAC before table commands. */
-	if (airoha_xgspon_read(pon, EN7580_XGSPON_INT_ENABLE) ||
-	    airoha_xgspon_read(pon, EN7580_XGSPON_ONU_ID) !=
+	if (airoha_xgspon_read(pon, XGSPON_MAC_INT_ENABLE) ||
+	    airoha_xgspon_read(pon, XGSPON_MAC_ONU_ID) !=
 	    XGSPON_PLOAM_ONU_ID_UNASSIGNED ||
-	    (airoha_xgspon_read(pon, EN7580_XGSPON_MBI_MPI_STOP) &
-	     EN7580_XGSPON_STOP_MASK) != EN7580_XGSPON_STOP_MASK ||
-	    !(airoha_xgspon_read(pon, EN7580_XGSPON_PLOAMU_CTRL) &
-	      EN7580_XGSPON_PLOAMU_SW_CTRL))
+	    (airoha_xgspon_read(pon, XGSPON_MAC_MBI_MPI_STOP) &
+	     XGSPON_MAC_STOP_MASK) != XGSPON_MAC_STOP_MASK ||
+	    !(airoha_xgspon_read(pon, XGSPON_MAC_PLOAMU_CTRL) &
+	      XGSPON_MAC_PLOAMU_SW_CTRL))
 		return dev_err_probe(pon->dev, -EIO, "MAC quiesce readback failed\n");
-	airoha_xgspon_write(pon, EN7580_XGSPON_INT_STATUS, U32_MAX);
-	airoha_xgspon_write(pon, EN7580_XGSPON_US_AES_KEY_CTRL, 0);
-	airoha_xgspon_write(pon, EN7580_XGSPON_DS_AES_KEY_VLD, 0);
-	airoha_xgspon_write(pon, EN7580_XGSPON_RSP_TIME,
-			    EN7580_XGSPON_RSP_TIME_DEFAULT);
-	value = airoha_xgspon_read(pon, EN7580_XGSPON_IDLE_GEM_CTRL);
-	value &= ~EN7580_XGSPON_IDLE_THRESHOLD;
-	value |= FIELD_PREP(EN7580_XGSPON_IDLE_THRESHOLD,
-			    EN7580_XGSPON_IDLE_DEFAULT);
-	airoha_xgspon_write(pon, EN7580_XGSPON_IDLE_GEM_CTRL, value);
+	airoha_xgspon_write(pon, XGSPON_MAC_INT_STATUS, U32_MAX);
+	airoha_xgspon_write(pon, XGSPON_MAC_US_AES_KEY_CTRL, 0);
+	airoha_xgspon_write(pon, XGSPON_MAC_DS_AES_KEY_VLD, 0);
+	airoha_xgspon_write(pon, XGSPON_MAC_RSP_TIME,
+			    XGSPON_MAC_RSP_TIME_DEFAULT);
+	value = airoha_xgspon_read(pon, XGSPON_MAC_IDLE_GEM_CTRL);
+	value &= ~XGSPON_MAC_IDLE_THRESHOLD;
+	value |= FIELD_PREP(XGSPON_MAC_IDLE_THRESHOLD,
+			    XGSPON_MAC_IDLE_DEFAULT);
+	airoha_xgspon_write(pon, XGSPON_MAC_IDLE_GEM_CTRL, value);
 
 	return airoha_xgspon_init_tables(pon);
+}
+
+/* The key engine and key banks use numeric, least-significant-word-first
+ * registers. FIFO words instead carry the first wire octet in bits 31:24.
+ */
+static void airoha_xgspon_key_copy(struct xpon_priv *pon, u32 dst, u32 src)
+{
+	int i;
+
+	for (i = 0; i < 4; i++)
+		airoha_xgspon_write(pon, dst + i * 4,
+				    airoha_xgspon_read(pon, src + i * 4));
+}
+
+static int airoha_xgspon_key_generate(struct xpon_priv *pon, u32 command,
+				      u32 destination)
+{
+	int ret;
+
+	airoha_xgspon_write(pon, XGSPON_MAC_INT_STATUS,
+			    XGSPON_MAC_INT_KEY_DONE);
+	airoha_xgspon_write(pon, XGSPON_MAC_KEY_GEN, command);
+	ret = airoha_xgspon_wait(pon, XGSPON_MAC_INT_STATUS,
+				 XGSPON_MAC_INT_KEY_DONE,
+				 XGSPON_MAC_CMD_TIMEOUT_US);
+	if (ret)
+		return ret;
+	airoha_xgspon_write(pon, XGSPON_MAC_INT_STATUS,
+			    XGSPON_MAC_INT_KEY_DONE);
+	if (destination)
+		airoha_xgspon_key_copy(pon, destination,
+				       command == BIT(0) ? XGSPON_MAC_REGMSK :
+							   XGSPON_MAC_HW_GENK);
+	return 0;
+}
+
+static int airoha_xgspon_integrity_init(struct xpon_priv *pon)
+{
+	/* SDK default MSK for the all-zero Registration_ID. */
+	static const u8 default_msk[16] = {
+		0x24, 0x37, 0xbe, 0x54, 0xe9, 0x5e, 0x6e, 0xe3,
+		0x53, 0x8b, 0xb1, 0xb4, 0xb5, 0xd4, 0x32, 0xeb,
+	};
+	int i, ret;
+
+	pon->xgspon_keys_ready = false;
+	airoha_xgspon_write(pon, XGSPON_MAC_VENDOR_ID,
+			    get_unaligned_be32(pon->identity.serial_number));
+	airoha_xgspon_write(pon, XGSPON_MAC_VS_SN,
+			    get_unaligned_be32(pon->identity.serial_number + 4));
+	for (i = 0; i < 9; i++)
+		airoha_xgspon_write(pon, XGSPON_MAC_REG_ID + i * 4,
+				    get_unaligned_be32(pon->xgspon_reg_id + (8 - i) * 4));
+	for (i = 0; i < 4; i++) {
+		airoha_xgspon_write(pon, XGSPON_MAC_MSK + i * 4,
+				    get_unaligned_be32(default_msk + (3 - i) * 4));
+		airoha_xgspon_write(pon, XGSPON_MAC_PIK1 + i * 4, 0x55555555);
+	}
+	/* Default key group 1, then the actual Registration_ID key group 0. */
+	ret = airoha_xgspon_key_generate(pon, BIT(1), 0);
+	if (ret)
+		return ret;
+	ret = airoha_xgspon_key_generate(pon, BIT(2), XGSPON_MAC_OIK1);
+	if (ret)
+		return ret;
+	ret = airoha_xgspon_key_generate(pon, BIT(4), XGSPON_MAC_KEK1);
+	if (ret)
+		return ret;
+	ret = airoha_xgspon_key_generate(pon, BIT(0), XGSPON_MAC_MSK);
+	if (ret)
+		return ret;
+	ret = airoha_xgspon_key_generate(pon, BIT(1), 0);
+	if (ret)
+		return ret;
+	ret = airoha_xgspon_key_generate(pon, BIT(2), XGSPON_MAC_OIK0);
+	if (ret)
+		return ret;
+	ret = airoha_xgspon_key_generate(pon, BIT(3), XGSPON_MAC_PIK0);
+	if (ret)
+		return ret;
+	ret = airoha_xgspon_key_generate(pon, BIT(4), XGSPON_MAC_KEK0);
+	if (ret)
+		return ret;
+	airoha_xgspon_write(pon, XGSPON_MAC_SW_SET_KIDX,
+			    XGSPON_MAC_DEFAULT_KEYS);
+	/* Enforce MIC rejection in hardware before trusting any FIFO body.
+	 * The SDK does not document the polarity of the trailing status bit.
+	 */
+	airoha_xgspon_write(pon, XGSPON_MAC_EPDROP_EN, XGSPON_MAC_DROP_BAD_MIC);
+	if (!(airoha_xgspon_read(pon, XGSPON_MAC_EPDROP_EN) &
+	      XGSPON_MAC_DROP_BAD_MIC))
+		return -EIO;
+	pon->xgspon_keys_ready = true;
+	airoha_xgspon_write(pon, XGSPON_MAC_FIFO_ERR_STS, XGSPON_MAC_PLOAM_FIFO_ERRORS);
+	airoha_xgspon_write(pon, XGSPON_MAC_FIFO_ERR_ENABLE, XGSPON_MAC_PLOAM_FIFO_ERRORS);
+	return 0;
+}
+
+static int airoha_xgspon_session_reset(void *data)
+{
+	struct xpon_priv *pon = data;
+	int ret;
+
+	mutex_lock(&pon->xgspon_lock);
+	pon->xgspon_keys_ready = false;
+	ret = airoha_xpon_tx_enable(pon, false);
+	if (ret)
+		goto quiesce;
+	ret = airoha_xgspon_prepare(pon);
+	if (!ret)
+		ret = airoha_xgspon_integrity_init(pon);
+	memset(pon->xgspon_alloc_id, 0xff, sizeof(pon->xgspon_alloc_id));
+	pon->xgspon_onu_id = XGSPON_PLOAM_ONU_ID_UNASSIGNED;
+	pon->xgspon_state = AIROHA_XGSPON_O1;
+quiesce:
+	if (ret)
+		airoha_xgspon_quiesce(pon);
+	mutex_unlock(&pon->xgspon_lock);
+	return ret;
+}
+
+static int airoha_xgspon_mac_set_state(void *data,
+				       enum airoha_xgspon_state state)
+{
+	struct xpon_priv *pon = data;
+	bool transmitting = state == AIROHA_XGSPON_O2_3 ||
+			    state == AIROHA_XGSPON_O4;
+	int ret;
+
+	/* Keep O5 unavailable until the GDM/QDMA OMCC transport is connected. */
+	if (state == AIROHA_XGSPON_O5)
+		return -EOPNOTSUPP;
+	mutex_lock(&pon->xgspon_lock);
+	if (transmitting && (!pon->xgspon_running || !pon->xgspon_keys_ready)) {
+		ret = -ENETDOWN;
+		goto out;
+	}
+	if (transmitting && pon->xgspon_state != AIROHA_XGSPON_O2_3 &&
+	    pon->xgspon_state != AIROHA_XGSPON_O4) {
+		ret = airoha_xpon_tx_rearm(pon->dev, pon->frontend);
+		if (ret)
+			goto out;
+	}
+	ret = airoha_xpon_tx_enable(pon, transmitting);
+	if (ret)
+		goto out;
+	/* MBI remains stopped. Only release the PHY-facing MPI for PLOAM. */
+	airoha_xgspon_write(pon, XGSPON_MAC_MBI_MPI_STOP,
+			    transmitting ? XGSPON_MAC_MBI_RX_STOP |
+						   XGSPON_MAC_MBI_TX_STOP :
+					   XGSPON_MAC_STOP_MASK);
+	airoha_xgspon_write(pon, XGSPON_MAC_ACTIVATION_ST, state);
+	/* The MAC answers SN/ranging grants at their hardware deadlines. */
+	airoha_xgspon_write(pon, XGSPON_MAC_PLOAMU_CTRL,
+			    transmitting ? 0 : XGSPON_MAC_PLOAMU_SW_CTRL);
+	pon->xgspon_state = state;
+	airoha_xgspon_write(pon, XGSPON_MAC_INT_ENABLE,
+			    pon->xgspon_running ? XGSPON_MAC_INT_MASK : 0);
+out:
+	mutex_unlock(&pon->xgspon_lock);
+	return ret;
+}
+
+static int
+airoha_xgspon_mac_set_profile(void *data,
+			      const struct xgspon_ploam_burst_profile *profile)
+{
+	struct xpon_priv *pon = data;
+	struct airoha_xpon_phy_burst_profile phy_profile = {
+		.index = profile->index,
+		.preamble_len = profile->preamble_len,
+		.delimiter_len = profile->delimiter_len,
+		.preamble_repeat = profile->preamble_repeat,
+		.fec = profile->fec,
+	};
+	u32 reg, value, shift;
+	int ret;
+
+	if (profile->index >= AIROHA_XGSPON_PROFILES ||
+	    profile->line_rate != XGSPON_PLOAM_LINE_RATE_XGSPON)
+		return -EINVAL;
+	memcpy(phy_profile.preamble, profile->preamble,
+	       sizeof(phy_profile.preamble));
+	memcpy(phy_profile.delimiter, profile->delimiter,
+	       sizeof(phy_profile.delimiter));
+	mutex_lock(&pon->xgspon_lock);
+	/* Invalidate before replacing a profile that the scheduler may select. */
+	value = airoha_xgspon_read(pon, XGSPON_MAC_US_PROF_VLD);
+	value &= ~BIT(profile->index * 8);
+	airoha_xgspon_write(pon, XGSPON_MAC_US_PROF_VLD, value);
+	ret = airoha_xpon_phy_set_xgspon_profile(pon->phy, &phy_profile);
+	if (ret)
+		goto out;
+	reg = XGSPON_MAC_PROF_LEN + (profile->index / 2) * 4;
+	shift = (profile->index % 2) * 16;
+	value = airoha_xgspon_read(pon, reg) & ~(0xffffU << shift);
+	value |= (profile->preamble_len * profile->preamble_repeat +
+		  profile->delimiter_len)
+		 << shift;
+	airoha_xgspon_write(pon, reg, value);
+	airoha_xgspon_write(pon, XGSPON_MAC_PON_TAG,
+			    get_unaligned_be32(profile->pon_tag + 4));
+	airoha_xgspon_write(pon, XGSPON_MAC_PON_TAG + 4,
+			    get_unaligned_be32(profile->pon_tag));
+	shift = profile->index * 8;
+	value = airoha_xgspon_read(pon, XGSPON_MAC_US_PROF_VLD);
+	value &= ~(0xffU << shift);
+	value |= (1U | (u32)profile->version << 4) << shift;
+	airoha_xgspon_write(pon, XGSPON_MAC_US_PROF_VLD, value);
+out:
+	mutex_unlock(&pon->xgspon_lock);
+	return ret;
+}
+
+static int airoha_xgspon_mac_set_onu_id(void *data, u16 onu_id)
+{
+	struct xpon_priv *pon = data;
+
+	if (!xgspon_ploam_is_assignable(onu_id))
+		return -EINVAL;
+	mutex_lock(&pon->xgspon_lock);
+	airoha_xgspon_write(pon, XGSPON_MAC_ONU_ID,
+			    XGSPON_MAC_ONU_VALID | onu_id);
+	pon->xgspon_onu_id = onu_id;
+	mutex_unlock(&pon->xgspon_lock);
+	return 0;
+}
+
+static int airoha_xgspon_mac_set_eqd(void *data, u32 eqd)
+{
+	struct xpon_priv *pon = data;
+
+	/* XGS-PON timing runs at four times the PLOAM EqD reference rate. */
+	if (eqd > U32_MAX / 4)
+		return -ERANGE;
+	mutex_lock(&pon->xgspon_lock);
+	airoha_xgspon_write(pon, XGSPON_MAC_EQD, eqd << 2);
+	mutex_unlock(&pon->xgspon_lock);
+	return 0;
+}
+
+static int airoha_xgspon_mac_set_alloc_id(void *data, u16 alloc_id, bool valid)
+{
+	struct xpon_priv *pon = data;
+	u32 command;
+	int i, slot = -1, ret = 0;
+
+	mutex_lock(&pon->xgspon_lock);
+	/* T-CONT 0 is the hardware shadow of the ONU-ID, not a service slot. */
+	if (alloc_id == pon->xgspon_onu_id)
+		goto out;
+	if (alloc_id < 1024 || alloc_id > 16383) {
+		ret = -EINVAL;
+		goto out;
+	}
+	for (i = 1; i < XGSPON_MAC_TCONTS; i++) {
+		if (pon->xgspon_alloc_id[i] == alloc_id) {
+			slot = i;
+			break;
+		}
+		if (slot < 0 && pon->xgspon_alloc_id[i] == U16_MAX)
+			slot = i;
+	}
+	if (!valid && i == XGSPON_MAC_TCONTS)
+		goto out;
+	if (slot < 0) {
+		ret = -ENOSPC;
+		goto out;
+	}
+	command = XGSPON_MAC_TCONT_WRITE |
+		  FIELD_PREP(XGSPON_MAC_TCONT_INDEX, slot) |
+		  (valid ? XGSPON_MAC_TCONT_VALID | alloc_id :
+			   XGSPON_PLOAM_ONU_ID_UNASSIGNED);
+	airoha_xgspon_write(pon, XGSPON_MAC_TCONT_ID_CFG, command);
+	ret = airoha_xgspon_wait(pon, XGSPON_MAC_TCONT_ID_STS,
+				 XGSPON_MAC_CMD_DONE,
+				 XGSPON_MAC_CMD_TIMEOUT_US);
+	if (!ret)
+		pon->xgspon_alloc_id[slot] = valid ? alloc_id : U16_MAX;
+out:
+	mutex_unlock(&pon->xgspon_lock);
+	return ret;
+}
+
+static int airoha_xgspon_mac_set_omcc(void *data, u16 port_id, bool valid)
+{
+	/* The next phase adds the XGEM entry and GDM/QDMA management channel. */
+	return valid ? -EOPNOTSUPP : 0;
+}
+
+static int airoha_xgspon_mac_send(void *data,
+				  const u8 body[XGSPON_PLOAM_BODY_LEN],
+				  bool registered)
+{
+	struct xpon_priv *pon = data;
+	u32 words[XGSPON_MAC_TX_WORDS], key_index, available;
+	int i, ret = 0;
+
+	mutex_lock(&pon->xgspon_lock);
+	if (!pon->xgspon_running || !pon->xgspon_keys_ready ||
+	    (pon->xgspon_state != AIROHA_XGSPON_O4 &&
+	     pon->xgspon_state != AIROHA_XGSPON_O2_3)) {
+		ret = -ENOLINK;
+		goto out;
+	}
+	/* Automatic SN responses must never also be enqueued in software. */
+	if (body[2] == XGSPON_PLOAM_UP_SERIAL_NUMBER) {
+		ret = -EOPNOTSUPP;
+		goto out;
+	}
+	available = airoha_xgspon_read(pon, XGSPON_MAC_PLOAMU_FIFO_STS);
+	if (FIELD_GET(XGSPON_MAC_FIFO_COUNT, available) < XGSPON_MAC_TX_WORDS) {
+		ret = -EAGAIN;
+		goto out;
+	}
+	/* Registration selects group 0. Other replies use the current hardware
+	 * group, which also accounts for an automatic Registration already sent
+	 * before its interrupt thread has published that notification.
+	 */
+	key_index = body[2] == XGSPON_PLOAM_UP_REGISTRATION ?
+			    0 :
+			    airoha_xgspon_read(pon, XGSPON_MAC_CUR_KIDX) &
+				    XGSPON_MAC_PIK_INDEX;
+	airoha_xgspon_fifo_encode(words, body, key_index);
+	for (i = 0; i < XGSPON_MAC_TX_WORDS; i++)
+		airoha_xgspon_write(pon, XGSPON_MAC_PLOAMU_WDATA, words[i]);
+out:
+	mutex_unlock(&pon->xgspon_lock);
+	return ret;
+}
+
+static int airoha_xgspon_mac_start(void *data)
+{
+	struct xpon_priv *pon = data;
+
+	if (!pon->phy || !pon->xgspon_accessible)
+		return -ENODEV;
+	mutex_lock(&pon->xgspon_lock);
+	pon->xgspon_running = true;
+	mutex_unlock(&pon->xgspon_lock);
+	/* The protocol's reset callback initializes keys before enabling IRQs. */
+	return 0;
+}
+
+static void airoha_xgspon_mac_stop(void *data)
+{
+	struct xpon_priv *pon = data;
+
+	mutex_lock(&pon->xgspon_lock);
+	pon->xgspon_running = false;
+	airoha_xgspon_quiesce(pon);
+	airoha_xpon_tx_enable(pon, false);
+	mutex_unlock(&pon->xgspon_lock);
+	/* No protocol mutex is held while waiting for the RX producer. */
+	synchronize_irq(pon->irq);
+}
+
+static int airoha_xgspon_mac_omci_xmit(void *data, struct sk_buff *skb,
+				       u16 port_id)
+{
+	return -EOPNOTSUPP;
+}
+
+static int airoha_xgspon_mac_read_ploam(void *data,
+					struct airoha_xgspon_ploam_rx *rx)
+{
+	struct xpon_priv *pon = data;
+	u32 packet[XGSPON_MAC_RX_WORDS], used;
+	int i, ret = 0;
+
+	mutex_lock(&pon->xgspon_lock);
+	used = FIELD_GET(XGSPON_MAC_FIFO_COUNT,
+			 airoha_xgspon_read(pon, XGSPON_MAC_PLOAMD_FIFO_STS));
+	if (!pon->xgspon_running || used < XGSPON_MAC_RX_WORDS) {
+		ret = -ENODATA;
+		goto out;
+	}
+	for (i = 0; i < XGSPON_MAC_RX_WORDS; i++)
+		packet[i] = airoha_xgspon_read(pon, XGSPON_MAC_PLOAMD_RDATA);
+	airoha_xgspon_fifo_decode(rx->body, packet);
+	rx->mic_valid = pon->xgspon_keys_ready &&
+			(airoha_xgspon_read(pon, XGSPON_MAC_EPDROP_EN) &
+			 XGSPON_MAC_DROP_BAD_MIC);
+	/* The MAC switches both integrity selectors after its automatic O4
+	 * Registration. Observe that change under the protocol's session lock.
+	 */
+	rx->registered = pon->xgspon_keys_ready &&
+			 !(airoha_xgspon_read(pon, XGSPON_MAC_CUR_KIDX) &
+			   (XGSPON_MAC_PIK_INDEX | XGSPON_MAC_OIK_INDEX));
+out:
+	mutex_unlock(&pon->xgspon_lock);
+	return ret;
+}
+
+static irqreturn_t airoha_xgspon_mac_irq(int irq, void *data)
+{
+	struct xpon_priv *pon = data;
+	u32 status, used;
+	int budget = 64, ret;
+
+	status = airoha_xgspon_read(pon, XGSPON_MAC_INT_STATUS) &
+		 airoha_xgspon_read(pon, XGSPON_MAC_INT_ENABLE);
+	if (!status)
+		return IRQ_NONE;
+	airoha_xgspon_write(pon, XGSPON_MAC_INT_STATUS, status);
+	if (status & XGSPON_MAC_INT_SN_SENT)
+		pon->xgspon_sn_sent++;
+	if (status & XGSPON_MAC_INT_REG_SENT)
+		pon->xgspon_reg_sent++;
+	if (status & XGSPON_MAC_INT_FIFO_ERR) {
+		pon->xgspon_fifo_errors++;
+		used = airoha_xgspon_read(pon, XGSPON_MAC_FIFO_ERR_STS);
+		airoha_xgspon_write(pon, XGSPON_MAC_FIFO_ERR_STS, used);
+		/* A partial/overrun record has no trustworthy message boundary. */
+		airoha_xgspon_recover(pon->xgspon);
+		return IRQ_HANDLED;
+	}
+	/* The RX FIFO contains 40 body bytes, 8 MIC bytes and a status word.
+	 * Consume all 13 words, including padding, even for a rejected message.
+	 */
+	while (budget--) {
+		ret = airoha_xgspon_poll_ploam(pon->xgspon,
+					       airoha_xgspon_mac_read_ploam, pon);
+		if (ret == -ENODATA || ret == -ENETDOWN)
+			break;
+		pon->xgspon_rx_messages++;
+		if (ret)
+			pon->xgspon_rx_rejected++;
+	}
+	return IRQ_HANDLED;
 }
 
 static int airoha_xgspon_status_show(struct seq_file *s, void *unused)
 {
 	struct xpon_priv *pon = s->private;
 
-	seq_puts(s, "stage: MAC prepared; activation and datapath unavailable\n");
+	seq_puts(s, "stage: PLOAM activation through O4; OMCC and datapath pending\n");
+	seq_printf(s, "control-running: %u\nkeys-ready: %u\n",
+		   READ_ONCE(pon->xgspon_running), READ_ONCE(pon->xgspon_keys_ready));
+	seq_printf(s, "ploamd-messages: %u\nploamd-rejected: %u\nfifo-error-events: %u\n",
+		   READ_ONCE(pon->xgspon_rx_messages), READ_ONCE(pon->xgspon_rx_rejected),
+		   READ_ONCE(pon->xgspon_fifo_errors));
+	seq_printf(s, "automatic-sn-sent: %u\nautomatic-registration-sent: %u\n",
+		   READ_ONCE(pon->xgspon_sn_sent), READ_ONCE(pon->xgspon_reg_sent));
 	seq_printf(s, "phy-initialized: %u\nphy-powered: %u\n",
 		   pon->phy_initialized, pon->phy_powered);
 	seq_printf(s, "reset: %#x\nonu-id: %#x\nstate: %#x\n",
-		   airoha_xgspon_read(pon, EN7580_XGSPON_SW_RST),
-		   airoha_xgspon_read(pon, EN7580_XGSPON_ONU_ID),
-		   airoha_xgspon_read(pon, EN7580_XGSPON_ACTIVATION_ST));
+		   airoha_xgspon_read(pon, XGSPON_MAC_SW_RST),
+		   airoha_xgspon_read(pon, XGSPON_MAC_ONU_ID),
+		   airoha_xgspon_read(pon, XGSPON_MAC_ACTIVATION_ST));
 	seq_printf(s, "interrupt-enable: %#x\ninterrupt-status: %#x\n",
-		   airoha_xgspon_read(pon, EN7580_XGSPON_INT_ENABLE),
-		   airoha_xgspon_read(pon, EN7580_XGSPON_INT_STATUS));
+		   airoha_xgspon_read(pon, XGSPON_MAC_INT_ENABLE),
+		   airoha_xgspon_read(pon, XGSPON_MAC_INT_STATUS));
 	seq_printf(s, "mbi-mpi-stop: %#x\nploamu-control: %#x\n",
-		   airoha_xgspon_read(pon, EN7580_XGSPON_MBI_MPI_STOP),
-		   airoha_xgspon_read(pon, EN7580_XGSPON_PLOAMU_CTRL));
+		   airoha_xgspon_read(pon, XGSPON_MAC_MBI_MPI_STOP),
+		   airoha_xgspon_read(pon, XGSPON_MAC_PLOAMU_CTRL));
 	seq_printf(s, "response-time: %#x\nidle-gem-control: %#x\n",
-		   airoha_xgspon_read(pon, EN7580_XGSPON_RSP_TIME),
-		   airoha_xgspon_read(pon, EN7580_XGSPON_IDLE_GEM_CTRL));
+		   airoha_xgspon_read(pon, XGSPON_MAC_RSP_TIME),
+		   airoha_xgspon_read(pon, XGSPON_MAC_IDLE_GEM_CTRL));
 	seq_printf(s, "mib-init: %#x\ngpidx-init: %#x\n",
-		   airoha_xgspon_read(pon, EN7580_XGSPON_MIB_TBL_CONFIG),
-		   airoha_xgspon_read(pon, EN7580_XGSPON_GPIDX_TBL_INIT));
+		   airoha_xgspon_read(pon, XGSPON_MAC_MIB_TBL_CONFIG),
+		   airoha_xgspon_read(pon, XGSPON_MAC_GPIDX_TBL_INIT));
 	seq_printf(s, "fifo-errors: %#x\ntx-errors: %#x\nrx-errors: %#x\n",
-		   airoha_xgspon_read(pon, EN7580_XGSPON_FIFO_ERR_STS),
-		   airoha_xgspon_read(pon, EN7580_XGSPON_TX_ERR_STS),
-		   airoha_xgspon_read(pon, EN7580_XGSPON_RX_ERR_STS));
+		   airoha_xgspon_read(pon, XGSPON_MAC_FIFO_ERR_STS),
+		   airoha_xgspon_read(pon, XGSPON_MAC_TX_ERR_STS),
+		   airoha_xgspon_read(pon, XGSPON_MAC_RX_ERR_STS));
 	/* Read FIFO occupancy only; do not consume PLOAM or expose keys. */
 	seq_printf(s, "ploamu-fifo: %#x\nploamd-fifo: %#x\n",
-		   airoha_xgspon_read(pon, EN7580_XGSPON_PLOAMU_FIFO_STS),
-		   airoha_xgspon_read(pon, EN7580_XGSPON_PLOAMD_FIFO_STS));
+		   airoha_xgspon_read(pon, XGSPON_MAC_PLOAMU_FIFO_STS),
+		   airoha_xgspon_read(pon, XGSPON_MAC_PLOAMD_FIFO_STS));
 	return 0;
 }
 DEFINE_SHOW_ATTRIBUTE(airoha_xgspon_status);
@@ -5043,7 +5533,7 @@ static void airoha_xgspon_debugfs_remove(void *data)
 	pon->xgspon_debugfs = NULL;
 }
 
-static void airoha_xgspon_unregister(void *data)
+static void airoha_xgspon_core_unregister(void *data)
 {
 	struct xpon_priv *pon = data;
 
@@ -5060,63 +5550,56 @@ static void airoha_xgspon_phy_stop(void *data)
 			     &pon->phy_initialized, &pon->phy_powered);
 }
 
-static int airoha_xgspon_omci_start(struct omci_device *odev)
+static int airoha_xgspon_get_telemetry(void *data,
+				       struct omci_telemetry *telemetry)
 {
-	/* Activation and the EN7580 OMCC datapath are not implemented yet. */
-	return -EOPNOTSUPP;
-}
-
-static int airoha_xgspon_omci_xmit(struct omci_device *odev,
-				   struct sk_buff *skb, u16 gem_port_id)
-{
-	/* An error leaves skb ownership with the OMCI core. */
-	return -EOPNOTSUPP;
-}
-
-static int
-airoha_xgspon_omci_get_telemetry(struct omci_device *odev,
-				 struct omci_telemetry *telemetry)
-{
-	struct xpon_priv *pon = omci_device_priv(odev);
+	struct xpon_priv *pon = data;
 
 	memset(telemetry, 0, sizeof(*telemetry));
 	return airoha_xpon_get_optical_telemetry(pon, telemetry);
 }
 
-static const struct omci_device_ops airoha_xgspon_omci_ops = {
-	.start = airoha_xgspon_omci_start,
-	.xmit = airoha_xgspon_omci_xmit,
-	.get_telemetry = airoha_xgspon_omci_get_telemetry,
+/* PLOAM activation is connected; O5 waits for the OMCC transport. */
+static const struct airoha_xgspon_ops airoha_xgspon_control_ops = {
+	.ploam = {
+		.reset = airoha_xgspon_session_reset,
+		.set_state = airoha_xgspon_mac_set_state,
+		.set_profile = airoha_xgspon_mac_set_profile,
+		.set_onu_id = airoha_xgspon_mac_set_onu_id,
+		.set_eqd = airoha_xgspon_mac_set_eqd,
+		.set_alloc_id = airoha_xgspon_mac_set_alloc_id,
+		.set_omcc = airoha_xgspon_mac_set_omcc,
+		.send_upstream = airoha_xgspon_mac_send,
+	},
+	.start = airoha_xgspon_mac_start,
+	.stop = airoha_xgspon_mac_stop,
+	.omci_xmit = airoha_xgspon_mac_omci_xmit,
+	.get_telemetry = airoha_xgspon_get_telemetry,
 };
+
+static const struct airoha_xgspon_ops airoha_xgspon_diagnostic_ops;
 
 static void airoha_xgspon_omci_unregister(void *data)
 {
 	struct xpon_priv *pon = data;
 
-	omci_device_unregister(pon->xgspon_omci);
-	pon->xgspon_omci = NULL;
+	airoha_xgspon_unregister(pon->xgspon);
+	pon->xgspon = NULL;
 }
 
 static int airoha_xgspon_omci_register(struct xpon_priv *pon)
 {
-	u32 capabilities = pon->frontend ? OMCI_CAP_TELEMETRY : 0;
-	struct omci_device *odev;
+	const struct airoha_xgspon_ops *ops = pon->phy ?
+		&airoha_xgspon_control_ops : &airoha_xgspon_diagnostic_ops;
 	int ret;
 
 	ret = omci_identity_load(pon->dev, &pon->identity);
 	if (ret)
 		return ret;
-
-	odev = omci_device_register(pon->xpon, capabilities,
-				    &airoha_xgspon_omci_ops, pon);
-	if (IS_ERR(odev))
-		return PTR_ERR(odev);
-
-	pon->xgspon_omci = odev;
-	omci_device_set_identity_info(odev, &pon->identity);
-	omci_device_set_onu_id(odev, XGSPON_PLOAM_ONU_ID_UNASSIGNED);
-	omci_device_set_state(odev, EN7580_XGSPON_STATE_O1);
-	/* Keep OMCC stopped until XGS-PON activation and transport exist. */
+	pon->xgspon = airoha_xgspon_register(pon->xpon, ops, pon, &pon->identity,
+					     pon->xgspon_reg_id);
+	if (IS_ERR(pon->xgspon))
+		return PTR_ERR(pon->xgspon);
 	return devm_add_action_or_reset(pon->dev,
 					airoha_xgspon_omci_unregister, pon);
 }
@@ -5127,8 +5610,10 @@ static void airoha_xgspon_phy_link_work(struct work_struct *work)
 					     struct xpon_priv, phy_link_work);
 	bool ready, los;
 
-	if (!airoha_xpon_phy_get_link_state(pon->phy, &ready, &los))
+	if (!airoha_xpon_phy_get_link_state(pon->phy, &ready, &los)) {
 		xpon_device_report_optical(pon->xpon, ready, los);
+		airoha_xgspon_notify_link(pon->xgspon, ready && !los);
+	}
 
 	schedule_delayed_work(&pon->phy_link_work,
 			      msecs_to_jiffies(XPON_LINK_POLL_MS));
@@ -5144,11 +5629,13 @@ static void airoha_xgspon_phy_link_stop(void *data)
 static int airoha_xpon_init_xgspon(struct xpon_priv *priv)
 {
 	struct device *dev = priv->dev;
+	struct platform_device *pdev = to_platform_device(dev);
 	char *name;
 	int ret;
 
+	mutex_init(&priv->xgspon_lock);
 	/* The devres actions own GDM2 from this point, including failures. */
-	ret = devm_add_action_or_reset(dev, airoha_xgspon_unregister, priv);
+	ret = devm_add_action_or_reset(dev, airoha_xgspon_core_unregister, priv);
 	if (ret)
 		return ret;
 	ret = reset_control_assert(priv->mac_reset);
@@ -5196,11 +5683,25 @@ static int airoha_xpon_init_xgspon(struct xpon_priv *priv)
 		return ret;
 	airoha_xpon_update_netdev_link(priv, false);
 
+	if (priv->phy) {
+		priv->irq = platform_get_irq_byname(pdev, "mac");
+		if (priv->irq < 0)
+			return priv->irq;
+		/* Protocol callbacks may sleep; the hardware handles grant timing. */
+		ret = devm_request_threaded_irq(dev, priv->irq, NULL,
+						airoha_xgspon_mac_irq, IRQF_ONESHOT,
+						dev_name(dev), priv);
+		if (ret)
+			return dev_err_probe(dev, ret, "failed to request XGS-PON IRQ\n");
+	}
 	ret = airoha_xgspon_omci_register(priv);
 	if (ret)
 		return dev_err_probe(dev, ret, "failed to register XGS-PON OMCI device\n");
 
 	if (priv->phy) {
+		ret = omci_device_start(airoha_xgspon_omci_device(priv->xgspon));
+		if (ret)
+			return dev_err_probe(dev, ret, "failed to start XGS-PON control\n");
 		INIT_DELAYED_WORK(&priv->phy_link_work,
 				  airoha_xgspon_phy_link_work);
 		ret = devm_add_action_or_reset(dev,
@@ -5224,8 +5725,8 @@ static int airoha_xpon_init_xgspon(struct xpon_priv *priv)
 		}
 	}
 	dev_info(dev,
-		 "EN7580 XGS-PON MAC prepared in O1; GDM2 managed, PHY powered=%u, activation and datapath disabled\n",
-		 priv->phy_powered);
+		 "XGS-PON MAC prepared; PHY powered=%u, PLOAM control=%u, OMCC and datapath pending\n",
+		 priv->phy_powered, !!priv->phy);
 	return 0;
 }
 
@@ -5252,8 +5753,7 @@ static int airoha_xpon_probe(struct platform_device *pdev)
 	priv->mode = data->default_mode;
 	spin_lock_init(&priv->epon_lock);
 	priv->epon_enabled_links = BIT(0);
-	if (!airoha_xpon_is_xgspon(priv) &&
-	    device_property_present(dev, "airoha,pon-mode")) {
+	if (device_property_present(dev, "airoha,pon-mode")) {
 		const char *mode;
 
 		ret = device_property_read_string(dev, "airoha,pon-mode",
@@ -5262,7 +5762,11 @@ static int airoha_xpon_probe(struct platform_device *pdev)
 			return ret;
 		if (!strcmp(mode, "epon"))
 			priv->mode = AIROHA_XPON_MODE_EPON;
-		else if (strcmp(mode, "gpon"))
+		else if (!strcmp(mode, "gpon"))
+			priv->mode = AIROHA_XPON_MODE_GPON;
+		else if (!strcmp(mode, "xgspon"))
+			priv->mode = AIROHA_XPON_MODE_XGSPON;
+		else
 			return -EINVAL;
 	}
 	if (!(XPON_MODE_CAP(airoha_xpon_core_mode(priv->mode)) &
@@ -5343,7 +5847,7 @@ static int airoha_xpon_probe(struct platform_device *pdev)
 	}
 
 	if (resource_size(res) < (airoha_xpon_is_xgspon(priv) ?
-				  XGSPON_REG_OFFSET + EN7580_XGSPON_SIZE :
+				  XGSPON_REG_OFFSET + XGSPON_MAC_SIZE :
 				  V1_XPON_REGION_SIZE)) {
 		ret = dev_err_probe(dev, -EINVAL,
 				    "unsupported xPON MAC resource size %#llx: %pR\n",
@@ -5578,6 +6082,19 @@ static void airoha_xpon_remove(struct platform_device *pdev)
 	priv->gdm_dev = NULL;
 }
 
+static void airoha_xpon_shutdown(struct platform_device *pdev)
+{
+	struct xpon_priv *priv = platform_get_drvdata(pdev);
+
+	if (!priv || !airoha_xpon_is_xgspon(priv))
+		return;
+	if (priv->phy)
+		cancel_delayed_work_sync(&priv->phy_link_work);
+	omci_device_stop(airoha_xgspon_omci_device(priv->xgspon));
+	airoha_xgspon_reset(priv);
+	airoha_xgspon_phy_stop(priv);
+}
+
 static const struct airoha_xpon_match_data en751221_xpon_data = {
 	.version = econet_en751221,
 	.wan_mode_mask = EN751221_SCU_WAN_MODE_MASK,
@@ -5621,11 +6138,7 @@ static const struct airoha_xpon_match_data en7580_xpon_data = {
 	.version = econet_en7580,
 	.default_mode = AIROHA_XPON_MODE_XGSPON,
 	.wan_mode_mask = EN7580_SCU_WAN_MODE_MASK,
-	.xpon_mode_comp = XPON_MODE_GPON |
-			  XPON_MODE_XGPON |
-			  XPON_MODE_XGSPON |
-			  XPON_MODE_EPON |
-			  XPON_MODE_XEPON,
+	.xpon_mode_comp = XPON_MODE_XGSPON,
 };
 
 static const struct airoha_xpon_match_data en7523_xpon_data = {
@@ -5669,7 +6182,7 @@ static const struct airoha_xpon_match_data an7581_xpon_data = {
 	.gpon_reset_on_start = true,
 	.gpon_rearm_tx_on_overhead = true,
 	.scu_dying_gasp_status = true,
-	.xpon_mode_comp = XPON_MODE_GPON,
+	.xpon_mode_comp = XPON_MODE_GPON | XPON_MODE_XGSPON,
 };
 
 /* AN7583 asymmetric GPON retains the shared 1G MAC interface. */
@@ -5686,7 +6199,7 @@ static const struct airoha_xpon_match_data an7583_xpon_data = {
 	.gpon_reset_on_start = true,
 	.gpon_rearm_tx_on_overhead = true,
 	.scu_dying_gasp_status = true,
-	.xpon_mode_comp = XPON_MODE_GPON,
+	.xpon_mode_comp = XPON_MODE_GPON | XPON_MODE_XGSPON,
 };
 
 static const struct of_device_id airoha_xpon_of_match[] = {
@@ -5705,6 +6218,7 @@ MODULE_DEVICE_TABLE(of, airoha_xpon_of_match);
 static struct platform_driver airoha_xpon_driver = {
 	.probe = airoha_xpon_probe,
 	.remove = airoha_xpon_remove,
+	.shutdown = airoha_xpon_shutdown,
 	.driver = {
 		.name = "airoha-xpon",
 		.of_match_table = airoha_xpon_of_match,

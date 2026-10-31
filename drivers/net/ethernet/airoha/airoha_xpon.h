@@ -60,59 +60,123 @@ struct airoha_xpon_match_data {
 	bool scu_dying_gasp_status;
 };
 
-/* EN7580 xpon_10g offsets relative to the MAC window at 0x1fb65000. */
-#define EN7580_XGSPON_SIZE		0x1000
-#define EN7580_XGSPON_SW_RST		0x000
-#define EN7580_XGSPON_MBI_MPI_STOP		0x004
-#define EN7580_XGSPON_ONU_ID		0x014
-#define EN7580_XGSPON_INT_ENABLE		0x040
-#define EN7580_XGSPON_INT_STATUS		0x044
-#define EN7580_XGSPON_FIFO_ERR_STS		0x050
-#define EN7580_XGSPON_TX_ERR_STS		0x054
-#define EN7580_XGSPON_RX_ERR_STS		0x058
-#define EN7580_XGSPON_PLOAMU_CTRL		0x100
-#define EN7580_XGSPON_ACTIVATION_ST	0x104
-#define EN7580_XGSPON_RSP_TIME		0x108
-#define EN7580_XGSPON_US_PROF_VLD		0x11c
-#define EN7580_XGSPON_US_AES_KEY_CTRL	0x200
-#define EN7580_XGSPON_DS_AES_KEY_VLD	0x204
-#define EN7580_XGSPON_TCONT_ID_CFG		0x250
-#define EN7580_XGSPON_TCONT_ID_STS		0x254
-#define EN7580_XGSPON_GPIDX_TBL_INIT	0x260
-#define EN7580_XGSPON_GEM_PORT_CFG		0x274
-#define EN7580_XGSPON_GEM_PORT_STS		0x278
-#define EN7580_XGSPON_IDLE_GEM_CTRL	0x280
-#define EN7580_XGSPON_DYING_GASP_CTRL	0x284
-#define EN7580_XGSPON_PLOAMU_FIFO_STS	0x300
-#define EN7580_XGSPON_PLOAMD_FIFO_STS	0x308
-#define EN7580_XGSPON_MIB_TBL_CONFIG	0x504
+/* xpon_10g MAC offsets shared by EN7580 and AN7581/AN7583. */
+#define XGSPON_MAC_VENDOR_ID		0x00c
+#define XGSPON_MAC_VS_SN			0x010
+#define XGSPON_MAC_REG_ID		0x018
+#define XGSPON_MAC_EQD			0x114
+#define XGSPON_MAC_PROF_LEN		0x120
+#define XGSPON_MAC_EPDROP_EN		0x2f0
+#define XGSPON_MAC_PLOAMU_WDATA		0x304
+#define XGSPON_MAC_PLOAMD_RDATA		0x30c
+#define XGSPON_MAC_KEY_GEN		0x314
+#define XGSPON_MAC_CUR_KIDX		0x318
+#define XGSPON_MAC_MSK			0x320
+#define XGSPON_MAC_REGMSK		0x330
+#define XGSPON_MAC_HW_GENK		0x350
+#define XGSPON_MAC_PIK0			0x360
+#define XGSPON_MAC_PIK1			0x370
+#define XGSPON_MAC_OIK0			0x380
+#define XGSPON_MAC_OIK1			0x390
+#define XGSPON_MAC_KEK0			0x3a0
+#define XGSPON_MAC_KEK1			0x3b0
+#define XGSPON_MAC_PON_TAG		0x3c0
+#define XGSPON_MAC_SW_SET_KIDX		0x3e8
+#define XGSPON_MAC_INT_PLOAMD		BIT(0)
+#define XGSPON_MAC_INT_SN_SENT		BIT(3)
+#define XGSPON_MAC_INT_REG_SENT		BIT(5)
+#define XGSPON_MAC_INT_FIFO_ERR		BIT(15)
+#define XGSPON_MAC_INT_KEY_DONE		BIT(20)
+#define XGSPON_MAC_INT_MASK		(XGSPON_MAC_INT_PLOAMD | \
+					 XGSPON_MAC_INT_SN_SENT | \
+					 XGSPON_MAC_INT_REG_SENT | \
+					 XGSPON_MAC_INT_FIFO_ERR)
+#define XGSPON_MAC_ONU_VALID		BIT(15)
+#define XGSPON_MAC_TCONT_VALID		BIT(16)
+#define XGSPON_MAC_RX_WORDS		13
+#define XGSPON_MAC_TX_WORDS		11
+#define XGSPON_MAC_FIFO_COUNT		GENMASK(7, 0)
+#define XGSPON_MAC_DROP_BAD_MIC		BIT(0)
+#define XGSPON_MAC_FIFO_ERR_ENABLE	0x060
+#define XGSPON_MAC_PLOAM_FIFO_ERRORS	(BIT(10) | BIT(9) | BIT(2))
+#define XGSPON_MAC_PIK_INDEX		BIT(0)
+#define XGSPON_MAC_OIK_INDEX		BIT(16)
+#define XGSPON_MAC_DEFAULT_KEYS		(BIT(24) | BIT(16) | BIT(8) | BIT(0))
+#define XGSPON_MAC_SIZE		0x1000
+#define XGSPON_MAC_SW_RST		0x000
+#define XGSPON_MAC_MBI_MPI_STOP		0x004
+#define XGSPON_MAC_ONU_ID		0x014
+#define XGSPON_MAC_INT_ENABLE		0x040
+#define XGSPON_MAC_INT_STATUS		0x044
+#define XGSPON_MAC_FIFO_ERR_STS		0x050
+#define XGSPON_MAC_TX_ERR_STS		0x054
+#define XGSPON_MAC_RX_ERR_STS		0x058
+#define XGSPON_MAC_PLOAMU_CTRL		0x100
+#define XGSPON_MAC_ACTIVATION_ST	0x104
+#define XGSPON_MAC_RSP_TIME		0x108
+#define XGSPON_MAC_US_PROF_VLD		0x11c
+#define XGSPON_MAC_US_AES_KEY_CTRL	0x200
+#define XGSPON_MAC_DS_AES_KEY_VLD	0x204
+#define XGSPON_MAC_TCONT_ID_CFG		0x250
+#define XGSPON_MAC_TCONT_ID_STS		0x254
+#define XGSPON_MAC_GPIDX_TBL_INIT	0x260
+#define XGSPON_MAC_GEM_PORT_CFG		0x274
+#define XGSPON_MAC_GEM_PORT_STS		0x278
+#define XGSPON_MAC_IDLE_GEM_CTRL	0x280
+#define XGSPON_MAC_DYING_GASP_CTRL	0x284
+#define XGSPON_MAC_PLOAMU_FIFO_STS	0x300
+#define XGSPON_MAC_PLOAMD_FIFO_STS	0x308
+#define XGSPON_MAC_MIB_TBL_CONFIG	0x504
 
-#define EN7580_XGSPON_RST_N		BIT(0)
-#define EN7580_XGSPON_MBI_RX_STOP		BIT(0)
-#define EN7580_XGSPON_MBI_TX_STOP		BIT(8)
-#define EN7580_XGSPON_MPI_RX_STOP		BIT(16)
-#define EN7580_XGSPON_MPI_TX_STOP		BIT(24)
-#define EN7580_XGSPON_STOP_MASK		(EN7580_XGSPON_MBI_RX_STOP | \
-					 EN7580_XGSPON_MBI_TX_STOP | \
-					 EN7580_XGSPON_MPI_RX_STOP | \
-					 EN7580_XGSPON_MPI_TX_STOP)
-#define EN7580_XGSPON_PLOAMU_SW_CTRL	BIT(0)
-#define EN7580_XGSPON_STATE_O1		1
-#define EN7580_XGSPON_TCONT_WRITE		BIT(31)
-#define EN7580_XGSPON_TCONT_INDEX		GENMASK(24, 20)
-#define EN7580_XGSPON_GEM_WRITE		BIT(31)
-#define EN7580_XGSPON_GEM_UNICAST		BIT(17)
-#define EN7580_XGSPON_CMD_DONE		BIT(31)
-#define EN7580_XGSPON_TABLE_START		BIT(0)
-#define EN7580_XGSPON_TABLE_DONE		BIT(8)
-#define EN7580_XGSPON_IDLE_THRESHOLD	GENMASK(15, 0)
-#define EN7580_XGSPON_TCONTS		32
-#define EN7580_XGSPON_GEM_IDS		65536
-#define EN7580_XGSPON_RSP_TIME_DEFAULT	0x1600
-#define EN7580_XGSPON_IDLE_DEFAULT	0x120
-#define EN7580_XGSPON_CMD_TIMEOUT_US	3000
-#define EN7580_XGSPON_TABLE_TIMEOUT_US	100000
-#define EN7580_XGSPON_GEM_TIMEOUT_MS	10000
+#define XGSPON_MAC_RST_N		BIT(0)
+#define XGSPON_MAC_MBI_RX_STOP		BIT(0)
+#define XGSPON_MAC_MBI_TX_STOP		BIT(8)
+#define XGSPON_MAC_MPI_RX_STOP		BIT(16)
+#define XGSPON_MAC_MPI_TX_STOP		BIT(24)
+#define XGSPON_MAC_STOP_MASK		(XGSPON_MAC_MBI_RX_STOP | \
+					 XGSPON_MAC_MBI_TX_STOP | \
+					 XGSPON_MAC_MPI_RX_STOP | \
+					 XGSPON_MAC_MPI_TX_STOP)
+#define XGSPON_MAC_PLOAMU_SW_CTRL	BIT(0)
+#define XGSPON_MAC_STATE_O1		1
+#define XGSPON_MAC_TCONT_WRITE		BIT(31)
+#define XGSPON_MAC_TCONT_INDEX		GENMASK(24, 20)
+#define XGSPON_MAC_GEM_WRITE		BIT(31)
+#define XGSPON_MAC_GEM_UNICAST		BIT(17)
+#define XGSPON_MAC_CMD_DONE		BIT(31)
+#define XGSPON_MAC_TABLE_START		BIT(0)
+#define XGSPON_MAC_TABLE_DONE		BIT(8)
+#define XGSPON_MAC_IDLE_THRESHOLD	GENMASK(15, 0)
+#define XGSPON_MAC_TCONTS		32
+#define XGSPON_MAC_GEM_IDS		65536
+#define XGSPON_MAC_RSP_TIME_DEFAULT	0x1600
+#define XGSPON_MAC_IDLE_DEFAULT	0x120
+#define XGSPON_MAC_CMD_TIMEOUT_US	3000
+#define XGSPON_MAC_TABLE_TIMEOUT_US	100000
+#define XGSPON_MAC_GEM_TIMEOUT_MS	10000
+
+static inline void
+airoha_xgspon_fifo_encode(u32 words[XGSPON_MAC_TX_WORDS],
+			  const u8 body[XGSPON_PLOAM_BODY_LEN], bool key_index)
+{
+	int i;
+
+	/* The first FIFO word is metadata, not part of the standard body. */
+	words[0] = key_index;
+	for (i = 0; i < XGSPON_PLOAM_BODY_LEN / 4; i++)
+		words[i + 1] = get_unaligned_be32(body + i * 4);
+}
+
+static inline void
+airoha_xgspon_fifo_decode(u8 body[XGSPON_PLOAM_BODY_LEN],
+			  const u32 words[XGSPON_MAC_RX_WORDS])
+{
+	int i;
+
+	/* MIC and status have already been consumed by the FIFO reader. */
+	for (i = 0; i < XGSPON_PLOAM_BODY_LEN / 4; i++)
+		put_unaligned_be32(words[i], body + i * 4);
+}
 
 /* GPON MAC register layout and protocol constants. */
 #define GPON_ONU_ID		0x000
@@ -429,6 +493,7 @@ struct epon_llid {
 };
 
 struct airoha_xpon_tod;
+struct airoha_xgspon;
 
 struct xpon_priv {
 	void __iomem *base;
@@ -438,7 +503,20 @@ struct xpon_priv {
 	void __iomem *epon_reset_reg;
 	struct dentry *xgspon_debugfs;
 	bool xgspon_accessible;
-	struct omci_device *xgspon_omci;
+	struct airoha_xgspon *xgspon;
+	/* Serializes MAC commands with start/stop and the threaded FIFO reader. */
+	struct mutex xgspon_lock;
+	bool xgspon_running;
+	bool xgspon_keys_ready;
+	enum airoha_xgspon_state xgspon_state;
+	u16 xgspon_onu_id;
+	u16 xgspon_alloc_id[XGSPON_MAC_TCONTS];
+	u8 xgspon_reg_id[XGSPON_PLOAM_REG_ID_LEN];
+	u32 xgspon_rx_messages;
+	u32 xgspon_rx_rejected;
+	u32 xgspon_fifo_errors;
+	u32 xgspon_sn_sent;
+	u32 xgspon_reg_sent;
 	struct device *dev;
 	struct regmap *scu;
 	const struct airoha_xpon_match_data *match_data;

@@ -16,6 +16,7 @@
 #include <linux/reset.h>
 #include <linux/sizes.h>
 #include <linux/slab.h>
+#include <linux/unaligned.h>
 #include <linux/workqueue.h>
 
 #include "xpon.h"
@@ -55,6 +56,50 @@ void airoha_xpon_phy_rmw(struct airoha_xpon_phy *priv, u32 reg,
 	airoha_xpon_phy_write(priv, reg, regval);
 }
 EXPORT_SYMBOL_GPL(airoha_xpon_phy_rmw);
+
+int airoha_xpon_phy_set_xgspon_profile(struct phy *phy,
+				       const struct airoha_xpon_phy_burst_profile *profile)
+{
+	struct airoha_xpon_phy *priv;
+	u32 offset, mask, info;
+	int ret = 0;
+
+	if (!phy || !profile || profile->index > 3 || !profile->preamble_len ||
+	    profile->preamble_len > 8 || profile->delimiter_len > 8)
+		return -EINVAL;
+	priv = phy_get_drvdata(phy);
+	/* Serialize PCS writes with generic PHY power and mode changes. */
+	mutex_lock(&phy->mutex);
+	if (!priv->soc->has_xgspon_profiles ||
+	    priv->submode != AIROHA_XPON_PHY_SUBMODE_XGSPON) {
+		ret = -EOPNOTSUPP;
+		goto out;
+	}
+	if (!priv->powered) {
+		ret = -ENOLINK;
+		goto out;
+	}
+	/* EN7580 and AN7581/AN7583 share this PCS burst-profile layout. */
+	offset = profile->index * 8;
+	airoha_xpon_phy_write(priv, XPON_XGS_PREAMBLE_UPPER + offset,
+			      get_unaligned_be32(profile->preamble));
+	airoha_xpon_phy_write(priv, XPON_XGS_PREAMBLE_LOWER + offset,
+			      get_unaligned_be32(profile->preamble + 4));
+	airoha_xpon_phy_write(priv, XPON_XGS_DELIMITER_UPPER + offset,
+			      get_unaligned_be32(profile->delimiter));
+	airoha_xpon_phy_write(priv, XPON_XGS_DELIMITER_LOWER + offset,
+			      get_unaligned_be32(profile->delimiter + 4));
+	mask = BIT(profile->index * 8);
+	airoha_xpon_phy_rmw(priv, XPON_XGS_TX_FEC_ENABLE, mask, profile->fec ? mask : 0);
+	info = FIELD_PREP(GENMASK(23, 16), profile->preamble_repeat) |
+	       FIELD_PREP(GENMASK(11, 8), profile->preamble_len) |
+	       FIELD_PREP(GENMASK(3, 0), profile->delimiter_len);
+	airoha_xpon_phy_write(priv, XPON_XGS_PSBU_INFO + profile->index * 4, info);
+out:
+	mutex_unlock(&phy->mutex);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(airoha_xpon_phy_set_xgspon_profile);
 
 void airoha_xpon_phy_run(struct airoha_xpon_phy *priv,
 			 const struct airoha_xpon_phy_step *seq, size_t count)
