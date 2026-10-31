@@ -2,8 +2,7 @@
 /*
  * AN7581 GPON PHY. The digital GEPON block is shared with the legacy PHYs,
  * while the ANA/PMA windows and calibration follow the AN7581 vendor SDK.
- * Only asymmetric GPON is implemented here; 10G modes use different PCS
- * programming and must not reuse these sequences.
+ * XGS-PON uses the separate AN758x PCS/calibration implementation.
  */
 
 #include <linux/bitfield.h>
@@ -16,6 +15,7 @@
 #include <linux/slab.h>
 
 #include "xpon.h"
+#include "an758x.h"
 
 #define AN7581_ANA_OFFSET		0xa000
 #define AN7581_PMA_OFFSET		0xb000
@@ -737,6 +737,8 @@ static int an7581_get_link_state(struct airoha_xpon_phy *priv,
 {
 	struct an7581_xpon_phy *an = priv->soc_priv;
 
+	if (priv->submode == AIROHA_XPON_PHY_SUBMODE_XGSPON)
+		return airoha_an758x_xgspon_get_link_state(priv, ready, los);
 	mutex_lock(&an->lock);
 	*los = !priv->powered || an7581_los(priv);
 	*ready = priv->powered && an7581_ready(priv);
@@ -749,6 +751,8 @@ static int an7581_set_tx_enable(struct airoha_xpon_phy *priv, bool enable)
 	struct an7581_xpon_phy *an = priv->soc_priv;
 	int ret = 0;
 
+	if (priv->submode == AIROHA_XPON_PHY_SUBMODE_XGSPON)
+		return airoha_an758x_xgspon_set_tx_enable(priv, enable);
 	mutex_lock(&an->lock);
 	if (enable && !priv->powered) {
 		ret = -EHOSTDOWN;
@@ -792,7 +796,7 @@ static int an7581_calibrate_cdr(struct airoha_xpon_phy *priv)
 	int coarse, bit;
 	bool locked;
 
-	/* E1 XPON_PrCal_WK(): GPON's frequency-detector target is 0xa49a. */
+	/* E1 XPON_PrCal_WK(): GPON and XGS-PON use target 0xa49a. */
 	airoha_xpon_phy_rmw(priv, AN7581_CDR_INJECTION, BIT(24), BIT(24));
 	airoha_xpon_phy_rmw(priv, AN7581_CDR_LPF,
 			    BIT(24) | BIT(16) | BIT(8) | BIT(0),
@@ -905,6 +909,8 @@ static int an7581_power_off(struct airoha_xpon_phy *priv)
 	struct an7581_xpon_phy *an = priv->soc_priv;
 	int ret = 0;
 
+	if (priv->submode == AIROHA_XPON_PHY_SUBMODE_XGSPON)
+		return airoha_an758x_xgspon_power_off(priv);
 	mutex_lock(&an->lock);
 	WRITE_ONCE(priv->powered, false);
 	an->tx_requested = false;
@@ -973,7 +979,9 @@ static int an7581_set_mode(struct phy *phy, enum phy_mode mode, int submode)
 	struct an7581_xpon_phy *an = priv->soc_priv;
 	int ret = 0;
 
-	if (mode != PHY_MODE_ETHERNET || submode != AIROHA_XPON_PHY_SUBMODE_GPON)
+	if (mode != PHY_MODE_ETHERNET ||
+	    (submode != AIROHA_XPON_PHY_SUBMODE_GPON &&
+	     submode != AIROHA_XPON_PHY_SUBMODE_XGSPON))
 		return -EOPNOTSUPP;
 	mutex_lock(&an->lock);
 	if (priv->powered)
@@ -991,6 +999,8 @@ static int an7581_power_on(struct phy *phy)
 	u32 value;
 	int ret;
 
+	if (priv->submode == AIROHA_XPON_PHY_SUBMODE_XGSPON)
+		return airoha_an758x_xgspon_power_on(priv);
 	mutex_lock(&an->lock);
 	if (!priv->initialized) {
 		ret = -EINVAL;
@@ -1126,6 +1136,8 @@ static int an7581_set_tx_calibration_mode(struct airoha_xpon_phy *priv,
 	struct an7581_xpon_phy *an = priv->soc_priv;
 	int ret = 0;
 
+	if (priv->submode == AIROHA_XPON_PHY_SUBMODE_XGSPON)
+		return -EOPNOTSUPP;
 	mutex_lock(&an->lock);
 	if (!priv->powered) {
 		ret = -EHOSTDOWN;
@@ -1175,6 +1187,10 @@ static int an7581_probe(struct airoha_xpon_phy *priv, struct platform_device *pd
 	if (ret)
 		return dev_err_probe(priv->dev, ret, "failed to read chip revision\n");
 	an->revision = revision & 0xffff;
+	ret = airoha_an758x_xgspon_probe(priv, AIROHA_AN7581,
+					 an->revision == 1 ? an7581_calibrate_cdr : NULL);
+	if (ret)
+		return ret;
 	INIT_DELAYED_WORK(&priv->ready_work, an7581_ready_work);
 	ret = reset_control_assert(priv->reset);
 	if (ret)

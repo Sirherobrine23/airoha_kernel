@@ -38,14 +38,19 @@ config PHY_AIROHA_XPON_EN7523
 	depends on PHY_AIROHA_XPON
 	depends on ARCH_AIROHA || COMPILE_TEST
 
+config PHY_AIROHA_XPON_AN758X
+	tristate
+
 config PHY_AIROHA_XPON_AN7581
-	tristate "GPON PHY for AN7581"
+	tristate "GPON/XGS-PON PHY for AN7581"
+	select PHY_AIROHA_XPON_AN758X
 	default y
 	depends on PHY_AIROHA_XPON
 	depends on ARCH_AIROHA || COMPILE_TEST
 
 config PHY_AIROHA_XPON_AN7583
-	tristate "GPON PHY for AN7583"
+	tristate "GPON/XGS-PON PHY for AN7583"
+	select PHY_AIROHA_XPON_AN758X
 	default y
 	depends on PHY_AIROHA_XPON
 	depends on ARCH_AIROHA || COMPILE_TEST

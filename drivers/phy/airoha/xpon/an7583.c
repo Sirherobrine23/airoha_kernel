@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * AN7583 asymmetric GPON PHY, based on the vendor combo_phy/an7583/pon_pma
+ * AN7583 PHY, based on the vendor combo_phy/an7583/pon_pma
  * implementation. The digital GEPON block uses the shared PHY API, while
  * the ANA/PMA setup and RX calibration are specific to this SerDes.
+ * XGS-PON uses the separate AN758x PCS/calibration implementation.
  */
 
 #include <linux/bitfield.h>
@@ -15,6 +16,7 @@
 #include <linux/slab.h>
 
 #include "xpon.h"
+#include "an758x.h"
 
 #define AN7583_ANA_OFFSET		0xf000
 #define AN7583_PMA_OFFSET		0xe000
@@ -670,6 +672,9 @@ static int an7583_get_link_state(struct airoha_xpon_phy *priv,
 {
 	struct an7583_xpon_phy *an = priv->soc_priv;
 
+	if (priv->submode == AIROHA_XPON_PHY_SUBMODE_XGSPON)
+		return airoha_an758x_xgspon_get_link_state(priv, ready, los);
+
 	mutex_lock(&an->lock);
 	*los = !priv->powered || an7583_los(priv);
 	*ready = priv->powered && an7583_ready(priv);
@@ -681,6 +686,9 @@ static int an7583_set_tx_enable(struct airoha_xpon_phy *priv, bool enable)
 {
 	struct an7583_xpon_phy *an = priv->soc_priv;
 	int ret = 0;
+
+	if (priv->submode == AIROHA_XPON_PHY_SUBMODE_XGSPON)
+		return airoha_an758x_xgspon_set_tx_enable(priv, enable);
 
 	mutex_lock(&an->lock);
 	if (enable && !priv->powered) {
@@ -776,6 +784,9 @@ static int an7583_power_off(struct airoha_xpon_phy *priv)
 	struct an7583_xpon_phy *an = priv->soc_priv;
 	int ret = 0;
 
+	if (priv->submode == AIROHA_XPON_PHY_SUBMODE_XGSPON)
+		return airoha_an758x_xgspon_power_off(priv);
+
 	mutex_lock(&an->lock);
 	WRITE_ONCE(priv->powered, false);
 	an->tx_requested = false;
@@ -844,8 +855,11 @@ static int an7583_set_mode(struct phy *phy, enum phy_mode mode, int submode)
 	struct an7583_xpon_phy *an = priv->soc_priv;
 	int ret = 0;
 
-	if (mode != PHY_MODE_ETHERNET || submode != AIROHA_XPON_PHY_SUBMODE_GPON)
+	if (mode != PHY_MODE_ETHERNET ||
+	    (submode != AIROHA_XPON_PHY_SUBMODE_GPON &&
+	     submode != AIROHA_XPON_PHY_SUBMODE_XGSPON))
 		return -EOPNOTSUPP;
+
 	mutex_lock(&an->lock);
 	if (priv->powered)
 		ret = -EBUSY;
@@ -861,6 +875,9 @@ static int an7583_power_on(struct phy *phy)
 	struct an7583_xpon_phy *an = priv->soc_priv;
 	u32 value;
 	int ret;
+
+	if (priv->submode == AIROHA_XPON_PHY_SUBMODE_XGSPON)
+		return airoha_an758x_xgspon_power_on(priv);
 
 	mutex_lock(&an->lock);
 	if (!priv->initialized) {
@@ -990,6 +1007,9 @@ static int an7583_set_tx_calibration_mode(struct airoha_xpon_phy *priv,
 	struct an7583_xpon_phy *an = priv->soc_priv;
 	int ret = 0;
 
+	if (priv->submode == AIROHA_XPON_PHY_SUBMODE_XGSPON)
+		return -EOPNOTSUPP;
+
 	mutex_lock(&an->lock);
 	if (!priv->powered) {
 		ret = -EHOSTDOWN;
@@ -1031,6 +1051,11 @@ static int an7583_probe(struct airoha_xpon_phy *priv, struct platform_device *pd
 	mutex_init(&an->lock);
 	an->parked = true;
 	priv->soc_priv = an;
+
+	ret = airoha_an758x_xgspon_probe(priv, AIROHA_AN7583, NULL);
+	if (ret)
+		return ret;
+
 	INIT_DELAYED_WORK(&priv->ready_work, an7583_ready_work);
 	ret = reset_control_assert(priv->reset);
 	if (ret)

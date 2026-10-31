@@ -830,8 +830,7 @@ int airoha_xpon_phy_probe(struct platform_device *pdev)
 
 	priv->dev = dev;
 	priv->soc = soc;
-	priv->submode = soc->has_xgspon ? AIROHA_XPON_PHY_SUBMODE_XGSPON :
-		AIROHA_XPON_PHY_SUBMODE_GPON;
+	priv->submode = soc->default_submode;
 	priv->trans_invert = airoha_xpon_phy_trans_invert(dev);
 	spin_lock_init(&priv->counter_lock);
 	INIT_DELAYED_WORK(&priv->ready_work, airoha_xpon_phy_ready_work);

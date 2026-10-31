@@ -141,6 +141,7 @@ struct reset_control;
 #define AIROHA_XPON_PHY_DELAY			0xffff
 
 struct airoha_xpon_phy;
+struct airoha_an758x_xgspon;
 
 struct airoha_xpon_phy_soc_data {
 	const char *name;
@@ -153,7 +154,7 @@ struct airoha_xpon_phy_soc_data {
 	bool has_integrated_pma;
 	bool manages_fw_ready;
 	bool has_gpon_bip;
-	bool has_xgspon;
+	enum airoha_xpon_phy_submode default_submode;
 	const struct phy_ops *ops;
 	int (*pre_init)(struct airoha_xpon_phy *priv);
 	int (*probe)(struct airoha_xpon_phy *priv, struct platform_device *pdev);
@@ -173,6 +174,7 @@ struct airoha_xpon_phy {
 	void __iomem *pma_base;
 	void __iomem *ana_base;
 	void *soc_priv;
+	struct airoha_an758x_xgspon *xgspon;
 	/* Each instance pins its backend module rather than the shared core. */
 	struct phy_ops phy_ops;
 	struct regmap *scu;
