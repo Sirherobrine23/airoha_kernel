@@ -2640,6 +2640,38 @@ airoha_qdma_rx_frame_desc(struct airoha_queue *q,
 	return frame_desc;
 }
 
+/*
+ * ME 78 downstream strip: drop the OLT's tag, so untagged pon0 users get
+ * untagged frames, unless a VLAN device (pon0.<VID>, or one on a bridge
+ * above pon0) still wants that VLAN.  Frees the skb only on failure.
+ */
+static struct sk_buff *airoha_xpon_rx_untag(struct airoha_gdm_dev *dev,
+					    struct net_device *netdev,
+					    struct sk_buff *skb)
+{
+	u16 vid = READ_ONCE(dev->xpon_strip_vid);
+	const struct vlan_hdr *vhdr;
+	bool wanted;
+
+	if (!vid || skb->protocol != htons(ETH_P_8021Q) ||
+	    !pskb_may_pull(skb, VLAN_HLEN))
+		return skb;
+	vhdr = (const struct vlan_hdr *)skb->data;
+	if ((ntohs(vhdr->h_vlan_TCI) & VLAN_VID_MASK) != vid)
+		return skb;
+
+	rcu_read_lock();
+	wanted = __vlan_find_dev_deep_rcu(netdev, htons(ETH_P_8021Q), vid);
+	rcu_read_unlock();
+	if (wanted)
+		return skb;
+
+	skb = skb_vlan_untag(skb);
+	if (skb)
+		__vlan_hwaccel_clear_tag(skb);
+	return skb;
+}
+
 static int airoha_qdma_rx_process(struct airoha_queue *q, int budget)
 {
 	enum dma_data_direction dir = page_pool_get_dma_dir(q->page_pool);
@@ -2884,6 +2916,12 @@ static int airoha_qdma_rx_process(struct airoha_queue *q, int budget)
 				continue;
 			}
 			skb_pull(q->skb, ETH_HLEN);
+		}
+
+		q->skb = airoha_xpon_rx_untag(dev, netdev, q->skb);
+		if (!q->skb) {
+			done++;
+			continue;
 		}
 
 		done++;
@@ -5035,13 +5073,24 @@ static int airoha_xpon_add_service_locked(struct net_device *netdev,
 					  struct airoha_gdm_dev *port,
 					  const struct airoha_xpon_service_cfg *cfg)
 {
+	bool tag_changed = false;
 	int ret;
 
 	spin_lock_bh(&port->xpon_service_lock);
 	ret = airoha_xpon_store_service(&port->xpon_services, cfg);
-	if (ret == -ENOSPC)
+	if (ret == -ENOSPC) {
 		airoha_xpon_service_full(netdev, &port->xpon_services, cfg);
+	} else if (!ret && cfg->tag_untagged) {
+		tag_changed = port->xpon_tag_tci != cfg->tag_tci;
+		port->xpon_tag_tci = cfg->tag_tci;
+		WRITE_ONCE(port->xpon_strip_vid, cfg->strip_downstream ?
+			   cfg->tag_tci & VLAN_VID_MASK : 0);
+	}
 	spin_unlock_bh(&port->xpon_service_lock);
+	if (tag_changed)
+		netdev_info(netdev, "ME 78: untagged upstream frames get VLAN %u%s\n",
+			    cfg->tag_tci & VLAN_VID_MASK,
+			    cfg->strip_downstream ? ", stripped downstream" : "");
 	return ret;
 }
 
@@ -5053,9 +5102,19 @@ static bool airoha_xpon_remove_service(struct airoha_gdm_dev *port,
 	spin_lock_bh(&port->xpon_service_lock);
 	i = airoha_xpon_find_cookie(&port->xpon_services, cookie);
 	if (i >= 0) {
+		const struct airoha_xpon_service_cfg *rule;
+		bool tagged;
+
+		rule = &port->xpon_services.rules[i];
+		tagged = rule->tag_untagged;
 		if (gem_port_id)
-			*gem_port_id = port->xpon_services.rules[i].gem_port_id;
+			*gem_port_id = rule->gem_port_id;
 		airoha_xpon_forget_cookie(&port->xpon_services, cookie);
+		/* The rule goes with its last cookie. */
+		if (tagged && !rule->valid) {
+			port->xpon_tag_tci = 0;
+			WRITE_ONCE(port->xpon_strip_vid, 0);
+		}
 	}
 	spin_unlock_bh(&port->xpon_service_lock);
 	return i >= 0;
@@ -5099,6 +5158,7 @@ static bool econet_xpon_has_gem_service(struct net_device *netdev,
 	spin_lock_bh(&port->xpon_service_lock);
 	for (i = 0; i < AIROHA_XPON_MAX_SERVICES; i++)
 		if (port->xpon_services.rules[i].valid &&
+		    !port->xpon_services.rules[i].tag_untagged &&
 		    port->xpon_services.rules[i].gem_port_id == gem_port_id) {
 			found = true;
 			break;
@@ -5117,6 +5177,8 @@ static void econet_xpon_flush_services(struct net_device *netdev)
 
 	spin_lock_bh(&port->xpon_service_lock);
 	memset(&port->xpon_services, 0, sizeof(port->xpon_services));
+	port->xpon_tag_tci = 0;
+	WRITE_ONCE(port->xpon_strip_vid, 0);
 	spin_unlock_bh(&port->xpon_service_lock);
 }
 
@@ -8167,16 +8229,15 @@ static int airoha_dev_set_features(struct net_device *netdev,
 	return 0;
 }
 
-static int
-airoha_eth_xpon_lookup_service(struct airoha_gdm_dev *dev,
-			       bool vlan_valid, u16 vlan_id,
-			       bool pcp_valid, u8 pcp,
-			       struct airoha_xpon_tx_info *info)
+static const struct airoha_xpon_service_cfg *
+airoha_eth_xpon_match_service(struct airoha_gdm_dev *dev,
+			      bool vlan_valid, u16 vlan_id,
+			      bool pcp_valid, u8 pcp)
 {
 	const struct airoha_xpon_service_cfg *fallback = NULL;
 	int i;
 
-	spin_lock_bh(&dev->xpon_service_lock);
+	lockdep_assert_held(&dev->xpon_service_lock);
 	for (i = 0; i < AIROHA_XPON_MAX_SERVICES; i++) {
 		const struct airoha_xpon_service_cfg *service;
 
@@ -8197,15 +8258,44 @@ airoha_eth_xpon_lookup_service(struct airoha_gdm_dev *dev,
 		break;
 	}
 
-	if (fallback) {
-		info->gem_port_id = fallback->gem_port_id;
-		info->tcont = fallback->tcont;
-		info->queue = fallback->queue;
+	return fallback;
+}
+
+static int
+airoha_eth_xpon_lookup_service(struct airoha_gdm_dev *dev,
+			       bool vlan_valid, u16 vlan_id,
+			       bool pcp_valid, u8 pcp,
+			       struct airoha_xpon_tx_info *info)
+{
+	const struct airoha_xpon_service_cfg *service = NULL;
+	u16 tci;
+
+	spin_lock_bh(&dev->xpon_service_lock);
+	/*
+	 * ME 78: an untagged frame goes out with the OLT's tag, so it takes the
+	 * path a frame of that VLAN (pon0.<VID>) takes.  Without a service for
+	 * that VLAN it falls back to the untagged lookup, as before ME 78.
+	 */
+	tci = dev->xpon_tag_tci;
+	if (!vlan_valid && tci)
+		service = airoha_eth_xpon_match_service(dev, true,
+				tci & VLAN_VID_MASK, true,
+				(tci & VLAN_PRIO_MASK) >> VLAN_PRIO_SHIFT);
+	info->tag = !!service;
+	info->tag_tci = tci;
+	if (!service)
+		service = airoha_eth_xpon_match_service(dev, vlan_valid,
+							vlan_id, pcp_valid,
+							pcp);
+	if (service) {
+		info->gem_port_id = service->gem_port_id;
+		info->tcont = service->tcont;
+		info->queue = service->queue;
 		info->oam = false;
 	}
 	spin_unlock_bh(&dev->xpon_service_lock);
 
-	return fallback ? 0 : -ENOENT;
+	return service ? 0 : -ENOENT;
 }
 
 static int airoha_xpon_get_tx_info(struct net_device *netdev, bool vlan_valid,
@@ -8225,8 +8315,16 @@ static int airoha_xpon_get_tx_info(struct net_device *netdev, bool vlan_valid,
 	    dev->xpon_mode != AIROHA_XPON_MODE_GPON)
 		return -EOPNOTSUPP;
 
-	return airoha_eth_xpon_lookup_service(dev, vlan_valid, vlan_id,
+	ret = airoha_eth_xpon_lookup_service(dev, vlan_valid, vlan_id,
 					     pcp_valid, pcp, info);
+	/*
+	 * Note: a PPE entry does not push the ME 78 tag, so those flows
+	 * stay in software; add the tag to the FOE entry if they need offload.
+	 */
+	if (!ret && info->tag)
+		return -EOPNOTSUPP;
+
+	return ret;
 }
 
 static int
@@ -8349,6 +8447,7 @@ static bool airoha_xpon_has_gem_service(struct net_device *netdev,
 	spin_lock_bh(&dev->xpon_service_lock);
 	for (i = 0; i < AIROHA_XPON_MAX_SERVICES; i++)
 		if (dev->xpon_services.rules[i].valid &&
+		    !dev->xpon_services.rules[i].tag_untagged &&
 		    dev->xpon_services.rules[i].gem_port_id == gem_port_id) {
 			found = true;
 			break;
@@ -8367,6 +8466,8 @@ static void airoha_xpon_flush_services(struct net_device *netdev)
 
 	spin_lock_bh(&dev->xpon_service_lock);
 	memset(&dev->xpon_services, 0, sizeof(dev->xpon_services));
+	dev->xpon_tag_tci = 0;
+	WRITE_ONCE(dev->xpon_strip_vid, 0);
 	spin_unlock_bh(&dev->xpon_service_lock);
 }
 
@@ -8403,6 +8504,13 @@ static netdev_tx_t __airoha_dev_xmit(struct sk_buff *skb,
 	    dev->xpon_mode == AIROHA_XPON_MODE_GPON) {
 		if (airoha_eth_xpon_classify(dev, skb, &classified))
 			goto error;
+		/* Frees the skb on failure; the error path copes with NULL. */
+		if (classified.tag) {
+			skb = vlan_insert_tag(skb, htons(ETH_P_8021Q),
+					      classified.tag_tci);
+			if (!skb)
+				goto error;
+		}
 		xpon = &classified;
 	}
 	/* Logical xPON endpoints can submit directly, bypassing the core's
@@ -10193,6 +10301,18 @@ static int airoha_alloc_gdm_device(struct airoha_eth *eth,
 		netdev->features |= NETIF_F_GRO_HW;
 
 		/* Keep the validated xPON RX GRO path but do TX segmentation in SW. */
+		netdev->hw_features &= ~AIROHA_XPON_TX_OFFLOAD_FEATURES;
+		netdev->features &= ~AIROHA_XPON_TX_OFFLOAD_FEATURES;
+		netdev->vlan_features &= ~AIROHA_XPON_TX_OFFLOAD_FEATURES;
+	}
+
+	/*
+	 * The check above never matches the EN7523 PON MAC (GDM2 has nbq 0).
+	 * A multi-descriptor frame queued towards a GPON T-CONT is never
+	 * completed and stalls the upstream for good, so segment and
+	 * checksum in software there too.
+	 */
+	if (of_property_read_bool(np, "airoha,xpon-managed")) {
 		netdev->hw_features &= ~AIROHA_XPON_TX_OFFLOAD_FEATURES;
 		netdev->features &= ~AIROHA_XPON_TX_OFFLOAD_FEATURES;
 		netdev->vlan_features &= ~AIROHA_XPON_TX_OFFLOAD_FEATURES;

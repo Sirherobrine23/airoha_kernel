@@ -1082,6 +1082,10 @@ struct airoha_xpon_service_cfg {
 	bool pcp_valid;
 	bool default_service;
 	bool valid;
+	/* ME 78 rule: no GEM path, only the tag for untagged frames */
+	u16 tag_tci;
+	bool tag_untagged;
+	bool strip_downstream;
 };
 
 struct airoha_xpon_service_table {
@@ -1106,6 +1110,9 @@ struct airoha_xpon_tx_info {
 	u8 tcont;
 	u8 queue;
 	bool oam;
+	/* insert @tag_tci before transmitting (ME 78) */
+	u16 tag_tci;
+	bool tag;
 };
 
 struct airoha_gdm_dev {
@@ -1169,6 +1176,9 @@ struct airoha_gdm_dev {
 	/* Protects GPON GEM/T-CONT service classification. */
 	spinlock_t xpon_service_lock;
 	struct airoha_xpon_service_table xpon_services;
+	/* ME 78: tag for untagged upstream frames, VID to strip downstream */
+	u16 xpon_tag_tci;
+	u16 xpon_strip_vid;
 };
 
 struct airoha_gdm_port {

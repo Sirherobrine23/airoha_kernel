@@ -313,6 +313,10 @@ struct omci_telemetry {
  * @multicast_ani_valid: @multicast_ani_entity_id was profile-resolved
  * @multicast: service represents a multicast GEM path
  * @default_service: fallback service when no VLAN/PCP rule matches
+ * @tag_tci: ME 78 upstream tag, used with @tag_untagged
+ * @tag_untagged: not a GEM path but an ME 78 rule: tag untagged upstream
+ *	frames with @tag_tci and classify them as frames of that VLAN
+ * @strip_downstream: ME 78 asks to remove @tag_tci's VLAN downstream
  */
 struct omci_service_config {
 	u32 cookie;
@@ -333,6 +337,9 @@ struct omci_service_config {
 	bool multicast_ani_valid;
 	bool multicast;
 	bool default_service;
+	u16 tag_tci;
+	bool tag_untagged;
+	bool strip_downstream;
 };
 
 struct omci_ani_topology {

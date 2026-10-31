@@ -767,8 +767,11 @@ out:
 
 static void an7581_mask_interrupts(struct airoha_xpon_phy *priv)
 {
-	/* Link events are polled; never enable an unhandled PHY interrupt. */
-	airoha_xpon_phy_write(priv, XPON_INT_ENABLE, 0);
+	/*
+	 * Link events are polled; never enable an unhandled PHY interrupt.
+	 * XPON_INT_ENABLE stays at its reset value of 0: on AN7581 a write to
+	 * it resets the board, and a read before init can too.
+	 */
 	airoha_xpon_phy_write(priv, AN7581_INT0, 0);
 	airoha_xpon_phy_write(priv, AN7581_INT1, 0);
 }
@@ -924,7 +927,6 @@ static int an7581_power_off(struct airoha_xpon_phy *priv)
 		airoha_xpon_phy_rmw(priv, XPON_PHYFWREADY,
 				    XPON_PHYFWREADY_READY, 0);
 		airoha_xpon_phy_write(priv, AN7581_PON_CLOCK, 0);
-		ret = reset_control_assert(priv->reset);
 	}
 	airoha_xpon_phy_set_vcc_enabled(priv, false);
 	an->configured = false;
@@ -1044,16 +1046,20 @@ static int an7581_power_on(struct phy *phy)
 	if (ret)
 		goto err_power;
 
+	/* The digital block hangs the bus until the init sequence has run. */
+	an7581_run(priv, init);
 	airoha_xpon_phy_rmw(priv, XPON_PHYFWREADY, XPON_PHYFWREADY_READY, 0);
 	an7581_mask_interrupts(priv);
-	an7581_run(priv, init);
-	an7581_mask_interrupts(priv);
-	ret = read_poll_timeout(airoha_xpon_phy_read, value, value & BIT(16),
-				100, 100000, false, priv, AN7581_TX_PLL_STATUS);
-	if (ret) {
-		dev_err(priv->dev, "GPON TX PLL lock timeout: %#08x\n", value);
+	/* The vendor only reports this bit: it stays low here even at O5. */
+	if (read_poll_timeout(airoha_xpon_phy_read, value, value & BIT(16),
+			      100, 100000, false, priv, AN7581_TX_PLL_STATUS))
+		dev_warn(priv->dev, "GPON TX PLL not locked: %#08x\n", value);
+	an->calibrated = false;
+	an->parked = true;
+	ret = an7581_connect(priv);
+	if (ret && !an7581_los(priv))
 		goto err_power;
-	}
+	/* These writes hang the bus until the RX tables release the digital reset. */
 	airoha_xpon_phy_rmw(priv, XPON_PHYSET10, XPON_PHYSET10_GPON,
 			    XPON_PHYSET10_GPON);
 	airoha_xpon_phy_rmw(priv, XPON_SETTING, XPON_SETTING_INV_MASK,
@@ -1072,11 +1078,6 @@ static int an7581_power_on(struct phy *phy)
 	airoha_xpon_phy_rmw(priv, XPON_GPON_TX_COUNTER_CTRL,
 			    BIT(2) | XPON_GPON_TX_COUNTER_ENABLE,
 			    BIT(2) | XPON_GPON_TX_COUNTER_ENABLE);
-	an->calibrated = false;
-	an->parked = true;
-	ret = an7581_connect(priv);
-	if (ret && !an7581_los(priv))
-		goto err_power;
 	if (an7581_los(priv) || ret) {
 		usleep_range(1000, 1100);
 		an7581_park_rx(priv);
@@ -1113,7 +1114,6 @@ err_power:
 	airoha_xpon_phy_set_tx_gpio(priv, false);
 	if (an->configured)
 		an7581_mask_interrupts(priv);
-	reset_control_assert(priv->reset);
 	/* Never leave the temporary reset-mode selector in the SCU. */
 	regmap_update_bits(priv->scu, AN7581_SCU_WAN_CONF, AN7581_SCU_WAN_MASK, 0);
 	airoha_xpon_phy_set_vcc_enabled(priv, false);
@@ -1192,9 +1192,11 @@ static int an7581_probe(struct airoha_xpon_phy *priv, struct platform_device *pd
 	if (ret)
 		return ret;
 	INIT_DELAYED_WORK(&priv->ready_work, an7581_ready_work);
-	ret = reset_control_assert(priv->reset);
-	if (ret)
-		return ret;
+	/*
+	 * Only ever pulse the PHY reset, as the vendor SDK does: an ANA or PMA
+	 * access while it is asserted hangs the bus, and power-on starts with
+	 * those accesses.
+	 */
 	return devm_add_action_or_reset(priv->dev, an7581_cleanup, priv);
 }
 

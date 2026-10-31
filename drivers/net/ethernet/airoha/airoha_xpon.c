@@ -2096,6 +2096,22 @@ int airoha_gpon_omci_hw_replace_service(
 	bool sfu = xpon_device_onu_type(priv->xpon) == XPON_ONU_SFU;
 	int ret;
 
+	/* ME 78 tag rule: classification only, no GEM or T-CONT of its own. */
+	if (service && service->tag_untagged) {
+		cfg = (struct airoha_xpon_service_cfg) {
+			.cookie = service->cookie,
+			.tag_tci = service->tag_tci,
+			.tag_untagged = true,
+			.strip_downstream = service->strip_downstream,
+		};
+		dev_dbg(priv->dev,
+			"OMCI ME 78 rule %#x: UNI %#x tag untagged upstream with TCI %#x%s\n",
+			service->cookie, service->uni_entity_id,
+			service->tag_tci,
+			service->strip_downstream ? ", strip downstream" : "");
+		return airoha_eth_xpon_add_service(priv->gdm_dev, &cfg);
+	}
+
 	if (!service || service->multicast || service->vlan_treatment_valid ||
 	    service->direction == OMCI_GEM_PORT_DIRECTION_ANI_TO_UNI)
 		return -EOPNOTSUPP;

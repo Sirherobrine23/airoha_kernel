@@ -418,6 +418,15 @@ static const struct omci_attr_desc omci_vlan_filter_attrs[] = {
 	OMCI_ATTR(13, 25, 1, OMCI_RW_SC),
 };
 
+/* ME 78: upstream mode, upstream TCI, downstream mode, association. */
+static const struct omci_attr_desc omci_vlan_tagging_op_attrs[] = {
+	OMCI_ATTR(15, 0, 1, OMCI_RW_SC),
+	OMCI_ATTR(14, 1, 2, OMCI_RW_SC),
+	OMCI_ATTR(13, 3, 1, OMCI_RW_SC),
+	OMCI_ATTR(12, 4, 1, OMCI_RW_SC),
+	OMCI_ATTR(11, 5, 2, OMCI_RW_SC),
+};
+
 static const struct omci_attr_desc omci_8021p_mapper_attrs[] = {
 	OMCI_ATTR(15, 0, 2, OMCI_RW_SC),
 	OMCI_ATTR(14, 2, 2, OMCI_RW_SC),
@@ -652,6 +661,12 @@ static const struct omci_me_desc omci_me_descs[] = {
 		      OMCI_ME_F_DATAPATH, GENMASK(15, 13), GENMASK(15, 13), 26,
 		      OMCI_CLASS_CATEGORY_LAYER2, OMCI_CLASS_SUPPORT_PROVISIONED,
 		      omci_vlan_filter_attrs),
+	STANDARD_DESC(OMCI_CLASS_VLAN_TAGGING_OPERATION,
+		      "VLAN tagging operation configuration data",
+		      OLT_CREATED_ACTIONS, OMCI_ME_F_DATAPATH,
+		      GENMASK(15, 11), GENMASK(15, 11), 7,
+		      OMCI_CLASS_CATEGORY_LAYER2, OMCI_CLASS_SUPPORT_PROVISIONED,
+		      omci_vlan_tagging_op_attrs),
 	STANDARD_DESC(OMCI_CLASS_8021P_MAPPER,
 		      "802.1p mapper service profile", OLT_CREATED_ACTIONS,
 		      OMCI_ME_F_DATAPATH, GENMASK(15, 3), GENMASK(15, 3), 45,

@@ -16,7 +16,10 @@ static bool airoha_xpon_rule_eq(const struct airoha_xpon_service_cfg *a,
 	       (!a->vlan_valid || a->vlan_id == b->vlan_id) &&
 	       a->pcp_valid == b->pcp_valid &&
 	       (!a->pcp_valid || a->pcp == b->pcp) &&
-	       a->default_service == b->default_service;
+	       a->default_service == b->default_service &&
+	       a->tag_untagged == b->tag_untagged &&
+	       (!a->tag_untagged || (a->tag_tci == b->tag_tci &&
+				     a->strip_downstream == b->strip_downstream));
 }
 
 /* Caller serializes access to the table. */

@@ -3015,6 +3015,48 @@ static bool omci_agent_vlan_associated(const struct omci_mib_object *object,
 	return false;
 }
 
+/*
+ * ME 84 belongs to the bridge port with the same entity ID.  When the
+ * WAN-side port has one that names VLANs, return it, so the LAN-side
+ * filters can be cut down to the VLANs that port admits.  Without this,
+ * a UNI filter on a bridge shared by several GEM IW TPs puts each of its
+ * VLANs on every GEM, and the backend picks whichever table slot it
+ * finds first.
+ */
+static const struct omci_mib_object *
+omci_agent_wan_vlan_filter_locked(struct omci_agent *agent,
+				  u16 bridge_port_entity)
+{
+	const struct omci_mib_object *object;
+	unsigned int i;
+
+	object = omci_mib_lookup(agent, OMCI_CLASS_VLAN_TAGGING_FILTER_DATA,
+				 bridge_port_entity);
+	if (!object || !omci_mib_object_active(agent, object) ||
+	    !object->vlan_filter.valid)
+		return NULL;
+	for (i = 0; i < object->vlan_filter.num_entries; i++)
+		if (omci_agent_service_vlan_valid(
+			    object->vlan_filter.entries[i].vid))
+			return object;
+
+	return NULL;
+}
+
+static bool
+omci_agent_wan_vlan_admits(const struct omci_mib_object *wan_filter, u16 vid)
+{
+	unsigned int i;
+
+	if (!wan_filter || !omci_agent_service_vlan_valid(vid))
+		return true;
+	for (i = 0; i < wan_filter->vlan_filter.num_entries; i++)
+		if (wan_filter->vlan_filter.entries[i].vid == vid)
+			return true;
+
+	return false;
+}
+
 static int omci_agent_stage_path_locked(struct omci_device *odev,
 					struct xarray *services,
 					const struct omci_mib_object *lan_port,
@@ -3025,12 +3067,15 @@ static int omci_agent_stage_path_locked(struct omci_device *odev,
 					bool *default_installed)
 {
 	struct omci_agent *agent = &odev->agent;
+	const struct omci_mib_object *wan_filter;
 	struct omci_mib_object *object;
 	unsigned long index;
 	u16 selector = pcp_valid ? 0x100 | pcp : 0;
 	bool installed = false;
 	int ret;
 
+	wan_filter = omci_agent_wan_vlan_filter_locked(agent,
+						       bridge_port_entity);
 	xa_for_each(&agent->mib, index, object) {
 		unsigned int i;
 
@@ -3042,6 +3087,10 @@ static int omci_agent_stage_path_locked(struct omci_device *odev,
 		if (object->class_id == OMCI_CLASS_VLAN_TAGGING_FILTER_DATA &&
 		    object->vlan_filter.valid) {
 			for (i = 0; i < object->vlan_filter.num_entries; i++) {
+				if (object != wan_filter &&
+				    !omci_agent_wan_vlan_admits(wan_filter,
+					object->vlan_filter.entries[i].vid))
+					continue;
 				ret = omci_agent_stage_service_rule_locked(
 					odev, services, lan_port->entity_id,
 					uni_entity, gem_iwtp_entity, pcp,
@@ -3159,6 +3208,92 @@ static int omci_agent_resolve_bridge_locked(
 	return 0;
 }
 
+static bool omci_agent_tagging_op_matches(const struct omci_mib_object *op,
+					  u16 port_entity, u8 tp_type,
+					  u16 uni_entity)
+{
+	u16 pointer = get_unaligned_be16(op->data + 5);
+
+	/* Association type; 0 (an older OLT leaves it out) means PPTP = ME ID. */
+	switch (op->data[4]) {
+	case 0:
+		return tp_type == OMCI_BRIDGE_TP_PPTP_ETH_UNI &&
+		       op->entity_id == uni_entity;
+	case 3:
+		return pointer == port_entity;
+	case 10:
+		return tp_type == OMCI_BRIDGE_TP_VEIP && pointer == uni_entity;
+	case 11:
+		return tp_type == OMCI_BRIDGE_TP_PPTP_ETH_UNI &&
+		       pointer == uni_entity;
+	default:
+		return false;
+	}
+}
+
+/*
+ * ME 78 (VLAN tagging operation, the pre-ME 171 way) makes the ONU tag a
+ * UNI's upstream frames with one TCI and optionally strip it downstream.
+ * pon0 is the network side and already carries tagged frames as pon0.<VID>,
+ * so the rule only says "tag untagged frames with this TCI"; the backend then
+ * classifies them exactly like pon0.<VID> frames, keeping the GEM choice the
+ * same for both.  pon0 is one host port, so the first enabled UNI with a
+ * tagging ME 78 wins.  Any non-zero upstream mode tags: the Huawei OLT on
+ * TIME sends 0x0f, which G.988 does not define, next to the TCI it wants.
+ */
+static int omci_agent_stage_tagging_op_locked(struct omci_device *odev,
+					      struct xarray *services)
+{
+	struct omci_agent *agent = &odev->agent;
+	struct omci_mib_object *port;
+	struct omci_mib_object *op;
+	unsigned long index;
+	unsigned long op_index;
+
+	xa_for_each(&agent->mib, index, port) {
+		struct omci_service_config service = {};
+		u16 uni_entity;
+		u8 tp_type;
+
+		if (!omci_mib_object_active(agent, port) ||
+		    port->class_id != OMCI_CLASS_MAC_BRIDGE_PORT_CONFIG_DATA)
+			continue;
+		tp_type = port->data[3];
+		uni_entity = get_unaligned_be16(port->data + 4);
+		if ((tp_type != OMCI_BRIDGE_TP_PPTP_ETH_UNI &&
+		     tp_type != OMCI_BRIDGE_TP_VEIP) ||
+		    !omci_agent_uni_enabled(agent, tp_type, uni_entity))
+			continue;
+
+		xa_for_each(&agent->mib, op_index, op) {
+			u16 tci = get_unaligned_be16(op->data + 1);
+
+			if (op->class_id != OMCI_CLASS_VLAN_TAGGING_OPERATION ||
+			    !omci_mib_object_active(agent, op) ||
+			    !omci_agent_tagging_op_matches(op, port->entity_id,
+							   tp_type, uni_entity) ||
+			    !op->data[0] ||
+			    !omci_agent_service_vlan_valid(tci & VLAN_VID_MASK))
+				continue;
+
+			service.uni_entity_id = omci_profile_normalize_uni_entity(
+				agent->profile_effective, uni_entity);
+			service.tag_tci = tci;
+			service.tag_untagged = true;
+			service.strip_downstream = op->data[3] != 0;
+			service.cookie = omci_agent_service_cookie(
+				port->entity_id, op->entity_id, 0, 0x7800);
+			dev_dbg(odev->parent,
+				"OMCI stage ME 78 %#x: UNI %#x LAN port %#x upstream mode %#x TCI %#x downstream mode %#x\n",
+				op->entity_id, uni_entity, port->entity_id,
+				op->data[0], tci, op->data[3]);
+			return omci_agent_stage_service(services, &service);
+		}
+	}
+
+	return 0;
+}
+
 static int omci_agent_reconcile_services_locked(struct omci_device *odev)
 {
 	struct omci_agent *agent = &odev->agent;
@@ -3184,6 +3319,10 @@ static int omci_agent_reconcile_services_locked(struct omci_device *odev)
 		if (ret)
 			goto out;
 	}
+
+	ret = omci_agent_stage_tagging_op_locked(odev, &desired);
+	if (ret)
+		goto out;
 
 	ret = omci_agent_apply_services_locked(odev, &desired);
 
@@ -4221,6 +4360,7 @@ static int omci_agent_build_response_locked(
 		*content_len = 32;
 		break;
 	case OMCI_MSG_TYPE_MIB_RESET:
+		dev_info(odev->parent, "OMCI MIB reset from the OLT\n");
 		if (omci_agent_mib_reset_locked(odev, false, profile_changed))
 			content[0] = OMCI_RESULT_PROCESSING_ERROR;
 		else
