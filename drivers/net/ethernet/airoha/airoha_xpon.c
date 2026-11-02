@@ -1056,6 +1056,7 @@ static int gpon_load_credentials(struct xpon_priv *priv)
 
 	if (!(identity->valid & OMCI_IDENTITY_F_SERIAL_NUMBER)) {
 		gpon_random_serial_number(airoha_default_vendor_id, identity);
+		priv->identity_hold = true;
 		dev_warn(
 			priv->dev,
 			"GPON serial number missing; generated random development serial %8phN\n",
@@ -2199,6 +2200,15 @@ void airoha_gpon_omci_hw_config_changed(void *hw_priv, u16 key,
 		dev_dbg(priv->dev,
 			"OMCI configuration changed (key %u), GPON restart not required\n",
 			key);
+		/*
+		 * A box with no identity changes nothing that needs a restart,
+		 * but rpcd's first apply still lands here: the default
+		 * permissive option differs from the kernel's. If it didn't,
+		 * the hold would just run to its timeout.
+		 */
+		if (READ_ONCE(priv->identity_hold))
+			mod_delayed_work(priv->fsm_wq, &priv->restart_work,
+					 msecs_to_jiffies(GPON_CONFIG_RESTART_DEBOUNCE_MS));
 		return;
 	}
 
@@ -2812,6 +2822,23 @@ static int gpon_enable(struct xpon_priv *priv)
 	if (!READ_ONCE(priv->started) || !READ_ONCE(priv->optical_active))
 		return -ENETDOWN;
 
+	/*
+	 * The real identity is in userspace, which can't apply it for another
+	 * 26 s. Ranging before then shows the OLT a random serial, it answers
+	 * with Deactivate_ONU-ID, and repeated alarms can get a line banned.
+	 * TX_DISABLE stays asserted from PHY probe, so a held box is dark.
+	 * restart_work ends the hold on the first apply, or on this timeout so
+	 * that a box with no identity still comes up.
+	 */
+	if (READ_ONCE(priv->identity_hold)) {
+		dev_info(priv->dev,
+			 "GPON MAC held for the identity, up to %u ms\n",
+			 GPON_IDENTITY_HOLD_MS);
+		queue_delayed_work(priv->fsm_wq, &priv->restart_work,
+				   msecs_to_jiffies(GPON_IDENTITY_HOLD_MS));
+		return 0;
+	}
+
 	dev_info(priv->dev, "starting GPON MAC from state %s\n",
 		 gpon_state_name(ploam_get_state(priv->ploam)));
 
@@ -3352,6 +3379,11 @@ static void gpon_restart_work_fn(struct work_struct *work)
 	int ret;
 
 	config_restart = gpon_take_pending_identity(priv, &identity, &key);
+	if (READ_ONCE(priv->identity_hold)) {
+		WRITE_ONCE(priv->identity_hold, false);
+		dev_info(priv->dev, "GPON MAC hold released (%s)\n",
+			 config_restart ? "new identity" : "no new identity");
+	}
 	if (!READ_ONCE(priv->started) || !READ_ONCE(priv->optical_active)) {
 		if (config_restart)
 			gpon_apply_runtime_identity(priv, &identity);

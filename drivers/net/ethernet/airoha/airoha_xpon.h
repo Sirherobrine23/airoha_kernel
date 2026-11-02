@@ -482,6 +482,12 @@ airoha_xgspon_fifo_decode(u8 body[XGSPON_PLOAM_BODY_LEN],
 #define GPON_DEACTIVATE_RESTART_MS	500
 /* Coalesce a net/omci apply batch into one complete MAC/PHY restart. */
 #define GPON_CONFIG_RESTART_DEBOUNCE_MS	250
+/*
+ * Longest the MAC waits for userspace to apply an identity. rpcd does so
+ * 26-29 s after the hold starts. Past this the MAC starts on the random
+ * serial, which is what it always did before the hold.
+ */
+#define GPON_IDENTITY_HOLD_MS		60000
 #define XPON_LINK_POLL_MS		250
 #define GPON_REARM_RETRY_MS		1000
 
@@ -581,6 +587,8 @@ struct xpon_priv {
 	bool started;
 	bool optical_active;
 	bool mac_enabled;
+	/* No stored serial: stay off the fibre until userspace applies one */
+	bool identity_hold;
 	/* True after a switch has detached the old protocol services. */
 	bool mode_switch_detached;
 	/* O7 gated a transmitter that O2 does not gate again */
