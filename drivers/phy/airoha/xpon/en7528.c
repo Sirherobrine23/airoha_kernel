@@ -117,7 +117,6 @@ static int airoha_en7528_xpon_phy_configure(struct airoha_xpon_phy *priv)
 
 	return 0;
 }
-EXPORT_SYMBOL_GPL(airoha_en7528_xpon_phy_configure);
 
 static const struct airoha_xpon_phy_soc_data airoha_en7528_xpon_phy_data = {
 	.name = "EN7528",
