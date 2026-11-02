@@ -227,6 +227,48 @@ int airoha_xpon_phy_take_gpon_bip(struct phy *phy, u32 *count)
 }
 EXPORT_SYMBOL_GPL(airoha_xpon_phy_take_gpon_bip);
 
+/*
+ * Latch and read the cumulative FEC and frame/LOF counters, as the vendor
+ * phy_rx_fec_counter() and show_phy_cnt() do.  The latch is a command
+ * register write; nothing is cleared here.
+ */
+int airoha_xpon_phy_get_gpon_rx_counters(
+	struct phy *phy, struct airoha_xpon_phy_gpon_rx_counters *c)
+{
+	struct airoha_xpon_phy *priv;
+	unsigned long flags;
+	u32 high;
+	int ret;
+
+	if (!c)
+		return -EINVAL;
+
+	ret = airoha_xpon_phy_get_active_gpon(phy, &priv);
+	if (ret)
+		return ret;
+
+	spin_lock_irqsave(&priv->counter_lock, flags);
+	airoha_xpon_phy_write(priv, XPON_RX_COUNTER_CTRL, XPON_RX_FEC_LATCH);
+	c->fec_corrected_bytes =
+		airoha_xpon_phy_read(priv, XPON_RX_FEC_CORRECTED_BYTES);
+	c->fec_corrected_codewords =
+		airoha_xpon_phy_read(priv, XPON_RX_FEC_CORRECTED_CW);
+	c->fec_uncorrectable_codewords =
+		airoha_xpon_phy_read(priv, XPON_RX_FEC_UNCORRECTABLE_CW);
+	c->fec_codewords = airoha_xpon_phy_read(priv, XPON_RX_FEC_TOTAL_CW);
+	c->fec_seconds = airoha_xpon_phy_read(priv, XPON_RX_FEC_SECONDS);
+
+	airoha_xpon_phy_write(priv, XPON_RX_COUNTER_CTRL, XPON_RX_FRAME_LATCH);
+	high = airoha_xpon_phy_read(priv, XPON_RX_FRAME_COUNT_HIGH);
+	c->frames = (u64)high << 32 |
+		    airoha_xpon_phy_read(priv, XPON_RX_FRAME_COUNT_LOW);
+	c->lof = airoha_xpon_phy_read(priv, XPON_RX_LOF_COUNTER);
+	spin_unlock_irqrestore(&priv->counter_lock, flags);
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(airoha_xpon_phy_get_gpon_rx_counters);
+
 int airoha_xpon_phy_get_gpon_tx_counters(struct phy *phy,
 					 u32 *frame_count,
 					 u32 *burst_count)

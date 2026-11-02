@@ -111,7 +111,13 @@ static int airoha_en7523_xpon_phy_configure(struct airoha_xpon_phy *priv)
 		return dev_err_probe(priv->dev, ret,
 				     "failed to enable xPON I/O mux\n");
 
-	return airoha_xpon_phy_configure_integrated_pma(priv);
+	ret = airoha_xpon_phy_configure_integrated_pma(priv);
+	if (ret)
+		return ret;
+
+	/* The stock EN7523 phy.ko enables the BIP/FEC/LOF counters too. */
+	econet_xpon_phy_counter_init(priv);
+	return 0;
 }
 
 static void en7523_xpon_phy_complete_ready(struct airoha_xpon_phy *priv)
@@ -125,6 +131,8 @@ static void en7523_xpon_phy_complete_ready(struct airoha_xpon_phy *priv)
 
 static const struct airoha_xpon_phy_soc_data airoha_en7523_xpon_phy_data = {
 	.name = "EN7523",
+	/* Same latch/read/clear sequence in the stock phy_bip_counter(). */
+	.has_gpon_bip = true,
 	.min_size = 0x480c,
 	.gpon_bit_delay_reg = XPON_GPON_TX_BIT_DELAY,
 	.gpon_bit_delay_mask = XPON_GPON_TX_BIT_DELAY_MASK,

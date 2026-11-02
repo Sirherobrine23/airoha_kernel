@@ -1963,7 +1963,60 @@ static ssize_t gpon_bip_show(struct device *dev, struct device_attribute *attr,
 }
 static DEVICE_ATTR_RO(gpon_bip);
 
-static struct attribute *gpon_bip_attrs[] = { &dev_attr_gpon_bip.attr, NULL };
+/*
+ * Line-quality counters for diagnostics, one "name=value" per line.  The
+ * MAC values are the raw GPON_DBG registers; the PHY ones are the latched
+ * cumulative FEC/frame/LOF counters and are left out while the PHY is not
+ * in GPON mode.
+ */
+static ssize_t gpon_counters_show(struct device *dev,
+				  struct device_attribute *attr, char *buf)
+{
+	struct xpon_priv *priv = dev_get_drvdata(dev);
+	struct airoha_xpon_phy_gpon_rx_counters c;
+	unsigned long flags;
+	ssize_t len;
+	u64 bip;
+
+	if (!priv)
+		return -ENODEV;
+
+	spin_lock_irqsave(&priv->bip_lock, flags);
+	bip = priv->bip_total;
+	spin_unlock_irqrestore(&priv->bip_lock, flags);
+
+	len = sysfs_emit(buf,
+			 "hec_corrected_1bit=%u\nhec_corrected_2bit=%u\nhec_uncorrectable=%u\n"
+			 "rx_crc_errors=%u\nrx_gem=%u\nrx_gtc=%u\ntx_gem=%u\ntx_bursts=%u\n"
+			 "bip_errors=%llu\n",
+			 gpon_read(priv, GPON_DBG_GEM_HEC_ONE_ERR_CNT),
+			 gpon_read(priv, GPON_DBG_GEM_HEC_TWO_ERR_CNT),
+			 gpon_read(priv, GPON_DBG_GEM_HEC_UC_ERR_CNT),
+			 gpon_read(priv, GPON_DBG_RX_CRC_ERR_CNT),
+			 gpon_read(priv, GPON_DBG_RX_GEM_CNT),
+			 gpon_read(priv, GPON_DBG_RX_GTC_CNT),
+			 gpon_read(priv, GPON_DBG_TX_GEM_CNT),
+			 gpon_read(priv, GPON_DBG_TX_BST_CNT),
+			 bip);
+
+	if (airoha_xpon_phy_get_gpon_rx_counters(priv->phy, &c))
+		return len;
+
+	return len + sysfs_emit_at(buf, len,
+			"fec_corrected_bytes=%u\nfec_corrected_codewords=%u\n"
+			"fec_uncorrectable_codewords=%u\nfec_codewords=%u\n"
+			"fec_seconds=%u\nrx_frames=%llu\nlof=%u\n",
+			c.fec_corrected_bytes, c.fec_corrected_codewords,
+			c.fec_uncorrectable_codewords, c.fec_codewords,
+			c.fec_seconds, c.frames, c.lof);
+}
+static DEVICE_ATTR_RO(gpon_counters);
+
+static struct attribute *gpon_bip_attrs[] = {
+	&dev_attr_gpon_bip.attr,
+	&dev_attr_gpon_counters.attr,
+	NULL
+};
 
 static const struct attribute_group gpon_bip_group = {
 	.attrs = gpon_bip_attrs,

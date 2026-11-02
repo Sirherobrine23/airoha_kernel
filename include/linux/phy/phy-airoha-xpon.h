@@ -49,6 +49,20 @@ int airoha_xpon_phy_get_gpon_tx_counters(struct phy *phy,
 					 u32 *burst_count);
 int airoha_xpon_phy_get_gpon_fec_status(struct phy *phy,
 					bool *downstream, bool *upstream);
+
+/* Cumulative downstream counters, as the vendor show_phy_cnt() reads them. */
+struct airoha_xpon_phy_gpon_rx_counters {
+	u32 fec_corrected_bytes;
+	u32 fec_corrected_codewords;
+	u32 fec_uncorrectable_codewords;
+	u32 fec_codewords;
+	u32 fec_seconds;
+	u64 frames;
+	u32 lof;
+};
+
+int airoha_xpon_phy_get_gpon_rx_counters(
+	struct phy *phy, struct airoha_xpon_phy_gpon_rx_counters *c);
 int airoha_xpon_phy_set_gpon_overhead(struct phy *phy, u8 guard_bits,
 				      u8 t1_pbits, u8 t2_pbits,
 				      u8 t3_pattern,
