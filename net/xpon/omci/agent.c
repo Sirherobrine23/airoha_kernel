@@ -270,6 +270,7 @@ static int omci_olt_g_parse_set(struct omci_mib_object *object, u16 mask,
 			return -EINVAL;
 		omci_olt_g_copy_string(olt->vendor_id, sizeof(olt->vendor_id),
 				       value, OMCI_OLT_VENDOR_ID_LEN);
+		memcpy(object->data, value, OMCI_OLT_VENDOR_ID_LEN);
 		olt->vendor_id_valid = true;
 	}
 	if (mask & OMCI_OLT_G_EQUIPMENT_ID_MASK) {
@@ -280,6 +281,8 @@ static int omci_olt_g_parse_set(struct omci_mib_object *object, u16 mask,
 		omci_olt_g_copy_string(olt->equipment_id,
 				       sizeof(olt->equipment_id), value,
 				       OMCI_OLT_EQUIPMENT_ID_LEN);
+		memcpy(object->data + OMCI_OLT_VENDOR_ID_LEN, value,
+		       OMCI_OLT_EQUIPMENT_ID_LEN);
 		olt->equipment_id_valid = true;
 	}
 	if (mask & OMCI_OLT_G_VERSION_MASK) {
@@ -1330,7 +1333,13 @@ static int omci_agent_seed_nokia_locked(struct omci_device *odev, u8 profile)
 		if (ret)
 			return ret;
 
-		/* Class 131 (OLT-G): pre-seed the Nokia/ALCL OLT identity. */
+		/*
+		 * Class 131 (OLT-G): pre-seed the Nokia/ALCL OLT identity. An
+		 * OLT that named itself is why we are here: its Set is still
+		 * using the object, and its identity is the real one.
+		 */
+		if (omci_agent_olt_g_locked(agent))
+			return 0;
 		memset(data, 0, sizeof(data));
 		memcpy(data, "ALCL", 4);
 		memcpy(data + 4, "ISAM                ", 20);
@@ -1864,6 +1873,20 @@ static int omci_agent_populate_defaults(struct omci_device *odev)
 				return ret;
 		}
 	}
+
+	/*
+	 * The OLT names itself by setting OLT-G, an ONU-created ME. Without
+	 * it in the MIB upload the OLT has nothing to set, and profile
+	 * detection never sees a vendor. Baseline upload records fit the
+	 * first two attributes only.
+	 */
+	memset(data, 0, sizeof(data));
+	ret = omci_mib_add_default_mask(agent, OMCI_CLASS_OLT_G, 0,
+					GENMASK(15, 14), data,
+					OMCI_OLT_VENDOR_ID_LEN +
+					OMCI_OLT_EQUIPMENT_ID_LEN);
+	if (ret)
+		return ret;
 
 	omci_agent_refresh_identity_locked(agent);
 	return 0;
@@ -2624,9 +2647,20 @@ static int omci_agent_mib_reset_locked(struct omci_device *odev, bool all,
 {
 	struct omci_agent *agent = &odev->agent;
 	struct omci_mib_object *object;
+	struct omci_olt_g *stored;
+	struct omci_olt_g olt = {};
 	unsigned long index;
 	int reset_ret;
 	int ret;
+
+	/*
+	 * Only the OLT's attributes reset. Its name is what the profile hangs
+	 * on, and an OLT sets it after the upload, so forgetting it here would
+	 * flip a detected profile back to generic on every reset.
+	 */
+	stored = all ? NULL : omci_agent_olt_g_locked(agent);
+	if (stored)
+		olt = *stored;
 
 	omci_agent_reset_table_snapshot_locked(agent);
 	reset_ret = omci_agent_clear_services_locked(odev);
@@ -2646,12 +2680,18 @@ static int omci_agent_mib_reset_locked(struct omci_device *odev, bool all,
 	 * expose the same MIB and capability table as a fresh agent.
 	 */
 	ret = omci_agent_populate_defaults(odev);
+	if (!ret && olt.valid) {
+		object = omci_mib_lookup(agent, OMCI_CLASS_OLT_G, 0);
+		if (object)
+			object->olt_g = olt;
+	}
 	if (!ret)
 		ret = omci_agent_seed_profile_locked(odev,
 						     agent->profile_effective);
 	if (!ret)
-		ret = omci_agent_profile_refresh_locked(odev, NULL,
-							profile_changed);
+		ret = omci_agent_profile_refresh_locked(odev,
+					omci_agent_olt_g_locked(agent),
+					profile_changed);
 
 	omci_agent_set_mib_sync_locked(agent, 0);
 	agent->upload_index = 0;
@@ -3513,7 +3553,8 @@ static u8 omci_agent_set_locked(struct omci_device *odev, u16 class_id,
 		ret = omci_me_decode_set(desc, object, mask, content + 2,
 					 content_len - 2);
 	} else if (class_id == OMCI_CLASS_PRIORITY_QUEUE ||
-		   class_id == OMCI_CLASS_TRAFFIC_SCHEDULER) {
+		   class_id == OMCI_CLASS_TRAFFIC_SCHEDULER ||
+		   class_id == OMCI_CLASS_OLT_G) {
 		ret = omci_mib_parse_set(object, mask, content + 2,
 					 content_len - 2);
 	} else {
@@ -3526,9 +3567,6 @@ static u8 omci_agent_set_locked(struct omci_device *odev, u16 class_id,
 	    (class_id == OMCI_CLASS_OLT_G ||
 	     class_id == OMCI_CLASS_VLAN_TAGGING_FILTER_DATA ||
 	     class_id == OMCI_CLASS_EXTENDED_VLAN))
-		ret = omci_mib_parse_set(object, mask, content + 2,
-					 content_len - 2);
-	if (!ret && !desc && class_id == OMCI_CLASS_OLT_G)
 		ret = omci_mib_parse_set(object, mask, content + 2,
 					 content_len - 2);
 	if (ret)
