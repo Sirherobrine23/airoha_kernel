@@ -709,7 +709,7 @@ static void econet_qdma_set_irqmask(struct airoha_qdma_mips *qdma, union irq_bit
 }
 
 static int econet_qdma_set_xpon_irq_mips(struct airoha_qdma_mips *qdma,
-				  enum airoha_xpon_mode mode, bool enable)
+				  enum xpon_mode mode, bool enable)
 {
 	union econet_irq_purpose purpose;
 	union irq_bit bit;
@@ -719,10 +719,10 @@ static int econet_qdma_set_xpon_irq_mips(struct airoha_qdma_mips *qdma,
 		return -EINVAL;
 
 	switch (mode) {
-	case AIROHA_XPON_MODE_GPON:
+	case XPON_MODE_GPON:
 		purpose = IRQ_PURPOSE(GPON_INT, UNSPEC, -1);
 		break;
-	case AIROHA_XPON_MODE_EPON:
+	case XPON_MODE_EPON:
 		purpose = IRQ_PURPOSE(EPON_INT, UNSPEC, -1);
 		break;
 	default:
@@ -827,11 +827,11 @@ static irqreturn_t econet_irq_handler(int irq_num, void *dev_instance)
 				}
 
 				if (p.type == IPS_GPON_INT) {
-					xpon_pending |= BIT(AIROHA_XPON_MODE_GPON);
+					xpon_pending |= XPON_MODE_GPON;
 					continue;
 				}
 				if (p.type == IPS_EPON_INT) {
-					xpon_pending |= BIT(AIROHA_XPON_MODE_EPON);
+					xpon_pending |= XPON_MODE_EPON;
 					continue;
 				}
 				dev_dbg_ratelimited(qdma->qdma->eth->dev,
@@ -851,12 +851,12 @@ static irqreturn_t econet_irq_handler(int irq_num, void *dev_instance)
 	 * QDMA aggregator and after dropping irq->lock_irq; the MAC ISR
 	 * performs its own W1C and FIFO drain operations.
 	 */
-	if (xpon_pending & BIT(AIROHA_XPON_MODE_GPON))
+	if (xpon_pending & XPON_MODE_GPON)
 		econet_xpon_irq(qdma->qdma->eth, qdma->qdma->id,
-					 AIROHA_XPON_MODE_GPON);
-	if (xpon_pending & BIT(AIROHA_XPON_MODE_EPON))
+					 XPON_MODE_GPON);
+	if (xpon_pending & XPON_MODE_EPON)
 		econet_xpon_irq(qdma->qdma->eth, qdma->qdma->id,
-					 AIROHA_XPON_MODE_EPON);
+					 XPON_MODE_EPON);
 
 	return IRQ_HANDLED;
 }
@@ -2137,7 +2137,7 @@ int airoha_whnat_qdma_xmit(struct airoha_qdma *qdma, struct sk_buff *skb)
 #endif
 
 static int airoha_qdma_mips_set_xpon_irq(struct airoha_qdma *qdma,
-					 enum airoha_xpon_mode mode, bool enable)
+					 enum xpon_mode mode, bool enable)
 {
 	return qdma->econet ? econet_qdma_set_xpon_irq_mips(qdma->econet, mode, enable) :
 			     -ENODEV;
@@ -4290,12 +4290,12 @@ static netdev_tx_t __econet_qdma_xmit(struct sk_buff *skb, struct net_device *de
 			goto drop;
 
 		switch (READ_ONCE(port->xpon_mode)) {
-		case AIROHA_XPON_MODE_GPON:
+		case XPON_MODE_GPON:
 			if (econet_xpon_classify(port, skb, &xpon_info))
 				goto drop;
 			xpon = true;
 			break;
-		case AIROHA_XPON_MODE_EPON:
+		case XPON_MODE_EPON:
 			/* Initial EPON support uses LLID/channel 0. Multi-LLID
 			 * classification can be layered on the service API later; the
 			 * important part here is to emit a PWAN descriptor instead of
@@ -4362,7 +4362,7 @@ static netdev_tx_t __econet_qdma_xmit(struct sk_buff *skb, struct net_device *de
 	 * skb_put_padto() consumes the skb on allocation failure, so do not
 	 * jump to the common drop label in that case.
 	 */
-	if (xpon && READ_ONCE(port->xpon_mode) == AIROHA_XPON_MODE_GPON &&
+	if (xpon && READ_ONCE(port->xpon_mode) == XPON_MODE_GPON &&
 	    !xpon_info.oam && skb->len < ETH_ZLEN) {
 		if (skb_put_padto(skb, ETH_ZLEN)) {
 			dev->stats.tx_dropped++;
@@ -4598,7 +4598,7 @@ static void airoha_gdm_xdsl_stop(struct airoha_gdm_dev *dev)
 }
 
 static int econet_set_xpon_mode(struct net_device *netdev,
-				enum airoha_xpon_mode mode)
+				enum xpon_mode mode)
 {
 	struct airoha_gdm_dev *port;
 	int ret;
@@ -4606,7 +4606,7 @@ static int econet_set_xpon_mode(struct net_device *netdev,
 	ret = econet_validate_xpon_gdm2(netdev, &port);
 	if (ret)
 		return ret;
-	if (mode != AIROHA_XPON_MODE_GPON && mode != AIROHA_XPON_MODE_EPON)
+	if (mode != XPON_MODE_GPON && mode != XPON_MODE_EPON)
 		return -EINVAL;
 
 	/* feDevGdm2Cdm2Stop(XPON_ENABLE) starts both protocols from a fully
@@ -4622,7 +4622,7 @@ static int econet_set_xpon_mode(struct net_device *netdev,
 }
 
 static int econet_set_xpon_datapath(struct net_device *netdev,
-				    enum airoha_xpon_mode mode, bool enable)
+				    enum xpon_mode mode, bool enable)
 {
 	struct airoha_gdm_dev *port;
 	int ret;
@@ -4632,7 +4632,7 @@ static int econet_set_xpon_datapath(struct net_device *netdev,
 		return ret;
 
 	switch (mode) {
-	case AIROHA_XPON_MODE_GPON:
+	case XPON_MODE_GPON:
 		/* EN7521 feDevGdm2Cdm2Stop(XPON_DISABLE): only downstream
 		 * receive channels 0 and 1 are released here. T-CONT TX/HWF
 		 * channels are enabled when their Alloc-ID is provisioned.
@@ -4641,7 +4641,7 @@ static int econet_set_xpon_datapath(struct net_device *netdev,
 			      EN751221_GPON_RX_CHN_MASK,
 			      enable ? EN751221_GPON_RX_CHN_MASK : 0);
 		break;
-	case AIROHA_XPON_MODE_EPON:
+	case XPON_MODE_EPON:
 		/* eponFeChannelEnable(): LLID 0..7 plus TX 16..23 used by
 		 * the vendor OAM-favour path.
 		 */
@@ -4685,7 +4685,7 @@ static int econet_set_xpon_tcont_channel(struct net_device *netdev,
 }
 
 static int econet_register_xpon(struct net_device *netdev,
-				enum airoha_xpon_mode mode,
+				enum xpon_mode mode,
 				const struct airoha_xpon_link_ops *ops,
 				void *priv)
 {
@@ -5042,7 +5042,7 @@ static int econet_xpon_get_tx_info(struct net_device *netdev, bool vlan_valid,
 	if (ret)
 		return ret;
 	if (!(READ_ONCE(port->flags) & AIROHA_PRIV_F_XPON_MANAGED) ||
-	    READ_ONCE(port->xpon_mode) != AIROHA_XPON_MODE_GPON)
+	    READ_ONCE(port->xpon_mode) != XPON_MODE_GPON)
 		return -EOPNOTSUPP;
 
 	return econet_xpon_lookup_service(port, vlan_valid, vlan_id,
@@ -5469,7 +5469,7 @@ static void airoha_retire_all(struct net_device *netdev)
 
 	if (eth->channel_retire)
 		airoha_retire_release_all(eth, netdev,
-					  dev->xpon_mode == AIROHA_XPON_MODE_EPON ?
+					  dev->xpon_mode == XPON_MODE_EPON ?
 					  8 : 32);
 	else
 		airoha_retire_drop(eth, netdev);
@@ -5492,7 +5492,7 @@ static u16 econet_rx_ingress_gem(struct airoha_qdma *qdma,
 		return AIROHA_PPE_RX_GEM_NONE;
 	port = airoha_eth_get_gdm_dev(eth, AIROHA_GDM2_IDX);
 	if (!port || !(READ_ONCE(port->flags) & AIROHA_PRIV_F_XPON_MANAGED) ||
-	    READ_ONCE(port->xpon_mode) != AIROHA_XPON_MODE_GPON)
+	    READ_ONCE(port->xpon_mode) != XPON_MODE_GPON)
 		return AIROHA_PPE_RX_GEM_NONE;
 
 	return FIELD_GET(ERX_XPON_GEM_MASK, msg->raw[0]);
@@ -5580,7 +5580,7 @@ bool econet_rx_xpon_oam(struct airoha_eth *eth, u8 qdma_id,
 }
 
 void econet_xpon_irq(struct airoha_eth *eth, u8 qdma_id,
-			      enum airoha_xpon_mode mode)
+			      enum xpon_mode mode)
 {
 	const struct airoha_xpon_link_ops *ops;
 	struct airoha_gdm_dev *port;
@@ -5799,9 +5799,6 @@ static int airoha_validate_xpon_gdm2(struct net_device *netdev,
 	ret = airoha_validate_xpon_link_gdm2(netdev, gdm);
 	if (ret)
 		return ret;
-	/* EN7580 XGS-PON only implements link ownership at this stage. */
-	if (airoha_is((*gdm)->eth, econet_en7580))
-		return -EOPNOTSUPP;
 
 	return 0;
 }
@@ -5838,115 +5835,252 @@ static void airoha_eth_update_gpon_pse_buf(struct airoha_gdm_dev *dev,
 			PSE_BUF_CHAN_THR_MASK | PSE_BUF_TOTAL_THR_MASK, val);
 }
 
+static bool airoha_xpon_has_10g_mac(struct airoha_eth *eth)
+{
+	return airoha_is(eth, econet_en7580, airoha_en7581,
+			 airoha_an7583);
+}
+
+static int airoha_xpon_fe_mode(struct airoha_eth *eth, enum xpon_mode mode,
+			       enum airoha_xpon_fe_mode *fe_mode)
+{
+	bool mac_10g = airoha_xpon_has_10g_mac(eth);
+
+	switch (mode) {
+	case XPON_MODE_GPON:
+	case XPON_MODE_GPON_SYM:
+		*fe_mode = mac_10g ? AIROHA_XPON_FE_ITU_10G :
+				     AIROHA_XPON_FE_ITU_1G;
+		break;
+	case XPON_MODE_EPON:
+		*fe_mode = mac_10g ? AIROHA_XPON_FE_IEEE_10G :
+				     AIROHA_XPON_FE_IEEE_1G;
+		break;
+	case XPON_MODE_XGPON:
+	case XPON_MODE_XGSPON:
+	case XPON_MODE_NGPON2:
+	case XPON_MODE_NGPON2_10G_10G:
+	case XPON_MODE_NGPON2_10G_2G:
+	case XPON_MODE_NGPON2_2G_2G:
+		if (!mac_10g)
+			return -EOPNOTSUPP;
+		*fe_mode = AIROHA_XPON_FE_ITU_10G;
+		break;
+	case XPON_MODE_XEPON:
+	case XPON_MODE_XEPON_10G_1G:
+	case XPON_MODE_XEPON_10G_10G:
+	case XPON_MODE_XEPON_1G_1G:
+	case XPON_MODE_TURBO_EPON:
+		if (!mac_10g)
+			return -EOPNOTSUPP;
+		*fe_mode = AIROHA_XPON_FE_IEEE_10G;
+		break;
+	default:
+		/* No verified 25G/50G FE or QDMA backend in this SDK. */
+		return -EOPNOTSUPP;
+	}
+
+	return 0;
+}
+
+/*
+ * xpon_10g/gpon_wan.c uses QDMA_API_SET_CHANNEL_CLOSE_STATUS() on
+ * T-CONT creation/removal.  On EN7580/EN7581/AN7583, QUEUE_CLOSE_CFG
+ * (0xa0..0xbc) is write-only.  Preserve all four channels sharing each
+ * 32-bit register in a software shadow instead of doing a MMIO RMW.
+ *
+ * Caller does not hold dev->xpon_txq_lock.  Channel/queue mappings are
+ * separate from GEM or LLID identifiers.
+ */
+static int airoha_xpon_qdma_channel_close(struct airoha_gdm_dev *dev,
+					  unsigned int channel, bool close)
+{
+	struct airoha_qdma *qdma = &dev->eth->qdma[1];
+	unsigned long flags;
+	u32 mask, value;
+	unsigned int idx;
+
+	if (channel >= 32)
+		return -EINVAL;
+
+	if (!qdma->regs)
+		return -ENODEV;
+
+	idx = channel >> 2;
+	mask = 0xffU << ((channel & 3) * 8);
+	spin_lock_irqsave(&dev->xpon_txq_lock, flags);
+
+	value = dev->xpon_txq_disabled[idx];
+	value = close ? (value | mask) : (value & ~mask);
+	dev->xpon_txq_disabled[idx] = value;
+	airoha_qdma_wr(qdma, REG_QUEUE_CLOSE_CFG(channel), value);
+	
+	spin_unlock_irqrestore(&dev->xpon_txq_lock, flags);
+
+	return 0;
+}
+
+/* Reset the 32 x 8 QDMA queue-close bits when entering a new 10G session.
+ * This must run only after the previous session's TX has been quiesced and
+ * its channels retired by the provider.
+ */
+static void airoha_xpon_qdma_reset_channel_close(struct airoha_gdm_dev *dev)
+{
+	struct airoha_qdma *qdma = &dev->eth->qdma[1];
+	unsigned long flags;
+	int i;
+
+	if (!qdma->regs)
+		return;
+
+	spin_lock_irqsave(&dev->xpon_txq_lock, flags);
+
+	for (i = 0; i < ARRAY_SIZE(dev->xpon_txq_disabled); i++) {
+		dev->xpon_txq_disabled[i] = 0;
+		airoha_qdma_wr(qdma, REG_QUEUE_CLOSE_CFG(i << 2), 0);
+	}
+
+	spin_unlock_irqrestore(&dev->xpon_txq_lock, flags);
+}
+
 static int airoha_xpon_set_mode(struct net_device *netdev,
-			      enum airoha_xpon_mode mode)
+				enum xpon_mode mode)
 {
 	struct airoha_gdm_dev *dev;
+	enum airoha_xpon_fe_mode fe_mode;
+	struct airoha_eth *eth;
+	struct airoha_qdma *qdma;
 	u32 max_frame_len;
+	bool itu, gpon_1g;
 	int ret;
 
 	ret = airoha_validate_xpon_gdm2(netdev, &dev);
 	if (ret)
 		return ret;
-	if (mode != AIROHA_XPON_MODE_GPON &&
-	    mode != AIROHA_XPON_MODE_EPON)
-		return -EINVAL;
-	if (airoha_is(dev->eth, airoha_en7581, airoha_an7583) &&
-	    mode != AIROHA_XPON_MODE_GPON)
-		return -EOPNOTSUPP;
 
-	/* FE_API_SET_GDMA_MISC_CONFIG(FE_GDM_SEL_GDMA2, mode).
-	 * The vendor SDK sets GDMA2_RLS_MODE only for GPON.
-	 */
-	airoha_fe_rmw(dev->eth, REG_GDM_MISC_CFG, GDM2_RLS_MODE_MASK,
-		      mode == AIROHA_XPON_MODE_GPON ?
-		      GDM2_RLS_MODE_MASK : 0);
+	eth = dev->eth;
+	ret = airoha_xpon_fe_mode(eth, mode, &fe_mode);
+	if (ret)
+		return ret;
 
-	/* gwan_init() in the EN7523 SDK programs GDMA2 to accept GPON
-	 * frames from 60 to 2000 bytes. Restore the regular FE maximum when
-	 * switching to EPON so the GPON-specific limit does not leak across
-	 * modes.
+	qdma = &eth->qdma[1];
+	itu = fe_mode == AIROHA_XPON_FE_ITU_1G ||
+	      fe_mode == AIROHA_XPON_FE_ITU_10G;
+	gpon_1g = fe_mode == AIROHA_XPON_FE_ITU_1G;
+
+	/*
+	 * FE_API_SET_GDMA_MISC_CONFIG() in the SDK modifies GDM2_RLS_MODE
+	 * for the EN7523 1G GPON MAC only.  Other values of the SDK's
+	 * FE_MISC_CONFIG enum are not literal GDM2 register bitfields.
 	 */
-	max_frame_len = mode == AIROHA_XPON_MODE_GPON ?
-			EN7523_GPON_MAX_FRAME_LEN : AIROHA_MAX_RX_SIZE;
-	airoha_fe_rmw(dev->eth, REG_GDM_LEN_CFG(AIROHA_GDM2_IDX),
+	if (airoha_is(eth, airoha_en7523, airoha_an7552))
+		airoha_fe_rmw(eth, REG_GDM_MISC_CFG, GDM2_RLS_MODE_MASK,
+			      gpon_1g ? GDM2_RLS_MODE_MASK : 0);
+
+	/* gwan_channel_init() (both xpon_1g and xpon_10g): GPON 60..2000. */
+	max_frame_len = itu ? EN7523_GPON_MAX_FRAME_LEN : AIROHA_MAX_RX_SIZE;
+	airoha_fe_rmw(eth, REG_GDM_LEN_CFG(AIROHA_GDM2_IDX),
 		      GDM_SHORT_LEN_MASK | GDM_LONG_LEN_MASK,
-		      FIELD_PREP(GDM_SHORT_LEN_MASK, ETH_HLEN) |
+		      FIELD_PREP(GDM_SHORT_LEN_MASK, itu ? 60 : ETH_HLEN) |
 		      FIELD_PREP(GDM_LONG_LEN_MASK, max_frame_len));
 
-	/* gpon_init_qdma_tx_buff() starts with the implicit ONU-ID T-CONT. */
-	if (mode == AIROHA_XPON_MODE_GPON) {
-		/*
-		 * Downstream GPON frames reach GDM2 after the GPON MAC has
-		 * already checked them, and a frame that failed decryption is
-		 * more useful counted than silently dropped here.
-		 */
-		airoha_fe_clear(dev->eth, REG_GDM_FWD_CFG(AIROHA_GDM2_IDX),
+	if (itu)
+		airoha_fe_clear(eth, REG_GDM_FWD_CFG(AIROHA_GDM2_IDX),
 				GDM_DROP_CRC_ERR_MASK);
-		airoha_eth_update_gpon_pse_buf(dev, 1);
-	}
-
-	/* The SDK enables PSE buffer estimation as part of the GPON path, and
-	 * it depends on the thresholds programmed just above. Keep the two
-	 * together: with the estimator on and the thresholds unset, QDMA1
-	 * eventually stops releasing frames towards GDM2 and transmit stalls
-	 * permanently, with no completion, no drop and no error reported.
-	 */
-	if (airoha_is(dev->eth, airoha_en7523, airoha_en7581,
-		      airoha_an7583) &&
-	    mode == AIROHA_XPON_MODE_GPON)
-		airoha_qdma_set(&dev->eth->qdma[1], REG_PSE_BUF_USAGE_CFG,
-				PSE_BUF_ESTIMATE_EN_MASK);
 	else
-		airoha_qdma_clear(&dev->eth->qdma[1], REG_PSE_BUF_USAGE_CFG,
+		airoha_fe_set(eth, REG_GDM_FWD_CFG(AIROHA_GDM2_IDX),
+			      GDM_DROP_CRC_ERR_MASK);
+
+	/*
+	 * The EN7523 GPON QDMA/PSE estimator requires its threshold table.
+	 * Do not reuse those thresholds for the xpon_10g QDMA backend: the
+	 * vendor 10G stack uses channel-close status and T-CONT setup instead.
+	 */
+	if (gpon_1g && airoha_is(eth, airoha_en7523)) {
+		airoha_eth_update_gpon_pse_buf(dev, 1);
+		airoha_qdma_set(qdma, REG_PSE_BUF_USAGE_CFG,
+				PSE_BUF_ESTIMATE_EN_MASK);
+	} else
+		airoha_qdma_clear(qdma, REG_PSE_BUF_USAGE_CFG,
 				  PSE_BUF_ESTIMATE_EN_MASK);
 
-	/* A mode switch starts from a quiescent GDM2/CDM2 datapath. */
-	airoha_fe_clear(dev->eth, REG_GDM_TXCHN_EN(AIROHA_GDM2_IDX), ~0U);
-	airoha_fe_clear(dev->eth, REG_GDM_RXCHN_EN(AIROHA_GDM2_IDX), ~0U);
-	airoha_fe_clear(dev->eth, REG_CDM_HWF_CHN_EN(2), ~0U);
+	/* No packet from a previous PON session may enter the new mode. */
+	airoha_fe_wr(eth, REG_GDM_TXCHN_EN(AIROHA_GDM2_IDX), 0);
+	airoha_fe_wr(eth, REG_GDM_RXCHN_EN(AIROHA_GDM2_IDX), 0);
+	airoha_fe_wr(eth, REG_CDM_HWF_CHN_EN(2), 0);
+
+	if (airoha_xpon_has_10g_mac(eth))
+		airoha_xpon_qdma_reset_channel_close(dev);
 
 	return 0;
 }
 
 static int airoha_xpon_set_datapath(struct net_device *netdev,
-				  enum airoha_xpon_mode mode, bool enable)
+				  enum xpon_mode mode, bool enable)
 {
 	struct airoha_gdm_dev *dev;
+	enum airoha_xpon_fe_mode fe_mode;
+	struct airoha_eth *eth;
+	u32 tx = 0, rx = 0, hwf = 0;
 	int ret;
 
 	ret = airoha_validate_xpon_gdm2(netdev, &dev);
 	if (ret)
 		return ret;
 
-	switch (mode) {
-	case AIROHA_XPON_MODE_GPON:
-		/* The vendor GPON path enables downstream channels 0 and 1
-		 * through the regular GDM2 receive channel register.
-		 */
-		airoha_fe_rmw(dev->eth, REG_GDM_RXCHN_EN(AIROHA_GDM2_IDX),
-			      EN7523_GDM2_GPON_RX_CHN_MASK,
-			      enable ? EN7523_GDM2_GPON_RX_CHN_MASK : 0);
+	eth = dev->eth;
+	ret = airoha_xpon_fe_mode(eth, mode, &fe_mode);
+	if (ret)
+		return ret;
+
+	/*
+	 * Only the baseline FE channels belong to this callback.  The
+	 * GPON/NGPON2 10G O8 all-channel map is a separate MAC-state action;
+	 * service T-CONTs and LLIDs are provisioned by their own callbacks.
+	 */
+	switch (fe_mode) {
+	case AIROHA_XPON_FE_ITU_1G:
+		/* feDevGdm2Cdm2Stop(): TX/HWF allocated by T-CONT. */
+		rx = GENMASK(1, 0);
 		break;
-	case AIROHA_XPON_MODE_EPON:
-		/* xpon_1g/eponFeChannelEnable(): LLID channels 0..7,
-		 * plus TX channels 16..23 for OAM-favour mode.
-		 */
-		airoha_fe_rmw(dev->eth,
-			      REG_GDM_TXCHN_EN(AIROHA_GDM2_IDX),
-			      EN7523_GDM2_EPON_TX_CHN_MASK,
-			      enable ? EN7523_GDM2_EPON_TX_CHN_MASK : 0);
-		airoha_fe_rmw(dev->eth,
-			      REG_GDM_RXCHN_EN(AIROHA_GDM2_IDX),
-			      EN7523_GDM2_EPON_RX_CHN_MASK,
-			      enable ? EN7523_GDM2_EPON_RX_CHN_MASK : 0);
-		airoha_fe_rmw(dev->eth, REG_CDM_HWF_CHN_EN(2),
-			      EN7523_CDM2_EPON_HWF_CHN_MASK,
-			      enable ? EN7523_CDM2_EPON_HWF_CHN_MASK : 0);
+	case AIROHA_XPON_FE_ITU_10G:
+		/* xpon_10g/gpon_dev.c: normal (non-O8) release. */
+		tx = BIT(0);
+		rx = GENMASK(1, 0);
+		hwf = BIT(0);
 		break;
-	default:
-		return -EINVAL;
+	case AIROHA_XPON_FE_IEEE_1G:
+		/* xpon_1g/eponFeChannelEnable(): optional OAM-favor TX.
+		 * Preserve the existing FE default enabling TX channels 16..23.
+		 */
+		tx = EN7523_GDM2_EPON_TX_CHN_MASK;
+		rx = EN7523_GDM2_EPON_RX_CHN_MASK;
+		hwf = EN7523_CDM2_EPON_HWF_CHN_MASK;
+		break;
+	case AIROHA_XPON_FE_IEEE_10G:
+		/* xpon_10g/epon_compile_option_wrapper.c: enable_gdma2(). */
+		tx = GENMASK(7, 0);
+		rx = GENMASK(7, 0);
+		hwf = GENMASK(7, 0);
+		break;
 	}
+
+	if (!enable) {
+		/*
+		 * The caller must stop TX/PHY and retire queued frames before
+		 * calling this.  Disable the entire old channel map so dynamic
+		 * T-CONT bits do not leak into the next PON session.
+		 */
+		airoha_fe_wr(eth, REG_CDM_HWF_CHN_EN(2), 0);
+		airoha_fe_wr(eth, REG_GDM_TXCHN_EN(AIROHA_GDM2_IDX), 0);
+		airoha_fe_wr(eth, REG_GDM_RXCHN_EN(AIROHA_GDM2_IDX), 0);
+		return 0;
+	}
+
+	/* set_mode() has already cleared the old mode's channels. */
+	airoha_fe_rmw(eth, REG_GDM_TXCHN_EN(AIROHA_GDM2_IDX), tx, tx);
+	airoha_fe_rmw(eth, REG_GDM_RXCHN_EN(AIROHA_GDM2_IDX), rx, rx);
+	airoha_fe_rmw(eth, REG_CDM_HWF_CHN_EN(2), hwf, hwf);
 
 	return 0;
 }
@@ -5958,7 +6092,8 @@ static int airoha_xpon_set_tcont_channel(struct net_device *netdev,
 				      unsigned int channel, bool enable)
 {
 	struct airoha_gdm_dev *dev;
-	bool setup_dba;
+	enum airoha_xpon_fe_mode fe_mode;
+	bool gpon_1g, gpon_10g, setup_dba;
 	u32 mask;
 	int ret;
 
@@ -5968,22 +6103,29 @@ static int airoha_xpon_set_tcont_channel(struct net_device *netdev,
 	if (channel >= 32)
 		return -EINVAL;
 
-	/* The AN7552 SDK returns early from gpon_qos_init()/deinit();
-	 * its T-CONT channels do not use the EN7523 egress trTCM setup.
-	 */
-	setup_dba = dev->xpon_mode == AIROHA_XPON_MODE_GPON &&
-		    !dev->eth->soc->legacy_qdma &&
+	ret = airoha_xpon_fe_mode(dev->eth, dev->xpon_mode, &fe_mode);
+	if (ret)
+		return ret;
+
+	gpon_1g = fe_mode == AIROHA_XPON_FE_ITU_1G;
+	gpon_10g = fe_mode == AIROHA_XPON_FE_ITU_10G;
+	if (!gpon_1g && !gpon_10g)
+		return -EOPNOTSUPP;
+
+	setup_dba = gpon_1g && !dev->eth->soc->legacy_qdma &&
 		    !airoha_is(dev->eth, airoha_an7552);
 
-	/*
-	 * gpon_qos_init() in the EN7523 SDK configures both egress trTCM
-	 * buckets for every QDMA WAN channel before enabling the matching
-	 * T-CONT.  Despite the API name, TX_DBA_REPORT, these parameters
-	 * are programmed in the QDMA egress trTCM table as part of the
-	 * vendor GPON QoS/DBA setup.
-	 */
 	if (setup_dba && enable) {
 		ret = airoha_qdma_set_gpon_dba_report(netdev, channel, true);
+		if (ret)
+			return ret;
+	}
+
+	/* xpon_10g/gpon_wan.c opens/closes all eight WAN QDMA TX queues
+	 * for the T-CONT; its CDM2 HWF call is commented out in the SDK.
+	 */
+	if (gpon_10g && enable) {
+		ret = airoha_xpon_qdma_channel_close(dev, channel, false);
 		if (ret)
 			return ret;
 	}
@@ -5991,10 +6133,18 @@ static int airoha_xpon_set_tcont_channel(struct net_device *netdev,
 	mask = BIT(channel);
 	airoha_fe_rmw(dev->eth, REG_GDM_TXCHN_EN(AIROHA_GDM2_IDX),
 		      mask, enable ? mask : 0);
-	airoha_fe_rmw(dev->eth, REG_CDM_HWF_CHN_EN(2),
-		      mask, enable ? mask : 0);
+	if (gpon_1g)
+		airoha_fe_rmw(dev->eth, REG_CDM_HWF_CHN_EN(2),
+			      mask, enable ? mask : 0);
 
-	if (dev->xpon_mode == AIROHA_XPON_MODE_GPON) {
+	if (gpon_10g && !enable) {
+		ret = airoha_xpon_qdma_channel_close(dev, channel, true);
+		if (ret)
+			return ret;
+		/* Channel retirement is performed via retire_channel(). */
+	}
+
+	if (gpon_1g) {
 		u32 tx_channels;
 
 		tx_channels = airoha_fe_rr(dev->eth,
@@ -6006,16 +6156,11 @@ static int airoha_xpon_set_tcont_channel(struct net_device *netdev,
 			if (ret)
 				return ret;
 		}
-
-		if (setup_dba)
-			netdev_info(netdev,
-				    "GPON DBA channel %u %s: CIR/PIR=%#xKbps CBS=%#x PBS=%#x\n",
-				    channel, enable ? "enabled" : "disabled",
-				    enable ? EN7523_GPON_DBA_RATE_KBPS : 0,
-				    enable ? EN7523_GPON_DBA_CBS_BYTES : 0,
-				    enable ? EN7523_GPON_DBA_PBS_BYTES : 0);
 	}
 
+	netdev_dbg(netdev, "%s T-CONT channel %u %s\n",
+		   gpon_10g ? "10G" : "1G", channel,
+		   enable ? "enabled" : "disabled");
 	return 0;
 }
 
@@ -6025,7 +6170,7 @@ static void airoha_xpon_unregister_link(struct net_device *netdev,
 					void *priv);
 
 static int airoha_xpon_register_link(struct net_device *netdev,
-			     enum airoha_xpon_mode mode,
+			     enum xpon_mode mode,
 			     const struct airoha_xpon_link_ops *ops,
 			     void *priv)
 {
@@ -6039,9 +6184,6 @@ static int airoha_xpon_register_link(struct net_device *netdev,
 	ret = airoha_validate_xpon_link_gdm2(netdev, &dev);
 	if (ret)
 		return ret;
-	if (airoha_is(dev->eth, econet_en7580) &&
-	    mode != AIROHA_XPON_MODE_XGSPON)
-		return -EOPNOTSUPP;
 
 	mutex_lock(&dev->xpon_lock);
 	if (dev->xpon_ops || dev->xdsl_ops) {
@@ -8312,7 +8454,7 @@ static int airoha_xpon_get_tx_info(struct net_device *netdev, bool vlan_valid,
 	if (ret)
 		return ret;
 	if (!(dev->flags & AIROHA_PRIV_F_XPON_MANAGED) ||
-	    dev->xpon_mode != AIROHA_XPON_MODE_GPON)
+	    dev->xpon_mode != XPON_MODE_GPON)
 		return -EOPNOTSUPP;
 
 	ret = airoha_eth_xpon_lookup_service(dev, vlan_valid, vlan_id,
@@ -8501,7 +8643,7 @@ static netdev_tx_t __airoha_dev_xmit(struct sk_buff *skb,
 	rcu_read_lock();
 	qdma = rcu_dereference(dev->qdma);
 	if (!xpon && (dev->flags & AIROHA_PRIV_F_XPON_MANAGED) &&
-	    dev->xpon_mode == AIROHA_XPON_MODE_GPON) {
+	    dev->xpon_mode == XPON_MODE_GPON) {
 		if (airoha_eth_xpon_classify(dev, skb, &classified))
 			goto error;
 		/* Frees the skb on failure; the error path copes with NULL. */
@@ -9030,9 +9172,18 @@ static int airoha_qdma_set_chan_tx_sched(struct net_device *netdev,
 	int i;
 
 	qdma = airoha_qdma_deref(dev);
-	for (i = 0; i < AIROHA_NUM_QOS_QUEUES; i++)
-		airoha_qdma_clear(qdma, REG_QUEUE_CLOSE_CFG(channel),
-				  TXQ_DISABLE_CHAN_QUEUE_MASK(channel, i));
+	if (dev->common.id == AIROHA_GDM2_IDX &&
+	    (READ_ONCE(dev->flags) & AIROHA_PRIV_F_XPON_MANAGED) &&
+	    airoha_xpon_has_10g_mac(dev->eth)) {
+		int err = airoha_xpon_qdma_channel_close(dev, channel, false);
+
+		if (err)
+			return err;
+	} else {
+		for (i = 0; i < AIROHA_NUM_QOS_QUEUES; i++)
+			airoha_qdma_clear(qdma, REG_QUEUE_CLOSE_CFG(channel),
+					  TXQ_DISABLE_CHAN_QUEUE_MASK(channel, i));
+	}
 
 	for (i = 0; i < n_weights; i++) {
 		u32 status;
@@ -10274,6 +10425,7 @@ static int airoha_alloc_gdm_device(struct airoha_eth *eth,
 	}
 
 	mutex_init(&dev->xpon_lock);
+	spin_lock_init(&dev->xpon_txq_lock);
 	spin_lock_init(&dev->xpon_state_lock);
 	spin_lock_init(&dev->xpon_service_lock);
 	mutex_init(&dev->xdsl_lock);
@@ -11024,6 +11176,22 @@ static const struct airoha_eth_xpon_ops en7580_xpon_ops = {
 	.register_link = airoha_xpon_register_link,
 	.unregister_link = airoha_xpon_unregister_link,
 	.update_link = airoha_xpon_update_link,
+	.set_mode = airoha_xpon_set_mode,
+	.set_datapath = airoha_xpon_set_datapath,
+	.set_tcont_channel = airoha_xpon_set_tcont_channel,
+	.control_start = airoha_xpon_control_start,
+	.control_stop = airoha_xpon_control_stop,
+	.dump_oam_rx_state = econet_xpon_dump_oam_rx_state,
+	.register_oam = econet_register_xpon_oam,
+	.unregister_oam = econet_unregister_xpon_oam,
+	.xmit_oam = econet_xmit_xpon_oam,
+	.add_service = econet_xpon_add_service,
+	.get_tx_info = econet_xpon_get_tx_info,
+	.del_service = econet_xpon_del_service,
+	.has_gem_service = econet_xpon_has_gem_service,
+	.flush_services = econet_xpon_flush_services,
+	.retire_all = airoha_retire_all,
+	.retire_channel = airoha_retire_channel,
 };
 
 const struct airoha_eth_soc_data econet_en751221_soc_data = {
@@ -11423,7 +11591,7 @@ struct net_device *airoha_eth_get_xpon_netdev(void)
 EXPORT_SYMBOL_GPL(airoha_eth_get_xpon_netdev);
 
 int airoha_eth_set_xpon_mode(struct net_device *netdev,
-			     enum airoha_xpon_mode mode)
+			     enum xpon_mode mode)
 {
 	const struct airoha_eth_xpon_ops *ops = airoha_eth_get_xpon_ops(netdev, NULL);
 
@@ -11432,7 +11600,7 @@ int airoha_eth_set_xpon_mode(struct net_device *netdev,
 EXPORT_SYMBOL_GPL(airoha_eth_set_xpon_mode);
 
 int airoha_eth_set_xpon_datapath(struct net_device *netdev,
-				 enum airoha_xpon_mode mode, bool enable)
+				 enum xpon_mode mode, bool enable)
 {
 	const struct airoha_eth_xpon_ops *ops = airoha_eth_get_xpon_ops(netdev, NULL);
 
@@ -11452,7 +11620,7 @@ int airoha_eth_set_xpon_tcont_channel(struct net_device *netdev,
 EXPORT_SYMBOL_GPL(airoha_eth_set_xpon_tcont_channel);
 
 int airoha_eth_register_xpon(struct net_device *netdev,
-			     enum airoha_xpon_mode mode,
+			     enum xpon_mode mode,
 			     const struct airoha_xpon_link_ops *link_ops,
 			     void *priv)
 {

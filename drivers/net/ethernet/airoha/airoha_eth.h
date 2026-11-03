@@ -35,42 +35,44 @@ struct airoha_ppe_dev;
 struct airoha_eth;
 struct gdm;
 
-#define AIROHA_MTK_INVALID_CHANNEL 7
-#define AIROHA_MTK_HDR_LEN 4
-#define AIROHA_MTK_STAG_PORT_MASK GENMASK(5, 0)
-#define AIROHA_MTK_HDR_XMIT_TAGGED_TPID_8100 1
-#define AIROHA_MTK_HDR_XMIT_TAGGED_TPID_88A8 2
+#define AIROHA_MTK_INVALID_CHANNEL		7
+#define AIROHA_MTK_HDR_LEN			4
+#define AIROHA_MTK_STAG_PORT_MASK		GENMASK(5, 0)
+#define AIROHA_MTK_HDR_XMIT_TAGGED_TPID_8100	1
+#define AIROHA_MTK_HDR_XMIT_TAGGED_TPID_88A8	2
 
-#define AIROHA_XPON_DATA_DUMP_LEN 128
+#define AIROHA_XPON_DATA_DUMP_LEN		128
 
-#define EN751221_GPON_RX_CHN_MASK GENMASK(1, 0)
-#define EN751221_EPON_RX_CHN_MASK GENMASK(7, 0)
-#define EN751221_EPON_TX_CHN_MASK (GENMASK(7, 0) | GENMASK(23, 16))
-#define EN751221_EPON_HWF_CHN_MASK GENMASK(7, 0)
+#define EN751221_GPON_RX_CHN_MASK		GENMASK(1, 0)
+#define EN751221_EPON_RX_CHN_MASK		GENMASK(7, 0)
+#define EN751221_EPON_TX_CHN_MASK		(GENMASK(7, 0) | GENMASK(23, 16))
+#define EN751221_EPON_HWF_CHN_MASK		GENMASK(7, 0)
+
 /* GDM2 TX channels the vendor channel drop enables while retiring. */
-#define GDM2_RETIRE_TX_CHN_MASK GENMASK(15, 0)
+#define GDM2_RETIRE_TX_CHN_MASK			GENMASK(15, 0)
+
 /* GDMA_CHN_RLS_TIMEOUT: milliseconds to wait for one channel release */
-#define GDM2_RETIRE_TIMEOUT_MS 10
+#define GDM2_RETIRE_TIMEOUT_MS			10
+
 /* EN751221/EN7528 QDMA GLB_CFG: loop UMAC TX back instead of sending it. */
-#define ECONET_GLOBAL_CFG_UMAC_LOOPBACK BIT(17)
+#define ECONET_GLOBAL_CFG_UMAC_LOOPBACK		BIT(17)
 
-#define EN751221_DSA_SPORT_BASE 8
-#define EN751221_DSA_NUM_PORTS 5
+#define EN751221_DSA_SPORT_BASE			8
+#define EN751221_DSA_NUM_PORTS			5
 
-#define EN7523_GPON_MAX_FRAME_LEN 2000
-#define EN7523_GPON_PSE_BUF_INIT_CHAN_THR 4
-#define EN7523_GPON_PSE_BUF_INIT_TOTAL_THR 0xe0
-#define EN7523_GPON_PSE_BUF_FEW_CHAN_THR 0x20
-#define EN7523_GPON_PSE_BUF_MANY_CHAN_THR 0x08
-#define EN7523_GPON_PSE_BUF_CHAN_OVERHEAD 0x10
-#define EN7523_GPON_PSE_BUF_FEW_CHAN_MAX 8
-#define EN7523_GPON_DBA_RATE_KBPS 0xa00000
-#define EN7523_GPON_DBA_CBS_BYTES 0x8000
-#define EN7523_GPON_DBA_PBS_BYTES 0xffff
+#define EN7523_GPON_MAX_FRAME_LEN		2000
+#define EN7523_GPON_PSE_BUF_INIT_CHAN_THR	4
+#define EN7523_GPON_PSE_BUF_INIT_TOTAL_THR	0xe0
+#define EN7523_GPON_PSE_BUF_FEW_CHAN_THR	0x20
+#define EN7523_GPON_PSE_BUF_MANY_CHAN_THR	0x08
+#define EN7523_GPON_PSE_BUF_CHAN_OVERHEAD	0x10
+#define EN7523_GPON_PSE_BUF_FEW_CHAN_MAX	8
+#define EN7523_GPON_DBA_RATE_KBPS		0xa00000
+#define EN7523_GPON_DBA_CBS_BYTES		0x8000
+#define EN7523_GPON_DBA_PBS_BYTES		0xffff
 
-#define AIROHA_XPON_TX_OFFLOAD_FEATURES                                   \
-	(NETIF_F_IP_CSUM | NETIF_F_IPV6_CSUM | NETIF_F_SG | NETIF_F_TSO | \
-	 NETIF_F_TSO6)
+#define AIROHA_XPON_TX_OFFLOAD_FEATURES		(NETIF_F_IP_CSUM | NETIF_F_IPV6_CSUM | \
+						 NETIF_F_SG | NETIF_F_TSO | NETIF_F_TSO6)
 
 enum airoha_mtk_tag_mode {
 	AIROHA_MTK_TAG_IN_SKB,
@@ -191,30 +193,29 @@ airoha_gdm_common_from_netdev(struct net_device *netdev)
 	return gdm->magic == AIROHA_GDM_COMMON_MAGIC ? gdm : NULL;
 }
 
-#define AIROHA_MAX_NUM_GDM_DEVS 3
-#define AIROHA_MAX_NUM_QDMA 2
-#define AIROHA_MAX_DSA_PORTS 7
-#define AIROHA_MAX_NUM_RSTS 3
-#define AIROHA_MAX_MTU 9220
-#define AIROHA_MAX_RX_SIZE 16128
-#define AIROHA_MAX_PACKET_SIZE 2048
-#define AIROHA_NUM_QOS_CHANNELS 4
-#define AIROHA_NUM_QOS_QUEUES 8
-#define AIROHA_NUM_NETDEV_TX_RINGS(_soc) \
-	(_soc->tx_ring + AIROHA_NUM_QOS_CHANNELS)
-#define AIROHA_FE_MC_MAX_VLAN_TABLE 64
-#define AIROHA_FE_MC_MAX_VLAN_PORT 16
-#define AIROHA_NUM_TX_IRQ 2
+#define AIROHA_MAX_NUM_GDM_DEVS			3
+#define AIROHA_MAX_NUM_QDMA			2
+#define AIROHA_MAX_DSA_PORTS			7
+#define AIROHA_MAX_NUM_RSTS			3
+#define AIROHA_MAX_MTU				9220
+#define AIROHA_MAX_RX_SIZE			16128
+#define AIROHA_MAX_PACKET_SIZE			2048
+#define AIROHA_NUM_QOS_CHANNELS			4
+#define AIROHA_NUM_QOS_QUEUES			8
+#define AIROHA_NUM_NETDEV_TX_RINGS(_soc)	(_soc->tx_ring + AIROHA_NUM_QOS_CHANNELS)
+#define AIROHA_FE_MC_MAX_VLAN_TABLE		64
+#define AIROHA_FE_MC_MAX_VLAN_PORT		16
+#define AIROHA_NUM_TX_IRQ			2
 /*
  * Software classification rules rather than a hardware table: one entry per
  * UNI and priority combination, all of which can share a single GEM port and
  * T-CONT. An OLT mapping eight priorities across several UNIs, plus a virtual
  * Ethernet interface point, needs far more than the thirty-two this started with.
  */
-#define AIROHA_XPON_MAX_SERVICES 256
-#define AIROHA_XPON_SVC_MAX_COOKIES 8
-#define HW_DSCP_NUM 2048
-#define IRQ_QUEUE_LEN(_n) ((_n) ? 1024 : 2048)
+#define AIROHA_XPON_MAX_SERVICES		256
+#define AIROHA_XPON_SVC_MAX_COOKIES		8
+#define HW_DSCP_NUM				2048
+#define IRQ_QUEUE_LEN(_n)			((_n) ? 1024 : 2048)
 #define TX_DSCP_NUM(_n)     \
 	((_n) == 0 ? 1536 : \
 	 (_n) == 1 ? 128 :  \
@@ -244,37 +245,36 @@ airoha_gdm_common_from_netdev(struct net_device *netdev)
 	 (_n) == 15 ? 128 :  \
 		      16)
 
-#define AIROHA_LRO_PAGE_ORDER 2
-#define EN7523_AIROHA_LRO_PAGE_ORDER 4
-#define AIROHA_MAX_NUM_LRO_QUEUES 8
-#define EN7523_AIROHA_MAX_NUM_LRO_QUEUES 4
-#define AIROHA_RXQ_LRO_EN_MASK GENMASK(31, 24)
-#define EN7523_AIROHA_RXQ_LRO_EN_MASK GENMASK(14, 11)
-#define AIROHA_RXQ_LRO_MAX_AGG_COUNT 64
-#define EN7523_AIROHA_RXQ_LRO_MAX_AGG_COUNT 30
-#define EN7523_AIROHA_RXQ_LRO_MAX_AGG_SIZE 44000
-#define AIROHA_RXQ_LRO_MAX_AGG_TIME 100
-#define AIROHA_RXQ_LRO_MAX_AGE_TIME 2000 /* 1ms */
+#define AIROHA_LRO_PAGE_ORDER			2
+#define EN7523_AIROHA_LRO_PAGE_ORDER		4
+#define AIROHA_MAX_NUM_LRO_QUEUES		8
+#define EN7523_AIROHA_MAX_NUM_LRO_QUEUES	4
+#define AIROHA_RXQ_LRO_EN_MASK			GENMASK(31, 24)
+#define EN7523_AIROHA_RXQ_LRO_EN_MASK		GENMASK(14, 11)
+#define AIROHA_RXQ_LRO_MAX_AGG_COUNT		64
+#define EN7523_AIROHA_RXQ_LRO_MAX_AGG_COUNT	30
+#define EN7523_AIROHA_RXQ_LRO_MAX_AGG_SIZE	44000
+#define AIROHA_RXQ_LRO_MAX_AGG_TIME		100
+#define AIROHA_RXQ_LRO_MAX_AGE_TIME		2000 /* 1ms */
 
-#define AIROHA_ETH_HW_FEATURES \
-	(NETIF_F_IP_CSUM | NETIF_F_RXCSUM | NETIF_F_IPV6_CSUM)
-#define AIROHA_QDMA_TSO_HW_FEATURES (NETIF_F_SG | NETIF_F_TSO | NETIF_F_TSO6)
-#define AIROHA_HW_FEATURES \
-	(AIROHA_ETH_HW_FEATURES | AIROHA_QDMA_TSO_HW_FEATURES | NETIF_F_HW_TC)
+#define AIROHA_ETH_HW_FEATURES			(NETIF_F_IP_CSUM | NETIF_F_RXCSUM | NETIF_F_IPV6_CSUM)
+#define AIROHA_QDMA_TSO_HW_FEATURES		(NETIF_F_SG | NETIF_F_TSO | NETIF_F_TSO6)
+#define AIROHA_HW_FEATURES			(AIROHA_ETH_HW_FEATURES | AIROHA_QDMA_TSO_HW_FEATURES | NETIF_F_HW_TC)
 
-#define PSE_RSV_PAGES 128
-#define PSE_QUEUE_RSV_PAGES 64
+#define PSE_RSV_PAGES				128
+#define PSE_QUEUE_RSV_PAGES			64
 
-#define QDMA_METER_IDX(_n) ((_n) & 0xff)
-#define QDMA_METER_GROUP(_n) (((_n) >> 8) & 0x3)
+#define QDMA_METER_IDX(_n)			((_n) & 0xff)
+#define QDMA_METER_GROUP(_n)			(((_n) >> 8) & 0x3)
 
-#define AIROHA_FOE_ENTRY_SIZE 80
-#define AIROHA_FOE_ENTRY_WORDS (AIROHA_FOE_ENTRY_SIZE / sizeof(u32))
-#define PPE_RAM_NUM_ENTRIES_SHIFT(_n) ((_n) == 512 ? 7 : __ffs((_n) >> 10))
+#define AIROHA_FOE_ENTRY_SIZE			80
+#define AIROHA_FOE_ENTRY_WORDS			(AIROHA_FOE_ENTRY_SIZE / sizeof(u32))
+#define PPE_RAM_NUM_ENTRIES_SHIFT(_n)		((_n) == 512 ? 7 : __ffs((_n) >> 10))
 
-#define OFFLOAD_FAST_TXRING_IDX \
-	7 /* for en7580, en7523, an7581, an7583 and an7552 */
-#define EN7516_OFFLOAD_FAST_TXRING_IDX 0 /* for en751627 and en7528 */
+/* for en7580, en7523, an7581, an7583 and an7552 */
+#define OFFLOAD_FAST_TXRING_IDX			7
+/* for en751627 and en7528 */
+#define EN7516_OFFLOAD_FAST_TXRING_IDX		0
 
 enum {
 	QDMA_INT_REG_IDX0,
@@ -340,12 +340,6 @@ enum airoha_gdm_index {
 	AIROHA_GDM2_IDX = 2,
 	AIROHA_GDM3_IDX = 3,
 	AIROHA_GDM4_IDX = 4,
-};
-
-enum airoha_xpon_mode {
-	AIROHA_XPON_MODE_GPON,
-	AIROHA_XPON_MODE_EPON,
-	AIROHA_XPON_MODE_XGSPON,
 };
 
 enum {
@@ -500,50 +494,50 @@ enum {
  * CPUs.  Keep mixed-width fields encoded as u32 words instead of relying on
  * C bitfield or u16 member layout.
  */
-#define AIROHA_FOE_WORD_IB1 0
-#define AIROHA_FOE_PORTS_SPORT GENMASK(31, 16)
-#define AIROHA_FOE_PORTS_DPORT GENMASK(15, 0)
-#define AIROHA_FOE_L2_ETYPE GENMASK(31, 16)
-#define AIROHA_FOE_L2_VLAN1 GENMASK(15, 0)
-#define AIROHA_FOE_L2_DMAC_LO GENMASK(31, 16)
-#define AIROHA_FOE_L2_VLAN2 GENMASK(15, 0)
-#define AIROHA_FOE_L2_SMAC_LO GENMASK(31, 16)
-#define AIROHA_FOE_L2_PPPOE_ID GENMASK(15, 0)
+#define AIROHA_FOE_WORD_IB1			0
+#define AIROHA_FOE_PORTS_SPORT			GENMASK(31, 16)
+#define AIROHA_FOE_PORTS_DPORT			GENMASK(15, 0)
+#define AIROHA_FOE_L2_ETYPE			GENMASK(31, 16)
+#define AIROHA_FOE_L2_VLAN1			GENMASK(15, 0)
+#define AIROHA_FOE_L2_DMAC_LO			GENMASK(31, 16)
+#define AIROHA_FOE_L2_VLAN2			GENMASK(15, 0)
+#define AIROHA_FOE_L2_SMAC_LO			GENMASK(31, 16)
+#define AIROHA_FOE_L2_PPPOE_ID			GENMASK(15, 0)
 
 /* FoE v1: EN751221 and EN7528. */
-#define AIROHA_FOE_V1_INVALID_HASH 0xffff
-#define AIROHA_FOE_V1_FP_QDMA_LAN 3
-#define AIROHA_FOE_V1_FP_QDMA_HW 6
+#define AIROHA_FOE_V1_INVALID_HASH		0xffff
+#define AIROHA_FOE_V1_FP_QDMA_LAN		3
+#define AIROHA_FOE_V1_FP_QDMA_HW		6
 
-#define AIROHA_FOE_V1_IPV4_IB2_WORD 4
-#define AIROHA_FOE_V1_IPV4_DATA_WORD 10
-#define AIROHA_FOE_V1_IPV4_L2_WORD 11
-#define AIROHA_FOE_V1_IPV6_DATA_WORD 13
-#define AIROHA_FOE_V1_IPV6_IB2_WORD 14
-#define AIROHA_FOE_V1_IPV6_L2_WORD 15
+#define AIROHA_FOE_V1_IPV4_IB2_WORD		4
+#define AIROHA_FOE_V1_IPV4_DATA_WORD		10
+#define AIROHA_FOE_V1_IPV4_L2_WORD		11
+#define AIROHA_FOE_V1_IPV6_DATA_WORD		13
+#define AIROHA_FOE_V1_IPV6_IB2_WORD		14
+#define AIROHA_FOE_V1_IPV6_L2_WORD		15
 
-#define AIROHA_FOE_V1_IB1_BIND_VLAN_LAYER GENMASK(18, 16)
-#define AIROHA_FOE_V1_IB1_BIND_PPPOE BIT(19)
-#define AIROHA_FOE_V1_IB1_BIND_VLAN_TAG BIT(20)
-#define AIROHA_FOE_V1_IB1_BIND_CACHE BIT(22)
+#define AIROHA_FOE_V1_IB1_BIND_VLAN_LAYER	GENMASK(18, 16)
+#define AIROHA_FOE_V1_IB1_BIND_PPPOE		BIT(19)
+#define AIROHA_FOE_V1_IB1_BIND_VLAN_TAG		BIT(20)
+#define AIROHA_FOE_V1_IB1_BIND_CACHE		BIT(22)
 
-#define AIROHA_FOE_V1_IB2_QID GENMASK(3, 0)
-#define AIROHA_FOE_V1_IB2_PSE_QOS BIT(4)
-#define AIROHA_FOE_V1_IB2_PSE_PORT GENMASK(7, 5)
-#define AIROHA_FOE_V1_IB2_MULTICAST BIT(8)
-#define AIROHA_FOE_V1_IB2_PORT_MG GENMASK(17, 12)
-#define AIROHA_FOE_V1_IB2_PORT_AG GENMASK(23, 18)
+#define AIROHA_FOE_V1_IB2_QID			GENMASK(3, 0)
+#define AIROHA_FOE_V1_IB2_PSE_QOS		BIT(4)
+#define AIROHA_FOE_V1_IB2_PSE_PORT		GENMASK(7, 5)
+#define AIROHA_FOE_V1_IB2_MULTICAST		BIT(8)
+#define AIROHA_FOE_V1_IB2_PORT_MG		GENMASK(17, 12)
+#define AIROHA_FOE_V1_IB2_PORT_AG		GENMASK(23, 18)
 
-#define AIROHA_FOE_V1_ACTDP GENMASK(31, 24)
-#define AIROHA_FOE_V1_SHAPER_ID GENMASK(23, 16)
-#define AIROHA_FOE_V1_CHANNEL GENMASK(15, 8)
+#define AIROHA_FOE_V1_ACTDP			GENMASK(31, 24)
+#define AIROHA_FOE_V1_SHAPER_ID			GENMASK(23, 16)
+#define AIROHA_FOE_V1_CHANNEL			GENMASK(15, 8)
 
-#define AIROHA_FOE_MAC_SMAC_ID GENMASK(20, 16)
-#define AIROHA_FOE_MAC_PPPOE_ID GENMASK(15, 0)
+#define AIROHA_FOE_MAC_SMAC_ID			GENMASK(20, 16)
+#define AIROHA_FOE_MAC_PPPOE_ID			GENMASK(15, 0)
 
-#define AIROHA_FOE_MAC_WDMA_QOS GENMASK(15, 12)
-#define AIROHA_FOE_MAC_WDMA_BAND BIT(11)
-#define AIROHA_FOE_MAC_WDMA_WCID GENMASK(10, 0)
+#define AIROHA_FOE_MAC_WDMA_QOS			GENMASK(15, 12)
+#define AIROHA_FOE_MAC_WDMA_BAND		BIT(11)
+#define AIROHA_FOE_MAC_WDMA_WCID		GENMASK(10, 0)
 
 struct airoha_foe_mac_info_common {
 	u16 vlan1;
@@ -564,43 +558,43 @@ struct airoha_foe_mac_info {
 	u16 src_mac_lo;
 };
 
-#define AIROHA_FOE_IB1_UNBIND_PREBIND BIT(24)
-#define AIROHA_FOE_IB1_UNBIND_PACKETS GENMASK(23, 8)
-#define AIROHA_FOE_IB1_UNBIND_TIMESTAMP GENMASK(7, 0)
+#define AIROHA_FOE_IB1_UNBIND_PREBIND		BIT(24)
+#define AIROHA_FOE_IB1_UNBIND_PACKETS		GENMASK(23, 8)
+#define AIROHA_FOE_IB1_UNBIND_TIMESTAMP		GENMASK(7, 0)
 
-#define AIROHA_FOE_IB1_BIND_STATIC BIT(31)
-#define AIROHA_FOE_IB1_BIND_UDP BIT(30)
-#define AIROHA_FOE_IB1_BIND_STATE GENMASK(29, 28)
-#define AIROHA_FOE_IB1_BIND_PACKET_TYPE GENMASK(27, 25)
-#define AIROHA_FOE_IB1_BIND_TTL BIT(24)
-#define AIROHA_FOE_IB1_BIND_TUNNEL_DECAP BIT(23)
-#define AIROHA_FOE_IB1_BIND_PPPOE BIT(22)
-#define AIROHA_FOE_IB1_BIND_VPM GENMASK(21, 20)
-#define AIROHA_FOE_IB1_BIND_VLAN_LAYER GENMASK(19, 16)
-#define AIROHA_FOE_IB1_BIND_KEEPALIVE BIT(15)
-#define AIROHA_FOE_IB1_BIND_TIMESTAMP GENMASK(14, 0)
+#define AIROHA_FOE_IB1_BIND_STATIC		BIT(31)
+#define AIROHA_FOE_IB1_BIND_UDP			BIT(30)
+#define AIROHA_FOE_IB1_BIND_STATE		GENMASK(29, 28)
+#define AIROHA_FOE_IB1_BIND_PACKET_TYPE		GENMASK(27, 25)
+#define AIROHA_FOE_IB1_BIND_TTL			BIT(24)
+#define AIROHA_FOE_IB1_BIND_TUNNEL_DECAP	BIT(23)
+#define AIROHA_FOE_IB1_BIND_PPPOE		BIT(22)
+#define AIROHA_FOE_IB1_BIND_VPM			GENMASK(21, 20)
+#define AIROHA_FOE_IB1_BIND_VLAN_LAYER		GENMASK(19, 16)
+#define AIROHA_FOE_IB1_BIND_KEEPALIVE		BIT(15)
+#define AIROHA_FOE_IB1_BIND_TIMESTAMP		GENMASK(14, 0)
 
-#define AIROHA_FOE_IB2_DSCP GENMASK(31, 24)
-#define AIROHA_FOE_IB2_PORT_AG GENMASK(23, 13)
-#define AIROHA_FOE_IB2_PCP BIT(12)
-#define AIROHA_FOE_IB2_MULTICAST BIT(11)
-#define AIROHA_FOE_IB2_FAST_PATH BIT(10)
-#define AIROHA_FOE_IB2_PSE_QOS BIT(9)
-#define AIROHA_FOE_IB2_PSE_PORT GENMASK(8, 5)
-#define AIROHA_FOE_IB2_NBQ GENMASK(4, 0)
+#define AIROHA_FOE_IB2_DSCP			GENMASK(31, 24)
+#define AIROHA_FOE_IB2_PORT_AG			GENMASK(23, 13)
+#define AIROHA_FOE_IB2_PCP			BIT(12)
+#define AIROHA_FOE_IB2_MULTICAST		BIT(11)
+#define AIROHA_FOE_IB2_FAST_PATH		BIT(10)
+#define AIROHA_FOE_IB2_PSE_QOS			BIT(9)
+#define AIROHA_FOE_IB2_PSE_PORT			GENMASK(8, 5)
+#define AIROHA_FOE_IB2_NBQ			GENMASK(4, 0)
 
-#define AIROHA_FOE_ACTDP GENMASK(31, 24)
-#define AIROHA_FOE_SHAPER_ID GENMASK(23, 16)
-#define AIROHA_FOE_CHANNEL GENMASK(15, 11)
-#define AIROHA_FOE_QID GENMASK(10, 8)
-#define AIROHA_FOE_DPI BIT(7)
-#define AIROHA_FOE_TUNNEL BIT(6)
-#define AIROHA_FOE_TUNNEL_ID GENMASK(5, 0)
+#define AIROHA_FOE_ACTDP			GENMASK(31, 24)
+#define AIROHA_FOE_SHAPER_ID			GENMASK(23, 16)
+#define AIROHA_FOE_CHANNEL			GENMASK(15, 11)
+#define AIROHA_FOE_QID				GENMASK(10, 8)
+#define AIROHA_FOE_DPI				BIT(7)
+#define AIROHA_FOE_TUNNEL			BIT(6)
+#define AIROHA_FOE_TUNNEL_ID			GENMASK(5, 0)
 
-#define AIROHA_FOE_TUNNEL_MTU GENMASK(31, 16)
-#define AIROHA_FOE_ACNT_GRP3 GENMASK(15, 9)
-#define AIROHA_FOE_METER_GRP3 GENMASK(8, 5)
-#define AIROHA_FOE_METER_GRP2 GENMASK(4, 0)
+#define AIROHA_FOE_TUNNEL_MTU			GENMASK(31, 16)
+#define AIROHA_FOE_ACNT_GRP3			GENMASK(15, 9)
+#define AIROHA_FOE_METER_GRP3			GENMASK(8, 5)
+#define AIROHA_FOE_METER_GRP2			GENMASK(4, 0)
 
 struct airoha_foe_bridge {
 	u32 dest_mac_hi;
@@ -869,10 +863,10 @@ struct airoha_wdma_info {
 };
 
 /* RX queue to IRQ mapping: BIT(q) in IRQ(n) */
-#define RX_IRQ0_BANK_PIN_MASK 0x839f
-#define RX_IRQ1_BANK_PIN_MASK 0xffe00000
-#define RX_IRQ2_BANK_PIN_MASK 0x20
-#define RX_IRQ3_BANK_PIN_MASK 0x40
+#define RX_IRQ0_BANK_PIN_MASK			0x839f
+#define RX_IRQ1_BANK_PIN_MASK			0xffe00000
+#define RX_IRQ2_BANK_PIN_MASK			0x20
+#define RX_IRQ3_BANK_PIN_MASK			0x40
 #define RX_IRQ_BANK_PIN_MASK(_n)               \
 	(((_n) == 3) ? RX_IRQ3_BANK_PIN_MASK : \
 	 ((_n) == 2) ? RX_IRQ2_BANK_PIN_MASK : \
@@ -888,20 +882,20 @@ struct airoha_irq_bank {
 	int irq;
 };
 
-#define EN751221_SLM_BASE 0x1fa60000
-#define EN751221_SLM_REG_SIZE SZ_256
-#define EN751221_SLM_HWF_VIRT_BASE 0x1b800000
-#define EN751221_SLM_PHYS_SIZE SZ_4M
-#define EN751221_SLM_MAX_DRAM_SIZE SZ_256M
-#define EN751221_SLM_SECTOR_SIZE SZ_256
-#define EN751221_SLM_GLO_CFG_BYPASS BIT(0)
-#define EN751221_SLM_EN_ENABLE BIT(0)
-#define EN751221_SLM_EN_ACTIVE BIT(1)
+#define EN751221_SLM_BASE			0x1fa60000
+#define EN751221_SLM_REG_SIZE			SZ_256
+#define EN751221_SLM_HWF_VIRT_BASE		0x1b800000
+#define EN751221_SLM_PHYS_SIZE			SZ_4M
+#define EN751221_SLM_MAX_DRAM_SIZE		SZ_256M
+#define EN751221_SLM_SECTOR_SIZE		SZ_256
+#define EN751221_SLM_GLO_CFG_BYPASS		BIT(0)
+#define EN751221_SLM_EN_ENABLE			BIT(0)
+#define EN751221_SLM_EN_ACTIVE			BIT(1)
 
-#define EN7516_QDMA_INT_STATUS1_OFFSET 0x700
-#define EN7516_QDMA_INT_STATUS2_OFFSET 0x704
-#define EN7516_QDMA_INT_ENABLE_BASE 0x704
-#define EN7516_QDMA_INT_ENABLE_STRIDE 0x0c
+#define EN7516_QDMA_INT_STATUS1_OFFSET		0x700
+#define EN7516_QDMA_INT_STATUS2_OFFSET		0x704
+#define EN7516_QDMA_INT_ENABLE_BASE		0x704
+#define EN7516_QDMA_INT_ENABLE_STRIDE		0x0c
 
 struct en751221_slm_regs {
 	u32 glo_cfg;
@@ -977,12 +971,11 @@ enum airoha_priv_flags {
 	AIROHA_PRIV_F_XDSL_MANAGED = BIT(3),
 };
 
-#define AIROHA_PRIV_F_WAN_MANAGED \
-	(AIROHA_PRIV_F_XPON_MANAGED | AIROHA_PRIV_F_XDSL_MANAGED)
+#define AIROHA_PRIV_F_WAN_MANAGED		(AIROHA_PRIV_F_XPON_MANAGED | AIROHA_PRIV_F_XDSL_MANAGED)
 
-#define AIROHA_XPON_OAM_RX_F_MIC_PRESENT BIT(0)
-#define AIROHA_XPON_OAM_RX_F_MIC_VALID BIT(1)
-#define AIROHA_XPON_OAM_RX_F_CRC_ERROR BIT(2)
+#define AIROHA_XPON_OAM_RX_F_MIC_PRESENT	BIT(0)
+#define AIROHA_XPON_OAM_RX_F_MIC_VALID		BIT(1)
+#define AIROHA_XPON_OAM_RX_F_CRC_ERROR		BIT(2)
 
 struct airoha_xpon_oam_handler {
 	bool (*rx)(void *priv, struct sk_buff *skb, u8 channel, u16 gem_port_id,
@@ -1028,7 +1021,7 @@ struct airoha_xpon_link_ops {
  * conventional netdev representation.
  */
 struct airoha_xpon_link_state {
-	enum airoha_xpon_mode mode;
+	enum xpon_mode mode;
 	bool valid;
 	bool link;
 	u32 speed;
@@ -1155,7 +1148,12 @@ struct airoha_gdm_dev {
 	struct mutex xpon_lock;
 	const struct airoha_xpon_link_ops *xpon_ops;
 	void *xpon_priv;
-	enum airoha_xpon_mode xpon_mode;
+	enum xpon_mode xpon_mode;
+	/* EN7580/AN758x QDMA TXQ close registers are write-only.  One u32
+	 * holds the queue-close bits for four channels (8 queues each).
+	 */
+	spinlock_t xpon_txq_lock;
+	u32 xpon_txq_disabled[8];
 	/* WAN transmits refused while the GDM2 channels are retired */
 	bool xpon_tx_stopped;
 	bool xpon_started;
@@ -1196,15 +1194,15 @@ struct airoha_gdm_port {
 	struct metadata_dst *dsa_meta[AIROHA_MAX_DSA_PORTS];
 };
 
-#define AIROHA_RXD4_PPE_CPU_REASON GENMASK(20, 16)
-#define AIROHA_RXD4_FOE_ENTRY GENMASK(15, 0)
-#define AN7581_AIROHA_RXD4_FOE_ENTRY_INVALID 0xffff
-#define EN7523_AIROHA_RXD4_FOE_ENTRY_INVALID 0x7fff
+#define AIROHA_RXD4_PPE_CPU_REASON			GENMASK(20, 16)
+#define AIROHA_RXD4_FOE_ENTRY				GENMASK(15, 0)
+#define AN7581_AIROHA_RXD4_FOE_ENTRY_INVALID		0xffff
+#define EN7523_AIROHA_RXD4_FOE_ENTRY_INVALID		0x7fff
 
-#define AIROHA_PPE_CPU_REASON_FOE_UNHIT 0x0d
-#define AIROHA_PPE_CPU_REASON_HIT_UNBIND 0x0e
-#define AIROHA_PPE_CPU_REASON_HIT_UNBIND_RATE_REACHED 0x0f
-#define AIROHA_PPE_CPU_REASON_KEEPALIVE_DUP_OLD_HDR 0x15
+#define AIROHA_PPE_CPU_REASON_FOE_UNHIT			0x0d
+#define AIROHA_PPE_CPU_REASON_HIT_UNBIND		0x0e
+#define AIROHA_PPE_CPU_REASON_HIT_UNBIND_RATE_REACHED	0x0f
+#define AIROHA_PPE_CPU_REASON_KEEPALIVE_DUP_OLD_HDR	0x15
 
 struct airoha_ppe_host_ops {
 	int (*get_fe_port)(struct airoha_gdm_dev *dev);
@@ -1303,14 +1301,29 @@ struct platform_device;
 
 struct airoha_eth;
 
+/*
+ * The FE datapath generation is selected by the SoC, not solely by the
+ * optical line rate.  The xpon_10g SDK uses the 10G MAC/FE path even for
+ * GPON, EPON, GPON_SYM and the 1G/1G XEPON line profile.
+ *
+ * This only prepares FE/QDMA resources; availability of a protocol MAC,
+ * PHY or optical frontend is validated by the xPON provider separately.
+ */
+enum airoha_xpon_fe_mode {
+	AIROHA_XPON_FE_ITU_1G,
+	AIROHA_XPON_FE_IEEE_1G,
+	AIROHA_XPON_FE_ITU_10G,
+	AIROHA_XPON_FE_IEEE_10G,
+};
+
 struct airoha_eth_xpon_ops {
-	int (*set_mode)(struct net_device *netdev, enum airoha_xpon_mode mode);
+	int (*set_mode)(struct net_device *netdev, enum xpon_mode mode);
 	int (*set_datapath)(struct net_device *netdev,
-			    enum airoha_xpon_mode mode, bool enable);
+			    enum xpon_mode mode, bool enable);
 	int (*set_tcont_channel)(struct net_device *netdev,
 				 unsigned int channel, bool enable);
 	int (*register_link)(struct net_device *netdev,
-			     enum airoha_xpon_mode mode,
+			     enum xpon_mode mode,
 			     const struct airoha_xpon_link_ops *ops,
 			     void *priv);
 	void (*unregister_link)(struct net_device *netdev,
@@ -1482,7 +1495,7 @@ static inline bool airoha_is_lan_gdm_dev(struct airoha_gdm_dev *dev)
 		}                                                  \
 		_found;                                            \
 	})
-	
+
 static inline bool airoha_is_econet(struct airoha_eth *eth)
 {
 	return airoha_is(eth, econet_en751221, econet_en7528, econet_en7580);
@@ -1531,7 +1544,7 @@ extern const struct airoha_eth_soc_data airoha_an7583_soc_data;
 
 struct net_device *airoha_eth_get_xpon_netdev(void);
 int airoha_eth_register_xpon(struct net_device *netdev,
-			     enum airoha_xpon_mode mode,
+			     enum xpon_mode mode,
 			     const struct airoha_xpon_link_ops *ops,
 			     void *priv);
 void airoha_eth_unregister_xpon(struct net_device *netdev,
@@ -1573,9 +1586,9 @@ void airoha_eth_unregister_xdsl(struct net_device *netdev,
 void airoha_eth_xdsl_update_link(struct net_device *netdev,
 				 const struct airoha_xdsl_link_state *state);
 int airoha_eth_set_xpon_mode(struct net_device *netdev,
-			     enum airoha_xpon_mode mode);
+			     enum xpon_mode mode);
 int airoha_eth_set_xpon_datapath(struct net_device *netdev,
-				 enum airoha_xpon_mode mode, bool enable);
+				 enum xpon_mode mode, bool enable);
 int airoha_eth_set_xpon_tcont_channel(struct net_device *netdev,
 				      unsigned int channel, bool enable);
 int airoha_get_fe_port(struct airoha_gdm_dev *dev);
@@ -1685,16 +1698,16 @@ struct etx {
  * Bitfield accessors for: etx bitfield_0
  */
 
-#define ETX_UNKNOWN0_MASK GENMASK(31, 28)
-#define ETX_SP_TAG_MASK GENMASK(27, 12)
+#define ETX_UNKNOWN0_MASK	GENMASK(31, 28)
+#define ETX_SP_TAG_MASK		GENMASK(27, 12)
 /* EN751221 xPON TX message word 0 overlays the Ethernet special-tag field. */
-#define ETX_XPON_GEM_MASK GENMASK(23, 12)
-#define ETX_XPON_DEI BIT(24)
-#define ETX_XPON_TSE BIT(25)
-#define ETX_XPON_TSID_MASK GENMASK(30, 26)
-#define ETX_OAM BIT(11)
-#define ETX_CHANNEL_MASK GENMASK(10, 3)
-#define ETX_QUEUE_MASK GENMASK(2, 0)
+#define ETX_XPON_GEM_MASK	GENMASK(23, 12)
+#define ETX_XPON_DEI		BIT(24)
+#define ETX_XPON_TSE		BIT(25)
+#define ETX_XPON_TSID_MASK	GENMASK(30, 26)
+#define ETX_OAM			BIT(11)
+#define ETX_CHANNEL_MASK	GENMASK(10, 3)
+#define ETX_QUEUE_MASK		GENMASK(2, 0)
 
 /** Unused, called "rev" probably short for reserved */
 static inline u8 get_etx_unknown0(struct etx *x)
@@ -1780,17 +1793,17 @@ enum etx_vlan_type {
 	ETX_VLAN_TYPE_UNKNOWN = 3,
 };
 
-#define ETX_ICO BIT(31)
-#define ETX_UCO BIT(30)
-#define ETX_TCO BIT(29)
-#define ETX_SCO BIT(28)
+#define ETX_ICO			BIT(31)
+#define ETX_UCO			BIT(30)
+#define ETX_TCO			BIT(29)
+#define ETX_SCO			BIT(28)
 /* EN7528 reuses bit 28 for TSO v1. */
-#define EN7528_ETX_TSO BIT(28)
-#define ETX_UDF_PMAP_MASK GENMASK(27, 22)
-#define ETX_FPORT_MASK GENMASK(21, 19)
-#define ETX_VLAN_EN BIT(18)
-#define ETX_VLAN_TYPE_MASK GENMASK(17, 16)
-#define ETX_VLAN_TAG_MASK GENMASK(15, 0)
+#define EN7528_ETX_TSO		BIT(28)
+#define ETX_UDF_PMAP_MASK	GENMASK(27, 22)
+#define ETX_FPORT_MASK		GENMASK(21, 19)
+#define ETX_VLAN_EN		BIT(18)
+#define ETX_VLAN_TYPE_MASK	GENMASK(17, 16)
+#define ETX_VLAN_TAG_MASK	GENMASK(15, 0)
 
 /** Checksum offload, probably IP */
 static inline bool is_etx_ico(struct etx *x)
@@ -1936,24 +1949,24 @@ struct qdma_desc_erx {
 /* EN751221 xPON RX message word 0.  The remaining words overlap the
  * regular Ethernet RX metadata and are deliberately kept in qdma_desc_erx.
  */
-#define ERX_XPON_CRC_ERROR BIT(0)
-#define ERX_XPON_RUNT BIT(1)
-#define ERX_XPON_LONG BIT(2)
-#define ERX_XPON_CHANNEL_MASK GENMASK(10, 3)
-#define ERX_XPON_OAM BIT(11)
-#define ERX_XPON_GEM_MASK GENMASK(23, 12)
+#define ERX_XPON_CRC_ERROR	BIT(0)
+#define ERX_XPON_RUNT		BIT(1)
+#define ERX_XPON_LONG		BIT(2)
+#define ERX_XPON_CHANNEL_MASK	GENMASK(10, 3)
+#define ERX_XPON_OAM		BIT(11)
+#define ERX_XPON_GEM_MASK	GENMASK(23, 12)
 
-#define ERX_UNKNOWN1_MASK GENMASK(31, 29)
-#define ERX_IP6 BIT(28)
-#define ERX_IP4 BIT(27)
-#define ERX_IP4F BIT(26)
-#define ERX_TACK BIT(25)
-#define ERX_L2VLD BIT(24)
-#define ERX_L4F BIT(23)
-#define ERX_SPORT_MASK GENMASK(22, 19)
-#define EN7528_ERX_SPORT_MASK GENMASK(23, 19)
-#define ERX_CRSN_MASK GENMASK(18, 14)
-#define ERX_PPE_ENTRY_MASK GENMASK(13, 0)
+#define ERX_UNKNOWN1_MASK	GENMASK(31, 29)
+#define ERX_IP6			BIT(28)
+#define ERX_IP4			BIT(27)
+#define ERX_IP4F		BIT(26)
+#define ERX_TACK		BIT(25)
+#define ERX_L2VLD		BIT(24)
+#define ERX_L4F			BIT(23)
+#define ERX_SPORT_MASK		GENMASK(22, 19)
+#define EN7528_ERX_SPORT_MASK	GENMASK(23, 19)
+#define ERX_CRSN_MASK		GENMASK(18, 14)
+#define ERX_PPE_ENTRY_MASK	GENMASK(13, 0)
 
 static inline u8 get_erx_unknown1(struct qdma_desc_erx *x)
 {
@@ -2038,8 +2051,8 @@ static inline void set_erx_ppe_entry(struct qdma_desc_erx *x, u16 v)
 
 /* qdma_desc_erx bitfield_1 */
 
-#define ERX_UNKNOWN2_MASK GENMASK(31, 1)
-#define ERX_UNTAG BIT(0)
+#define ERX_UNKNOWN2_MASK	GENMASK(31, 1)
+#define ERX_UNTAG		BIT(0)
 
 static inline u32 get_erx_unknown2(struct qdma_desc_erx *x)
 {
@@ -2060,8 +2073,8 @@ static inline void set_erx_untag(struct qdma_desc_erx *x, bool v)
 
 /* qdma_desc_erx bitfield_3 */
 
-#define ERX_SP_TAG_MASK GENMASK(31, 16)
-#define ERX_TCI_MASK GENMASK(15, 0)
+#define ERX_SP_TAG_MASK		GENMASK(31, 16)
+#define ERX_TCI_MASK		GENMASK(15, 0)
 
 static inline u16 get_erx_sp_tag(struct qdma_desc_erx *x)
 {
@@ -2128,11 +2141,11 @@ struct desc {
  * Bitfield accessors for: desc_info word
  */
 
-#define DESC_INFO_DONE BIT(31)
-#define DESC_INFO_DROPPED BIT(30)
-#define DESC_INFO_NLS BIT(29)
-#define DESC_INFO_UNKNOWN1_MASK GENMASK(28, 16)
-#define DESC_INFO_PKT_LEN_MASK GENMASK(15, 0)
+#define DESC_INFO_DONE			BIT(31)
+#define DESC_INFO_DROPPED		BIT(30)
+#define DESC_INFO_NLS			BIT(29)
+#define DESC_INFO_UNKNOWN1_MASK		GENMASK(28, 16)
+#define DESC_INFO_PKT_LEN_MASK		GENMASK(15, 0)
 
 /**
  * Descriptor Done flag, this roughly means that the DSCP "belongs to the
@@ -2230,10 +2243,10 @@ struct fwdesc {
  * Bitfield accessors for: fwdesc_info word
  */
 
-#define FWDESC_INFO_CTX BIT(31)
-#define FWDESC_INFO_CTX_RING BIT(28)
-#define FWDESC_INFO_CTX_IDX_MASK GENMASK(27, 16)
-#define FWDESC_INFO_PKT_LEN_MASK GENMASK(15, 0)
+#define FWDESC_INFO_CTX			BIT(31)
+#define FWDESC_INFO_CTX_RING		BIT(28)
+#define FWDESC_INFO_CTX_IDX_MASK	GENMASK(27, 16)
+#define FWDESC_INFO_PKT_LEN_MASK	GENMASK(15, 0)
 
 /** True if there is a context descriptor (i.e. it is send, not a forward) */
 static inline bool is_fwdesc_info_ctx(struct fwdesc_info *x)
@@ -2773,26 +2786,26 @@ enum qregs_qcfg_burst_size {
 	QREGS_QCFG_BURST_SIZE_128_BYTES = 3,
 };
 
-#define QREGS_QCFG_RX_2B_OFFSET BIT(31)
-#define QREGS_QCFG_DMA_PREF_MASK GENMASK(30, 29)
-#define QREGS_QCFG_MSG_WORD_SWAP BIT(28)
-#define QREGS_QCFG_DSCP_BYTE_SWAP BIT(27)
-#define QREGS_QCFG_PAYLOAD_BYTE_SW BIT(26)
-#define QREGS_QCFG_VCHNL_MAP_EN BIT(25)
-#define QREGS_QCFG_VCHNL_MAP_MODE BIT(24)
-#define QREGS_QCFG_QDMA_LPBK_RXQ_SEL BIT(22)
-#define QREGS_QCFG_SLM_RELEASE_EN BIT(21)
-#define QREGS_QCFG_TX_IMMEDIATE_DONE BIT(20)
-#define QREGS_QCFG_IRQ_EN BIT(19)
-#define QREGS_QCFG_GDM_LOOPBACK BIT(17)
-#define QREGS_QCFG_QDMA_LOOPBACK BIT(16)
-#define QREGS_QCFG_CHECK_DONE BIT(7)
-#define QREGS_QCFG_TX_WB_DONE BIT(6)
-#define QREGS_QCFG_BURST_SIZE_MASK GENMASK(5, 4)
-#define QREGS_QCFG_RX_DMA_BUSY BIT(3)
-#define QREGS_QCFG_RX_DMA_EN BIT(2)
-#define QREGS_QCFG_TX_DMA_BUSY BIT(1)
-#define QREGS_QCFG_TX_DMA_EN BIT(0)
+#define QREGS_QCFG_RX_2B_OFFSET		BIT(31)
+#define QREGS_QCFG_DMA_PREF_MASK	GENMASK(30, 29)
+#define QREGS_QCFG_MSG_WORD_SWAP	BIT(28)
+#define QREGS_QCFG_DSCP_BYTE_SWAP	BIT(27)
+#define QREGS_QCFG_PAYLOAD_BYTE_SW	BIT(26)
+#define QREGS_QCFG_VCHNL_MAP_EN		BIT(25)
+#define QREGS_QCFG_VCHNL_MAP_MODE	BIT(24)
+#define QREGS_QCFG_QDMA_LPBK_RXQ_SEL	BIT(22)
+#define QREGS_QCFG_SLM_RELEASE_EN	BIT(21)
+#define QREGS_QCFG_TX_IMMEDIATE_DONE	BIT(20)
+#define QREGS_QCFG_IRQ_EN		BIT(19)
+#define QREGS_QCFG_GDM_LOOPBACK		BIT(17)
+#define QREGS_QCFG_QDMA_LOOPBACK	BIT(16)
+#define QREGS_QCFG_CHECK_DONE		BIT(7)
+#define QREGS_QCFG_TX_WB_DONE		BIT(6)
+#define QREGS_QCFG_BURST_SIZE_MASK	GENMASK(5, 4)
+#define QREGS_QCFG_RX_DMA_BUSY		BIT(3)
+#define QREGS_QCFG_RX_DMA_EN		BIT(2)
+#define QREGS_QCFG_TX_DMA_BUSY		BIT(1)
+#define QREGS_QCFG_TX_DMA_EN		BIT(0)
 
 /** If enabled, use (dscp_pkt_ptr + 2) as starting address for rx payload */
 static inline bool is_qregs_qcfg_rx_2b_offset(struct qregs_qcfg *x)
@@ -3032,8 +3045,8 @@ enum qregs_hwf_cfg_pkt_sz {
 	QREGS_HWF_CFG_PKT_SZ_16384 = 3,
 };
 
-#define QREGS_HWF_CFG_PKT_SZ_MASK GENMASK(29, 28)
-#define QREGS_HWF_CFG_LOW_TH_MASK GENMASK(12, 0)
+#define QREGS_HWF_CFG_PKT_SZ_MASK	GENMASK(29, 28)
+#define QREGS_HWF_CFG_LOW_TH_MASK	GENMASK(12, 0)
 
 /**
  * The size of the packet buffers in hwf_data_addr (and therefore the maximum
@@ -3072,10 +3085,10 @@ static inline void set_qregs_hwf_cfg_low_th(struct hwf_cfg *x, u16 v)
  * - Bits 15-0: FWD_DESC_N (16 bits)
  */
 
-#define QREGS_HWF_CFG1_START BIT(31)
-#define QREGS_HWF_CFG1_OVERHEAD_EN BIT(24)
-#define QREGS_HWF_CFG1_OVERHEAD_MASK GENMASK(23, 16)
-#define QREGS_HWF_CFG1_FWD_DESC_N_MASK GENMASK(15, 0)
+#define QREGS_HWF_CFG1_START		BIT(31)
+#define QREGS_HWF_CFG1_OVERHEAD_EN	BIT(24)
+#define QREGS_HWF_CFG1_OVERHEAD_MASK	GENMASK(23, 16)
+#define QREGS_HWF_CFG1_FWD_DESC_N_MASK	GENMASK(15, 0)
 
 /** Start up the hardware forwarding subsystem */
 static inline bool is_qregs_hwf_cfg1_start(struct qregs_hwf_cfg1 *x)
@@ -3124,8 +3137,8 @@ static inline void set_qregs_hwf_cfg1_fwd_desc_n(struct qregs_hwf_cfg1 *x,
  * WRR control register, called QDMA_CSR_TXWRR_MODE_CFG.
  */
 
-#define QREGS_WRR_MODE_USE_16B BIT(31)
-#define QREGS_WRR_MODE_BY_BYTE BIT(3)
+#define QREGS_WRR_MODE_USE_16B	BIT(31)
+#define QREGS_WRR_MODE_BY_BYTE	BIT(3)
 
 /** If enabled, weighting is based on 16 byte units, otherwise 64 byte. */
 static inline bool is_qregs_wrr_mode_use_16b(struct wrr_mode *x)
@@ -3151,10 +3164,10 @@ static inline void set_qregs_wrr_mode_by_byte(struct wrr_mode *x, bool v)
  * Bitfield accessors for: qregs_wrr_weight bitfield_0
  */
 
-#define QREGS_WRR_WEIGHT_WRITE BIT(15)
-#define QREGS_WRR_WEIGHT_DONE BIT(14)
-#define QREGS_WRR_WEIGHT_CHANNEL_MASK GENMASK(7, 3)
-#define QREGS_WRR_WEIGHT_QUEUE_MASK GENMASK(2, 0)
+#define QREGS_WRR_WEIGHT_WRITE		BIT(15)
+#define QREGS_WRR_WEIGHT_DONE		BIT(14)
+#define QREGS_WRR_WEIGHT_CHANNEL_MASK	GENMASK(7, 3)
+#define QREGS_WRR_WEIGHT_QUEUE_MASK	GENMASK(2, 0)
 
 static inline void set_qregs_wrr_weight_write(struct qregs_wrr_weight *x,
 					      bool v)
@@ -3200,18 +3213,18 @@ enum qregs_tx_congest_cfg_dyncong_dei_scale {
 	QREGS_TX_CONGEST_CFG_DYNCONG_DEI_SCALE_SIXTEENTH = 3,
 };
 
-#define QREGS_TX_CONGEST_CFG_TAIL_DROP_EN BIT(15)
-#define QREGS_TX_CONGEST_CFG_DEI_DROP_EN BIT(14)
-#define QREGS_TX_CONGEST_CFG_DYNCONG_EN BIT(13)
-#define QREGS_TX_CONGEST_CFG_MAX_THR_BLK_TX1 BIT(11)
-#define QREGS_TX_CONGEST_CFG_MIN_THR_BLK_TX1 BIT(10)
-#define QREGS_TX_CONGEST_CFG_MAX_THR_BLK_TX0 BIT(9)
-#define QREGS_TX_CONGEST_CFG_MIN_THR_BLK_TX0 BIT(8)
-#define QREGS_TX_CONGEST_CFG_DYNCONG_MARGIN_MASK GENMASK(7, 6)
-#define QREGS_TX_CONGEST_CFG_DYNCONG_DEI_SCALE_MASK GENMASK(5, 4)
-#define QREGS_TX_CONGEST_CFG_DYNCONG_UPD_WRR BIT(2)
-#define QREGS_TX_CONGEST_CFG_DYNCONG_UPD_TXRX BIT(1)
-#define QREGS_TX_CONGEST_CFG_DYNCONG_UPD_TICK BIT(0)
+#define QREGS_TX_CONGEST_CFG_TAIL_DROP_EN		BIT(15)
+#define QREGS_TX_CONGEST_CFG_DEI_DROP_EN		BIT(14)
+#define QREGS_TX_CONGEST_CFG_DYNCONG_EN			BIT(13)
+#define QREGS_TX_CONGEST_CFG_MAX_THR_BLK_TX1		BIT(11)
+#define QREGS_TX_CONGEST_CFG_MIN_THR_BLK_TX1		BIT(10)
+#define QREGS_TX_CONGEST_CFG_MAX_THR_BLK_TX0		BIT(9)
+#define QREGS_TX_CONGEST_CFG_MIN_THR_BLK_TX0		BIT(8)
+#define QREGS_TX_CONGEST_CFG_DYNCONG_MARGIN_MASK	GENMASK(7, 6)
+#define QREGS_TX_CONGEST_CFG_DYNCONG_DEI_SCALE_MASK	GENMASK(5, 4)
+#define QREGS_TX_CONGEST_CFG_DYNCONG_UPD_WRR		BIT(2)
+#define QREGS_TX_CONGEST_CFG_DYNCONG_UPD_TXRX		BIT(1)
+#define QREGS_TX_CONGEST_CFG_DYNCONG_UPD_TICK		BIT(0)
 
 static inline bool
 is_qregs_tx_congest_cfg_tail_drop_en(struct qregs_tx_congest_cfg *x)
@@ -3397,11 +3410,11 @@ enum qregs_debug_mem_ctl_dataset {
 	QREGS_DEBUG_MEM_CTL_DATASET_VCH_WEIGHT = 6,
 };
 
-#define QREGS_DEBUG_MEM_CTL_WRITE BIT(31)
-#define QREGS_DEBUG_MEM_CTL_DONE BIT(30)
-#define QREGS_DEBUG_MEM_CTL_DATASET_MASK GENMASK(26, 24)
-#define QREGS_DEBUG_MEM_CTL_WORD_OF_ELEM_MASK GENMASK(20, 16)
-#define QREGS_DEBUG_MEM_CTL_ELEM_MASK GENMASK(15, 0)
+#define QREGS_DEBUG_MEM_CTL_WRITE		BIT(31)
+#define QREGS_DEBUG_MEM_CTL_DONE		BIT(30)
+#define QREGS_DEBUG_MEM_CTL_DATASET_MASK	GENMASK(26, 24)
+#define QREGS_DEBUG_MEM_CTL_WORD_OF_ELEM_MASK	GENMASK(20, 16)
+#define QREGS_DEBUG_MEM_CTL_ELEM_MASK		GENMASK(15, 0)
 
 static inline void set_qregs_debug_mem_ctl_write(struct mem_ctl *x, bool v)
 {
@@ -3434,8 +3447,8 @@ static inline void set_qregs_debug_mem_ctl_elem(struct mem_ctl *x, u16 v)
  * - Bits 27-16: INT_THRESHOLD (when done queue is this full, fire interrupt)
  * - Bits 11-0: SIZE (size of done queue buffer in 4-byte units)
  */
-#define QREGS_DONEQ_CFG_INT_THRESHOLD_MASK GENMASK(27, 16)
-#define QREGS_DONEQ_CFG_SIZE_MASK GENMASK(11, 0)
+#define QREGS_DONEQ_CFG_INT_THRESHOLD_MASK	GENMASK(27, 16)
+#define QREGS_DONEQ_CFG_SIZE_MASK		GENMASK(11, 0)
 
 static inline u16 get_qregs_doneq_cfg_int_threshold(struct qregs_doneq_cfg *x)
 {
@@ -3461,8 +3474,8 @@ static inline void set_qregs_doneq_cfg_size(struct qregs_doneq_cfg *x, u16 v)
  * - Bits 27-16: LENGTH (number of items waiting in the queue)
  * - Bits 11-0: HEAD_INDEX (index of the first item in the list)
  */
-#define QREGS_DONEQ_STATE_LENGTH_MASK GENMASK(27, 16)
-#define QREGS_DONEQ_STATE_HEAD_INDEX_MASK GENMASK(11, 0)
+#define QREGS_DONEQ_STATE_LENGTH_MASK		GENMASK(27, 16)
+#define QREGS_DONEQ_STATE_HEAD_INDEX_MASK	GENMASK(11, 0)
 
 static inline u16 get_qregs_doneq_state_length(struct qregs_doneq_state *x)
 {
@@ -3479,8 +3492,8 @@ static inline u16 get_qregs_doneq_state_head_index(struct qregs_doneq_state *x)
  * - Bits 11-0: RING0_SIZE (size of RX ring 0, max 4095)
  * - Bits 27-16: RING1_SIZE (size of RX ring 1, max 4095)
  */
-#define QREGS_RXRING_SIZE_RING0_MASK GENMASK(11, 0)
-#define QREGS_RXRING_SIZE_RING1_MASK GENMASK(27, 16)
+#define QREGS_RXRING_SIZE_RING0_MASK	GENMASK(11, 0)
+#define QREGS_RXRING_SIZE_RING1_MASK	GENMASK(27, 16)
 
 static inline u16 get_qregs_rxring_size_ring0(struct qregs_rxring_size *x)
 {
@@ -3507,8 +3520,8 @@ static inline void set_qregs_rxring_size_ring1(struct qregs_rxring_size *x,
  * - Bits 11-0: RING0_LOW (interrupt threshold for ring 0, max 4095)
  * - Bits 27-16: RING1_LOW (interrupt threshold for ring 1, max 4095)
  */
-#define QREGS_RXRING_LOW_RING0_MASK GENMASK(11, 0)
-#define QREGS_RXRING_LOW_RING1_MASK GENMASK(27, 16)
+#define QREGS_RXRING_LOW_RING0_MASK	GENMASK(11, 0)
+#define QREGS_RXRING_LOW_RING1_MASK	GENMASK(27, 16)
 
 static inline u16 get_qregs_rxring_low_ring0(struct qregs_rxring_low *x)
 {
@@ -4200,8 +4213,8 @@ struct gdm {
  * Bitfield accessors for: gdm_vlan bitfield_0
  */
 
-#define GDM_VLAN_URX BIT(1)
-#define GDM_VLAN_TTX BIT(0)
+#define GDM_VLAN_URX	BIT(1)
+#define GDM_VLAN_TTX	BIT(0)
 
 /** Untag incoming tagged packets (and put the tag in the DESC) */
 static inline bool is_gdm_vlan_urx(struct gdm_vlan *x)
@@ -4227,7 +4240,7 @@ static inline void set_gdm_vlan_ttx(struct gdm_vlan *x, bool v)
  * Bitfield accessors for: gdm_pppoe bitfield_0
  */
 
-#define GDM_PPPOE_TTX BIT(0)
+#define GDM_PPPOE_TTX	BIT(0)
 
 /** Insert PPPoE header on transmitted packets */
 static inline bool is_gdm_pppoe_ttx(struct gdm_pppoe *x)
@@ -4256,10 +4269,10 @@ enum gdm_red_dscp_rxm_sz {
 	GDM_RED_DSCP_RXM_SZ_32B = 3,
 };
 
-#define GDM_RED_CP_MASK GENMASK(31, 30)
-#define GDM_RED_LP_MASK GENMASK(29, 28)
-#define GDM_RED_HP_MASK GENMASK(27, 26)
-#define GDM_RED_DSCP_RXM_SZ_MASK GENMASK(25, 24)
+#define GDM_RED_CP_MASK			GENMASK(31, 30)
+#define GDM_RED_LP_MASK			GENMASK(29, 28)
+#define GDM_RED_HP_MASK			GENMASK(27, 26)
+#define GDM_RED_DSCP_RXM_SZ_MASK	GENMASK(25, 24)
 
 /**
  * Trigger RED packet dropping on 1. Rate-limit-violation OR buffer is full 2.
@@ -4314,26 +4327,26 @@ static inline void set_gdm_red_dscp_rxm_sz(struct red_drop_criteria *x,
  * Configuration for GDM
  */
 
-#define GDM_FWD_CFG_VIP BIT(31)
-#define GDM_FWD_CFG_L2LU_DCSP_2CPU BIT(30)
-#define GDM_FWD_CFG_L2LU_CTAG_2CPU BIT(29)
-#define GDM_FWD_CFG_L2LU_STAG_2CPU BIT(28)
-#define GDM_FWD_CFG_G2_UNDERRUN_RETRY BIT(27)
-#define GDM_FWD_CFG_G2_DROP_256B BIT(26)
-#define GDM_FWD_CFG_DROP_OVERSIZE BIT(25)
-#define GDM_FWD_CFG_DROP_RUNT BIT(24)
-#define GDM_FWD_CFG_DROP_CRC BIT(23)
-#define GDM_FWD_CFG_DROP_IP4_CSUM BIT(22)
-#define GDM_FWD_CFG_DROP_TCP_CSUM BIT(21)
-#define GDM_FWD_CFG_DROP_UCP_CSUM BIT(20)
-#define GDM_FWD_CFG_G2_FAVOR_OAM BIT(19)
-#define GDM_FWD_CFG_L2LU_BRG_CPU BIT(18)
-#define GDM_FWD_CFG_L2LU_UNBRG_CPU BIT(17)
-#define GDM_FWD_CFG_STRIP_CRC BIT(16)
-#define GDM_FWD_CFG_MYMAC_FPORT_MASK GENMASK(15, 12)
-#define GDM_FWD_CFG_BCAST_FPORT_MASK GENMASK(11, 8)
-#define GDM_FWD_CFG_MCAST_FPORT_MASK GENMASK(7, 4)
-#define GDM_FWD_CFG_DEFAULT_FPORT_MASK GENMASK(3, 0)
+#define GDM_FWD_CFG_VIP			BIT(31)
+#define GDM_FWD_CFG_L2LU_DCSP_2CPU	BIT(30)
+#define GDM_FWD_CFG_L2LU_CTAG_2CPU	BIT(29)
+#define GDM_FWD_CFG_L2LU_STAG_2CPU	BIT(28)
+#define GDM_FWD_CFG_G2_UNDERRUN_RETRY	BIT(27)
+#define GDM_FWD_CFG_G2_DROP_256B	BIT(26)
+#define GDM_FWD_CFG_DROP_OVERSIZE	BIT(25)
+#define GDM_FWD_CFG_DROP_RUNT		BIT(24)
+#define GDM_FWD_CFG_DROP_CRC		BIT(23)
+#define GDM_FWD_CFG_DROP_IP4_CSUM	BIT(22)
+#define GDM_FWD_CFG_DROP_TCP_CSUM	BIT(21)
+#define GDM_FWD_CFG_DROP_UCP_CSUM	BIT(20)
+#define GDM_FWD_CFG_G2_FAVOR_OAM	BIT(19)
+#define GDM_FWD_CFG_L2LU_BRG_CPU	BIT(18)
+#define GDM_FWD_CFG_L2LU_UNBRG_CPU	BIT(17)
+#define GDM_FWD_CFG_STRIP_CRC		BIT(16)
+#define GDM_FWD_CFG_MYMAC_FPORT_MASK	GENMASK(15, 12)
+#define GDM_FWD_CFG_BCAST_FPORT_MASK	GENMASK(11, 8)
+#define GDM_FWD_CFG_MCAST_FPORT_MASK	GENMASK(7, 4)
+#define GDM_FWD_CFG_DEFAULT_FPORT_MASK	GENMASK(3, 0)
 
 /**
  * GDM2 only, configure whether VIP packets are included in rate control
@@ -4575,10 +4588,10 @@ enum gdm_pcp_gdm_rx {
 	GDM_PCP_GDM_RX_8P0D = 1,
 };
 
-#define GDM_PCP_GDM_RX_MASK GENMASK(15, 12)
-#define GDM_PCP_GDM_TX_MASK GENMASK(11, 8)
-#define GDM_PCP_CDM_RX_MASK GENMASK(7, 4)
-#define GDM_PCP_CDM_TX_MASK GENMASK(3, 0)
+#define GDM_PCP_GDM_RX_MASK	GENMASK(15, 12)
+#define GDM_PCP_GDM_TX_MASK	GENMASK(11, 8)
+#define GDM_PCP_CDM_RX_MASK	GENMASK(7, 4)
+#define GDM_PCP_CDM_TX_MASK	GENMASK(3, 0)
 
 static inline enum gdm_pcp_gdm_rx get_gdm_pcp_gdm_rx(struct pcp *x)
 {
@@ -4621,13 +4634,13 @@ static inline void set_gdm_pcp_cdm_tx(struct pcp *x, u8 v)
  * GDMA1_LPBK_CFG, GDMA2_LPBP_CFG, and REG_GDM_LPBK_CFG (Airoha).
  */
 
-#define GDM_LPBK_GAP_MASK GENMASK(31, 24)
-#define GDM_LPBK_LEN_MASK GENMASK(23, 10)
-#define GDM_LPBK_CHAN_MASK GENMASK(8, 4)
-#define GDM_LPBK_GAP_MODE BIT(3)
-#define GDM_LPBK_LEN_MODE BIT(2)
-#define GDM_LPBK_CHAN_MODE BIT(1)
-#define GDM_LPBK_ENABLED BIT(0)
+#define GDM_LPBK_GAP_MASK	GENMASK(31, 24)
+#define GDM_LPBK_LEN_MASK	GENMASK(23, 10)
+#define GDM_LPBK_CHAN_MASK	GENMASK(8, 4)
+#define GDM_LPBK_GAP_MODE	BIT(3)
+#define GDM_LPBK_LEN_MODE	BIT(2)
+#define GDM_LPBK_CHAN_MODE	BIT(1)
+#define GDM_LPBK_ENABLED	BIT(0)
 
 static inline u8 get_gdm_lpbk_gap(struct loopback *x)
 {
@@ -4691,9 +4704,9 @@ static inline void set_gdm_lpbk_enabled(struct loopback *x, bool v)
  * Shut down a channel and release its resources
  */
 
-#define GDM_CHANNEL_RETIRE_CHANNEL_MASK GENMASK(8, 4)
-#define GDM_CHANNEL_RETIRE_DONE BIT(1)
-#define GDM_CHANNEL_RETIRE_RELEASE BIT(0)
+#define GDM_CHANNEL_RETIRE_CHANNEL_MASK		GENMASK(8, 4)
+#define GDM_CHANNEL_RETIRE_DONE			BIT(1)
+#define GDM_CHANNEL_RETIRE_RELEASE		BIT(0)
 
 /** Number of the channel to release */
 static inline u8 get_gdm_channel_retire_channel(struct channel_retire *x)
@@ -4734,8 +4747,8 @@ static inline void set_gdm_channel_retire_release(struct channel_retire *x,
  * disabled + all route to PPE.
  */
 
-#define GDM_RX7_EN BIT(31)
-#define GDM_RX7_FPORT_MASK GENMASK(30, 28)
+#define GDM_RX7_EN 		BIT(31)
+#define GDM_RX7_FPORT_MASK	GENMASK(30, 28)
 
 static inline bool is_gdm_rx7_en(struct gdm *x)
 {
@@ -4760,11 +4773,11 @@ static inline void set_gdm_rx7_fport(struct gdm *x, u8 v)
  * used in GDM1, but might still be present in GDM2.
  */
 
-#define GDM_G1_CPORT_CFG_ADD_CRC BIT(30)
-#define GDM_G1_CPORT_CFG_PAD BIT(26)
-#define GDM_G1_CPORT_CFG_PORT_XFC BIT(25)
-#define GDM_G1_CPORT_CFG_QUEUE_XFC BIT(24)
-#define GDM_G1_CPORT_CFG_UNKNOWN_MASK GENMASK(23, 0)
+#define GDM_G1_CPORT_CFG_ADD_CRC	BIT(30)
+#define GDM_G1_CPORT_CFG_PAD		BIT(26)
+#define GDM_G1_CPORT_CFG_PORT_XFC	BIT(25)
+#define GDM_G1_CPORT_CFG_QUEUE_XFC	BIT(24)
+#define GDM_G1_CPORT_CFG_UNKNOWN_MASK	GENMASK(23, 0)
 
 /**
  * Add the ethernet trailing CRC to incoming frames (from the switch) this is
@@ -4834,8 +4847,8 @@ static inline void set_gdm_g1_cport_cfg_unknown(struct g1_cport_cfg *x, u32 v)
  * Bitfield accessors for: struct clear_counters
  */
 
-#define GDM_CL_CNT_RX BIT(1)
-#define GDM_CL_CNT_TX BIT(0)
+#define GDM_CL_CNT_RX	BIT(1)
+#define GDM_CL_CNT_TX	BIT(0)
 
 static inline void set_gdm_cl_cnt_rx(struct clear_counters *x, bool v)
 {
@@ -4850,10 +4863,10 @@ static inline void set_gdm_cl_cnt_tx(struct clear_counters *x, bool v)
  * Bitfield accessors for: gdm_mymac_lsb
  * MAC address bytes c,d,e,f (indices 2-5)
  */
-#define GDM_MYMAC_LSB_C_MASK GENMASK(31, 24)
-#define GDM_MYMAC_LSB_D_MASK GENMASK(23, 16)
-#define GDM_MYMAC_LSB_E_MASK GENMASK(15, 8)
-#define GDM_MYMAC_LSB_F_MASK GENMASK(7, 0)
+#define GDM_MYMAC_LSB_C_MASK	GENMASK(31, 24)
+#define GDM_MYMAC_LSB_D_MASK	GENMASK(23, 16)
+#define GDM_MYMAC_LSB_E_MASK	GENMASK(15, 8)
+#define GDM_MYMAC_LSB_F_MASK	GENMASK(7, 0)
 
 static inline u8 get_gdm_mymac_lsb_c(struct gdm_mymac_lsb *x)
 {
@@ -4892,9 +4905,9 @@ static inline void set_gdm_mymac_lsb_f(struct gdm_mymac_lsb *x, u8 v)
  * Bitfield accessors for: gdm_mymac_msb
  * MAC address bytes a,b (indices 0-1) and LSB matching mask
  */
-#define GDM_MYMAC_MSB_LSB_MASK_MASK GENMASK(23, 16)
-#define GDM_MYMAC_MSB_A_MASK GENMASK(15, 8)
-#define GDM_MYMAC_MSB_B_MASK GENMASK(7, 0)
+#define GDM_MYMAC_MSB_LSB_MASK_MASK	GENMASK(23, 16)
+#define GDM_MYMAC_MSB_A_MASK		GENMASK(15, 8)
+#define GDM_MYMAC_MSB_B_MASK		GENMASK(7, 0)
 
 static inline u8 get_gdm_mymac_msb_lsb_mask(struct gdm_mymac_msb *x)
 {
@@ -4927,8 +4940,8 @@ static inline void set_gdm_mymac_msb_b(struct gdm_mymac_msb *x, u8 v)
  * - Bits 31-16: OVERSIZE_LEN (packet larger than this is treated as oversize)
  * - Bits 15-0: RUNT_LEN (packet smaller than this is treated as a runt)
  */
-#define GDM_LEN_TH_OVERSIZE_LEN_MASK GENMASK(31, 16)
-#define GDM_LEN_TH_RUNT_LEN_MASK GENMASK(15, 0)
+#define GDM_LEN_TH_OVERSIZE_LEN_MASK	GENMASK(31, 16)
+#define GDM_LEN_TH_RUNT_LEN_MASK	GENMASK(15, 0)
 
 static inline u16 get_gdm_len_th_oversize_len(struct gdm_len_th *x)
 {
@@ -4952,22 +4965,25 @@ static inline void set_gdm_len_th_runt_len(struct gdm_len_th *x, u16 v)
  */
 /* Internally these are properties of the QDMA engine, but they are important
  * to the GDM port driver because they define how QoS can be done. */
-#define ECONET_NUM_QUEUES 8
-#define ECONET_NUM_CHANNELS 32
+#define ECONET_NUM_QUEUES	8
+#define ECONET_NUM_CHANNELS	32
 
 /* Number of queues reported to the kernel.
  * Currently every chan/queue is made available. */
-#define ECONET_NUM_SOFT_QUEUES (ECONET_NUM_CHANNELS * ECONET_NUM_QUEUES)
+#define ECONET_NUM_SOFT_QUEUES	(ECONET_NUM_CHANNELS * ECONET_NUM_QUEUES)
 
 /* A chain is 1 TX ring + 1 RX ring, each QDMA has 2 chains. */
-#define QDMA_NUM_CHAINS 2
+#define QDMA_NUM_CHAINS		2
+
 /* Each QDMA has one queue of TX-complete notifications. */
-#define QDMA_NUM_TX_DONE 1
+
+#define QDMA_NUM_TX_DONE	1
+
 /* EN751221 has one IRQ bank and one status/enable register. EN7516/EN7527
  * expose four IRQ banks, each selecting from three shared status registers.
  */
-#define ECONET_MAX_QDMA_IRQS 4
-#define ECONET_QDMA_IRQ_REGS 3
+#define ECONET_MAX_QDMA_IRQS	4
+#define ECONET_QDMA_IRQ_REGS	3
 
 union econet_irq_purpose {
 	struct {
@@ -5073,7 +5089,7 @@ struct airoha_qdma_mips_cfg {
 bool econet_rx_xpon_oam(struct airoha_eth *eth, u8 qdma_id, struct sk_buff *skb,
 			union desc_msg *msg);
 void econet_xpon_irq(struct airoha_eth *eth, u8 qdma_id,
-		     enum airoha_xpon_mode mode);
+		     enum xpon_mode mode);
 
 /* QDMA datapath. */
 /* The non-dma part of RX packet descriptor */

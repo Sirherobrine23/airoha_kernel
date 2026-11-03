@@ -1,18 +1,25 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * EcoNet GPON PLOAM message processing — hardware-independent layer
+ * Airoha GPON and XGS-PON PLOAM protocol engines
  *
- * Implements the ITU-T G.984.3 ONU activation state machine (O1–O7) and
+ * The GPON engine implements the ITU-T G.984.3 state machine (O1–O7) and
  * all downstream PLOAM message decode / upstream PLOAM message encode
  * logic.  Hardware effects (register writes, carrier changes) are
  * delegated entirely through struct ploam_ops callbacks.
  *
- * Includes the EN7521 PLOAM deduplication filter: every 3rd consecutive
+ * XGS-PON uses the same protocol library with its own state and callbacks
+ * below. Its 40-byte bodies, ten-bit ONU-ID and combined O2/O3 state must
+ * retain their protocol-specific processing.
+ *
+ * GPON includes the EN7521 PLOAM deduplication filter: every 3rd consecutive
  * identical message is passed through; intermediate duplicates are
  * suppressed. For RANGING_TIME the ONU-ID, message type and first five
  * content bytes are compared, matching the seven-byte vendor comparison.
  */
 
+#include <linux/err.h>
+#include <linux/module.h>
+#include <linux/overflow.h>
 #include <linux/slab.h>
 #include <linux/random.h>
 #include <linux/string.h>
@@ -771,3 +778,602 @@ void ploam_set_aes_key(struct ploam_priv *pp, const u8 key[16])
 	memcpy(pp->aes_key, key, 16);
 	pp->key_exchange_pending = false;
 }
+
+/* XGS-PON activation and PLOAM policy. */
+
+/* Cache directed requests separately so interleaved broadcasts cannot cause
+ * a retransmitted relative Ranging_Time to be applied for a second time.
+ */
+struct airoha_xgspon_reply {
+	u8 request[XGSPON_PLOAM_BODY_LEN];
+	struct xgspon_ploam_up reply;
+	bool valid;
+	bool has_reply;
+	bool registered;
+};
+
+struct airoha_xgspon_ploam {
+	const struct airoha_xgspon_ploam_ops *ops;
+	void *priv;
+	enum airoha_xgspon_state state;
+	u16 onu_id;
+	u32 eqd;
+	u8 sn[XGSPON_PLOAM_SN_LEN];
+	u8 reg_id[XGSPON_PLOAM_REG_ID_LEN];
+	u8 profiles;
+	bool running;
+	bool ready;
+	bool denied;
+	bool registered;
+	bool omcc_up;
+	struct airoha_xgspon_reply cache[XGSPON_PLOAM_DOWN_MAX];
+	struct airoha_xgspon_reply *reply_entry;
+};
+
+static void airoha_xgspon_publish(struct airoha_xgspon_ploam *pp)
+{
+	if (pp->ops->state_changed)
+		pp->ops->state_changed(pp->priv, pp->state, pp->onu_id);
+}
+
+static int airoha_xgspon_state_set(struct airoha_xgspon_ploam *pp,
+				   enum airoha_xgspon_state state)
+{
+	unsigned int timeout = 0;
+	int ret;
+
+	ret = pp->ops->set_state(pp->priv, state);
+	if (ret)
+		return ret;
+	pp->state = state;
+	if (state == AIROHA_XGSPON_O4)
+		timeout = XGSPON_PLOAM_TO1_MS;
+	else if (state == AIROHA_XGSPON_O6)
+		timeout = AIROHA_XGSPON_TO2_MS;
+	if (pp->ops->timer_changed)
+		pp->ops->timer_changed(pp->priv, timeout);
+	airoha_xgspon_publish(pp);
+	return 0;
+}
+
+static int airoha_xgspon_reset_session(struct airoha_xgspon_ploam *pp)
+{
+	int ret;
+
+	/* reset() owns all hardware teardown, including a partially set OMCC. */
+	ret = pp->ops->reset(pp->priv);
+	pp->onu_id = XGSPON_PLOAM_ONU_ID_UNASSIGNED;
+	pp->eqd = 0;
+	pp->profiles = 0;
+	pp->registered = false;
+	pp->omcc_up = false;
+	memset(pp->cache, 0, sizeof(pp->cache));
+	pp->reply_entry = NULL;
+	pp->state = pp->denied ? AIROHA_XGSPON_O7 : AIROHA_XGSPON_O1;
+	if (pp->ops->timer_changed)
+		pp->ops->timer_changed(pp->priv, 0);
+	if (ret)
+		pp->running = false;
+	else
+		ret = pp->ops->set_state(pp->priv, pp->state);
+	if (ret)
+		pp->running = false;
+	airoha_xgspon_publish(pp);
+	return ret;
+}
+
+static int airoha_xgspon_send(struct airoha_xgspon_ploam *pp,
+			      const struct xgspon_ploam_up *msg, bool registered)
+{
+	u8 body[XGSPON_PLOAM_BODY_LEN];
+	int ret;
+
+	ret = xgspon_ploam_up_build(body, sizeof(body), msg);
+	if (ret < 0)
+		return ret;
+	return pp->ops->send_upstream(pp->priv, body, registered);
+}
+
+static int airoha_xgspon_reply(struct airoha_xgspon_ploam *pp,
+			       const struct xgspon_ploam_up *msg, bool registered)
+{
+	/* Keep the response even when the TX queue is temporarily full. The
+	 * next identical request must resend it without repeating side effects.
+	 */
+	if (pp->reply_entry) {
+		pp->reply_entry->reply = *msg;
+		pp->reply_entry->has_reply = true;
+		pp->reply_entry->registered = registered;
+	}
+	return airoha_xgspon_send(pp, msg, registered);
+}
+
+static int airoha_xgspon_ack(struct airoha_xgspon_ploam *pp,
+			     const struct xgspon_ploam_down *msg, u8 code)
+{
+	struct xgspon_ploam_up reply = {
+		.onu_id = pp->onu_id,
+		.msg_id = XGSPON_PLOAM_UP_ACKNOWLEDGE,
+		.seq_no = msg->seq_no,
+		.ack.code = code,
+	};
+
+	if (pp->denied || msg->onu_id != pp->onu_id ||
+	    !xgspon_ploam_is_assignable(pp->onu_id))
+		return 0;
+	return airoha_xgspon_reply(pp, &reply, pp->registered);
+}
+
+static int airoha_xgspon_result(struct airoha_xgspon_ploam *pp,
+				const struct xgspon_ploam_down *msg, int result)
+{
+	u8 code = XGSPON_PLOAM_ACK_OK;
+
+	/* A busy/failed provider has not applied the operation. Let the OLT
+	 * retry the same request after that condition clears.
+	 */
+	if (result)
+		pp->reply_entry = NULL;
+	if (result == -EINVAL || result == -ERANGE)
+		code = XGSPON_PLOAM_ACK_PARAM_ERR;
+	else if (result == -EBUSY || result == -EAGAIN)
+		code = XGSPON_PLOAM_ACK_BUSY;
+	else if (result == -EOPNOTSUPP)
+		code = XGSPON_PLOAM_ACK_UNKNOWN_TYPE;
+	else if (result)
+		code = XGSPON_PLOAM_ACK_PROCESS_ERR;
+	return airoha_xgspon_ack(pp, msg, code);
+}
+
+static int airoha_xgspon_profile(struct airoha_xgspon_ploam *pp,
+				 const struct xgspon_ploam_down *msg)
+{
+	const struct xgspon_ploam_burst_profile *profile = &msg->burst_profile;
+	int ret;
+
+	if (pp->state != AIROHA_XGSPON_O2_3 && pp->state != AIROHA_XGSPON_O4 &&
+	    pp->state != AIROHA_XGSPON_O5)
+		return -EAGAIN;
+	if (pp->state == AIROHA_XGSPON_O2_3 &&
+	    !xgspon_ploam_profile_is_broadcast(msg->onu_id))
+		return -EADDRNOTAVAIL;
+	if (profile->line_rate != XGSPON_PLOAM_LINE_RATE_XGSPON)
+		return -EOPNOTSUPP;
+	ret = pp->ops->set_profile(pp->priv, profile);
+	if (!ret)
+		pp->profiles |= BIT(profile->index);
+	return airoha_xgspon_result(pp, msg, ret);
+}
+
+static int airoha_xgspon_assign_onu(struct airoha_xgspon_ploam *pp,
+				    const struct xgspon_ploam_down *msg)
+{
+	const struct xgspon_ploam_assign_onu_id *assign = &msg->assign_onu_id;
+	int ret;
+
+	if (!xgspon_ploam_is_broadcast(msg->onu_id) ||
+	    memcmp(assign->sn, pp->sn, sizeof(pp->sn)))
+		return -EADDRNOTAVAIL;
+	if (!xgspon_ploam_is_assignable(assign->onu_id))
+		return -EINVAL;
+	if (pp->state == AIROHA_XGSPON_O4 || pp->state == AIROHA_XGSPON_O5) {
+		if (assign->onu_id == pp->onu_id)
+			return 0;
+		/* A conflicting assignment invalidates the previous registration. */
+		return airoha_xgspon_reset_session(pp);
+	}
+	if (pp->state != AIROHA_XGSPON_O2_3 || !pp->profiles)
+		return -EAGAIN;
+	ret = pp->ops->set_onu_id(pp->priv, assign->onu_id);
+	if (ret)
+		goto reset;
+	ret = pp->ops->set_alloc_id(pp->priv, assign->onu_id, true);
+	if (ret)
+		goto reset;
+	pp->onu_id = assign->onu_id;
+	ret = airoha_xgspon_state_set(pp, AIROHA_XGSPON_O4);
+	if (!ret)
+		return 0;
+reset:
+	airoha_xgspon_reset_session(pp);
+	return ret;
+}
+
+static int airoha_xgspon_operational(struct airoha_xgspon_ploam *pp)
+{
+	int ret;
+
+	/* Apply activation and the default OMCC before publishing O5. */
+	ret = pp->ops->set_state(pp->priv, AIROHA_XGSPON_O5);
+	if (ret)
+		return ret;
+	ret = pp->ops->set_omcc(pp->priv, pp->onu_id, true);
+	if (ret) {
+		airoha_xgspon_reset_session(pp);
+		return ret;
+	}
+	pp->omcc_up = true;
+	pp->state = AIROHA_XGSPON_O5;
+	if (pp->ops->timer_changed)
+		pp->ops->timer_changed(pp->priv, 0);
+	airoha_xgspon_publish(pp);
+	return 0;
+}
+
+static int airoha_xgspon_ranging(struct airoha_xgspon_ploam *pp,
+				 const struct xgspon_ploam_down *msg)
+{
+	const struct xgspon_ploam_ranging_time *range = &msg->ranging_time;
+	u32 eqd;
+	int ret;
+
+	if (pp->state != AIROHA_XGSPON_O4 && pp->state != AIROHA_XGSPON_O5)
+		return -EAGAIN;
+	if (range->absolute) {
+		if (msg->onu_id != pp->onu_id)
+			return -EADDRNOTAVAIL;
+		eqd = range->eqd;
+	} else {
+		if (pp->state != AIROHA_XGSPON_O5)
+			return -EAGAIN;
+		if (range->positive) {
+			if (check_add_overflow(pp->eqd, range->eqd, &eqd))
+				return airoha_xgspon_result(pp, msg, -ERANGE);
+		} else if (check_sub_overflow(pp->eqd, range->eqd, &eqd)) {
+			return airoha_xgspon_result(pp, msg, -ERANGE);
+		}
+	}
+	ret = pp->ops->set_eqd(pp->priv, eqd);
+	if (ret)
+		return airoha_xgspon_result(pp, msg, ret);
+	pp->eqd = eqd;
+	if (pp->state == AIROHA_XGSPON_O4) {
+		ret = airoha_xgspon_operational(pp);
+		if (ret)
+			return ret;
+	}
+	return airoha_xgspon_ack(pp, msg, XGSPON_PLOAM_ACK_OK);
+}
+
+static int airoha_xgspon_disable(struct airoha_xgspon_ploam *pp,
+				 const struct xgspon_ploam_down *msg)
+{
+	const struct xgspon_ploam_disable_sn *disable = &msg->disable_sn;
+	bool match = !memcmp(disable->sn, pp->sn, sizeof(pp->sn));
+
+	switch (disable->mode) {
+	case XGSPON_PLOAM_DISABLE_DENY_ONE:
+		if (!match)
+			return -EADDRNOTAVAIL;
+		fallthrough;
+	case XGSPON_PLOAM_DISABLE_DENY_ALL:
+		pp->denied = true;
+		if (pp->omcc_up) {
+			int ret = pp->ops->set_omcc(pp->priv, pp->onu_id, false);
+
+			if (ret)
+				return airoha_xgspon_reset_session(pp);
+			pp->omcc_up = false;
+		}
+		/* Retain the ONU-ID to accept a directed enable while in O7. */
+		if (airoha_xgspon_state_set(pp, AIROHA_XGSPON_O7))
+			return airoha_xgspon_reset_session(pp);
+		return 0;
+	case XGSPON_PLOAM_DISABLE_ALLOW_ONE:
+		if (!match)
+			return -EADDRNOTAVAIL;
+		fallthrough;
+	case XGSPON_PLOAM_DISABLE_ALLOW_ALL:
+		if (!pp->denied)
+			return 0;
+		pp->denied = false;
+		return airoha_xgspon_reset_session(pp);
+	default:
+		return airoha_xgspon_result(pp, msg, -EINVAL);
+	}
+}
+
+static int airoha_xgspon_alloc_id(struct airoha_xgspon_ploam *pp,
+				  const struct xgspon_ploam_down *msg)
+{
+	const struct xgspon_ploam_assign_alloc_id *alloc = &msg->assign_alloc_id;
+	bool valid = alloc->type == XGSPON_PLOAM_ALLOC_ASSIGN;
+	int ret;
+
+	if (pp->state != AIROHA_XGSPON_O5 || msg->onu_id != pp->onu_id)
+		return -EAGAIN;
+	if (alloc->alloc_id == pp->onu_id && valid)
+		return airoha_xgspon_ack(pp, msg, XGSPON_PLOAM_ACK_OK);
+	if (!xgspon_ploam_alloc_is_assignable(alloc->alloc_id) ||
+	    (!valid && alloc->type != XGSPON_PLOAM_ALLOC_DEALLOCATE))
+		return airoha_xgspon_result(pp, msg, -EINVAL);
+	ret = pp->ops->set_alloc_id(pp->priv, alloc->alloc_id, valid);
+	return airoha_xgspon_result(pp, msg, ret);
+}
+
+static int airoha_xgspon_key(struct airoha_xgspon_ploam *pp,
+			     const struct xgspon_ploam_down *msg)
+{
+	const struct xgspon_ploam_key_control *key = &msg->key_control;
+	struct xgspon_ploam_up reply = {
+		.onu_id = pp->onu_id,
+		.msg_id = XGSPON_PLOAM_UP_KEY_REPORT,
+		.seq_no = msg->seq_no,
+	};
+	int ret;
+
+	if (pp->state != AIROHA_XGSPON_O5)
+		return -EAGAIN;
+	if (key->key_length != XGSPON_PLOAM_KEY_LEN_AES128 ||
+	    key->key_index < XGSPON_PLOAM_KEY_INDEX_FIRST ||
+	    key->key_index > XGSPON_PLOAM_KEY_INDEX_SECOND)
+		return airoha_xgspon_result(pp, msg, -EINVAL);
+	if (!pp->ops->key_report)
+		return airoha_xgspon_result(pp, msg, -EOPNOTSUPP);
+	ret = pp->ops->key_report(pp->priv, key, &reply.key_report);
+	if (ret)
+		return airoha_xgspon_result(pp, msg, ret);
+	/* A new AES-128 key is wrapped into 16 octets; a key name is also 16. */
+	if (reply.key_report.len != XGSPON_PLOAM_KEY_LEN_AES128 ||
+	    reply.key_report.index != key->key_index ||
+	    reply.key_report.num != XGSPON_PLOAM_KEY_FRAGMENT_FIRST ||
+	    reply.key_report.type != key->control)
+		return airoha_xgspon_result(pp, msg, -EINVAL);
+	return airoha_xgspon_reply(pp, &reply, pp->registered);
+}
+
+static int airoha_xgspon_reboot(struct airoha_xgspon_ploam *pp,
+				const struct xgspon_ploam_down *msg)
+{
+	const struct xgspon_ploam_reboot *reboot = &msg->reboot;
+	static const u8 zero_sn[XGSPON_PLOAM_SN_LEN];
+
+	if (xgspon_ploam_is_broadcast(msg->onu_id) &&
+	    memcmp(reboot->sn, pp->sn, sizeof(pp->sn)) &&
+	    memcmp(reboot->sn, zero_sn, sizeof(zero_sn)))
+		return -EADDRNOTAVAIL;
+	if (reboot->depth > XGSPON_PLOAM_REBOOT_DEPTH_MAX ||
+	    reboot->image > XGSPON_PLOAM_REBOOT_IMAGE_MAX ||
+	    reboot->state > XGSPON_PLOAM_REBOOT_STATE_INACTIVE_ONLY ||
+	    reboot->flags > XGSPON_PLOAM_REBOOT_CALLS_MASK)
+		return airoha_xgspon_result(pp, msg, -EINVAL);
+	if (reboot->state && pp->state == AIROHA_XGSPON_O5)
+		return 0;
+	if (!pp->ops->reboot)
+		return airoha_xgspon_result(pp, msg, -EOPNOTSUPP);
+	return pp->ops->reboot(pp->priv, reboot);
+}
+
+static int airoha_xgspon_dispatch(struct airoha_xgspon_ploam *pp,
+				  const struct xgspon_ploam_down *msg)
+{
+	switch (msg->msg_id) {
+	case XGSPON_PLOAM_DOWN_BURST_PROFILE:
+		return airoha_xgspon_profile(pp, msg);
+	case XGSPON_PLOAM_DOWN_ASSIGN_ONU_ID:
+		return airoha_xgspon_assign_onu(pp, msg);
+	case XGSPON_PLOAM_DOWN_RANGING_TIME:
+		return airoha_xgspon_ranging(pp, msg);
+	case XGSPON_PLOAM_DOWN_DEACTIVATE:
+		return airoha_xgspon_reset_session(pp);
+	case XGSPON_PLOAM_DOWN_DISABLE_SN:
+		return airoha_xgspon_disable(pp, msg);
+	case XGSPON_PLOAM_DOWN_REQUEST_REG:
+		if (pp->state != AIROHA_XGSPON_O5 || msg->onu_id != pp->onu_id)
+			return -EAGAIN;
+		return airoha_xgspon_ploam_registration(pp, msg->seq_no);
+	case XGSPON_PLOAM_DOWN_ASSIGN_ALLOC_ID:
+		return airoha_xgspon_alloc_id(pp, msg);
+	case XGSPON_PLOAM_DOWN_KEY_CONTROL:
+		return airoha_xgspon_key(pp, msg);
+	case XGSPON_PLOAM_DOWN_REBOOT_ONU:
+		return airoha_xgspon_reboot(pp, msg);
+	default:
+		return airoha_xgspon_result(pp, msg, -EOPNOTSUPP);
+	}
+}
+
+int airoha_xgspon_ploam_receive(struct airoha_xgspon_ploam *pp,
+				const void *body, size_t len, bool mic_valid)
+{
+	struct airoha_xgspon_reply *entry = NULL;
+	struct xgspon_ploam_down msg;
+	bool directed;
+	int ret;
+
+	if (!body || len != XGSPON_PLOAM_BODY_LEN)
+		return -EMSGSIZE;
+	if (!mic_valid)
+		return -EBADMSG;
+	if (!pp->running || !pp->ready || pp->state == AIROHA_XGSPON_O1)
+		return -ENOLINK;
+	ret = xgspon_ploam_down_parse(body, len, &msg);
+	directed = xgspon_ploam_is_assignable(pp->onu_id) && msg.onu_id == pp->onu_id;
+	if (!directed && !xgspon_ploam_is_broadcast(msg.onu_id) &&
+	    !(msg.msg_id == XGSPON_PLOAM_DOWN_BURST_PROFILE &&
+	      xgspon_ploam_profile_is_broadcast(msg.onu_id)))
+		return -EADDRNOTAVAIL;
+	if (pp->state == AIROHA_XGSPON_O7 &&
+	    msg.msg_id != XGSPON_PLOAM_DOWN_DISABLE_SN)
+		return -EACCES;
+	if (ret)
+		return airoha_xgspon_result(pp, &msg, ret);
+
+	if (directed && msg.seq_no && msg.msg_id < ARRAY_SIZE(pp->cache)) {
+		entry = &pp->cache[msg.msg_id];
+		if (entry->valid && !memcmp(entry->request, body, len)) {
+			if (entry->has_reply) {
+				ret = airoha_xgspon_send(pp, &entry->reply, entry->registered);
+				if (!ret && entry->reply.msg_id == XGSPON_PLOAM_UP_REGISTRATION)
+					pp->registered = true;
+				return ret;
+			}
+			return 0;
+		}
+		memset(entry, 0, sizeof(*entry));
+		pp->reply_entry = entry;
+	}
+	ret = airoha_xgspon_dispatch(pp, &msg);
+	/* A reset may have invalidated the cache while dispatching. */
+	if (entry && pp->reply_entry == entry && (!ret || entry->has_reply)) {
+		memcpy(entry->request, body, len);
+		entry->valid = true;
+	}
+	pp->reply_entry = NULL;
+	return ret;
+}
+
+int airoha_xgspon_ploam_serial_number(struct airoha_xgspon_ploam *pp,
+				      u32 random_delay)
+{
+	struct xgspon_ploam_up msg = {
+		.onu_id = XGSPON_PLOAM_ONU_ID_UNASSIGNED,
+		.msg_id = XGSPON_PLOAM_UP_SERIAL_NUMBER,
+		.sn.random_delay = random_delay,
+	};
+
+	if (!pp->running || !pp->ready || pp->state != AIROHA_XGSPON_O2_3 ||
+	    !pp->profiles)
+		return -ENOLINK;
+	memcpy(msg.sn.sn, pp->sn, sizeof(pp->sn));
+	return airoha_xgspon_send(pp, &msg, false);
+}
+
+int airoha_xgspon_ploam_registration(struct airoha_xgspon_ploam *pp, u8 seq_no)
+{
+	struct xgspon_ploam_up msg = {
+		.onu_id = pp->onu_id,
+		.msg_id = XGSPON_PLOAM_UP_REGISTRATION,
+		.seq_no = seq_no,
+	};
+	int ret;
+
+	if (!pp->running || !pp->ready ||
+	    (pp->state != AIROHA_XGSPON_O4 && pp->state != AIROHA_XGSPON_O5))
+		return -ENOLINK;
+	memcpy(msg.registration.reg_id, pp->reg_id, sizeof(pp->reg_id));
+	ret = airoha_xgspon_reply(pp, &msg, true);
+	if (!ret)
+		pp->registered = true;
+	return ret;
+}
+
+int airoha_xgspon_ploam_reset(struct airoha_xgspon_ploam *pp)
+{
+	if (!pp->running)
+		return -ENETDOWN;
+	return airoha_xgspon_reset_session(pp);
+}
+
+int airoha_xgspon_ploam_registration_sent(struct airoha_xgspon_ploam *pp)
+{
+	if (!pp->running || !pp->ready || pp->denied ||
+	    (pp->state != AIROHA_XGSPON_O4 && pp->state != AIROHA_XGSPON_O5))
+		return -ENOLINK;
+	pp->registered = true;
+	return 0;
+}
+
+struct airoha_xgspon_ploam *
+airoha_xgspon_ploam_alloc(const struct airoha_xgspon_ploam_ops *ops, void *priv,
+			  const u8 sn[XGSPON_PLOAM_SN_LEN],
+			 const u8 reg_id[XGSPON_PLOAM_REG_ID_LEN])
+{
+	struct airoha_xgspon_ploam *pp;
+
+	if (!ops || !sn || !ops->reset || !ops->set_state || !ops->set_profile ||
+	    !ops->set_onu_id || !ops->set_eqd || !ops->set_alloc_id ||
+	    !ops->set_omcc || !ops->send_upstream)
+		return ERR_PTR(-EINVAL);
+	pp = kzalloc(sizeof(*pp), GFP_KERNEL);
+	if (!pp)
+		return ERR_PTR(-ENOMEM);
+	pp->ops = ops;
+	pp->priv = priv;
+	pp->state = AIROHA_XGSPON_O1;
+	pp->onu_id = XGSPON_PLOAM_ONU_ID_UNASSIGNED;
+	memcpy(pp->sn, sn, sizeof(pp->sn));
+	if (reg_id)
+		memcpy(pp->reg_id, reg_id, sizeof(pp->reg_id));
+	return pp;
+}
+
+void airoha_xgspon_ploam_free(struct airoha_xgspon_ploam *pp)
+{
+	kfree_sensitive(pp);
+}
+
+int airoha_xgspon_ploam_start(struct airoha_xgspon_ploam *pp)
+{
+	if (pp->running)
+		return 0;
+	pp->running = true;
+	pp->ready = false;
+	return airoha_xgspon_reset_session(pp);
+}
+
+int airoha_xgspon_ploam_stop(struct airoha_xgspon_ploam *pp)
+{
+	pp->running = false;
+	pp->ready = false;
+	return airoha_xgspon_reset_session(pp);
+}
+
+int airoha_xgspon_ploam_link(struct airoha_xgspon_ploam *pp, bool ready)
+{
+	int ret;
+
+	if (!pp->running)
+		return -ENETDOWN;
+	pp->ready = ready;
+	if (pp->denied)
+		return 0;
+	if (ready) {
+		if (pp->state == AIROHA_XGSPON_O1)
+			return airoha_xgspon_state_set(pp, AIROHA_XGSPON_O2_3);
+		if (pp->state == AIROHA_XGSPON_O6)
+			return airoha_xgspon_operational(pp);
+		return 0;
+	}
+	if (pp->state == AIROHA_XGSPON_O5) {
+		ret = pp->ops->set_omcc(pp->priv, pp->onu_id, false);
+		if (ret)
+			return airoha_xgspon_reset_session(pp);
+		pp->omcc_up = false;
+		ret = airoha_xgspon_state_set(pp, AIROHA_XGSPON_O6);
+		if (ret)
+			airoha_xgspon_reset_session(pp);
+		return ret;
+	}
+	if (pp->state == AIROHA_XGSPON_O6 || pp->state == AIROHA_XGSPON_O1)
+		return 0;
+	return airoha_xgspon_reset_session(pp);
+}
+
+int airoha_xgspon_ploam_timeout(struct airoha_xgspon_ploam *pp)
+{
+	if (!pp->running)
+		return -ENETDOWN;
+	if (pp->state != AIROHA_XGSPON_O4 && pp->state != AIROHA_XGSPON_O6)
+		return 0;
+	return airoha_xgspon_reset_session(pp);
+}
+
+enum airoha_xgspon_state
+airoha_xgspon_ploam_state(const struct airoha_xgspon_ploam *pp)
+{
+	return pp->state;
+}
+
+u16 airoha_xgspon_ploam_onu_id(const struct airoha_xgspon_ploam *pp)
+{
+	return pp->onu_id;
+}
+
+u32 airoha_xgspon_ploam_eqd(const struct airoha_xgspon_ploam *pp)
+{
+	return pp->eqd;
+}
+
+MODULE_DESCRIPTION("Airoha GPON and XGS-PON PLOAM protocol engines");
+MODULE_LICENSE("GPL");

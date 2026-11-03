@@ -7,7 +7,6 @@
 #include <linux/mutex.h>
 #include <linux/netdevice.h>
 #include <linux/optical_frontend.h>
-#include <linux/sfp.h>
 #include <linux/timer.h>
 #include <linux/workqueue.h>
 #include <net/xpon.h>
@@ -18,27 +17,51 @@
 #include "airoha_omci.h"
 #include "airoha_ploam.h"
 
-#define V1_XPON_REGION_SIZE		0x00010000
-#define GPON_REG_OFFSET			0x00004000
-#define XGSPON_REG_OFFSET		0x00005000
-#define EPON_REG_OFFSET			0x00006000
+#define GPON_REG_OFFSET				0x00004000
+#define XGSPON_REG_OFFSET			0x00005000
+#define EPON_REG_OFFSET				0x00006000
 
-#define XPON_SCU_WAN_CONF		0x070
-#define EN7523_SCU_WAN_MODE_MASK	GENMASK(7, 0)
-#define EN7528_SCU_WAN_MODE_MASK	GENMASK(2, 0)
-#define EN751221_SCU_WAN_MODE_MASK	GENMASK(2, 0)
-#define XPON_SCU_WAN_MODE_GPON		0x00
-#define XPON_SCU_WAN_MODE_EPON		0x01
-#define XPON_SCU_WAN_MODE_XGSPON	0x0a
-#define EN7580_SCU_WAN_MODE_MASK	GENMASK(7, 0)
-#define XPON_SCU_DYING_GASP		0x084
-#define XPON_SCU_DYING_GASP_STATUS	BIT(16)
+#define XPON_SCU_DYING_GASP			0x084
+#define XPON_SCU_DYING_GASP_STATUS		BIT(16)
+#define XPON_SCU_WAN_CONF			0x070
+#define SCU_WAN_MODE_MASK_EN751221		GENMASK(2, 0)
+#define SCU_WAN_MODE_MASK_EN7580		GENMASK(7, 0)
+#define XPON_SCU_WAN_MODE_GPON			0x00
+#define XPON_SCU_WAN_MODE_EPON			0x01
+#define XPON_SCU_WAN_MODE_XEPON_10G_1G		0x06
+#define XPON_SCU_WAN_MODE_XEPON_10G_10G		0x07
+#define XPON_SCU_WAN_MODE_XEPON_1G_1G		0x08
+#define XPON_SCU_WAN_MODE_XGPON			0x09
+#define XPON_SCU_WAN_MODE_XGSPON		0x0a
+#define XPON_SCU_WAN_MODE_NGPON2_10G_10G	0x0b
+#define XPON_SCU_WAN_MODE_NGPON2_10G_2G		0x0c
+#define XPON_SCU_WAN_MODE_NGPON2_2G_2G		0x0d
+#define XPON_SCU_WAN_MODE_GPON_SYM		0x14
+#define XPON_SCU_WAN_MODE_TURBO_EPON		0x15
+
+/*
+ * XEPON interrupt register offsets relative to the EPON window at +0x6000.
+ * EN7580 exposes the second and third banks at +0x6200/+0x6400, while
+ * AN7581 keeps all three banks in the +0x6000 register block. The first
+ * EN7580 status register is read-only in the SDK register table.
+ *
+ * These layouts do not imply that the XEPON MPCP engine is supported yet.
+ */
+#define AIROHA_XEPON_IRQ_BANKS 3
+struct airoha_xepon_irq_bank {
+	u16 status;
+	u16 enable;
+	bool status_w1c;
+};
+
+struct airoha_xepon_irq_layout {
+	struct airoha_xepon_irq_bank bank[AIROHA_XEPON_IRQ_BANKS];
+};
 
 struct airoha_xpon_match_data {
 	enum airoha_ids version;
 	/* Hardware capabilities; only implemented modes are advertised. */
 	u32 xpon_mode_comp;
-	enum airoha_xpon_mode default_mode;
 	u32 wan_mode_mask;
 	u32 gpon_irq_mask;
 	u8 gpon_fine_delay;
@@ -46,7 +69,6 @@ struct airoha_xpon_match_data {
 	u16 gpon_idle_gem_threshold;
 	u8 gpon_guard_bits_override;
 	u8 gpon_sn_tx_power_mode;
-	bool gpon_defaults;
 	bool gpon_dbru_48b;
 	bool gpon_has_del_rx_stop;
 	bool gpon_reset_dbg_dly;
@@ -60,155 +82,230 @@ struct airoha_xpon_match_data {
 	bool scu_dying_gasp_status;
 };
 
-/* EN7580 xpon_10g offsets relative to the MAC window at 0x1fb65000. */
-#define EN7580_XGSPON_SIZE		0x1000
-#define EN7580_XGSPON_SW_RST		0x000
-#define EN7580_XGSPON_MBI_MPI_STOP		0x004
-#define EN7580_XGSPON_ONU_ID		0x014
-#define EN7580_XGSPON_INT_ENABLE		0x040
-#define EN7580_XGSPON_INT_STATUS		0x044
-#define EN7580_XGSPON_FIFO_ERR_STS		0x050
-#define EN7580_XGSPON_TX_ERR_STS		0x054
-#define EN7580_XGSPON_RX_ERR_STS		0x058
-#define EN7580_XGSPON_PLOAMU_CTRL		0x100
-#define EN7580_XGSPON_ACTIVATION_ST	0x104
-#define EN7580_XGSPON_RSP_TIME		0x108
-#define EN7580_XGSPON_US_PROF_VLD		0x11c
-#define EN7580_XGSPON_US_AES_KEY_CTRL	0x200
-#define EN7580_XGSPON_DS_AES_KEY_VLD	0x204
-#define EN7580_XGSPON_TCONT_ID_CFG		0x250
-#define EN7580_XGSPON_TCONT_ID_STS		0x254
-#define EN7580_XGSPON_GPIDX_TBL_INIT	0x260
-#define EN7580_XGSPON_GEM_PORT_CFG		0x274
-#define EN7580_XGSPON_GEM_PORT_STS		0x278
-#define EN7580_XGSPON_IDLE_GEM_CTRL	0x280
-#define EN7580_XGSPON_DYING_GASP_CTRL	0x284
-#define EN7580_XGSPON_PLOAMU_FIFO_STS	0x300
-#define EN7580_XGSPON_PLOAMD_FIFO_STS	0x308
-#define EN7580_XGSPON_MIB_TBL_CONFIG	0x504
+/* xpon_10g MAC offsets shared by EN7580 and AN7581/AN7583. */
+#define XGSPON_MAC_VENDOR_ID		0x00c
+#define XGSPON_MAC_VS_SN		0x010
+#define XGSPON_MAC_REG_ID		0x018
+#define XGSPON_MAC_EQD			0x114
+#define XGSPON_MAC_PROF_LEN		0x120
+#define XGSPON_MAC_EPDROP_EN		0x2f0
+#define XGSPON_MAC_PLOAMU_WDATA		0x304
+#define XGSPON_MAC_PLOAMD_RDATA		0x30c
+#define XGSPON_MAC_KEY_GEN		0x314
+#define XGSPON_MAC_CUR_KIDX		0x318
+#define XGSPON_MAC_MSK			0x320
+#define XGSPON_MAC_REGMSK		0x330
+#define XGSPON_MAC_HW_GENK		0x350
+#define XGSPON_MAC_PIK0			0x360
+#define XGSPON_MAC_PIK1			0x370
+#define XGSPON_MAC_OIK0			0x380
+#define XGSPON_MAC_OIK1			0x390
+#define XGSPON_MAC_KEK0			0x3a0
+#define XGSPON_MAC_KEK1			0x3b0
+#define XGSPON_MAC_PON_TAG		0x3c0
+#define XGSPON_MAC_SW_SET_KIDX		0x3e8
+#define XGSPON_MAC_INT_PLOAMD		BIT(0)
+#define XGSPON_MAC_INT_SN_SENT		BIT(3)
+#define XGSPON_MAC_INT_REG_SENT		BIT(5)
+#define XGSPON_MAC_INT_FIFO_ERR		BIT(15)
+#define XGSPON_MAC_INT_KEY_DONE		BIT(20)
+#define XGSPON_MAC_INT_MASK		(XGSPON_MAC_INT_PLOAMD | \
+					 XGSPON_MAC_INT_SN_SENT | \
+					 XGSPON_MAC_INT_REG_SENT | \
+					 XGSPON_MAC_INT_FIFO_ERR)
+#define XGSPON_MAC_ONU_VALID		BIT(15)
+#define XGSPON_MAC_TCONT_VALID		BIT(16)
+#define XGSPON_MAC_RX_WORDS		13
+#define XGSPON_MAC_TX_WORDS		11
+#define XGSPON_MAC_FIFO_COUNT		GENMASK(7, 0)
+#define XGSPON_MAC_DROP_BAD_MIC		BIT(0)
+#define XGSPON_MAC_FIFO_ERR_ENABLE	0x060
+#define XGSPON_MAC_PLOAM_FIFO_ERRORS	(BIT(10) | BIT(9) | BIT(2))
+#define XGSPON_MAC_PIK_INDEX		BIT(0)
+#define XGSPON_MAC_OIK_INDEX		BIT(16)
+#define XGSPON_MAC_DEFAULT_KEYS		(BIT(24) | BIT(16) | BIT(8) | BIT(0))
+#define XGSPON_MAC_SIZE			0x1000
+#define XGSPON_MAC_SW_RST		0x000
+#define XGSPON_MAC_MBI_MPI_STOP		0x004
+#define XGSPON_MAC_ONU_ID		0x014
+#define XGSPON_MAC_INT_ENABLE		0x040
+#define XGSPON_MAC_INT_STATUS		0x044
+#define XGSPON_MAC_FIFO_ERR_STS		0x050
+#define XGSPON_MAC_TX_ERR_STS		0x054
+#define XGSPON_MAC_RX_ERR_STS		0x058
+#define XGSPON_MAC_PLOAMU_CTRL		0x100
+#define XGSPON_MAC_ACTIVATION_ST	0x104
+#define XGSPON_MAC_RSP_TIME		0x108
+#define XGSPON_MAC_US_PROF_VLD		0x11c
+#define XGSPON_MAC_US_AES_KEY_CTRL	0x200
+#define XGSPON_MAC_DS_AES_KEY_VLD	0x204
+#define XGSPON_MAC_TCONT_ID_CFG		0x250
+#define XGSPON_MAC_TCONT_ID_STS		0x254
+#define XGSPON_MAC_GPIDX_TBL_INIT	0x260
+#define XGSPON_MAC_GEM_PORT_CFG		0x274
+#define XGSPON_MAC_GEM_PORT_STS		0x278
+#define XGSPON_MAC_IDLE_GEM_CTRL	0x280
+#define XGSPON_MAC_DYING_GASP_CTRL	0x284
+#define XGSPON_MAC_PLOAMU_FIFO_STS	0x300
+#define XGSPON_MAC_PLOAMD_FIFO_STS	0x308
+#define XGSPON_MAC_MIB_TBL_CONFIG	0x504
 
-#define EN7580_XGSPON_RST_N		BIT(0)
-#define EN7580_XGSPON_MBI_RX_STOP		BIT(0)
-#define EN7580_XGSPON_MBI_TX_STOP		BIT(8)
-#define EN7580_XGSPON_MPI_RX_STOP		BIT(16)
-#define EN7580_XGSPON_MPI_TX_STOP		BIT(24)
-#define EN7580_XGSPON_STOP_MASK		(EN7580_XGSPON_MBI_RX_STOP | \
-					 EN7580_XGSPON_MBI_TX_STOP | \
-					 EN7580_XGSPON_MPI_RX_STOP | \
-					 EN7580_XGSPON_MPI_TX_STOP)
-#define EN7580_XGSPON_PLOAMU_SW_CTRL	BIT(0)
-#define EN7580_XGSPON_STATE_O1		1
-#define EN7580_XGSPON_TCONT_WRITE		BIT(31)
-#define EN7580_XGSPON_TCONT_INDEX		GENMASK(24, 20)
-#define EN7580_XGSPON_GEM_WRITE		BIT(31)
-#define EN7580_XGSPON_GEM_UNICAST		BIT(17)
-#define EN7580_XGSPON_CMD_DONE		BIT(31)
-#define EN7580_XGSPON_TABLE_START		BIT(0)
-#define EN7580_XGSPON_TABLE_DONE		BIT(8)
-#define EN7580_XGSPON_IDLE_THRESHOLD	GENMASK(15, 0)
-#define EN7580_XGSPON_TCONTS		32
-#define EN7580_XGSPON_GEM_IDS		65536
-#define EN7580_XGSPON_RSP_TIME_DEFAULT	0x1600
-#define EN7580_XGSPON_IDLE_DEFAULT	0x120
-#define EN7580_XGSPON_CMD_TIMEOUT_US	3000
-#define EN7580_XGSPON_TABLE_TIMEOUT_US	100000
-#define EN7580_XGSPON_GEM_TIMEOUT_MS	10000
+#define XGSPON_MAC_RST_N		BIT(0)
+#define XGSPON_MAC_MBI_RX_STOP		BIT(0)
+#define XGSPON_MAC_MBI_TX_STOP		BIT(8)
+#define XGSPON_MAC_MPI_RX_STOP		BIT(16)
+#define XGSPON_MAC_MPI_TX_STOP		BIT(24)
+#define XGSPON_MAC_STOP_MASK		(XGSPON_MAC_MBI_RX_STOP | \
+					 XGSPON_MAC_MBI_TX_STOP | \
+					 XGSPON_MAC_MPI_RX_STOP | \
+					 XGSPON_MAC_MPI_TX_STOP)
+#define XGSPON_MAC_PLOAMU_SW_CTRL	BIT(0)
+#define XGSPON_MAC_STATE_O1		1
+#define XGSPON_MAC_TCONT_WRITE		BIT(31)
+#define XGSPON_MAC_TCONT_INDEX		GENMASK(24, 20)
+#define XGSPON_MAC_GEM_WRITE		BIT(31)
+#define XGSPON_MAC_GEM_UNICAST		BIT(17)
+#define XGSPON_MAC_CMD_DONE		BIT(31)
+#define XGSPON_MAC_TABLE_START		BIT(0)
+#define XGSPON_MAC_TABLE_DONE		BIT(8)
+#define XGSPON_MAC_IDLE_THRESHOLD	GENMASK(15, 0)
+#define XGSPON_MAC_TCONTS		32
+#define XGSPON_MAC_GEM_IDS		65536
+#define XGSPON_MAC_RSP_TIME_DEFAULT	0x1600
+#define XGSPON_MAC_IDLE_DEFAULT	0x120
+#define XGSPON_MAC_CMD_TIMEOUT_US	3000
+#define XGSPON_MAC_TABLE_TIMEOUT_US	100000
+#define XGSPON_MAC_GEM_TIMEOUT_MS	10000
+
+static inline void
+airoha_xgspon_fifo_encode(u32 words[XGSPON_MAC_TX_WORDS],
+			  const u8 body[XGSPON_PLOAM_BODY_LEN], bool key_index)
+{
+	int i;
+
+	/* The first FIFO word is metadata, not part of the standard body. */
+	words[0] = key_index;
+	for (i = 0; i < XGSPON_PLOAM_BODY_LEN / 4; i++)
+		words[i + 1] = get_unaligned_be32(body + i * 4);
+}
+
+static inline void
+airoha_xgspon_fifo_decode(u8 body[XGSPON_PLOAM_BODY_LEN],
+			  const u32 words[XGSPON_MAC_RX_WORDS])
+{
+	int i;
+
+	/* MIC and status have already been consumed by the FIFO reader. */
+	for (i = 0; i < XGSPON_PLOAM_BODY_LEN / 4; i++)
+		put_unaligned_be32(words[i], body + i * 4);
+}
 
 /* GPON MAC register layout and protocol constants. */
-#define GPON_ONU_ID		0x000
-#define GPON_GBL_CFG		0x004
-#define GPON_INT_STATUS		0x008
-#define GPON_INT_ENABLE		0x00C
+#define GPON_ONU_ID			0x000
+#define GPON_GBL_CFG			0x004
+#define GPON_INT_STATUS			0x008
+#define GPON_INT_ENABLE			0x00C
 /* T-CONT pair registers (direct access, T-CONTs 0–15) */
-#define GPON_TCONT_ID_0_1	0x020	/* 8 regs, each holds 2 T-CONTs */
-#define GPON_TCONT_ID_14_15	0x03C
+#define GPON_TCONT_ID_0_1		0x020	/* 8 regs, each holds 2 T-CONTs */
+#define GPON_TCONT_ID_14_15		0x03C
 /* T-CONTs 16–31 indirect access */
-#define GPON_TCONT_ID_16_31_CFG	0x180
-#define GPON_TCONT_ID_16_31_STS	0x184
+#define GPON_TCONT_ID_16_31_CFG		0x180
+#define GPON_TCONT_ID_16_31_STS		0x184
 /* GEM port indirect access */
-#define GPON_GEM_PORT_CFG	0x040
-#define GPON_GEM_PORT_STS	0x044
+#define GPON_GEM_PORT_CFG		0x040
+#define GPON_GEM_PORT_STS		0x044
 /* OMCI GEM port */
-#define GPON_OMCI_ID		0x048
+#define GPON_OMCI_ID			0x048
 /* GEM table init control.  The EN7523 vendor runtime path does not use
  * this register during normal activation; it clears GEM entries through
  * G_GEM_PORT_CFG instead.  Keep the offset documented for diagnostics.
  */
-#define GPON_GEM_TBL_INIT	0x04C
+#define GPON_GEM_TBL_INIT		0x04C
+
 /* Upstream PLOAM FIFO */
-#define GPON_PLOAMu_FIFO_STS	0x050
-#define GPON_PLOAMu_WDATA	0x054
+#define GPON_PLOAMu_FIFO_STS		0x050
+#define GPON_PLOAMu_WDATA		0x054
+
 /* Downstream PLOAM FIFO */
-#define GPON_PLOAMd_FIFO_STS	0x058
-#define GPON_PLOAMd_RDATA	0x05C
+#define GPON_PLOAMd_FIFO_STS		0x058
+#define GPON_PLOAMd_RDATA		0x05C
+
 /* AES shadow key and switch-time config */
-#define GPON_AES_CFG		0x060
-#define GPON_AES_ACTIVE_KEY0	0x064	/* 4 × 32-bit, read-only */
-#define GPON_AES_SHADOW_KEY0	0x074	/* 4 × 32-bit, write to program */
+#define GPON_AES_CFG			0x060
+#define GPON_AES_ACTIVE_KEY0		0x064	/* 4 × 32-bit, read-only */
+#define GPON_AES_SHADOW_KEY0		0x074	/* 4 × 32-bit, write to program */
+
 /* PLOu burst parameters */
-#define GPON_PLOu_OVERHEAD	0x090
-#define GPON_PLOu_GUARD_BIT	0x094
-#define GPON_PLOu_PRMBL_TYPE1_2	0x098
-#define GPON_PLOu_PRMBL_TYPE3	0x09C
-#define GPON_PLOu_DELM_BIT	0x0A0
-#define GPON_PRE_ASSIGNED_DLY	0x0A4
-#define GPON_EQD		0x0A8
-#define GPON_RSP_TIME		0x0AC
+#define GPON_PLOu_OVERHEAD		0x090
+#define GPON_PLOu_GUARD_BIT		0x094
+#define GPON_PLOu_PRMBL_TYPE1_2		0x098
+#define GPON_PLOu_PRMBL_TYPE3		0x09C
+#define GPON_PLOu_DELM_BIT		0x0A0
+#define GPON_PRE_ASSIGNED_DLY		0x0A4
+#define GPON_EQD			0x0A8
+#define GPON_RSP_TIME			0x0AC
+
 /* Serial number registers */
-#define GPON_VENDOR_ID		0x0B0
-#define GPON_VS_SN		0x0B4
-#define GPON_SN_MSG_CFG		0x0B8
-#define GPON_ACTIVATION_ST	0x0BC
+#define GPON_VENDOR_ID			0x0B0
+#define GPON_VS_SN			0x0B4
+#define GPON_SN_MSG_CFG			0x0B8
+#define GPON_ACTIVATION_ST		0x0BC
+
 /* Time of Day */
-#define GPON_TOD_CFG		0x0D0
-#define GPON_NEW_TOD_SEC_L32	0x0D4
-#define GPON_NEW_TOD_NANO_SEC	0x0D8
-#define GPON_CUR_TOD_SEC_L32	0x0DC
-#define GPON_CUR_TOD_NANO_SEC	0x0E0
+#define GPON_TOD_CFG			0x0D0
+#define GPON_NEW_TOD_SEC_L32		0x0D4
+#define GPON_NEW_TOD_NANO_SEC		0x0D8
+#define GPON_CUR_TOD_SEC_L32		0x0DC
+#define GPON_CUR_TOD_NANO_SEC		0x0E0
+
 /* FCS / MIB tables */
-#define GPON_TX_FCS_TBL_INIT	0x100
-#define GPON_MIB_CTRL_STS	0x120
-#define GPON_MIB_RDATA_L32	0x124
-#define GPON_MIB_RDATA_H32	0x128
-#define GPON_MIB_TBL_INIT	0x134
+#define GPON_TX_FCS_TBL_INIT		0x100
+#define GPON_MIB_CTRL_STS		0x120
+#define GPON_MIB_RDATA_L32		0x124
+#define GPON_MIB_RDATA_H32		0x128
+#define GPON_MIB_TBL_INIT		0x134
+
 /* GPON/PSE memory-bus interface control */
-#define GPON_MBI_MPI_STOP	0x160
+#define GPON_MBI_MPI_STOP		0x160
+
 /* EN7523 GPON debug and timing registers */
-#define GPON_DBG_DLY		0x208
-#define GPON_DBG_IDLE_GEM_THLD	0x20C
+#define GPON_DBG_DLY			0x208
+#define GPON_DBG_IDLE_GEM_THLD		0x20C
 #define GPON_DBG_BWM_FILTER_CTRL	0x220
-#define GPON_DBG_BWM_SFIFO_STS	0x224
-#define GPON_DBG_GRP_0		0x228
-#define GPON_DBG_GRP_1		0x22C
-#define GPON_DBG_BWM_BFIFO_STS	0x250
-#define GPON_DBG_PROBE_CTRL	0x240
-#define GPON_DBG_PROBE_HIGH32	0x244
-#define GPON_DBG_PROBE_LOW32	0x248
-#define GPON_DBG_ERR_CTRL	0x260
-#define GPON_DBG_RX_GEM_CNT	0x300
-#define GPON_DBG_RX_CRC_ERR_CNT	0x304
-#define GPON_DBG_RX_GTC_CNT	0x308
-#define GPON_DBG_TX_GEM_CNT	0x30C
-#define GPON_DBG_TX_BST_CNT	0x310
+#define GPON_DBG_BWM_SFIFO_STS		0x224
+#define GPON_DBG_GRP_0			0x228
+#define GPON_DBG_GRP_1			0x22C
+#define GPON_DBG_BWM_BFIFO_STS		0x250
+#define GPON_DBG_PROBE_CTRL		0x240
+#define GPON_DBG_PROBE_HIGH32		0x244
+#define GPON_DBG_PROBE_LOW32		0x248
+#define GPON_DBG_ERR_CTRL		0x260
+#define GPON_DBG_RX_GEM_CNT		0x300
+#define GPON_DBG_RX_CRC_ERR_CNT		0x304
+#define GPON_DBG_RX_GTC_CNT		0x308
+#define GPON_DBG_TX_GEM_CNT		0x30C
+#define GPON_DBG_TX_BST_CNT		0x310
 #define GPON_DBG_GEM_HEC_ONE_ERR_CNT	0x330
 #define GPON_DBG_GEM_HEC_TWO_ERR_CNT	0x334
 #define GPON_DBG_GEM_HEC_UC_ERR_CNT	0x338
+
 /* Debug / TX sync (EN7521 EqD adjustment) */
-#define GPON_DBG_TX_SYNC_OFFSET	0x35C
+#define GPON_DBG_TX_SYNC_OFFSET		0x35C
+
 /* Power management (always-on domain) */
-#define GPON_SLEEP_GLB_CFG	0x3A4
-#define GPON_SLEEP_CNT		0x3A8
+#define GPON_SLEEP_GLB_CFG		0x3A4
+#define GPON_SLEEP_CNT			0x3A8
 
 /* -----------------------------------------------------------------------
  * Register bit definitions
  * -------------------------------------------------------------------- */
 
 /* G_ONU_ID */
-#define ONU_ID_VLD		BIT(15)
-#define ONU_ID_MASK		0xFF
+#define ONU_ID_VLD			BIT(15)
+#define ONU_ID_MASK			0xFF
 
 /* G_GBL_CFG */
-#define GBL_CFG_US_FEC_EN	BIT(16)
+#define GBL_CFG_US_FEC_EN		BIT(16)
 #define GBL_CFG_SR_BLK_SIZE_MASK	GENMASK(7, 0)
 
 /*
@@ -225,40 +322,40 @@ struct airoha_xpon_match_data {
 #define SN_MSG_CFG_RANDOM_DELAY_MASK	GENMASK(11, 0)
 
 /* G_INT_STATUS / G_INT_ENABLE */
-#define INT_PLOAMD_RECV		BIT(0)
-#define INT_PLOAMU_SEND		BIT(1)
-#define INT_SN_REQ_RECV		BIT(2)
-#define INT_SN_ONU_SEND_O3	BIT(3)
-#define INT_RANGING_REQ_RECV	BIT(4)
-#define INT_SN_ONU_SEND_O4	BIT(5)
-#define INT_SN_REQ_CRS		BIT(6)
-#define INT_LOSS_GEM_DEL	BIT(7)
-#define INT_AES_KEY_SWITCH_DONE	BIT(8)
-#define INT_TOD_UPDATE_DONE	BIT(9)
-#define INT_TOD_1PPS		BIT(10)
-#define INT_DYING_GASP		BIT(11)
+#define INT_PLOAMD_RECV			BIT(0)
+#define INT_PLOAMU_SEND			BIT(1)
+#define INT_SN_REQ_RECV			BIT(2)
+#define INT_SN_ONU_SEND_O3		BIT(3)
+#define INT_RANGING_REQ_RECV		BIT(4)
+#define INT_SN_ONU_SEND_O4		BIT(5)
+#define INT_SN_REQ_CRS			BIT(6)
+#define INT_LOSS_GEM_DEL		BIT(7)
+#define INT_AES_KEY_SWITCH_DONE		BIT(8)
+#define INT_TOD_UPDATE_DONE		BIT(9)
+#define INT_TOD_1PPS			BIT(10)
+#define INT_DYING_GASP			BIT(11)
 /*
  * G_INT_STATUS layout from the vendor EN7521/EN7523 register header.
  * Bits 13 and 14 are reserved on EN7523. Bit 15 reports completion of
  * the grant-size calculation used by the EN7523 DBA block.
  */
-#define INT_CAL_GNT_SIZE_DONE	BIT(15)
-#define INT_RX_ERR		BIT(16)
-#define INT_FIFO_ERR		BIT(17)
-#define INT_BST_SGL_DIFF	BIT(18)
-#define INT_TX_LATE_START	BIT(19)
-#define INT_RX_EOF_ERR		BIT(20)
-#define INT_RX_GEM_INTLV_ERR	BIT(21)
-#define INT_BFIFO_FULL		BIT(22)
-#define INT_SFIFO_FULL		BIT(23)
-#define INT_O5_EQD_ADJ_DONE	BIT(24)
-#define INT_OLT_DS_FEC_CHG	BIT(25)
-#define INT_ONU_US_FEC_CHG	BIT(26)
-#define INT_POP_UP_RECV_O6	BIT(27)
-#define INT_FWI			BIT(28)
-#define INT_LWI			BIT(29)
-#define INT_BWM_STOP_TIME_ERR	BIT(30)
-#define INT_BWM_US_FEC_ERR	BIT(31)
+#define INT_CAL_GNT_SIZE_DONE		BIT(15)
+#define INT_RX_ERR			BIT(16)
+#define INT_FIFO_ERR			BIT(17)
+#define INT_BST_SGL_DIFF		BIT(18)
+#define INT_TX_LATE_START		BIT(19)
+#define INT_RX_EOF_ERR			BIT(20)
+#define INT_RX_GEM_INTLV_ERR		BIT(21)
+#define INT_BFIFO_FULL			BIT(22)
+#define INT_SFIFO_FULL			BIT(23)
+#define INT_O5_EQD_ADJ_DONE		BIT(24)
+#define INT_OLT_DS_FEC_CHG		BIT(25)
+#define INT_ONU_US_FEC_CHG		BIT(26)
+#define INT_POP_UP_RECV_O6		BIT(27)
+#define INT_FWI				BIT(28)
+#define INT_LWI				BIT(29)
+#define INT_BWM_STOP_TIME_ERR		BIT(30)
+#define INT_BWM_US_FEC_ERR		BIT(31)
 
 #define GPON_INT_ACTIVATION_MASK \
 	(INT_PLOAMD_RECV | INT_SN_REQ_RECV | INT_SN_ONU_SEND_O3 |      \
@@ -276,64 +373,64 @@ struct airoha_xpon_match_data {
 #define GPON_INT_DEFAULT_MASK (GPON_INT_ACTIVATION_MASK | INT_TX_LATE_START)
 
 /* G_GEM_PORT_CFG */
-#define GEM_CMD_WRITE		BIT(31)
-#define GEM_ENCRYPT		BIT(17)
-#define GEM_VALID		BIT(16)
+#define GEM_CMD_WRITE			BIT(31)
+#define GEM_ENCRYPT			BIT(17)
+#define GEM_VALID			BIT(16)
 
 /* G_GEM_PORT_STS */
-#define GEM_CMD_DONE		BIT(31)
-#define GEM_STS_ENCRYPT		BIT(1)
-#define GEM_STS_VALID		BIT(0)
+#define GEM_CMD_DONE			BIT(31)
+#define GEM_STS_ENCRYPT			BIT(1)
+#define GEM_STS_VALID			BIT(0)
 
 /* G_GEM_TBL_INIT */
-#define GEM_TBL_INIT_DONE	BIT(8)
-#define GEM_TBL_INIT_START	BIT(0)
+#define GEM_TBL_INIT_DONE		BIT(8)
+#define GEM_TBL_INIT_START		BIT(0)
 
 /* G_PLOAMu_FIFO_STS */
-#define PLOAMu_FIFO_AVAIL_MASK	0xFF
+#define PLOAMu_FIFO_AVAIL_MASK		0xFF
 
 /* G_PLOAMd_FIFO_STS */
-#define PLOAMd_FIFO_USED_MASK	0xFF
+#define PLOAMd_FIFO_USED_MASK		0xFF
 
 /* G_TCONT_ID pair register */
-#define TCONT_ID_MASK		0x0FFF
-#define TCONT0_VALID		BIT(15)
-#define TCONT1_ID_SHIFT		16
-#define TCONT1_VALID		BIT(31)
-#define TCONT_PAIR_INVALID	0x00000000 /* validity bits cleared */
+#define TCONT_ID_MASK			0x0FFF
+#define TCONT0_VALID			BIT(15)
+#define TCONT1_ID_SHIFT			16
+#define TCONT1_VALID			BIT(31)
+#define TCONT_PAIR_INVALID		0x00000000 /* validity bits cleared */
 
 /* G_TCONT_ID_16_31_CFG */
-#define TCONT16_CMD_EXEC	BIT(31)
-#define TCONT16_VALID		BIT(27)
-#define TCONT16_IDX_SHIFT	16
-#define TCONT16_ALLOC_MASK	0x0FFF
+#define TCONT16_CMD_EXEC		BIT(31)
+#define TCONT16_VALID			BIT(27)
+#define TCONT16_IDX_SHIFT		16
+#define TCONT16_ALLOC_MASK		0x0FFF
 
 /* G_TCONT_ID_16_31_STS */
-#define TCONT16_CMD_DONE	BIT(31)
+#define TCONT16_CMD_DONE		BIT(31)
 
 /* G_MIB_TBL_INIT */
-#define MIB_TBL_INIT_DONE	BIT(8)
-#define MIB_TBL_INIT_START	BIT(0)
+#define MIB_TBL_INIT_DONE		BIT(8)
+#define MIB_TBL_INIT_START		BIT(0)
 
 /* G_OMCI_ID */
-#define OMCI_PORT_VLD		BIT(16)
-#define OMCI_GPID_MASK		0xFFF
+#define OMCI_PORT_VLD			BIT(16)
+#define OMCI_GPID_MASK			0xFFF
 
 /* G_AES_CFG: bits[29:0] = key-switch superframe counter */
-#define AES_KEY_SWITCH_CNT_MASK	0x3FFFFFFF
+#define AES_KEY_SWITCH_CNT_MASK		0x3FFFFFFF
 
 /* G_PRE_ASSIGNED_DLY */
-#define PRE_DLY_EN		BIT(31)
-#define PRE_DLY_MASK		0xFFFF
+#define PRE_DLY_EN			BIT(31)
+#define PRE_DLY_MASK			0xFFFF
 
 /* G_MBI_MPI_STOP */
-#define MBI_RX_STOP		BIT(0)
-#define DEL_RX_STOP		BIT(4)
-#define MBI_TX_STOP		BIT(8)
-#define MPI_RX_STOP		BIT(16)
-#define MPI_TX_STOP		BIT(24)
-#define MPI_RX_STOP_DONE	BIT(30)
-#define MPI_TX_STOP_DONE	BIT(31)
+#define MBI_RX_STOP			BIT(0)
+#define DEL_RX_STOP			BIT(4)
+#define MBI_TX_STOP			BIT(8)
+#define MPI_RX_STOP			BIT(16)
+#define MPI_TX_STOP			BIT(24)
+#define MPI_RX_STOP_DONE		BIT(30)
+#define MPI_TX_STOP_DONE		BIT(31)
 
 /* DBG_DLY */
 #define DBG_DLY_PHY_RX_DLY_SEL		BIT(31)
@@ -411,6 +508,17 @@ struct airoha_xpon_match_data {
 #define GPON_PHY_GUARD_BIT_NUM_EN751221	24
 
 #define EPON_MAX_LLID			8
+#define XEPON_MAX_LLID			32
+#define AIROHA_IEEE_MAX_LLID		XEPON_MAX_LLID
+
+/* EN7580: LLID8..31 discovery state is in the third MAC bank. */
+#define XEPON_EN7580_LLID8_STS		0x428
+#define XEPON_EN7580_RPT_CFG2		0x488
+#define XEPON_EN7580_RPT_CFG3		0x48c
+#define XEPON_EN7580_RPT_QTHLD_CFG2	0x490
+#define XEPON_EN7580_TRX_ADJTIME3	0x218
+#define XEPON_EN7580_TRX_ADJTIME4	0x21c
+
 
 /* LLID registration states */
 enum airoha_epon_llid_state {
@@ -429,28 +537,52 @@ struct epon_llid {
 };
 
 struct airoha_xpon_tod;
+struct airoha_xgspon;
 
 struct xpon_priv {
-	void __iomem *base;
+	void __iomem *xpon_base;
 	void __iomem *gpon_reg;
 	void __iomem *epon_reg;
 	void __iomem *xgspon_reg;
-	void __iomem *epon_reset_reg;
+
 	struct dentry *xgspon_debugfs;
 	bool xgspon_accessible;
-	struct omci_device *xgspon_omci;
+	bool xgspon_link_registered;
+
+	struct airoha_xgspon *xgspon;
+	/* Serializes MAC commands with start/stop and the threaded FIFO reader. */
+	struct mutex xgspon_lock;
+	bool xgspon_running;
+	bool xgspon_keys_ready;
+	enum airoha_xgspon_state xgspon_state;
+	u16 xgspon_onu_id;
+	u16 xgspon_alloc_id[XGSPON_MAC_TCONTS];
+	u8 xgspon_reg_id[XGSPON_PLOAM_REG_ID_LEN];
+	u32 xgspon_rx_messages;
+	u32 xgspon_rx_rejected;
+	u32 xgspon_fifo_errors;
+	u32 xgspon_sn_sent;
+	u32 xgspon_reg_sent;
+
 	struct device *dev;
 	struct regmap *scu;
+
 	const struct airoha_xpon_match_data *match_data;
+
 	struct reset_control *mac_reset;
 	struct phy *phy;
-	enum airoha_xpon_mode mode;
+	
+	enum xpon_mode mode;
+	/* Last successfully programmed XEPON WAN_CONF, for diagnostics only. */
+	u8 xepon_wan_mode;
 	bool phy_initialized;
 	bool phy_powered;
 	struct net_device *gdm_dev;
 	bool started;
 	bool optical_active;
 	bool mac_enabled;
+	/* True after a switch has detached the old protocol services. */
+	bool mode_switch_detached;
 	/* O7 gated a transmitter that O2 does not gate again */
 	bool gpon_o7_tx_off;
 	bool phy_link_known;
@@ -460,12 +592,11 @@ struct xpon_priv {
 	struct airoha_gpon_omci omci;
 	struct airoha_xpon_tod *tod;
 	struct airoha_xpon_oam_handler omci_handler;
-	struct sfp_bus *sfp_bus;
-	struct optical_frontend *frontend;
-	int irq;
+
+	int mac_irq;
 	int dying_gasp_irq;
 
-	struct epon_llid llid[EPON_MAX_LLID];
+	struct epon_llid llid[AIROHA_IEEE_MAX_LLID];
 
 	struct ploam_priv *ploam;
 	int registered_llids;
@@ -474,8 +605,12 @@ struct xpon_priv {
 	/* Serialize MPCP IRQ transitions with link administration. */
 	spinlock_t epon_lock;
 	unsigned long epon_enabled_links;
-	u32 epon_epoch[EPON_MAX_LLID];
+	u32 epon_epoch[AIROHA_IEEE_MAX_LLID];
 	struct work_struct epon_retire_work;
+	/* XEPON 10G: synchronize registered LLIDs with the GDM2 channels. */
+	struct mutex epon_dba_lock;
+	struct work_struct xepon_channel_work;
+	unsigned long xepon_hw_channels;
 
 	u8 hw_sn[8];
 	u8 hw_passwd[10];
@@ -556,51 +691,51 @@ struct xpon_priv {
 
 /* EPON MAC register layout and MPCP constants. */
 /* Register offsets from EPON MAC base */
-#define EPON_GLB_CFG			0x000
-#define EPON_INT_STATUS			0x004
-#define EPON_INT_EN			0x008
-#define EPON_RPT_MPCP_TIMEOUT		0x00C
-#define EPON_DYINGGSP_CFG		0x010
-#define EPON_PENDING_GNT_NUM		0x014
-#define EPON_LLID0_3_CFG		0x020
-#define EPON_LLID4_7_CFG		0x024
-#define EPON_LLID_DSCVRY_CTRL		0x028
-#define EPON_LLID0_DSCVRY_STS		0x02C
-#define EPON_MAC_ADDR_CFG		0x050
-#define EPON_MAC_ADDR_VALUE		0x054
-#define EPON_SECURITY_KEY_CFG		0x058
-#define EPON_SECURITY_KEY_DATA		0x05C
-#define EPON_RPT_DATA			0x060
-#define EPON_RPT_LEN			0x064
-#define EPON_RPT_CFG			0x068
-#define EPON_RPT_QTHLD_CFG		0x06c
-#define EPON_LOCAL_TIME			0x080
-#define EPON_TOD_SYNC_X			0x084
-#define EPON_TOD_LTNCY			0x088
-#define EPON_P2P_TX_TAG1		0x08C
-#define EPON_P2P_TX_TAG2		0x090
-#define EPON_TXFETCH_CFG		0x0D0
-#define EPON_SYNC_TIME			0x0D4
-#define EPON_TX_CAL_CNST		0x0D8
-#define EPON_LASER_ONOFF_TIME		0x0DC
-#define EPON_GRD_THRSHLD		0x0E0
-#define EPON_MPCP_TIMEOUT_INTVL		0x0E4
-#define EPON_RPT_TIMEOUT_INTVL		0x0E8
-#define EPON_MAX_FUTURE_GNT		0x0EC
-#define EPON_MIN_PROC_TIME		0x0F0
-#define EPON_TRX_ADJUST_TIME1		0x0F4
-#define EPON_TRX_ADJUST_TIME2		0x0F8
-#define EPON_TIME_DRFT_STAT		0x134
+#define EPON_GLB_CFG				0x000
+#define EPON_INT_STATUS				0x004
+#define EPON_INT_EN				0x008
+#define EPON_RPT_MPCP_TIMEOUT			0x00C
+#define EPON_DYINGGSP_CFG			0x010
+#define EPON_PENDING_GNT_NUM			0x014
+#define EPON_LLID0_3_CFG			0x020
+#define EPON_LLID4_7_CFG			0x024
+#define EPON_LLID_DSCVRY_CTRL			0x028
+#define EPON_LLID0_DSCVRY_STS			0x02C
+#define EPON_MAC_ADDR_CFG			0x050
+#define EPON_MAC_ADDR_VALUE			0x054
+#define EPON_SECURITY_KEY_CFG			0x058
+#define EPON_SECURITY_KEY_DATA			0x05C
+#define EPON_RPT_DATA				0x060
+#define EPON_RPT_LEN				0x064
+#define EPON_RPT_CFG				0x068
+#define EPON_RPT_QTHLD_CFG			0x06c
+#define EPON_LOCAL_TIME				0x080
+#define EPON_TOD_SYNC_X				0x084
+#define EPON_TOD_LTNCY				0x088
+#define EPON_P2P_TX_TAG1			0x08C
+#define EPON_P2P_TX_TAG2			0x090
+#define EPON_TXFETCH_CFG			0x0D0
+#define EPON_SYNC_TIME				0x0D4
+#define EPON_TX_CAL_CNST			0x0D8
+#define EPON_LASER_ONOFF_TIME			0x0DC
+#define EPON_GRD_THRSHLD			0x0E0
+#define EPON_MPCP_TIMEOUT_INTVL			0x0E4
+#define EPON_RPT_TIMEOUT_INTVL			0x0E8
+#define EPON_MAX_FUTURE_GNT			0x0EC
+#define EPON_MIN_PROC_TIME			0x0F0
+#define EPON_TRX_ADJUST_TIME1			0x0F4
+#define EPON_TRX_ADJUST_TIME2			0x0F8
+#define EPON_TIME_DRFT_STAT			0x134
 
 /* e_glb_cfg bits */
-#define GLB_CFG_MODE_SEL		BIT(0)
-#define GLB_CFG_RPT_TXPRI_CTRL		BIT(1)
-#define GLB_CFG_EPON_MAC_SW_RST		BIT(4)
-#define GLB_CFG_TXMBI_STOP		BIT(8)
-#define GLB_CFG_RXMBI_STOP		BIT(9)
-#define GLB_CFG_FCS_ERR_FWD		BIT(17)
-#define GLB_CFG_MPCP_FWD		BIT(22)
-#define GLB_CFG_DISCV_BURST_EN		BIT(23)
+#define GLB_CFG_MODE_SEL			BIT(0)
+#define GLB_CFG_RPT_TXPRI_CTRL			BIT(1)
+#define GLB_CFG_EPON_MAC_SW_RST			BIT(4)
+#define GLB_CFG_TXMBI_STOP			BIT(8)
+#define GLB_CFG_RXMBI_STOP			BIT(9)
+#define GLB_CFG_FCS_ERR_FWD			BIT(17)
+#define GLB_CFG_MPCP_FWD			BIT(22)
+#define GLB_CFG_DISCV_BURST_EN			BIT(23)
 
 /*
  * e_int_status / e_int_en bit positions (from epon_reg.h):
@@ -613,24 +748,24 @@ struct xpon_priv {
  *   bit 24: REG_REQ_DONE_INT      — REGISTER_REQUEST sent by HW
  *   bit 25: REG_ACK_DONE_INT      — REGISTER_ACK sent by HW
  */
-#define EPON_INT_DISCV_GATE		BIT(0)
-#define EPON_INT_LLID0_RGST		BIT(1) /* BIT(1+n) for LLID n */
-#define EPON_INT_GNT_OVRRUN		BIT(9)
-#define EPON_INT_TIMEDRFT		BIT(13)
-#define EPON_INT_MPCP_TIMEOUT		BIT(14)
-#define EPON_INT_RPT_OVRFLW		BIT(15)
-#define EPON_INT_REG_REQ_DONE		BIT(24)
-#define EPON_INT_REG_ACK_DONE		BIT(25)
+#define EPON_INT_DISCV_GATE			BIT(0)
+#define EPON_INT_LLID0_RGST			BIT(1) /* BIT(1+n) for LLID n */
+#define EPON_INT_GNT_OVRRUN			BIT(9)
+#define EPON_INT_TIMEDRFT			BIT(13)
+#define EPON_INT_MPCP_TIMEOUT			BIT(14)
+#define EPON_INT_RPT_OVRFLW			BIT(15)
+#define EPON_INT_REG_REQ_DONE			BIT(24)
+#define EPON_INT_REG_ACK_DONE			BIT(25)
 
 /* e_llid_dscvry_ctrl bits (from epon_reg.h REG_e_llid_dscvry_ctrl) */
-#define DSCVRY_MPCP_CMD_MASK		(3U << 30)
-#define DSCVRY_MPCP_REG_REQ		BIT(30) /* send REGISTER_REQUEST */
-#define DSCVRY_MPCP_NORMAL		BIT(31)
-#define DSCVRY_MPCP_ACK			(3U << 30) /* send REGISTER_ACK */
-#define DSCVRY_CMD_DONE			BIT(16)
-#define DSCVRY_RGSTR_ACK_FLG		BIT(12)
-#define DSCVRY_RGSTR_REQ_FLG		BIT(8)
-#define DSCVRY_TX_MPCP_LLID_MASK	0x7
+#define DSCVRY_MPCP_CMD_MASK			(3U << 30)
+#define DSCVRY_MPCP_REG_REQ			BIT(30) /* send REGISTER_REQUEST */
+#define DSCVRY_MPCP_NORMAL			BIT(31)
+#define DSCVRY_MPCP_ACK				(3U << 30) /* send REGISTER_ACK */
+#define DSCVRY_CMD_DONE				BIT(16)
+#define DSCVRY_RGSTR_ACK_FLG			BIT(12)
+#define DSCVRY_RGSTR_REQ_FLG			BIT(8)
+#define DSCVRY_TX_MPCP_LLID_MASK		0x7
 
 /*
  * e_llid0_dscvry_sts bit layout (little-endian packed struct from epon_reg.h):
@@ -641,17 +776,17 @@ struct xpon_priv {
  *   bits [29:26] reserved
  *   bits [31:30] llidDscvrySts — 0=unregistered, 1=registering, 2=registered
  */
-#define LLID_STS_DSCVRY_SHIFT		30
-#define LLID_STS_RGST_FLG_SHIFT		24
-#define LLID_STS_RGST_FLG_MASK		(3U << 24)
-#define LLID_STS_VALID			BIT(16)
-#define LLID_STS_VALUE_MASK		0xFFFF
+#define LLID_STS_DSCVRY_SHIFT			30
+#define LLID_STS_RGST_FLG_SHIFT			24
+#define LLID_STS_RGST_FLG_MASK			(3U << 24)
+#define LLID_STS_VALID				BIT(16)
+#define LLID_STS_VALUE_MASK			0xFFFF
 
 /* rgstrFlgSts values */
-#define MPCP_REG_RE_REGISTER		0
-#define MPCP_REG_DE_REGISTER		1
-#define MPCP_REG_ACK			2
-#define MPCP_REG_NACK			3
+#define MPCP_REG_RE_REGISTER			0
+#define MPCP_REG_DE_REGISTER			1
+#define MPCP_REG_ACK				2
+#define MPCP_REG_NACK				3
 
 /*
  * e_mac_addr_cfg indirect register (from epon_reg.h REG_e_mac_addr_cfg):
@@ -660,38 +795,37 @@ struct xpon_priv {
  *   bit  16     mac_addr_rwcmd_done — 1=busy/in-progress
  *   bit  31     mac_addr_rwcmd    — write 1 to trigger write
  */
-#define MAC_ADDR_RWCMD			BIT(31)
-#define MAC_ADDR_DONE			BIT(16)
-#define MAC_ADDR_LLID_SHIFT		1
-#define MAC_ADDR_DW_IDX			BIT(0)
+#define MAC_ADDR_RWCMD				BIT(31)
+#define MAC_ADDR_DONE				BIT(16)
+#define MAC_ADDR_LLID_SHIFT			1
+#define MAC_ADDR_DW_IDX				BIT(0)
 
 /* e_security_key_cfg */
-#define SEC_KEY_WRITE_CMD		BIT(31)
-#define SEC_KEY_LLID_SHIFT		24
-#define SEC_KEY_IDX_SHIFT		16
-#define SEC_KEY_DW_SHIFT		8
+#define SEC_KEY_WRITE_CMD			BIT(31)
+#define SEC_KEY_LLID_SHIFT			24
+#define SEC_KEY_IDX_SHIFT			16
+#define SEC_KEY_DW_SHIFT			8
 
 /* Dying gasp init value per ref (hw_dying_gasp_en=1, dygsp_num_of_times=1,
  * dygsp_code=0, other fields=0x02) */
-#define DYINGGSP_CFG_HW_ENABLE		0x80000102
+#define DYINGGSP_CFG_HW_ENABLE			0x80000102
 
 /* Guard threshold for time drift detection (ref: EPON_TIMEDRIFT_THRSHLD) */
-#define EPON_TIMEDRIFT_THRSHLD		0x10
+#define EPON_TIMEDRIFT_THRSHLD			0x10
 
 /* Default register values */
-#define EPON_PENDING_GNT_DEFAULT	0x40
-#define EPON_MPCP_TIMEOUT_DEFAULT	0x03B9ACA0
-#define EPON_RPT_TIMEOUT_DEFAULT	0x002FAF08
-#define EPON_MAX_FUTURE_GNT_DEFAULT	0x03B9ACA0
-#define EPON_MIN_PROC_TIME_DEFAULT	0x400
-#define EPON_LASER_ONOFF_DEFAULT	0x2020
-#define EPON_TX_CAL_CNST_DEFAULT	0x2612040C
-#define EPON_TXFETCH_DEFAULT		0x202403E8
-#define EPON_TRX_ADJUST_TIME1_DEF	0x004FFFF1
-#define EPON_TRX_ADJUST_TIME2_DEF	0x6
+#define EPON_PENDING_GNT_DEFAULT		0x40
+#define EPON_MPCP_TIMEOUT_DEFAULT		0x03B9ACA0
+#define EPON_RPT_TIMEOUT_DEFAULT		0x002FAF08
+#define EPON_MAX_FUTURE_GNT_DEFAULT		0x03B9ACA0
+#define EPON_MIN_PROC_TIME_DEFAULT		0x400
+#define EPON_LASER_ONOFF_DEFAULT		0x2020
+#define EPON_TX_CAL_CNST_DEFAULT		0x2612040C
+#define EPON_TXFETCH_DEFAULT			0x202403E8
+#define EPON_TRX_ADJUST_TIME1_DEF		0x004FFFF1
+#define EPON_TRX_ADJUST_TIME2_DEF		0x6
 
-/* External SW reset register bit (REG_E_SW_RST, outside EPON MAC block) */
-#define EPON_EXT_SW_RST_BIT	BIT(31)
-#define EPON_RESET_DELAY_US	100
+/* Delay around the EPON MAC internal software reset. */
+#define EPON_RESET_DELAY_US			100
 
 #endif /* _AIROHA_XPON_H */

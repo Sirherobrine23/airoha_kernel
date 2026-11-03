@@ -1,14 +1,14 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /*
- * EcoNet GPON PLOAM layer — public interface
+ * Airoha GPON and XGS-PON PLOAM layer — public interface
  *
  * The protocol vocabulary and byte codec live in net/xpon. This header
  * defines the FIFO representation and the callbacks through which the
- * PLOAM state machine drives the MAC in airoha_xpon.c.
+ * mode-specific PLOAM state machines drive their MAC providers.
  */
 
-#ifndef _ECONET_PLOAM_H
-#define _ECONET_PLOAM_H
+#ifndef _AIROHA_PLOAM_H
+#define _AIROHA_PLOAM_H
 
 #include <linux/types.h>
 #include <linux/unaligned.h>
@@ -130,4 +130,81 @@ u32 ploam_get_eqd(const struct ploam_priv *pp);
 /* Key management — called by hardware after loading key into shadow regs */
 void ploam_set_aes_key(struct ploam_priv *pp, const u8 key[16]);
 
-#endif /* _ECONET_PLOAM_H */
+/* XGS-PON protocol and hardware callback interface. */
+struct airoha_xgspon_ploam;
+
+/* The values match the SDK activation register, including combined O2/O3. */
+enum airoha_xgspon_state {
+	AIROHA_XGSPON_O1 = 1,
+	AIROHA_XGSPON_O2_3 = 2,
+	AIROHA_XGSPON_O4 = 4,
+	AIROHA_XGSPON_O5,
+	AIROHA_XGSPON_O6,
+	AIROHA_XGSPON_O7,
+};
+
+#define AIROHA_XGSPON_PROFILES	4
+#define AIROHA_XGSPON_TO2_MS	100
+
+/*
+ * Hardware boundary, following xpon_10g gpon_ploam.c/gpon_act.c.
+ * Calls run in process context, serialized by the protocol owner. They must
+ * not reenter the protocol. Every int callback reports hardware completion;
+ * no state or OMCC is published as operational before it succeeds.
+ *
+ * reset() silences upstream, invalidates ONU-ID, profiles, Alloc-IDs and OMCC,
+ * and restores the default integrity-key selection. set_state() applies the
+ * activation/TX policy for that state. set_eqd() takes an absolute value in
+ * 2.48832 Gbit/s bit periods; conversion to a SoC register is the MAC's job.
+ * set_alloc_id() also accepts the default Alloc-ID equal to the ONU-ID.
+ *
+ * send_upstream() queues a standard 40-byte body for an OLT-authorized grant.
+ * The MAC supplies MIC, FIFO framing and integrity-key switching. registered
+ * selects the Registration_ID-derived key group, including Registration.
+ * key_report() generates/loads/wraps a new AES key or returns its key name;
+ * the caller validates the request and encodes the returned Key_Report.
+ *
+ * state_changed() and timer_changed() are owner notifications, not MAC ops.
+ * A zero timeout cancels the timer. The owner calls ploam_timeout() on expiry.
+ * RX bodies may be supplied only after the transport has checked their MIC.
+ */
+struct airoha_xgspon_ploam_ops {
+	int (*reset)(void *priv);
+	int (*set_state)(void *priv, enum airoha_xgspon_state state);
+	int (*set_profile)(void *priv, const struct xgspon_ploam_burst_profile *profile);
+	int (*set_onu_id)(void *priv, u16 onu_id);
+	int (*set_eqd)(void *priv, u32 eqd);
+	int (*set_alloc_id)(void *priv, u16 alloc_id, bool valid);
+	int (*set_omcc)(void *priv, u16 port_id, bool valid);
+	int (*send_upstream)(void *priv, const u8 body[XGSPON_PLOAM_BODY_LEN],
+			     bool registered);
+	int (*key_report)(void *priv, const struct xgspon_ploam_key_control *request,
+			  struct xgspon_ploam_key_report *report);
+	int (*reboot)(void *priv, const struct xgspon_ploam_reboot *request);
+	void (*state_changed)(void *priv, enum airoha_xgspon_state state, u16 onu_id);
+	void (*timer_changed)(void *priv, unsigned int timeout_ms);
+};
+
+struct airoha_xgspon_ploam *
+airoha_xgspon_ploam_alloc(const struct airoha_xgspon_ploam_ops *ops, void *priv,
+			  const u8 sn[XGSPON_PLOAM_SN_LEN],
+			 const u8 reg_id[XGSPON_PLOAM_REG_ID_LEN]);
+void airoha_xgspon_ploam_free(struct airoha_xgspon_ploam *ploam);
+int airoha_xgspon_ploam_start(struct airoha_xgspon_ploam *ploam);
+int airoha_xgspon_ploam_stop(struct airoha_xgspon_ploam *ploam);
+int airoha_xgspon_ploam_reset(struct airoha_xgspon_ploam *ploam);
+int airoha_xgspon_ploam_link(struct airoha_xgspon_ploam *ploam, bool ready);
+int airoha_xgspon_ploam_timeout(struct airoha_xgspon_ploam *ploam);
+int airoha_xgspon_ploam_receive(struct airoha_xgspon_ploam *ploam,
+				const void *body, size_t len, bool mic_valid);
+/* Called for a serial-number/registration grant, never on a polling timer. */
+int airoha_xgspon_ploam_serial_number(struct airoha_xgspon_ploam *ploam,
+				      u32 random_delay);
+int airoha_xgspon_ploam_registration(struct airoha_xgspon_ploam *ploam, u8 seq_no);
+int airoha_xgspon_ploam_registration_sent(struct airoha_xgspon_ploam *ploam);
+enum airoha_xgspon_state
+airoha_xgspon_ploam_state(const struct airoha_xgspon_ploam *ploam);
+u16 airoha_xgspon_ploam_onu_id(const struct airoha_xgspon_ploam *ploam);
+u32 airoha_xgspon_ploam_eqd(const struct airoha_xgspon_ploam *ploam);
+
+#endif /* _AIROHA_PLOAM_H */
