@@ -1065,6 +1065,7 @@ static int an7583_probe(struct airoha_xpon_phy *priv, struct platform_device *pd
 
 static const struct airoha_xpon_phy_soc_data airoha_an7583_xpon_phy_data = {
 	.name = "AN7583",
+	.has_xgspon_profiles = true,
 	.min_size = SZ_4K,
 	.ana_offset = AN7583_ANA_OFFSET,
 	.pma_offset = AN7583_PMA_OFFSET,

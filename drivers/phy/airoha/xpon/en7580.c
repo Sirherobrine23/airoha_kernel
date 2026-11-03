@@ -922,13 +922,47 @@ static int en7580_phy_set_mode(struct phy *phy, enum phy_mode mode, int submode)
 {
 	struct airoha_xpon_phy *priv = phy_get_drvdata(phy);
 
-	if (mode != PHY_MODE_ETHERNET || submode != AIROHA_XPON_PHY_SUBMODE_XGSPON)
+	if (mode != PHY_MODE_ETHERNET ||
+	    (submode != AIROHA_XPON_PHY_SUBMODE_XGSPON &&
+	     submode != AIROHA_XPON_PHY_SUBMODE_XEPON_10G_10G &&
+	     submode != AIROHA_XPON_PHY_SUBMODE_XEPON_10G_1G))
 		return -EOPNOTSUPP;
 	/* Live changes are owned by the MAC/core and require a stopped PHY. */
 	if (priv->powered)
 		return -EBUSY;
 	priv->submode = submode;
 	return 0;
+}
+
+/* Rate-dependent subset of the vendor en7580_pma.c TXPLL/TX/RX modes.
+ * Common 10G receiver setup is shared with the XGS sequence. The transmitter
+ * remains disabled until an IEEE 802.3av MPCP backend authorizes bursts.
+ */
+static void en7580_xepon_set_rate(struct airoha_xpon_phy *priv)
+{
+	bool asymmetric = priv->submode ==
+		AIROHA_XPON_PHY_SUBMODE_XEPON_10G_1G;
+
+	/* LCPLL 10.3125G: setting_mode_XPON_TXPLL(10) for symmetric,
+	 * setting_mode_XPON_TXPLL(1) for the 1.25G upstream profile.
+	 */
+	airoha_xpon_phy_write(priv, 0x3230,
+			       asymmetric ? 0x08000000 : 0x08400000);
+	airoha_xpon_phy_write(priv, 0x3248,
+			       asymmetric ? 0x20000000 : 0x21000000);
+	airoha_xpon_phy_write(priv, 0x324c,
+			       asymmetric ? 0x20000000 : 0x21000000);
+	airoha_xpon_phy_rmw(priv, 0x3234, BIT(8), BIT(8));
+	/* RX always runs at 10.3125G. 1G upstream uses a narrower TX bus. */
+	airoha_xpon_phy_rmw(priv, 0x3118, GENMASK(25, 24), 0);
+	airoha_xpon_phy_rmw(priv, 0x3714, GENMASK(1, 0), 2);
+	airoha_xpon_phy_rmw(priv, 0x3754, GENMASK(2, 0), 0);
+	airoha_xpon_phy_rmw(priv, 0x3150, GENMASK(12, 10),
+			      (asymmetric ? 1 : 5) << 10);
+	airoha_xpon_phy_rmw(priv, 0x3150, GENMASK(5, 4),
+			      (asymmetric ? 1 : 2) << 4);
+	airoha_xpon_phy_rmw(priv, 0x3874, GENMASK(1, 0),
+			      asymmetric ? 1 : 2);
 }
 
 static int en7580_phy_power_on(struct phy *phy)
@@ -951,10 +985,9 @@ static int en7580_phy_power_on(struct phy *phy)
 	ret = reset_control_assert(priv->reset);
 	if (ret)
 		goto err_power;
-	ret = regmap_update_bits(priv->scu, EN7523_SCU_WAN_CONF,
-				 EN7523_SCU_WAN_MODE_MASK, 0x0a);
-	if (ret)
-		goto err_power;
+	/* WAN_CONF is owned by the xPON MAC/net/xpon mode transaction.
+	 * Never overwrite the requested XEPON mode with XGS-PON here.
+	 */
 	ret = reset_control_deassert(priv->reset);
 	if (ret)
 		goto err_power;
@@ -964,6 +997,8 @@ static int en7580_phy_power_on(struct phy *phy)
 	if (ret)
 		goto err_power;
 	en7580_phy_run(priv, init);
+	if (priv->submode != AIROHA_XPON_PHY_SUBMODE_XGSPON)
+		en7580_xepon_set_rate(priv);
 	soc->xgspon_configured = true;
 	en7580_phy_mask_interrupts(priv);
 	airoha_xpon_phy_rmw(priv, EN7580_PHY_RX_CTRL, BIT(16), 0);
@@ -1012,7 +1047,9 @@ static int en7580_phy_power_on(struct phy *phy)
 	priv->ready_reported = false;
 	mod_delayed_work(system_wq, &priv->ready_work, msecs_to_jiffies(1000));
 	mutex_unlock(&soc->xgspon_lock);
-	dev_info(priv->dev, "EN7580 XGS-PON PHY powered; optical TX remains disabled\n");
+	dev_info(priv->dev, "EN7580 %s PHY powered; optical TX remains disabled\n",
+		 priv->submode == AIROHA_XPON_PHY_SUBMODE_XGSPON ?
+		 "XGS-PON" : "XEPON bring-up");
 	return 0;
 
 err_power:
@@ -1187,6 +1224,7 @@ static int en7580_xpon_phy_probe(struct airoha_xpon_phy *priv,
 
 static const struct airoha_xpon_phy_soc_data airoha_en7580_xpon_phy_data = {
 	.name = "EN7580",
+	.has_xgspon_profiles = true,
 	.pma_offset = EN7580_XPON_PHY_PMA_OFFSET,
 	.min_size = EN7580_XPON_PHY_PCS_MIN_SIZE,
 	.default_submode = AIROHA_XPON_PHY_SUBMODE_XGSPON,

@@ -59,6 +59,13 @@ struct reset_control;
 #define XPON_INT_STATUS				0x05f8
 #define EN7528_XPON_REG_580			0x0580
 
+#define XPON_XGS_PREAMBLE_UPPER			0x0a18
+#define XPON_XGS_PREAMBLE_LOWER			0x0a1c
+#define XPON_XGS_DELIMITER_UPPER			0x0a38
+#define XPON_XGS_DELIMITER_LOWER			0x0a3c
+#define XPON_XGS_TX_FEC_ENABLE			0x0a58
+#define XPON_XGS_PSBU_INFO			0x0a5c
+
 #define XPON_RX_CTRL0				0x3028
 #define XPON_PMA_CTRL0				0x4100
 #define XPON_PMA_CTRL8				0x4110
@@ -154,6 +161,7 @@ struct airoha_xpon_phy_soc_data {
 	bool has_integrated_pma;
 	bool manages_fw_ready;
 	bool has_gpon_bip;
+	bool has_xgspon_profiles;
 	enum airoha_xpon_phy_submode default_submode;
 	const struct phy_ops *ops;
 	int (*pre_init)(struct airoha_xpon_phy *priv);

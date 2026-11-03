@@ -1202,6 +1202,7 @@ static int an7581_probe(struct airoha_xpon_phy *priv, struct platform_device *pd
 
 static const struct airoha_xpon_phy_soc_data airoha_an7581_xpon_phy_data = {
 	.name = "AN7581",
+	.has_xgspon_profiles = true,
 	.min_size = SZ_4K,
 	.ana_offset = AN7581_ANA_OFFSET,
 	.pma_offset = AN7581_PMA_OFFSET,
