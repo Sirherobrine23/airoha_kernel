@@ -184,6 +184,7 @@ struct optical_frontend_desc {
 /**
  * struct optical_frontend_ops - provider operations
  * @set_mode: configure protocol/rates; optional
+ * @get_protocols: get current protocols is supported; optional
  * @tx_enable: enable or disable transmitter state internal to the provider; optional
  * @tx_rearm: rearm a transmitter safety/fault latch; optional
  * @tx_timing_calibrate: calibrate provider-local burst timing; optional
@@ -196,6 +197,7 @@ struct optical_frontend_desc {
 struct optical_frontend_ops {
 	int (*set_mode)(struct optical_frontend *frontend,
 			const struct optical_frontend_mode *mode);
+	int (*get_protocols)(struct optical_frontend *frontend, u32 *modes);
 	int (*tx_enable)(struct optical_frontend *frontend, bool enable);
 	int (*tx_rearm)(struct optical_frontend *frontend);
 	int (*tx_timing_calibrate)(struct optical_frontend *frontend);
@@ -229,6 +231,8 @@ int optical_frontend_set_mode(struct optical_frontend *frontend,
 			      const struct optical_frontend_mode *mode);
 int optical_frontend_get_mode(struct optical_frontend *frontend,
 			      struct optical_frontend_mode *mode);
+int optical_frontend_get_modes(struct optical_frontend *frontend,
+			       u32 *mode);
 int optical_frontend_tx_enable(struct optical_frontend *frontend, bool enable);
 int optical_frontend_tx_rearm(struct optical_frontend *frontend);
 int optical_frontend_tx_timing_calibrate(struct optical_frontend *frontend);

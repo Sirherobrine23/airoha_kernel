@@ -14,6 +14,7 @@ struct led_classdev;
 struct net_device;
 struct notifier_block;
 struct xpon_device;
+struct optical_frontend;
 
 #define XPON_MODE_CAP(_mode)	((unsigned long)(_mode))
 
@@ -25,6 +26,15 @@ static inline bool xpon_mode_valid(u32 mode)
 
 #define XPON_STATE_F_SIGNAL	BIT(0)
 #define XPON_STATE_F_LOS	BIT(1)
+
+/* XEPON line profiles are protocol settings, not Device Tree properties.
+ * Values deliberately do not encode the Airoha SCU WAN_CONF register.
+ */
+enum xpon_xepon_profile {
+	XPON_XEPON_10G_10G = 0,
+	XPON_XEPON_10G_1G,
+	XPON_XEPON_1G_1G,
+};
 
 struct xpon_state {
 	enum xpon_mode mode;
@@ -93,8 +103,60 @@ struct xpon_report_config {
 	u8 queue;
 };
 
+/**
+ * struct xpon_device_limits - limits for a single PON mode
+ * @max_links: maximum number of LLIDs (zero for protocols without LLIDs)
+ * @max_endpoints: maximum number of independently exposed endpoint netdevs
+ * @max_queues: maximum number of hardware queues per endpoint
+ * @report_sets: number of EPON MPCP REPORT sets
+ *
+ * These are effective per-mode limits, not the maximum across all modes.
+ * get_limits() provides the limits before registration; the core caches them
+ * and preallocates enough LLID storage for every advertised mode.
+ * The callback must be side-effect free. An error for any advertised mode
+ * prevents registration, so do not advertise an unimplemented mode.
+ */
+struct xpon_device_limits {
+	u16 max_links;
+	u16 max_endpoints;
+	u8 max_queues;
+	u8 report_sets;
+};
+
+/**
+ * struct xpon_device_ops - xPON hardware and protocol lifecycle
+ *
+ * @get_limits: report hardware capacities for each advertised mode;
+ *              called before hardware preparation, must be side-effect free,
+ *              and may not access a live MAC/PHY.
+ * @hw_prepare: initialize the initially selected mode during registration
+ * @hw_pre_shutdown: stop protocol services, mask/synchronize MAC IRQs, disable
+ *                   the optical TX and quiesce the old PHY/MAC/datapath
+ * @set_mode: select WAN mux/optical path and fully start the requested mode;
+ *            leave TX disabled until the new protocol is ready
+ * @hw_fallback: recover a safe mode after either transition callback fails;
+ *               report the mode actually recovered in @recovered
+ * @get_mode: read the hardware-selected mode
+ *
+ * Mode changes run under the core mode_lock with the lower netdev stopped and
+ * without logical endpoints. Callers with live netdev/OAM consumers must hold
+ * RTNL (both sysfs and Generic Netlink entrypoints do so) to serialize their
+ * lifetimes. A provider must keep MAC/PHY/OMCI/OAM teardown
+ * and re-registration inside its callbacks. Callbacks must not recursively
+ * request another mode change. Returning failure from hw_fallback leaves the
+ * device faulted; it cannot be switched again without reinitialization.
+ */
 struct xpon_device_ops {
+	int (*get_limits)(struct xpon_device *xpon, enum xpon_mode mode,
+			  struct xpon_device_limits *limits);
+	int (*hw_prepare)(struct xpon_device *xpon, enum xpon_mode mode);
+	int (*hw_pre_shutdown)(struct xpon_device *xpon,
+			       enum xpon_mode previous, enum xpon_mode next);
+	int (*hw_fallback)(struct xpon_device *xpon,
+			   enum xpon_mode previous, enum xpon_mode attempted,
+			   enum xpon_mode *recovered);
 	int (*set_mode)(struct xpon_device *xpon, enum xpon_mode mode);
+	int (*get_mode)(struct xpon_device *xpon, enum xpon_mode *mode);
 	/* NETDEV_TX_BUSY leaves the skb with the caller. */
 	netdev_tx_t (*xmit)(struct xpon_device *xpon, struct sk_buff *skb,
 			    const struct xpon_endpoint_config *config);
@@ -108,24 +170,30 @@ struct xpon_device_ops {
 			  const struct xpon_report_config *config);
 };
 
-struct xpon_device_desc {
-	struct net_device *netdev;
-	struct device *optical;
-	const struct xpon_device_ops *ops;
-	struct led_classdev *pon_led;
-	struct led_classdev *los_led;
-	struct led_classdev *fiber_led;
+/* Each physical BOB/LDDLA may support a different set of PON modes. */
+struct xpon_optical_path {
+	struct device *dev;
+	struct optical_frontend *frontend;
 	unsigned long modes;
-	u16 max_links;
-	u16 max_endpoints;
-	u8 max_queues;
-	u8 report_sets;
-	enum xpon_mode mode;
-	void *priv;
+	/* Exactly one frontend is active for a shared xPON MAC. */
+	bool active;
 };
 
-struct xpon_device *xpon_device_register(struct device *parent,
-					 const struct xpon_device_desc *desc);
+/*
+ * Configuration is stored directly in the allocated xpon_device. The provider
+ * may keep its hardware-specific settings in xpon_device_priv().
+ * Setup may only be changed before registration. Limits are supplied by
+ * ops->get_limits() and are committed automatically on mode transitions.
+ */
+struct xpon_device *xpon_device_alloc(struct device *parent, int priv_size);
+void xpon_device_free(struct xpon_device *xpon);
+int xpon_device_setup(struct xpon_device *xpon, struct net_device *netdev,
+		      const struct xpon_device_ops *ops, void *priv,
+		      enum xpon_mode mode, unsigned long modes);
+int xpon_device_set_leds(struct xpon_device *xpon,
+			 struct led_classdev *pon, struct led_classdev *los,
+			 struct led_classdev *fiber);
+int xpon_device_register_allocated(struct xpon_device *xpon);
 void xpon_device_unregister(struct xpon_device *xpon);
 
 struct device *xpon_device_dev(struct xpon_device *xpon);
@@ -133,6 +201,20 @@ struct net_device *xpon_device_netdev(struct xpon_device *xpon);
 void *xpon_device_priv(struct xpon_device *xpon);
 unsigned long xpon_device_modes(struct xpon_device *xpon);
 enum xpon_mode xpon_device_mode(struct xpon_device *xpon);
+/* Set before entering XEPON. A live XEPON PHY must be switched out first. */
+enum xpon_xepon_profile xpon_device_xepon_profile(struct xpon_device *xpon);
+int xpon_device_set_xepon_profile(struct xpon_device *xpon,
+				  enum xpon_xepon_profile profile);
+int xpon_device_get_limits(struct xpon_device *xpon,
+			   struct xpon_device_limits *limits);
+int xpon_device_get_hw_mode(struct xpon_device *xpon, enum xpon_mode *mode);
+/* Borrowed active optical frontend, owned by the xPON core. */
+struct optical_frontend *xpon_device_optical_frontend(struct xpon_device *xpon);
+/* Borrowed candidate frontend; intended for use inside mode callbacks. */
+struct optical_frontend *xpon_device_optical_frontend_for_mode(
+				struct xpon_device *xpon, enum xpon_mode mode);
+bool xpon_device_mode_faulted(struct xpon_device *xpon);
+struct device *xpon_device_optical(struct xpon_device *xpon);
 
 int xpon_device_set_mode(struct xpon_device *xpon, enum xpon_mode mode);
 void xpon_device_report_registration(struct xpon_device *xpon,

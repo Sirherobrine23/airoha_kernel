@@ -30,10 +30,12 @@ static struct genl_family xpon_genl_family;
 static int xpon_genl_put_state(struct sk_buff *msg, struct xpon_device *xpon)
 {
 	struct xpon_state state;
+	struct xpon_device_limits limits;
 	u32 caps = 0;
 
 	spin_lock_bh(&xpon->state_lock);
 	state = xpon->state;
+	limits = xpon->limits;
 	spin_unlock_bh(&xpon->state_lock);
 	if (xpon->ops) {
 		if (xpon->ops->xmit)
@@ -55,10 +57,10 @@ static int xpon_genl_put_state(struct sk_buff *msg, struct xpon_device *xpon)
 	    ((state.valid & XPON_STATE_F_LOS) &&
 	     nla_put_u8(msg, XPON_ATTR_LOS, state.los)) ||
 	    nla_put_u32(msg, XPON_ATTR_CAPABILITIES, caps) ||
-	    nla_put_u16(msg, XPON_ATTR_MAX_LINKS, xpon->max_links) ||
-	    nla_put_u16(msg, XPON_ATTR_MAX_ENDPOINTS, xpon->max_endpoints) ||
-	    nla_put_u8(msg, XPON_ATTR_MAX_QUEUES, xpon->max_queues) ||
-	    nla_put_u8(msg, XPON_ATTR_MAX_REPORT_SETS, xpon->report_sets) ||
+	    nla_put_u16(msg, XPON_ATTR_MAX_LINKS, limits.max_links) ||
+	    nla_put_u16(msg, XPON_ATTR_MAX_ENDPOINTS, limits.max_endpoints) ||
+	    nla_put_u8(msg, XPON_ATTR_MAX_QUEUES, limits.max_queues) ||
+	    nla_put_u8(msg, XPON_ATTR_MAX_REPORT_SETS, limits.report_sets) ||
 	    nla_put_u8(msg, XPON_ATTR_ONU_TYPE, xpon->onu_type) ||
 	    nla_put_u8(msg, XPON_ATTR_UNI_COUNT, xpon->uni_count))
 		return -EMSGSIZE;
@@ -92,7 +94,7 @@ static int xpon_genl_put_object(struct sk_buff *msg, struct xpon_device *xpon,
 		put_device(&dev->dev);
 		return ret ? -EMSGSIZE : 0;
 	case XPON_CMD_LINK_GET:
-		if (!id || id > xpon->max_links)
+		if (!id || id > xpon->limits.max_links)
 			return -ENOENT;
 		spin_lock_bh(&xpon->state_lock);
 		link = xpon->links[id - 1];
@@ -160,7 +162,7 @@ static int xpon_genl_doit(struct sk_buff *skb, struct genl_info *info)
 			      -EINVAL;
 		goto out;
 	case XPON_CMD_LINK_SET:
-		if (!id || id > xpon->max_links || !a[XPON_ATTR_ENABLED]) {
+		if (!id || id > xpon->limits.max_links || !a[XPON_ATTR_ENABLED]) {
 			ret = -EINVAL;
 			goto out;
 		}
@@ -216,15 +218,15 @@ static int xpon_genl_doit(struct sk_buff *skb, struct genl_info *info)
 		goto out;
 	case XPON_CMD_REPORT_GET:
 	case XPON_CMD_REPORT_SET:
-		if (!id || id > xpon->max_links || !a[XPON_ATTR_QUEUE] ||
+		if (!id || id > xpon->limits.max_links || !a[XPON_ATTR_QUEUE] ||
 		    !a[XPON_ATTR_REPORT_SET]) {
 			ret = -EINVAL;
 			goto out;
 		}
 		report.queue = nla_get_u8(a[XPON_ATTR_QUEUE]);
 		report.set = nla_get_u8(a[XPON_ATTR_REPORT_SET]);
-		if (report.queue >= xpon->max_queues ||
-		    report.set >= xpon->report_sets) {
+		if (report.queue >= xpon->limits.max_queues ||
+		    report.set >= xpon->limits.report_sets) {
 			ret = -EINVAL;
 			goto out;
 		}
@@ -237,7 +239,7 @@ static int xpon_genl_doit(struct sk_buff *skb, struct genl_info *info)
 			report.sets = nla_get_u8(a[XPON_ATTR_REPORT_SETS]);
 			report.threshold_tq =
 				nla_get_u32(a[XPON_ATTR_THRESHOLD_TQ]);
-			if (!report.sets || report.sets > xpon->report_sets ||
+			if (!report.sets || report.sets > xpon->limits.report_sets ||
 			    report.set >= report.sets) {
 				ret = -EINVAL;
 				goto out;
@@ -313,7 +315,7 @@ static int xpon_genl_dump(struct sk_buff *msg, struct netlink_callback *cb)
 		ret = -ENODEV;
 		goto unlock;
 	}
-	last = cmd == XPON_CMD_UNI_GET ? xpon->uni_count : xpon->max_links;
+	last = cmd == XPON_CMD_UNI_GET ? xpon->uni_count : xpon->limits.max_links;
 	for (;;) {
 		if (cmd == XPON_CMD_ENDPOINT_GET) {
 			if (!xa_find(&xpon->endpoints, &id, U32_MAX,

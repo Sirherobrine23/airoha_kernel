@@ -260,12 +260,7 @@ static void omci_access_pon_registration(struct kunit *test)
 	};
 	static const struct xpon_device_ops xpon_ops = {};
 	struct omci_access_test_ctx *ctx = test->priv;
-	struct xpon_device_desc desc = {
-		.netdev = ctx->netdev,
-		.ops = &xpon_ops,
-		.modes = XPON_MODE_XGSPON,
-		.mode = XPON_MODE_XGSPON,
-	};
+
 	struct omci_line_status status;
 	struct omci_device *odev;
 	struct xpon_device *xpon;
@@ -274,8 +269,15 @@ static void omci_access_pon_registration(struct kunit *test)
 	/* Replace the copper registration with a real OMCI core registration. */
 	omci_line_unregister(ctx->line);
 	ctx->line = NULL;
-	xpon = xpon_device_register(ctx->parent, &desc);
+	xpon = xpon_device_alloc(ctx->parent, 0);
 	KUNIT_ASSERT_FALSE(test, IS_ERR(xpon));
+	if (xpon_device_setup(xpon, ctx->netdev, &xpon_ops, NULL,
+			      XPON_MODE_XGSPON, XPON_MODE_XGSPON) ||
+	    xpon_device_register_allocated(xpon)) {
+		xpon_device_free(xpon);
+		KUNIT_FAIL(test, "failed to register test xPON device");
+		return;
+	}
 	odev = omci_device_register(xpon, 0, &transport_ops, NULL);
 	KUNIT_EXPECT_FALSE(test, IS_ERR(odev));
 	if (IS_ERR(odev))

@@ -15,9 +15,21 @@ struct xpon_oam *xpon_oam_register(struct xpon_device *xpon,
 				   void *priv)
 {
 	struct xpon_oam *oam;
+	u16 max_links;
 	int ret;
 
-	if (!xpon || !ops || !ops->xmit || !xpon->max_links)
+	if (!xpon || !ops || !ops->xmit)
+		return ERR_PTR(-EINVAL);
+
+	/* In a GPON -> EPON transition the published limits still describe
+	 * GPON (zero LLIDs). Only the provider running under mode_lock may
+	 * attach its future OAM instance before the new mode is committed.
+	 */
+	max_links = xpon->limits.max_links;
+	if (READ_ONCE(xpon->mode_changing))
+		max_links = xpon->mode_limits[
+			__ffs(xpon->transition_target)].max_links;
+	if (!max_links)
 		return ERR_PTR(-EINVAL);
 	if (xpon->oam)
 		return ERR_PTR(-EBUSY);
@@ -78,7 +90,7 @@ void xpon_oam_receive(struct xpon_oam *oam, struct sk_buff *skb, u8 index)
 	if (!oam || !skb)
 		goto free;
 	xpon = oam->xpon;
-	if (index >= xpon->max_links || skb->len > XPON_OAM_FRAME_MAX ||
+	if (index >= xpon->limits.max_links || skb->len > XPON_OAM_FRAME_MAX ||
 	    !pskb_may_pull(skb, ETH_HLEN + 4) ||
 	    ((struct ethhdr *)skb->data)->h_proto != htons(ETH_P_SLOW) ||
 	    skb->data[ETH_HLEN] != XPON_OAM_SUBTYPE)

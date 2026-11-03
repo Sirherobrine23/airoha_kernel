@@ -31,22 +31,27 @@ static const struct net_device_ops xpon_test_netdev_ops = {
 	.ndo_start_xmit = xpon_test_parent_xmit,
 };
 
+static int xpon_test_get_limits(struct xpon_device *xpon,
+				enum xpon_mode mode,
+				struct xpon_device_limits *limits)
+{
+	if (mode == XPON_MODE_EPON) {
+		limits->max_links = 2;
+		limits->max_endpoints = 2;
+		limits->max_queues = 2;
+	}
+	return 0;
+}
+
 static const struct xpon_device_ops xpon_test_ops = {
+	.get_limits = xpon_test_get_limits,
 	.xmit = xpon_test_xmit,
 };
 
 static int xpon_test_init(struct kunit *test)
 {
 	struct xpon_test_context *ctx;
-	struct xpon_device_desc desc = {
-		.mode = XPON_MODE_EPON,
-		.modes = XPON_MODE_CAP(XPON_MODE_EPON) |
-			 XPON_MODE_CAP(XPON_MODE_GPON),
-		.max_links = 2,
-		.max_endpoints = 2,
-		.max_queues = 2,
-		.ops = &xpon_test_ops,
-	};
+
 	int ret;
 
 	ctx = kunit_kzalloc(test, sizeof(*ctx), GFP_KERNEL);
@@ -67,11 +72,20 @@ static int xpon_test_init(struct kunit *test)
 	ret = register_netdev(ctx->netdev);
 	if (ret)
 		goto free;
-	desc.netdev = ctx->netdev;
-	ctx->xpon = xpon_device_register(ctx->parent, &desc);
-	if (!IS_ERR(ctx->xpon))
+	ctx->xpon = xpon_device_alloc(ctx->parent, 0);
+	if (IS_ERR(ctx->xpon)) {
+		ret = PTR_ERR(ctx->xpon);
+		goto unregister;
+	}
+	ret = xpon_device_setup(ctx->xpon, ctx->netdev, &xpon_test_ops,
+				NULL, XPON_MODE_EPON,
+				XPON_MODE_EPON | XPON_MODE_GPON);
+	if (!ret)
+		ret = xpon_device_register_allocated(ctx->xpon);
+	if (!ret)
 		return 0;
-	ret = PTR_ERR(ctx->xpon);
+	xpon_device_free(ctx->xpon);
+unregister:
 	unregister_netdev(ctx->netdev);
 free:
 	free_netdev(ctx->netdev);

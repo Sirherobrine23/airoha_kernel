@@ -11,6 +11,11 @@ struct xpon_mode_test_ctx {
 	struct xpon_device *xpon;
 	int calls;
 	int error;
+	int stop_error;
+	int fallback_error;
+	int stop_calls;
+	int fallback_calls;
+	int limits_calls;
 	enum xpon_mode requested;
 };
 
@@ -23,13 +28,64 @@ static int xpon_test_set_mode(struct xpon_device *xpon, enum xpon_mode mode)
 	return ctx->error;
 }
 
+static int xpon_test_hw_pre_shutdown(struct xpon_device *xpon,
+				      enum xpon_mode old, enum xpon_mode next)
+{
+	struct xpon_mode_test_ctx *ctx = xpon_device_priv(xpon);
+
+	ctx->stop_calls++;
+	return ctx->stop_error;
+}
+
+static int xpon_test_hw_fallback(struct xpon_device *xpon,
+				 enum xpon_mode old, enum xpon_mode attempted,
+				 enum xpon_mode *recovered)
+{
+	struct xpon_mode_test_ctx *ctx = xpon_device_priv(xpon);
+
+	ctx->fallback_calls++;
+	*recovered = old;
+	return ctx->fallback_error;
+}
+
+static int xpon_test_get_limits(struct xpon_device *xpon,
+				 enum xpon_mode mode,
+				 struct xpon_device_limits *limits)
+{
+	struct xpon_mode_test_ctx *ctx = xpon_device_priv(xpon);
+
+	ctx->limits_calls++;
+	switch (mode) {
+	case XPON_MODE_GPON:
+		limits->max_endpoints = 2;
+		limits->max_queues = 8;
+		return 0;
+	case XPON_MODE_XGSPON:
+		return 0;
+	case XPON_MODE_50GPON:
+		limits->max_endpoints = 4;
+		limits->max_queues = 8;
+		return 0;
+	case XPON_MODE_50GEPON:
+		limits->max_links = 4;
+		limits->max_endpoints = 4;
+		limits->max_queues = 4;
+		limits->report_sets = 3;
+		return 0;
+	default:
+		return -EOPNOTSUPP;
+	}
+}
+
 static const struct xpon_device_ops xpon_test_ops = {
+	.get_limits = xpon_test_get_limits,
+	.hw_pre_shutdown = xpon_test_hw_pre_shutdown,
+	.hw_fallback = xpon_test_hw_fallback,
 	.set_mode = xpon_test_set_mode,
 };
 
 static int xpon_mode_test_init(struct kunit *test)
 {
-	struct xpon_device_desc desc = {};
 	struct xpon_mode_test_ctx *ctx;
 	int ret;
 
@@ -46,20 +102,26 @@ static int xpon_mode_test_init(struct kunit *test)
 		goto unregister_parent;
 	}
 	strscpy(ctx->netdev->name, "xpon-test");
-	desc.netdev = ctx->netdev;
-	desc.modes = XPON_MODE_GPON | XPON_MODE_XGSPON |
-		     XPON_MODE_50GPON | XPON_MODE_50GEPON;
-	desc.mode = XPON_MODE_GPON;
-	desc.ops = &xpon_test_ops;
-	desc.priv = ctx;
-	ctx->xpon = xpon_device_register(ctx->parent, &desc);
+	ctx->xpon = xpon_device_alloc(ctx->parent, 0);
 	if (IS_ERR(ctx->xpon)) {
 		ret = PTR_ERR(ctx->xpon);
-		free_netdev(ctx->netdev);
-		goto unregister_parent;
+		goto free_netdev;
 	}
+	ret = xpon_device_setup(ctx->xpon, ctx->netdev, &xpon_test_ops,
+				ctx, XPON_MODE_GPON,
+				XPON_MODE_GPON | XPON_MODE_XGSPON |
+				XPON_MODE_50GPON | XPON_MODE_50GEPON);
+	if (ret)
+		goto free_xpon;
+	ret = xpon_device_register_allocated(ctx->xpon);
+	if (ret)
+		goto free_xpon;
 	return 0;
 
+free_xpon:
+	xpon_device_free(ctx->xpon);
+free_netdev:
+	free_netdev(ctx->netdev);
 unregister_parent:
 	root_device_unregister(ctx->parent);
 	return ret;
@@ -90,6 +152,42 @@ static void xpon_mode_high_bits(struct kunit *test)
 	KUNIT_EXPECT_EQ(test, ctx->calls, (int)ARRAY_SIZE(modes));
 	KUNIT_EXPECT_TRUE(test, !!(xpon_device_modes(ctx->xpon) &
 				  XPON_MODE_50GEPON));
+}
+
+/* The core preallocates the largest LLID table at registration, but only
+ * exposes the effective limits for the current mode.
+ */
+static void xpon_mode_limits_switch(struct kunit *test)
+{
+	struct xpon_mode_test_ctx *ctx = test->priv;
+	struct xpon_device_limits limits;
+	int calls = ctx->limits_calls;
+
+	KUNIT_ASSERT_EQ(test, xpon_device_get_limits(ctx->xpon, &limits), 0);
+	KUNIT_EXPECT_EQ(test, limits.max_links, (u16)0);
+	KUNIT_EXPECT_EQ(test, limits.max_endpoints, (u16)2);
+	KUNIT_ASSERT_EQ(test,
+			xpon_device_set_mode(ctx->xpon, XPON_MODE_50GEPON), 0);
+	KUNIT_ASSERT_EQ(test, xpon_device_get_limits(ctx->xpon, &limits), 0);
+	KUNIT_EXPECT_EQ(test, limits.max_links, (u16)4);
+	KUNIT_EXPECT_EQ(test, limits.max_endpoints, (u16)4);
+	KUNIT_EXPECT_EQ(test, limits.max_queues, (u8)4);
+	KUNIT_EXPECT_EQ(test, limits.report_sets, (u8)3);
+	KUNIT_EXPECT_EQ(test, ctx->limits_calls, calls);
+}
+
+static void xpon_mode_limits_fallback(struct kunit *test)
+{
+	struct xpon_mode_test_ctx *ctx = test->priv;
+	struct xpon_device_limits limits;
+
+	ctx->error = -EIO;
+	KUNIT_EXPECT_EQ(test,
+		xpon_device_set_mode(ctx->xpon, XPON_MODE_50GEPON), -EIO);
+	KUNIT_ASSERT_EQ(test, xpon_device_get_limits(ctx->xpon, &limits), 0);
+	KUNIT_EXPECT_EQ(test, limits.max_links, (u16)0);
+	KUNIT_EXPECT_EQ(test, limits.max_endpoints, (u16)2);
+	KUNIT_EXPECT_EQ(test, xpon_device_mode(ctx->xpon), XPON_MODE_GPON);
 }
 
 static void xpon_mode_invalid_requests(struct kunit *test)
@@ -125,9 +223,37 @@ static void xpon_mode_backend_failure(struct kunit *test)
 	KUNIT_EXPECT_EQ(test, xpon_device_set_mode(ctx->xpon, XPON_MODE_XGSPON),
 			-EIO);
 	KUNIT_EXPECT_EQ(test, xpon_device_mode(ctx->xpon), XPON_MODE_GPON);
+	KUNIT_EXPECT_EQ(test, ctx->fallback_calls, 1);
+	KUNIT_EXPECT_FALSE(test, xpon_device_mode_faulted(ctx->xpon));
 	ctx->error = 0;
 	KUNIT_EXPECT_EQ(test, xpon_device_set_mode(ctx->xpon, XPON_MODE_XGSPON), 0);
 	KUNIT_EXPECT_EQ(test, xpon_device_mode(ctx->xpon), XPON_MODE_XGSPON);
+}
+
+static void xpon_mode_fallback_fault(struct kunit *test)
+{
+	struct xpon_mode_test_ctx *ctx = test->priv;
+
+	ctx->error = -EIO;
+	ctx->fallback_error = -EIO;
+	KUNIT_EXPECT_EQ(test, xpon_device_set_mode(ctx->xpon, XPON_MODE_XGSPON),
+			-EIO);
+	KUNIT_EXPECT_TRUE(test, xpon_device_mode_faulted(ctx->xpon));
+	ctx->error = 0;
+	KUNIT_EXPECT_EQ(test, xpon_device_set_mode(ctx->xpon, XPON_MODE_XGSPON),
+			-EBUSY);
+}
+
+static void xpon_mode_stop_failure(struct kunit *test)
+{
+	struct xpon_mode_test_ctx *ctx = test->priv;
+
+	ctx->stop_error = -ETIMEDOUT;
+	KUNIT_EXPECT_EQ(test, xpon_device_set_mode(ctx->xpon, XPON_MODE_XGSPON),
+			-ETIMEDOUT);
+	KUNIT_EXPECT_EQ(test, ctx->calls, 0);
+	KUNIT_EXPECT_EQ(test, ctx->fallback_calls, 1);
+	KUNIT_EXPECT_EQ(test, xpon_device_mode(ctx->xpon), XPON_MODE_GPON);
 }
 
 static void xpon_mode_running(struct kunit *test)
@@ -144,27 +270,25 @@ static void xpon_mode_running(struct kunit *test)
 static void xpon_mode_invalid_registration(struct kunit *test)
 {
 	struct xpon_mode_test_ctx *ctx = test->priv;
-	struct xpon_device_desc desc = {
-		.netdev = ctx->netdev,
-		.modes = XPON_MODE_GPON | XPON_MODE_XGSPON,
-	};
 	struct xpon_device *xpon;
 	const u32 modes[] = { 0, 1, XPON_MODE_GPON | XPON_MODE_XGSPON };
-	int i;
+	int i, ret;
 
 	for (i = 0; i < ARRAY_SIZE(modes); i++) {
-		desc.mode = modes[i];
-		xpon = xpon_device_register(ctx->parent, &desc);
-		if (!IS_ERR(xpon))
-			xpon_device_unregister(xpon);
-		KUNIT_EXPECT_EQ(test, PTR_ERR_OR_ZERO(xpon), -EINVAL);
+		xpon = xpon_device_alloc(ctx->parent, 0);
+		KUNIT_ASSERT_FALSE(test, IS_ERR(xpon));
+		ret = xpon_device_setup(xpon, ctx->netdev, &xpon_test_ops,
+				ctx, modes[i], XPON_MODE_GPON | XPON_MODE_XGSPON);
+		KUNIT_EXPECT_EQ(test, ret, -EINVAL);
+		xpon_device_free(xpon);
 	}
-	desc.mode = XPON_MODE_GPON;
-	desc.modes |= BIT(31);
-	xpon = xpon_device_register(ctx->parent, &desc);
-	if (!IS_ERR(xpon))
-		xpon_device_unregister(xpon);
-	KUNIT_EXPECT_EQ(test, PTR_ERR_OR_ZERO(xpon), -EINVAL);
+	xpon = xpon_device_alloc(ctx->parent, 0);
+	KUNIT_ASSERT_FALSE(test, IS_ERR(xpon));
+	ret = xpon_device_setup(xpon, ctx->netdev, &xpon_test_ops,
+				ctx, XPON_MODE_GPON,
+				XPON_MODE_GPON | XPON_MODE_XGSPON | BIT(31));
+	KUNIT_EXPECT_EQ(test, ret, -EINVAL);
+	xpon_device_free(xpon);
 }
 
 static struct device_attribute *xpon_test_attr(struct device *dev,
@@ -204,14 +328,38 @@ static void xpon_mode_sysfs(struct kunit *test)
 	KUNIT_EXPECT_STREQ(test, buf, "50gepon\n");
 }
 
+static void xpon_mode_alloc_private(struct kunit *test)
+{
+	struct xpon_mode_test_ctx *ctx = test->priv;
+	struct xpon_device *xpon;
+	u64 *data;
+
+	xpon = xpon_device_alloc(ctx->parent, sizeof(*data));
+	KUNIT_ASSERT_FALSE(test, IS_ERR(xpon));
+	data = xpon_device_priv(xpon);
+	KUNIT_ASSERT_NOT_NULL(test, data);
+	KUNIT_EXPECT_EQ(test, *data, 0ULL);
+	*data = 0x123456789abcdefULL;
+	KUNIT_EXPECT_EQ(test, *(u64 *)xpon_device_priv(xpon), *data);
+	xpon_device_free(xpon);
+
+	xpon = xpon_device_alloc(ctx->parent, -1);
+	KUNIT_EXPECT_EQ(test, PTR_ERR(xpon), -EINVAL);
+}
+
 static struct kunit_case xpon_mode_cases[] = {
 	KUNIT_CASE(xpon_mode_high_bits),
+	KUNIT_CASE(xpon_mode_limits_switch),
+	KUNIT_CASE(xpon_mode_limits_fallback),
 	KUNIT_CASE(xpon_mode_invalid_requests),
 	KUNIT_CASE(xpon_mode_unsupported),
 	KUNIT_CASE(xpon_mode_backend_failure),
+	KUNIT_CASE(xpon_mode_fallback_fault),
+	KUNIT_CASE(xpon_mode_stop_failure),
 	KUNIT_CASE(xpon_mode_running),
 	KUNIT_CASE(xpon_mode_invalid_registration),
 	KUNIT_CASE(xpon_mode_sysfs),
+	KUNIT_CASE(xpon_mode_alloc_private),
 	{}
 };
 

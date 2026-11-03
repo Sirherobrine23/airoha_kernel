@@ -31,16 +31,24 @@ enum xpon_link_state {
 
 /* Each mode is a single bit; capability masks combine these values. */
 enum xpon_mode {
-	XPON_MODE_GPON = (1U << 1),	/* ITU-T G.984 (2.5Gbps RX / 1.2Gbps TX) */
-	XPON_MODE_EPON = (1U << 2),	/* IEEE 802.3ah (1Gbps) */
-	XPON_MODE_XEPON = (1U << 3),	/* IEEE 802.3av (10G) */
-	XPON_MODE_XGPON = (1U << 4),	/* ITU-T G.987 (10Gbps RX / 2.5Gbps TX) */
-	XPON_MODE_XGSPON = (1U << 5),	/* ITU-T G.9807.1 (10Gbps) */
-	XPON_MODE_NGPON2 = (1U << 6),	/* ITU-T G.989 (10Gbps per channel) */
-	XPON_MODE_25GSPON = (1U << 7),	/* 25GS-PON MSA specification (25Gbps) */
-	XPON_MODE_50GPON = (1U << 8),	/* ITU-T G.9804 (50Gbps) */
-	XPON_MODE_25GEPON = (1U << 9),	/* IEEE 802.3ca (25Gbps) */
-	XPON_MODE_50GEPON = (1U << 10),	/* IEEE 802.3ca (50Gbps) */
+	XPON_MODE_GPON =		(1U << 1),	/* ITU-T G.984 (2.5Gbps RX / 1.2Gbps TX) */
+	XPON_MODE_EPON =		(1U << 2),	/* IEEE 802.3ah (1Gbps) */
+	XPON_MODE_XEPON =		(1U << 3),	/* IEEE 802.3av (10Gbps) */
+	XPON_MODE_XGPON =		(1U << 4),	/* ITU-T G.987 (10Gbps RX / 2.5Gbps TX) */
+	XPON_MODE_XGSPON =		(1U << 5),	/* ITU-T G.9807.1 (10Gbps) */
+	XPON_MODE_NGPON2 =		(1U << 6),	/* ITU-T G.989 (10Gbps per channel) */
+	XPON_MODE_25GSPON =		(1U << 7),	/* 25GS-PON MSA specification (25Gbps) */
+	XPON_MODE_50GPON =		(1U << 8),	/* ITU-T G.9804 (50Gbps) */
+	XPON_MODE_25GEPON =		(1U << 9),	/* IEEE 802.3ca (25Gbps) */
+	XPON_MODE_50GEPON =		(1U << 10),	/* IEEE 802.3ca (50Gbps) */
+	XPON_MODE_XEPON_10G_1G =	(1U << 11),	/* IEEE 802.3av (10Gbps RX / 1Gbps TX) */
+	XPON_MODE_XEPON_10G_10G =	(1U << 12),	/* IEEE 802.3av (10Gbps symmetric) */
+	XPON_MODE_XEPON_1G_1G =		(1U << 13),	/* IEEE 802.3av (1Gbps symmetric) */
+	XPON_MODE_NGPON2_10G_10G =	(1U << 14),	/* ITU-T G.989 (10Gbps RX / 10Gbps TX) */
+	XPON_MODE_NGPON2_10G_2G =	(1U << 15),	/* ITU-T G.989 (10Gbps RX / 2.5Gbps TX) */
+	XPON_MODE_NGPON2_2G_2G =	(1U << 16),	/* ITU-T G.989 (2.5Gbps symmetric) */
+	XPON_MODE_GPON_SYM =		(1U << 17),	/* ITU-T G.984 (2.5Gbps symmetric) */
+	XPON_MODE_TURBO_EPON =		(1U << 18),	/* EPON extender by broadcom (2.5Gbps RX / 1Gbps TX) */
 
 	__XPON_MODE_MAX,
 };

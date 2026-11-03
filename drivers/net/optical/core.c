@@ -116,11 +116,12 @@ static ssize_t supported_protocols_show(struct device *dev,
 	struct optical_frontend *frontend =
 		container_of(dev, struct optical_frontend, dev);
 	ssize_t len = 0;
-	unsigned int protocol;
+	unsigned int protocol, protocols;
+	optical_frontend_get_modes(frontend, &protocols);
 
 	for (protocol = OPTICAL_FRONTEND_PROTO_ETHERNET;
 	     protocol <= OPTICAL_FRONTEND_PROTO_NGPON2; protocol <<= 1) {
-		if (!(frontend->desc->protocols & protocol))
+		if (!(protocols & protocol))
 			continue;
 		len += sysfs_emit_at(buf, len, "%s%s", len ? " " : "",
 				     optical_frontend_protocol_name(protocol));
@@ -512,6 +513,27 @@ int optical_frontend_get_mode(struct optical_frontend *frontend,
 	return 0;
 }
 EXPORT_SYMBOL_GPL(optical_frontend_get_mode);
+
+int optical_frontend_get_modes(struct optical_frontend *frontend,
+			       u32 *modes)
+{
+	int ret;
+
+	if (!frontend || !modes)
+		return -EINVAL;
+
+	mutex_lock(&frontend->op_lock);
+	if (frontend->ops->get_protocols)
+		ret = frontend->ops->get_protocols(frontend, modes);
+	else if (frontend->desc && frontend->desc->protocols) {
+		*modes = frontend->desc->protocols;
+	} else
+		ret = -ENODATA;
+	mutex_unlock(&frontend->op_lock);
+
+	return ret;
+}
+EXPORT_SYMBOL_GPL(optical_frontend_get_modes);
 
 int optical_frontend_tx_enable(struct optical_frontend *frontend, bool enable)
 {

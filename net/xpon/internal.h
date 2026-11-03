@@ -32,10 +32,12 @@ struct xpon_device {
 	struct list_head list;
 	struct kref ref;
 	bool unregistering;
-	u16 max_links;
-	u16 max_endpoints;
-	u8 max_queues;
-	u8 report_sets;
+	bool registered;
+	void *owned_priv;
+	/* Effective per-mode limits and immutable capacities cached at probe. */
+	struct xpon_device_limits limits;
+	struct xpon_device_limits mode_limits[BITS_PER_LONG];
+	u16 link_capacity;
 	u8 onu_type;
 	u8 uni_count;
 	struct xpon_uni *unis;
@@ -49,7 +51,8 @@ struct xpon_device {
 	struct device *parent;
 	struct device *class_dev;
 	struct net_device *netdev;
-	struct device *optical;
+	struct xpon_optical_path **opticals;
+	u16 num_optical;
 	const struct xpon_device_ops *ops;
 	void *priv;
 
@@ -57,7 +60,13 @@ struct xpon_device {
 	struct xpon_state state;
 	spinlock_t state_lock;
 	struct mutex mode_lock;
+	/* Owned by the xPON core; consumed by MAC only during mode setup. */
+	enum xpon_xepon_profile xepon_profile;
 	bool mode_changing;
+	/* Requested mode is valid only while mode_changing is set. */
+	enum xpon_mode transition_target;
+	bool mode_faulted;
+	bool configured;
 
 	unsigned long pending_events;
 	struct xpon_state notify_old;
@@ -79,6 +88,8 @@ extern struct class *xpon_class;
 int xpon_sysfs_init(void);
 void xpon_sysfs_exit(void);
 int xpon_sysfs_register(struct xpon_device *xpon);
+void xpon_sysfs_optical_changed(struct xpon_device *xpon,
+				struct device *previous);
 void xpon_sysfs_unregister(struct xpon_device *xpon);
 void xpon_sysfs_notify(struct xpon_device *xpon, unsigned long changed);
 

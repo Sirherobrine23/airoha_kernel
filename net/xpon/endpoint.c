@@ -23,7 +23,7 @@ static bool xpon_endpoint_ready(struct xpon_endpoint *ep)
 	cfg = ep->config;
 	ready = cfg.enabled && !xpon->state.los && xpon->state.carrier;
 	if (cfg.type == XPON_ENDPOINT_LLID)
-		ready = cfg.enabled && cfg.channel < xpon->max_links &&
+		ready = cfg.enabled && cfg.channel < xpon->limits.max_links &&
 			xpon->links[cfg.channel].state ==
 				XPON_LINK_REGISTERED &&
 			xpon->links[cfg.channel].llid == cfg.wire_id;
@@ -151,11 +151,11 @@ int xpon_endpoint_set(struct xpon_device *xpon,
 		return -EOPNOTSUPP;
 	if (!config->id || config->id == U32_MAX ||
 	    config->type > XPON_ENDPOINT_LLID ||
-	    config->queue >= xpon->max_queues)
+	    config->queue >= xpon->limits.max_queues)
 		return -EINVAL;
 	if (config->type == XPON_ENDPOINT_LLID) {
 		if (xpon->state.mode != XPON_MODE_EPON ||
-		    (!config->link_id || config->link_id > xpon->max_links))
+		    (!config->link_id || config->link_id > xpon->limits.max_links))
 			return -EINVAL;
 	} else if (xpon->state.mode == XPON_MODE_EPON) {
 		return -EINVAL;
@@ -176,7 +176,7 @@ int xpon_endpoint_set(struct xpon_device *xpon,
 
 		xa_for_each(&xpon->endpoints, index, other)
 			count++;
-		if (count >= xpon->max_endpoints)
+		if (count >= xpon->limits.max_endpoints)
 			return -ENOSPC;
 		dev = alloc_netdev(sizeof(*ep), "pon%d", NET_NAME_ENUM,
 				   xpon_endpoint_setup);

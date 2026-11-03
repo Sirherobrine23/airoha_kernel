@@ -2,6 +2,7 @@
 
 #include <linux/device.h>
 #include <linux/netdevice.h>
+#include <linux/rtnetlink.h>
 #include <linux/string.h>
 #include <net/xpon.h>
 
@@ -110,10 +111,55 @@ static ssize_t mode_current_store(struct device *dev,
 	else
 		return -EINVAL;
 
+	/* Mirror the Generic Netlink entrypoint: RTNL protects the OAM and
+	 * GDM2 provider lifetime while mode callbacks detach/re-register them.
+	 */
+	rtnl_lock();
 	ret = xpon_device_set_mode(xpon, mode);
+	rtnl_unlock();
 	return ret ? ret : count;
 }
 static DEVICE_ATTR_RW(mode_current);
+
+static ssize_t xepon_profile_show(struct device *dev,
+				  struct device_attribute *attr, char *buf)
+{
+	struct xpon_device *xpon = dev_get_drvdata(dev);
+
+	switch (xpon_device_xepon_profile(xpon)) {
+	case XPON_XEPON_10G_1G:
+		return sysfs_emit(buf, "10g-1g\n");
+	case XPON_XEPON_1G_1G:
+		return sysfs_emit(buf, "1g-1g\n");
+	case XPON_XEPON_10G_10G:
+	default:
+		return sysfs_emit(buf, "10g-10g\n");
+	}
+}
+
+static ssize_t xepon_profile_store(struct device *dev,
+				   struct device_attribute *attr,
+				   const char *buf, size_t count)
+{
+	struct xpon_device *xpon = dev_get_drvdata(dev);
+	enum xpon_xepon_profile profile;
+	int ret;
+
+	if (sysfs_streq(buf, "10g-1g"))
+		profile = XPON_XEPON_10G_1G;
+	else if (sysfs_streq(buf, "10g-10g"))
+		profile = XPON_XEPON_10G_10G;
+	else if (sysfs_streq(buf, "1g-1g"))
+		profile = XPON_XEPON_1G_1G;
+	else
+		return -EINVAL;
+
+	rtnl_lock();
+	ret = xpon_device_set_xepon_profile(xpon, profile);
+	rtnl_unlock();
+	return ret ? ret : count;
+}
+static DEVICE_ATTR_RW(xepon_profile);
 
 static ssize_t state_show(struct device *dev, struct device_attribute *attr,
 			  char *buf)
@@ -159,6 +205,7 @@ static DEVICE_ATTR_RO(los);
 static struct attribute *xpon_attrs[] = {
 	&dev_attr_mode_available.attr,
 	&dev_attr_mode_current.attr,
+	&dev_attr_xepon_profile.attr,
 	&dev_attr_state.attr,
 	&dev_attr_carrier.attr,
 	&dev_attr_signal_detect.attr,
@@ -226,9 +273,9 @@ int xpon_sysfs_register(struct xpon_device *xpon)
 		return ret;
 	}
 
-	if (xpon->optical) {
+	if (xpon_device_optical(xpon)) {
 		ret = sysfs_create_link(&xpon->class_dev->kobj,
-					&xpon->optical->kobj, "optical");
+					&xpon_device_optical(xpon)->kobj, "optical");
 		if (ret)
 			dev_warn(xpon->parent,
 				 "failed to create optical xPON link: %d\n", ret);
@@ -237,11 +284,30 @@ int xpon_sysfs_register(struct xpon_device *xpon)
 	return 0;
 }
 
+/* The mode-lock owner updates the active optical symlink after commit. */
+void xpon_sysfs_optical_changed(struct xpon_device *xpon,
+				struct device *previous)
+{
+	int ret;
+
+	if (!xpon->class_dev)
+		return;
+	if (previous)
+		sysfs_remove_link(&xpon->class_dev->kobj, "optical");
+	if (!xpon_device_optical(xpon))
+		return;
+	ret = sysfs_create_link(&xpon->class_dev->kobj,
+				&xpon_device_optical(xpon)->kobj, "optical");
+	if (ret)
+		dev_warn(xpon->parent, "failed to switch optical symlink: %d\n",
+			 ret);
+}
+
 void xpon_sysfs_unregister(struct xpon_device *xpon)
 {
 	if (!xpon->class_dev)
 		return;
-	if (xpon->optical)
+	if (xpon_device_optical(xpon))
 		sysfs_remove_link(&xpon->class_dev->kobj, "optical");
 	device_unregister(xpon->class_dev);
 	xpon->class_dev = NULL;
