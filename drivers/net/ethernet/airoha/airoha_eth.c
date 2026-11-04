@@ -2842,22 +2842,6 @@ static int airoha_qdma_rx_process(struct airoha_queue *q, int budget)
 				airoha_ppe_check_lro(q->qdma, q->skb, hash);
 		}
 
-		if (eth->soc->gpon_metadata &&
-		    (READ_ONCE(dev->flags) & AIROHA_PRIV_F_XPON_MANAGED)) {
-			bool consumed;
-			u8 channel = FIELD_GET(EN7523_QDMA_ETH_RXMSG_CHAN_MASK, msg0);
-			u16 gem = FIELD_GET(EN7523_QDMA_ETH_RXMSG_GEM_MASK, msg0);
-
-			skb_push(q->skb, ETH_HLEN);
-			consumed = airoha_xpon_receive_data(dev, q->skb, channel, gem);
-			if (consumed) {
-				q->skb = NULL;
-				done++;
-				continue;
-			}
-			skb_pull(q->skb, ETH_HLEN);
-		}
-
 		if (netdev_uses_dsa(netdev)) {
 			struct airoha_gdm_port *port = dev->port;
 			u32 msg0, sptag, sport;
@@ -2899,9 +2883,32 @@ static int airoha_qdma_rx_process(struct airoha_queue *q, int budget)
 			skb_set_hash(q->skb, jhash_1word(hash, 0), PKT_HASH_TYPE_L4);
 
 		if (airoha_qdma_foe_entry_is_valid(eth, hash) &&
-		    airoha_qdma_should_check_ppe_skb(eth, reason))
-			airoha_ppe_check_skb(&eth->ppe->common.dev, q->skb, hash,
-					     false);
+		    airoha_qdma_should_check_ppe_skb(eth, reason)) {
+			u16 ingress_gem = AIROHA_PPE_RX_GEM_NONE;
+
+			if (eth->soc->gpon_metadata &&
+			    (READ_ONCE(dev->flags) & AIROHA_PRIV_F_XPON_MANAGED) &&
+			    READ_ONCE(dev->xpon_mode) == XPON_MODE_GPON)
+				ingress_gem = FIELD_GET(EN7523_QDMA_ETH_RXMSG_GEM_MASK, msg0);
+			airoha_ppe_check_xpon_skb(&eth->ppe->common.dev, q->skb, hash,
+						  ingress_gem);
+		}
+
+		if (eth->soc->gpon_metadata &&
+		    (READ_ONCE(dev->flags) & AIROHA_PRIV_F_XPON_MANAGED)) {
+			bool consumed;
+			u8 channel = FIELD_GET(EN7523_QDMA_ETH_RXMSG_CHAN_MASK, msg0);
+			u16 gem = FIELD_GET(EN7523_QDMA_ETH_RXMSG_GEM_MASK, msg0);
+
+			skb_push(q->skb, ETH_HLEN);
+			consumed = airoha_xpon_receive_data(dev, q->skb, channel, gem);
+			if (consumed) {
+				q->skb = NULL;
+				done++;
+				continue;
+			}
+			skb_pull(q->skb, ETH_HLEN);
+		}
 
 		if (airoha_whnat_active()) {
 			bool consumed;
@@ -4230,6 +4237,60 @@ static int econet_xpon_lookup_service(struct airoha_gdm_dev *port,
 	return fallback ? 0 : -ENOENT;
 }
 
+static int airoha_xpon_tx_vlan(struct airoha_gdm_dev *dev, struct sk_buff *skb,
+			       u16 wire_id, struct airoha_xpon_tx_info *info,
+			       struct airoha_xpon_vlan_undo *undo)
+{
+	struct xpon_vlan_config config;
+	int ret, index;
+
+	if (!(READ_ONCE(dev->flags) & AIROHA_PRIV_F_XPON_MANAGED) ||
+	    READ_ONCE(dev->xpon_mode) != XPON_MODE_GPON)
+		return 0;
+
+	if (READ_ONCE(dev->xpon_tx_stopped))
+		return -ENETDOWN;
+
+	spin_lock_bh(&dev->xpon_service_lock);
+	ret = airoha_xpon_vlan_select(&dev->xpon_vlans, skb, wire_id, false, &config);
+	if (ret > 0 && config.upstream.drop)
+		ret = -EACCES;
+	if (ret > 0) {
+		index = airoha_xpon_find_cookie(&dev->xpon_services, config.cookie);
+		if (index < 0 || dev->xpon_services.rules[index].gem_port_id !=
+				 config.wire_id) {
+			ret = -ENOENT;
+		} else {
+			const struct airoha_xpon_service_cfg *service;
+
+			service = &dev->xpon_services.rules[index];
+			*info = (struct airoha_xpon_tx_info) {
+				.gem_port_id = service->gem_port_id,
+				.tcont = service->tcont,
+				.queue = service->queue,
+			};
+		}
+	}
+	spin_unlock_bh(&dev->xpon_service_lock);
+	if (ret <= 0)
+		return ret;
+
+	ret = airoha_xpon_vlan_apply(skb, &config.upstream, undo);
+	if (!ret && skb_vlan_tag_present(skb)) {
+		/* Materialize the existing tag: neither xPON TX format inserts it. */
+		skb_reset_mac_header(skb);
+		ret = __vlan_insert_tag(skb, skb->vlan_proto, skb_vlan_tag_get(skb));
+		if (ret)
+			return ret;
+		skb->protocol = skb->vlan_proto;
+		__vlan_hwaccel_clear_tag(skb);
+		if (skb->ip_summed == CHECKSUM_COMPLETE)
+			skb->ip_summed = CHECKSUM_NONE;
+	}
+
+	return ret ?: 1;
+}
+
 static int econet_xpon_classify(struct airoha_gdm_dev *port,
 				struct sk_buff *skb,
 				struct airoha_xpon_tx_info *info)
@@ -4536,7 +4597,23 @@ static bool airoha_xpon_receive_data(struct airoha_gdm_dev *dev,
 				     u16 wire_id)
 {
 	const struct airoha_xpon_link_ops *ops;
+	struct xpon_vlan_config config;
 	bool consumed = false;
+	int ret = 0;
+
+	if (READ_ONCE(dev->xpon_mode) == XPON_MODE_GPON) {
+		spin_lock_bh(&dev->xpon_service_lock);
+		ret = airoha_xpon_vlan_select(&dev->xpon_vlans, skb, wire_id,
+					      true, &config);
+		spin_unlock_bh(&dev->xpon_service_lock);
+		if (ret > 0)
+			ret = airoha_xpon_vlan_apply(skb, &config.downstream, NULL);
+		if (ret < 0) {
+			dev_kfree_skb_any(skb);
+			netdev_from_priv(dev)->stats.rx_dropped++;
+			return true;
+		}
+	}
 
 	rcu_read_lock();
 	ops = READ_ONCE(dev->xpon_ops);
@@ -5349,7 +5426,7 @@ static int airoha_retire_channel(struct net_device *netdev,
 	}
 
 	stopped = READ_ONCE(dev->xpon_tx_stopped);
-	if (airoha_tso_version(eth) == AIROHA_TSO_V2) {
+	if (airoha_tso_is_v2(eth)) {
 		WRITE_ONCE(dev->xpon_tx_stopped, true);
 		synchronize_net();
 		airoha_tso_flush(eth, NULL);
@@ -5364,7 +5441,7 @@ static int airoha_retire_channel(struct net_device *netdev,
 	airoha_retire_txbuf_restore(eth, &txbuf);
 	airoha_fe_wr(eth, REG_CDM_HWF_CHN_EN(2), hwf);
 
-	if (airoha_tso_version(eth) == AIROHA_TSO_V2)
+	if (airoha_tso_is_v2(eth))
 		WRITE_ONCE(dev->xpon_tx_stopped, stopped);
 	return ret;
 }
@@ -5484,14 +5561,15 @@ static u16 econet_rx_ingress_gem(struct airoha_qdma *qdma,
 	struct airoha_gdm_dev *port;
 	u8 sport;
 
-	/* Word 0 is GPON metadata only on the managed EN751221 WAN path. */
-	if (!airoha_is(eth, econet_en751221) || qdma->id != 1)
+	/* Word 0 carries GPON metadata on the managed WAN path. */
+	if (!airoha_is(eth, econet_en751221, econet_en7528) || qdma->id != 1)
 		return AIROHA_PPE_RX_GEM_NONE;
-	sport = FIELD_GET(ERX_SPORT_MASK, msg->erx.bitfield_0);
-	if (sport != ETX_FPORT_GDM2 && sport != ETX_FPORT_QDMA1_CPU)
-		return AIROHA_PPE_RX_GEM_NONE;
-	port = airoha_eth_get_gdm_dev(eth, AIROHA_GDM2_IDX);
-	if (!port || !(READ_ONCE(port->flags) & AIROHA_PRIV_F_XPON_MANAGED) ||
+	sport = airoha_is(eth, econet_en7528) ?
+		FIELD_GET(EN7528_ERX_SPORT_MASK, msg->erx.bitfield_0) :
+		FIELD_GET(ERX_SPORT_MASK, msg->erx.bitfield_0);
+	port = airoha_qdma_get_gdm_dev(eth, sport);
+	if (IS_ERR(port) || port->common.id != AIROHA_GDM2_IDX ||
+	    !(READ_ONCE(port->flags) & AIROHA_PRIV_F_XPON_MANAGED) ||
 	    READ_ONCE(port->xpon_mode) != XPON_MODE_GPON)
 		return AIROHA_PPE_RX_GEM_NONE;
 
@@ -7067,7 +7145,7 @@ static int airoha_fe_irq_init(struct platform_device *pdev,
 	/* FE TSO alerts are separate from PDMA TX completion interrupts. The
 	 * SDK does not document the individual meanings of bits 12 through 15.
 	 */
-	if (airoha_tso_version(eth) == AIROHA_TSO_V2)
+	if (airoha_tso_is_v2(eth))
 		mask |= FE_INT_TSO_MASK;
 	eth->fe_irq_mask = mask;
 
@@ -8319,7 +8397,7 @@ static bool airoha_gdm2_needs_linear_tx(const struct airoha_gdm_dev *dev)
 {
 	return airoha_is(dev->eth, airoha_en7523) &&
 	        dev->port->id == AIROHA_GDM2_IDX &&
-	        airoha_tso_version(dev->eth) != AIROHA_TSO_V2;
+	        !airoha_tso_is_v2(dev->eth);
 }
 
 static netdev_features_t airoha_dev_fix_features(struct net_device *netdev,
@@ -8749,7 +8827,7 @@ static netdev_tx_t __airoha_dev_xmit(struct sk_buff *skb,
 	if (xpon_oam)
 		msg1 |= QDMA_ETH_TXMSG_NO_DROP;
 
-	if (!xpon_oam && airoha_tso_version(dev->eth) == AIROHA_TSO_V2 &&
+	if (!xpon_oam && airoha_tso_is_v2(dev->eth) &&
 	    (skb_is_nonlinear(skb) || skb_is_gso(skb))) {
 		netdev_tx_t ret;
 
@@ -8836,8 +8914,13 @@ static netdev_tx_t __airoha_dev_xmit(struct sk_buff *skb,
 		q->txq_stopped = true;
 	}
 
+	/* A TSO v2 queue can send the next skb through PDMA instead. Publish
+	 * QDMA descriptors now so a later PDMA submission cannot leave them
+	 * pending behind BQL's stop condition on the shared netdev queue.
+	 */
 	dma_wmb();
-	if (netif_xmit_stopped(txq) || !netdev_xmit_more())
+	if (netif_xmit_stopped(txq) || !netdev_xmit_more() ||
+	    airoha_tso_is_v2(dev->eth))
 		airoha_qdma_rmw(qdma, REG_TX_CPU_IDX(qid),
 				TX_RING_CPU_IDX_MASK,
 				FIELD_PREP(TX_RING_CPU_IDX_MASK, index));
@@ -8880,11 +8963,29 @@ static netdev_tx_t airoha_dev_xmit(struct sk_buff *skb,
 				   struct net_device *netdev)
 {
 	struct airoha_gdm_dev *dev = netdev_priv(netdev);
+	struct airoha_xpon_vlan_undo undo;
+	struct airoha_xpon_tx_info info;
+	netdev_tx_t ret;
+	int rewritten;
+
+	rewritten = airoha_xpon_tx_vlan(dev, skb, U16_MAX, &info, &undo);
+	if (rewritten < 0)
+		goto drop;
 
 	if (airoha_has_legacy_qdma(dev->eth))
-		return econet_qdma_xmit(skb, netdev);
+		ret = rewritten ? __econet_qdma_xmit(skb, netdev, &info) :
+				  econet_qdma_xmit(skb, netdev);
+	else
+		ret = __airoha_dev_xmit(skb, netdev, rewritten ? &info : NULL);
+	if (ret == NETDEV_TX_BUSY && rewritten &&
+	    airoha_xpon_vlan_restore(skb, &undo))
+		goto drop;
+	return ret;
 
-	return __airoha_dev_xmit(skb, netdev, NULL);
+drop:
+	dev_kfree_skb_any(skb);
+	netdev->stats.tx_dropped++;
+	return NETDEV_TX_OK;
 }
 
 netdev_tx_t airoha_eth_xmit_xpon_data(struct net_device *netdev,
@@ -8897,15 +8998,23 @@ netdev_tx_t airoha_eth_xmit_xpon_data(struct net_device *netdev,
 		.gem_port_id = gem_port_id,
 		.queue = queue,
 	};
+	struct airoha_xpon_vlan_undo undo;
 	struct net_device *upper = skb->dev;
 	u16 old_queue = skb_get_queue_mapping(skb);
 	struct netdev_queue *txq;
 	netdev_tx_t ret;
+	int rewritten;
 
 	if (channel >= 32 || queue >= 8 || gem_port_id >= 4096 ||
 	    !(READ_ONCE(dev->flags) & AIROHA_PRIV_F_XPON_MANAGED) ||
 	    READ_ONCE(dev->xpon_tx_stopped)) {
 		dev_kfree_skb_any(skb);
+		return NETDEV_TX_OK;
+	}
+	rewritten = airoha_xpon_tx_vlan(dev, skb, gem_port_id, &info, &undo);
+	if (rewritten < 0) {
+		dev_kfree_skb_any(skb);
+		netdev->stats.tx_dropped++;
 		return NETDEV_TX_OK;
 	}
 	skb->dev = netdev;
@@ -8918,6 +9027,11 @@ netdev_tx_t airoha_eth_xmit_xpon_data(struct net_device *netdev,
 		ret = __airoha_dev_xmit(skb, netdev, &info);
 	__netif_tx_unlock_bh(txq);
 	if (ret == NETDEV_TX_BUSY) {
+		if (rewritten && airoha_xpon_vlan_restore(skb, &undo)) {
+			dev_kfree_skb_any(skb);
+			netdev->stats.tx_dropped++;
+			return NETDEV_TX_OK;
+		}
 		skb->dev = upper;
 		skb_set_queue_mapping(skb, old_queue);
 	}
@@ -11382,6 +11496,7 @@ static int airoha_eth_probe(struct platform_device *pdev)
 	eth->soc = soc;
 	for (i = 0; i < ARRAY_SIZE(eth->fe_irq_stats); i++)
 		atomic64_set(&eth->fe_irq_stats[i], 0);
+
 	/* fe.c: EN7580 retires the GDM2 channels, every other SoC drops them */
 	eth->channel_retire = airoha_is(eth, econet_en7580);
 	eth->ppe_host_ops = &airoha_ppe_host_ops;
@@ -11732,6 +11847,7 @@ int airoha_eth_xpon_check_services(struct net_device *netdev,
 	ops = airoha_eth_get_xpon_ops(netdev, NULL);
 	if (!ops || !ops->add_service)
 		return -EOPNOTSUPP;
+
 	if (ops->add_service == econet_xpon_add_service) {
 		ret = econet_validate_xpon_gdm2(netdev, &dev);
 		max_gem = FIELD_MAX(ETX_XPON_GEM_MASK);
@@ -11741,11 +11857,14 @@ int airoha_eth_xpon_check_services(struct net_device *netdev,
 	}
 	if (ret)
 		return ret;
+
 	if (count && !configs)
 		return -EINVAL;
+
 	table = kvzalloc(sizeof(*table), GFP_KERNEL);
 	if (!table)
 		return -ENOMEM;
+
 	for (i = 0; i < count; i++) {
 		const struct airoha_xpon_service_cfg *cfg = &configs[i];
 
@@ -11765,6 +11884,131 @@ int airoha_eth_xpon_check_services(struct net_device *netdev,
 	return ret;
 }
 EXPORT_SYMBOL_GPL(airoha_eth_xpon_check_services);
+
+static int airoha_xpon_vlan_port(struct net_device *netdev,
+				 struct airoha_gdm_dev **dev)
+{
+	if (!airoha_eth_get_xpon_ops(netdev, NULL))
+		return -EOPNOTSUPP;
+
+	*dev = netdev_priv(netdev);
+	if (!(READ_ONCE((*dev)->flags) & AIROHA_PRIV_F_XPON_MANAGED) ||
+	    READ_ONCE((*dev)->xpon_mode) != XPON_MODE_GPON)
+		return -EOPNOTSUPP;
+
+	return 0;
+}
+
+int airoha_eth_xpon_validate_vlans(struct net_device *netdev,
+				   const struct xpon_vlan_config *configs,
+				   size_t count)
+{
+	struct airoha_gdm_dev *dev;
+	int ret;
+
+	if (!count)
+		return 0;
+	ret = airoha_xpon_vlan_port(netdev, &dev);
+	return ret ? ret : airoha_xpon_vlan_validate(configs, count);
+}
+EXPORT_SYMBOL_GPL(airoha_eth_xpon_validate_vlans);
+
+int airoha_eth_xpon_replace_vlan(struct net_device *netdev,
+				 const struct xpon_vlan_config *config)
+{
+	struct airoha_xpon_vlan_table *next;
+	struct airoha_gdm_dev *dev;
+	int ret, i;
+
+	if (!config)
+		return -EINVAL;
+
+	ret = airoha_xpon_vlan_port(netdev, &dev);
+	if (ret)
+		return ret;
+
+	next = kvzalloc(sizeof(*next), GFP_KERNEL);
+	if (!next)
+		return -ENOMEM;
+
+	mutex_lock(&flow_offload_mutex);
+	spin_lock_bh(&dev->xpon_service_lock);
+	*next = dev->xpon_vlans;
+
+	i = airoha_xpon_find_cookie(&dev->xpon_services, config->cookie);
+	if (!config->upstream.drop &&
+	    (i < 0 || dev->xpon_services.rules[i].gem_port_id != config->wire_id))
+		ret = -ENOENT;
+
+	spin_unlock_bh(&dev->xpon_service_lock);
+	if (ret)
+		goto out;
+
+	for (i = 0; i < next->count; i++)
+		if (next->rules[i].cookie == config->cookie)
+			break;
+
+	if (i == next->count) {
+		if (next->count == AIROHA_XPON_MAX_SERVICES) {
+			ret = -ENOSPC;
+			goto out;
+		}
+		next->count++;
+	}
+
+	next->rules[i] = *config;
+
+	ret = airoha_xpon_vlan_validate(next->rules, next->count);
+	if (ret)
+		goto out;
+
+	/* Retire old xPON actions before publishing the new treatment. */
+	airoha_ppe_xpon_vlan_update(dev->eth, true);
+	spin_lock_bh(&dev->xpon_service_lock);
+	dev->xpon_vlans = *next;
+	spin_unlock_bh(&dev->xpon_service_lock);
+	airoha_ppe_xpon_vlan_update(dev->eth, false);
+out:
+	mutex_unlock(&flow_offload_mutex);
+	kvfree(next);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(airoha_eth_xpon_replace_vlan);
+
+int airoha_eth_xpon_delete_vlan(struct net_device *netdev, u32 cookie)
+{
+	struct airoha_gdm_dev *dev;
+	int ret, i;
+
+	ret = airoha_xpon_vlan_port(netdev, &dev);
+	if (ret)
+		return ret;
+
+	mutex_lock(&flow_offload_mutex);
+
+	airoha_ppe_xpon_vlan_update(dev->eth, true);
+	spin_lock_bh(&dev->xpon_service_lock);
+
+	for (i = 0; i < dev->xpon_vlans.count; i++)
+		if (dev->xpon_vlans.rules[i].cookie == cookie)
+			break;
+
+	if (i == dev->xpon_vlans.count) {
+		ret = -ENOENT;
+	} else {
+		dev->xpon_vlans.count--;
+		memmove(&dev->xpon_vlans.rules[i], &dev->xpon_vlans.rules[i + 1],
+			(dev->xpon_vlans.count - i) * sizeof(dev->xpon_vlans.rules[0]));
+		memset(&dev->xpon_vlans.rules[dev->xpon_vlans.count], 0,
+		       sizeof(dev->xpon_vlans.rules[0]));
+	}
+	spin_unlock_bh(&dev->xpon_service_lock);
+
+	airoha_ppe_xpon_vlan_update(dev->eth, false);
+	mutex_unlock(&flow_offload_mutex);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(airoha_eth_xpon_delete_vlan);
 
 int airoha_eth_xpon_get_tx_info(struct net_device *netdev, bool vlan_valid,
 				u16 vlan_id, bool pcp_valid, u8 pcp,
@@ -11799,9 +12043,24 @@ EXPORT_SYMBOL_GPL(airoha_eth_xpon_has_gem_service);
 void airoha_eth_xpon_flush_services(struct net_device *netdev)
 {
 	const struct airoha_eth_xpon_ops *ops = airoha_eth_get_xpon_ops(netdev, NULL);
+	struct airoha_gdm_dev *dev;
 
-	if (ops && ops->flush_services)
-		ops->flush_services(netdev);
+	if (!ops || !ops->flush_services)
+		return;
+
+	dev = netdev_priv(netdev);
+
+	mutex_lock(&flow_offload_mutex);
+	airoha_ppe_xpon_vlan_update(dev->eth, true);
+
+	spin_lock_bh(&dev->xpon_service_lock);
+	memset(&dev->xpon_vlans, 0, sizeof(dev->xpon_vlans));
+	spin_unlock_bh(&dev->xpon_service_lock);
+
+	ops->flush_services(netdev);
+	airoha_ppe_xpon_vlan_update(dev->eth, false);
+
+	mutex_unlock(&flow_offload_mutex);
 }
 EXPORT_SYMBOL_GPL(airoha_eth_xpon_flush_services);
 

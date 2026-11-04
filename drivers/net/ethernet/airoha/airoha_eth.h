@@ -524,6 +524,8 @@ enum {
 #define AIROHA_FOE_V1_IB2_QID			GENMASK(3, 0)
 #define AIROHA_FOE_V1_IB2_PSE_QOS		BIT(4)
 #define AIROHA_FOE_V1_IB2_PSE_PORT		GENMASK(7, 5)
+#define AIROHA_FOE_V1_IB1_BIND_VPM		GENMASK(21, 20)
+#define AIROHA_FOE_V1_IB2_PCP			BIT(9)
 #define AIROHA_FOE_V1_IB2_MULTICAST		BIT(8)
 #define AIROHA_FOE_V1_IB2_PORT_MG		GENMASK(17, 12)
 #define AIROHA_FOE_V1_IB2_PORT_AG		GENMASK(23, 18)
@@ -793,6 +795,23 @@ enum airoha_flow_entry_type {
 	FLOW_TYPE_L2_SUBFLOW,
 };
 
+/* Logical VLAN path before the OMCI treatment, retained across relearning. */
+struct airoha_ppe_vlan_path {
+	bool ingress_xpon;
+	bool egress_xpon;
+	bool match_tagged;
+	bool output_tagged;
+	bool bridge_preserve;
+	bool output_dsa;
+	u16 match_tci;
+	u16 match_mask;
+	__be16 match_tpid;
+	u16 output_tci;
+	__be16 output_tpid;
+	u16 ingress_gem;
+	u16 egress_gem;
+};
+
 struct airoha_flow_table_entry {
 	union {
 		struct hlist_node list; /* PPE L3 flow entry */
@@ -806,6 +825,7 @@ struct airoha_flow_table_entry {
 	u32 hash;
 
 	struct airoha_foe_stats64 stats;
+	struct airoha_ppe_vlan_path vlan_path;
 	enum airoha_flow_entry_type type;
 
 	struct rhash_head node;
@@ -1087,6 +1107,42 @@ struct airoha_xpon_service_table {
 	u8 ncookies[AIROHA_XPON_MAX_SERVICES];
 };
 
+struct airoha_xpon_vlan_table {
+	struct xpon_vlan_config rules[AIROHA_XPON_MAX_SERVICES];
+	u16 count;
+};
+
+/* Saved tag and checksum state for a NETDEV_TX_BUSY retry. */
+struct airoha_xpon_vlan_undo {
+	struct xpon_vlan_rule rule;
+	__be16 protocol;
+	__wsum csum;
+	u8 ip_summed;
+	bool accelerated;
+};
+
+struct airoha_xpon_vlan_packet {
+	__be16 tpid[2];
+	u16 tci[2];
+	u8 tags;
+};
+
+int airoha_xpon_vlan_lookup_tags(const struct airoha_xpon_vlan_table *table,
+				 const struct airoha_xpon_vlan_packet *packet,
+				 u16 wire_id, bool downstream,
+				 struct xpon_vlan_config *config);
+int airoha_xpon_vlan_validate(const struct xpon_vlan_config *configs, size_t count);
+int airoha_xpon_vlan_select(const struct airoha_xpon_vlan_table *table,
+			    struct sk_buff *skb, u16 wire_id, bool downstream,
+			    struct xpon_vlan_config *config);
+int airoha_xpon_vlan_lookup(const struct airoha_xpon_vlan_table *table,
+			    __be16 tpid, u16 tci, u16 wire_id, bool downstream,
+			    struct xpon_vlan_config *config);
+int airoha_xpon_vlan_apply(struct sk_buff *skb, const struct xpon_vlan_rule *rule,
+			   struct airoha_xpon_vlan_undo *undo);
+int airoha_xpon_vlan_restore(struct sk_buff *skb,
+			     const struct airoha_xpon_vlan_undo *undo);
+
 int airoha_xpon_find_cookie(const struct airoha_xpon_service_table *table,
 			    u32 cookie);
 void airoha_xpon_forget_cookie(struct airoha_xpon_service_table *table,
@@ -1174,6 +1230,7 @@ struct airoha_gdm_dev {
 	/* Protects GPON GEM/T-CONT service classification. */
 	spinlock_t xpon_service_lock;
 	struct airoha_xpon_service_table xpon_services;
+	struct airoha_xpon_vlan_table xpon_vlans;
 	/* ME 78: tag for untagged upstream frames, VID to strip downstream */
 	u16 xpon_tag_tci;
 	u16 xpon_strip_vid;
@@ -1417,6 +1474,8 @@ struct airoha_eth {
 	struct airoha_ppe_dev *ppe_dev;
 	const struct airoha_ppe_host_ops *ppe_host_ops;
 	struct rhashtable flow_table;
+	/* Pause new xPON binds only while OMCI replaces the VLAN rules. */
+	bool xpon_vlan_updating;
 
 	struct reset_control_bulk_data rsts[AIROHA_MAX_NUM_RSTS];
 	struct reset_control_bulk_data *xsi_rsts;
@@ -1574,6 +1633,12 @@ bool airoha_eth_xpon_del_service(struct net_device *netdev, u32 cookie,
 bool airoha_eth_xpon_has_gem_service(struct net_device *netdev,
 				     u16 gem_port_id);
 void airoha_eth_xpon_flush_services(struct net_device *netdev);
+int airoha_eth_xpon_validate_vlans(struct net_device *netdev,
+				   const struct xpon_vlan_config *configs,
+				   size_t count);
+int airoha_eth_xpon_replace_vlan(struct net_device *netdev,
+				 const struct xpon_vlan_config *config);
+int airoha_eth_xpon_delete_vlan(struct net_device *netdev, u32 cookie);
 void airoha_eth_xpon_retire_all(struct net_device *netdev);
 int airoha_eth_xpon_retire_channel(struct net_device *netdev,
 				   unsigned int channel);
@@ -1609,9 +1674,13 @@ void airoha_ppe_set_cpu_port(struct airoha_gdm_dev *dev, u8 ppe_id, u8 fport);
 bool airoha_ppe_is_enabled(struct airoha_eth *eth, int index);
 void airoha_ppe_check_skb(struct airoha_ppe_dev *dev, struct sk_buff *skb,
 			  u16 hash, bool rx_wlan);
+void airoha_ppe_check_xpon_skb(struct airoha_ppe_dev *dev, struct sk_buff *skb,
+			       u16 hash, u16 ingress_gem);
 void airoha_ppe_check_lro(struct airoha_qdma *qdma, struct sk_buff *skb,
 			  u16 hash);
 void airoha_ppe_lro_flush(struct airoha_eth *eth, unsigned int qdma_id);
+/* Caller holds flow_offload_mutex. */
+void airoha_ppe_xpon_vlan_update(struct airoha_eth *eth, bool begin);
 int airoha_ppe_setup_tc_wed(struct airoha_eth *eth, struct net_device *dev,
 			    enum tc_setup_type type, void *type_data);
 int airoha_ppe_setup_tc_block_cb(struct airoha_ppe_dev *dev, void *type_data);

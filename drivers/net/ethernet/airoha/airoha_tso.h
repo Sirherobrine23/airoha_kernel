@@ -87,4 +87,19 @@ airoha_tso_xmit(struct sk_buff *skb, struct net_device *dev,
 }
 #endif
 
+static inline bool airoha_tso_is_none(struct airoha_eth *eth)
+{
+	return airoha_tso_version(eth) == AIROHA_TSO_NONE;
+}
+
+static inline bool airoha_tso_is_v1(struct airoha_eth *eth)
+{
+	return airoha_tso_version(eth) == AIROHA_TSO_V1;
+}
+
+static inline bool airoha_tso_is_v2(struct airoha_eth *eth)
+{
+	return airoha_tso_version(eth) == AIROHA_TSO_V2;
+}
+
 #endif /* _AIROHA_TSO_H */

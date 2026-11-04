@@ -46,7 +46,6 @@
 #include <linux/workqueue.h>
 #include <net/xpon/omci.h>
 #include <linux/rtnetlink.h>
-#include <kunit/static_stub.h>
 
 #include "airoha_eth.h"
 #include "airoha_xpon.h"
@@ -4511,18 +4510,13 @@ static int airoha_xpon_register_gpon_omci(struct xpon_priv *priv)
 	priv->omci_handler.rx = airoha_gpon_omci_receive;
 	priv->omci_handler.priv = &priv->omci;
 
-	dev_info(priv->dev, "EN7528 test: registering xPON OAM handler\n");
 	ret = airoha_eth_register_xpon_oam(priv->gdm_dev, &priv->omci_handler);
-	dev_info(priv->dev, "EN7528 test: register xPON OAM returned %d\n",
-		 ret);
 	if (ret)
 		return ret;
 
-	dev_info(priv->dev, "EN7528 test: registering OMCI device\n");
 	ret = airoha_gpon_omci_register(&priv->omci, priv->xpon,
 					&airoha_gpon_omci_hw_ops,
 					priv, &priv->identity, !!priv->tod);
-	dev_info(priv->dev, "EN7528 test: OMCI register returned %d\n", ret);
 	if (ret)
 		goto err_unregister_oam;
 
@@ -4531,9 +4525,7 @@ static int airoha_xpon_register_gpon_omci(struct xpon_priv *priv)
 	 * PLOAM state callback so userspace never observes an invalid O0.
 	 */
 	airoha_gpon_omci_set_state(&priv->omci, GPON_O1_INITIAL);
-	dev_info(priv->dev, "EN7528 test: starting OMCI transport\n");
 	ret = airoha_gpon_omci_start(&priv->omci);
-	dev_info(priv->dev, "EN7528 test: OMCI start returned %d\n", ret);
 	if (ret)
 		goto err_unregister_omci;
 
@@ -6045,6 +6037,36 @@ static int airoha_xpon_get_limits(struct xpon_device *xpon,
 	}
 }
 
+static int airoha_xpon_validate_vlans(struct xpon_device *xpon,
+				      const struct xpon_vlan_config *configs,
+				      size_t count)
+{
+	struct xpon_priv *priv = xpon_device_priv(xpon);
+
+	if (READ_ONCE(priv->mode) != XPON_MODE_GPON)
+		return count ? -EOPNOTSUPP : 0;
+
+	return airoha_eth_xpon_validate_vlans(priv->gdm_dev, configs, count);
+}
+
+static int airoha_xpon_replace_vlan(struct xpon_device *xpon,
+				    const struct xpon_vlan_config *config)
+{
+	struct xpon_priv *priv = xpon_device_priv(xpon);
+
+	if (READ_ONCE(priv->mode) != XPON_MODE_GPON)
+		return -EOPNOTSUPP;
+
+	return airoha_eth_xpon_replace_vlan(priv->gdm_dev, config);
+}
+
+static int airoha_xpon_delete_vlan(struct xpon_device *xpon, u32 cookie)
+{
+	struct xpon_priv *priv = xpon_device_priv(xpon);
+
+	return airoha_eth_xpon_delete_vlan(priv->gdm_dev, cookie);
+}
+
 static const struct xpon_device_ops airoha_core_ops = {
 	.get_limits = airoha_xpon_get_limits,
 	.hw_prepare = airoha_xpon_prepare,
@@ -6052,6 +6074,9 @@ static const struct xpon_device_ops airoha_core_ops = {
 	.hw_fallback = airoha_xpon_mode_fallback,
 	.set_mode = airoha_xpon_change_mode,
 	.get_mode = airoha_xpon_get_current_mode,
+	.validate_vlans = airoha_xpon_validate_vlans,
+	.replace_vlan = airoha_xpon_replace_vlan,
+	.delete_vlan = airoha_xpon_delete_vlan,
 	.xmit = airoha_xpon_endpoint_xmit,
 	.resolve_endpoint = airoha_xpon_resolve_endpoint,
 	.oam_xmit = airoha_xpon_oam_xmit,
@@ -6569,7 +6594,8 @@ err_cleanup_mode:
 	if (airoha_xpon_is_xgspon(priv)) {
 		airoha_xgspon_stop_hardware(priv);
 	} else {
-		devm_remove_action(dev, airoha_xpon_cleanup_legacy, priv);
+		/* Registration can fail before hw_prepare() installs the action. */
+		devm_remove_action_nowarn(dev, airoha_xpon_cleanup_legacy, priv);
 		airoha_xpon_cleanup_legacy(priv);
 	}
 err_put_gdm:

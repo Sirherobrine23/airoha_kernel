@@ -424,7 +424,7 @@ int airoha_xpon_tod_init(struct platform_device *pdev, struct xpon_priv *priv)
 	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "tod");
 	if (!res)
 		return 0;
-	if (priv->mode != AIROHA_XPON_MODE_GPON ||
+	if (priv->mode != XPON_MODE_GPON ||
 	    (priv->match_data->version != airoha_en7581 &&
 	     priv->match_data->version != airoha_an7583))
 		return dev_err_probe(dev, -EOPNOTSUPP, "unsupported ToD integration\n");
