@@ -4,6 +4,7 @@
 
 #include <linux/bits.h>
 #include <linux/types.h>
+#include <net/xpon.h>
 #include <uapi/linux/omci.h>
 
 struct device;
@@ -317,6 +318,8 @@ struct omci_telemetry {
  * @tag_untagged: not a GEM path but an ME 78 rule: tag untagged upstream
  *	frames with @tag_tci and classify them as frames of that VLAN
  * @strip_downstream: ME 78 asks to remove @tag_tci's VLAN downstream
+ * @vlan: normalized single-tag rewrite for an opted-in xPON provider
+ * @vlan_rewrite: @vlan is applied through xpon_device_ops VLAN callbacks
  */
 struct omci_service_config {
 	u32 cookie;
@@ -340,6 +343,8 @@ struct omci_service_config {
 	u16 tag_tci;
 	bool tag_untagged;
 	bool strip_downstream;
+	struct xpon_vlan_config vlan;
+	bool vlan_rewrite;
 };
 
 struct omci_ani_topology {

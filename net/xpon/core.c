@@ -146,6 +146,45 @@ void xpon_device_free(struct xpon_device *xpon)
 }
 EXPORT_SYMBOL_GPL(xpon_device_free);
 
+bool xpon_device_has_vlan_ops(struct xpon_device *xpon)
+{
+	return xpon && xpon->ops && xpon->ops->validate_vlans &&
+	       xpon->ops->replace_vlan && xpon->ops->delete_vlan;
+}
+EXPORT_SYMBOL_GPL(xpon_device_has_vlan_ops);
+
+int xpon_device_validate_vlans(struct xpon_device *xpon,
+			       const struct xpon_vlan_config *configs, size_t count)
+{
+	if (count && !configs)
+		return -EINVAL;
+	if (!xpon_device_has_vlan_ops(xpon))
+		return count ? -EOPNOTSUPP : 0;
+	return xpon->ops->validate_vlans(xpon, configs, count);
+}
+EXPORT_SYMBOL_GPL(xpon_device_validate_vlans);
+
+int xpon_device_replace_vlan(struct xpon_device *xpon,
+			     const struct xpon_vlan_config *config)
+{
+	if (!config || !config->cookie)
+		return -EINVAL;
+	if (!xpon_device_has_vlan_ops(xpon))
+		return -EOPNOTSUPP;
+	return xpon->ops->replace_vlan(xpon, config);
+}
+EXPORT_SYMBOL_GPL(xpon_device_replace_vlan);
+
+int xpon_device_delete_vlan(struct xpon_device *xpon, u32 cookie)
+{
+	if (!cookie)
+		return -EINVAL;
+	if (!xpon_device_has_vlan_ops(xpon))
+		return -EOPNOTSUPP;
+	return xpon->ops->delete_vlan(xpon, cookie);
+}
+EXPORT_SYMBOL_GPL(xpon_device_delete_vlan);
+
 /* Describe the board's optical paths in optical-frontend-names. */
 static unsigned long xpon_optical_named_modes(const char *name,
 					      unsigned long all_modes)

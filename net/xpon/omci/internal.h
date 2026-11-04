@@ -53,6 +53,22 @@ struct omci_service_state {
 
 int omci_agent_apply_services_locked(struct omci_device *odev,
 				     struct xarray *desired);
+int omci_service_delete(struct omci_device *odev,
+			const struct omci_service_config *config);
+void omci_ext_vlan_parse_rule(struct omci_extended_vlan_rule *rule,
+			      const u8 *raw);
+int omci_vlan_parse_rewrite(const struct omci_extended_vlan *vlan,
+			    const struct omci_extended_vlan_rule *rule,
+			    struct xpon_vlan_config *config);
+
+int omci_agent_stage_path_locked(struct omci_device *odev,
+				 struct xarray *services,
+				 const struct omci_mib_object *lan_port,
+				 u16 uni_entity, u16 bridge_port_entity,
+				 u16 service_entity, u16 gem_iwtp_entity,
+				 u8 pcp, bool pcp_valid, bool multicast,
+				 u16 ani_entity_id, bool ani_valid,
+				 bool *default_installed);
 
 struct omci_agent_config {
 	u8 serial_number[8];

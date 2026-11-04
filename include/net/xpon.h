@@ -103,6 +103,63 @@ struct xpon_report_config {
 	u8 queue;
 };
 
+enum xpon_vlan_tag_mode {
+	XPON_VLAN_SINGLE_TAG,
+	XPON_VLAN_DOUBLE_TAG,
+	XPON_VLAN_UNTAGGED,
+};
+
+/**
+ * struct xpon_vlan_rule - match existing VLAN tags and modify the first tag
+ * @tpid: first tag protocol to match, or zero for any VLAN protocol
+ * @new_tpid: replacement first tag protocol, or zero to preserve it
+ * @tci: host-order first tag TCI bits to match
+ * @tci_mask: significant bits in @tci
+ * @new_tci: replacement host-order first tag TCI bits
+ * @new_tci_mask: bits to replace; all other bits are preserved
+ * @inner_tpid: second tag protocol to match, or zero for any VLAN protocol
+ * @inner_tci: host-order second tag TCI bits to match
+ * @inner_tci_mask: significant bits in @inner_tci
+ * @tag_mode: required tag count; zero defaults to a single tag
+ * @drop: discard a matching frame instead of modifying it
+ *
+ * Modification preserves the tag count. With two tags, the second tag is
+ * matched but never changed. Untagged rules can only discard frames.
+ */
+struct xpon_vlan_rule {
+	__be16 tpid;
+	__be16 new_tpid;
+	u16 tci;
+	u16 tci_mask;
+	u16 new_tci;
+	u16 new_tci_mask;
+	__be16 inner_tpid;
+	u16 inner_tci;
+	u16 inner_tci_mask;
+	u8 tag_mode;
+	bool drop;
+};
+
+/**
+ * struct xpon_vlan_config - bidirectional VLAN rewrite for one PON service
+ * @cookie: stable rule identifier, independent of hardware table indices
+ * @port_id: provider port identifier (normalized UNI entity for OMCI)
+ * @wire_id: GEM port or LLID identifying the downstream service
+ * @priority: rule precedence, lower values match first
+ * @upstream: customer-to-network translation, before service classification
+ * @downstream: network-to-customer translation, after wire-ID classification
+ * @downstream_valid: apply @downstream; otherwise downstream is transparent
+ */
+struct xpon_vlan_config {
+	u32 cookie;
+	u16 port_id;
+	u16 wire_id;
+	u16 priority;
+	struct xpon_vlan_rule upstream;
+	struct xpon_vlan_rule downstream;
+	bool downstream_valid;
+};
+
 /**
  * struct xpon_device_limits - limits for a single PON mode
  * @max_links: maximum number of LLIDs (zero for protocols without LLIDs)
@@ -137,6 +194,9 @@ struct xpon_device_limits {
  * @hw_fallback: recover a safe mode after either transition callback fails;
  *               report the mode actually recovered in @recovered
  * @get_mode: read the hardware-selected mode
+ * @validate_vlans: optional read-only validation of the complete VLAN rule set
+ * @replace_vlan: atomically add or replace a VLAN rewrite by cookie
+ * @delete_vlan: remove both directions of a VLAN rewrite by cookie
  *
  * Mode changes run under the core mode_lock with the lower netdev stopped and
  * without logical endpoints. Callers with live netdev/OAM consumers must hold
@@ -145,6 +205,12 @@ struct xpon_device_limits {
  * and re-registration inside its callbacks. Callbacks must not recursively
  * request another mode change. Returning failure from hw_fallback leaves the
  * device faulted; it cannot be switched again without reinitialization.
+ *
+ * VLAN callbacks are an optional group: implement all three to opt in. They
+ * run in sleepable context, serialized by the provisioning caller, without
+ * mode_lock. Providers must synchronize with their datapath and quiesce the
+ * provisioning caller before mode teardown. A failed replacement must leave
+ * the old rule intact. Deleting an absent cookie may return -ENOENT.
  */
 struct xpon_device_ops {
 	int (*get_limits)(struct xpon_device *xpon, enum xpon_mode mode,
@@ -157,6 +223,11 @@ struct xpon_device_ops {
 			   enum xpon_mode *recovered);
 	int (*set_mode)(struct xpon_device *xpon, enum xpon_mode mode);
 	int (*get_mode)(struct xpon_device *xpon, enum xpon_mode *mode);
+	int (*validate_vlans)(struct xpon_device *xpon,
+			      const struct xpon_vlan_config *configs, size_t count);
+	int (*replace_vlan)(struct xpon_device *xpon,
+			    const struct xpon_vlan_config *config);
+	int (*delete_vlan)(struct xpon_device *xpon, u32 cookie);
 	/* NETDEV_TX_BUSY leaves the skb with the caller. */
 	netdev_tx_t (*xmit)(struct xpon_device *xpon, struct sk_buff *skb,
 			    const struct xpon_endpoint_config *config);
@@ -208,6 +279,12 @@ int xpon_device_set_xepon_profile(struct xpon_device *xpon,
 int xpon_device_get_limits(struct xpon_device *xpon,
 			   struct xpon_device_limits *limits);
 int xpon_device_get_hw_mode(struct xpon_device *xpon, enum xpon_mode *mode);
+bool xpon_device_has_vlan_ops(struct xpon_device *xpon);
+int xpon_device_validate_vlans(struct xpon_device *xpon,
+			       const struct xpon_vlan_config *configs, size_t count);
+int xpon_device_replace_vlan(struct xpon_device *xpon,
+			     const struct xpon_vlan_config *config);
+int xpon_device_delete_vlan(struct xpon_device *xpon, u32 cookie);
 /* Borrowed active optical frontend, owned by the xPON core. */
 struct optical_frontend *xpon_device_optical_frontend(struct xpon_device *xpon);
 /* Borrowed candidate frontend; intended for use inside mode callbacks. */
