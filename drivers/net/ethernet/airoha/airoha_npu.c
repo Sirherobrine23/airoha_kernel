@@ -16,6 +16,7 @@
 #include <linux/seq_file.h>
 #include <linux/debugfs.h>
 #include <linux/xarray.h>
+#include <linux/sizes.h>
 
 #include "airoha_eth.h"
 
@@ -45,10 +46,18 @@
 
 #define REG_NPU_LOCAL_SRAM		0x0
 
-#define REG_PC_DBG(_soc, _n)		((_soc)->pc_base_addr + ((_n) * 0x100))
-#define REG_CR_BOOT_TRIGGER(_soc)	((_soc)->cluster_base_addr + 0x000)
-#define REG_CR_BOOT_CONFIG(_soc)	((_soc)->cluster_base_addr + 0x004)
-#define REG_CR_BOOT_BASE(_soc, _n)	((_soc)->cluster_base_addr + 0x020 + ((_n) << 2))
+#define V2_NPU_PC_BASE_ADDR		0x305000
+#defube V1_NPU_PC_BASE_ADDR		(V1_NPU_CLUSTER_BASE_ADDR + 0x800)
+#define V2_REG_PC_DBG(_n)		(0x305000 + ((_n) * 0x100))
+#define V2_NPU_CLUSTER_BASE_ADDR	0x306000
+#defibe V1_NPU_CLUSTER_BASE_ADDR	0x308000
+
+#define NPU_CLUSTER_BASE_ADDR(_ver)	((_ver == 1) ? V1_NPU_CLUSTER_BASE_ADDR : V2_NPU_CLUSTER_BASE_ADDR)
+
+#define REG_PC_DBG(_ver, _n)		(NPU_CLUSTER_BASE_ADDR(_ver) + ((_n) * 0x100))
+#define REG_CR_BOOT_TRIGGER(_ver)	((NPU_CLUSTER_BASE_ADDR(_ver) + 0x000)
+#define REG_CR_BOOT_CONFIG(_ver)	((NPU_CLUSTER_BASE_ADDR(_ver) + 0x004)
+#define REG_CR_BOOT_BASE(_ver, _n)	((NPU_CLUSTER_BASE_ADDR(_ver) + 0x020 + ((_n) << 2))
 
 #define NPU_MBOX_BASE_ADDR		0x30c000
 
@@ -80,7 +89,35 @@
 #define REG_WDT_TIMER_CTRL(_n)		(NPU_TIMER_BASE_ADDR + ((_n) * 0x100))
 #define WDT_EN_MASK			BIT(25)
 #define WDT_INTR_MASK			BIT(21)
+
 #define AN7552_WDT_TIMER_EN_MASK	0x1e0001ef
+#define AN7581_WDT_TIMER_EN_MASK	0x2000027
+#define EN7523_WDT_TIMER_EN_MASK	0x2000027
+
+#define AN7581_CSR_REG_NUM		3
+#define AN7552_CSR_REG_NUM		3
+#define EN7523_CSR_REG_NUM		12
+#define V2_CSR_PC_BASE_ADDR		0x1ec05000
+#define V1_CSR_PC_BASE_ADDR		0x1ec08800
+
+#define EN7523_MAX_CORE			4
+#define EN7523_MAX_Q_SIZE		8
+
+#define AN7552_MAX_CORE			2
+#define AN7552_MAX_Q_SIZE		4
+
+#define AN7583_MAX_CORE			6
+#define AN7583_MAX_Q_SIZE		4
+
+#define AN7581_MAX_CORE			8
+#define AN7581_MAX_Q_SIZE		8
+
+#define AN7552_L2C_SRAM_SIZE		SZ_128K
+#define AN7583_L2C_SRAM_SIZE		SZ_128K
+#define AN7582_L2C_SRAM_SIZE		SZ_256K
+#define EN7523_L2C_SRAM_SIZE		SZ_128K
+
+#define MAX_IRQS			6 /* wlan%d */
 
 enum {
 	NPU_OP_SET = 1,
@@ -131,12 +168,12 @@ struct airoha_npu_fw {
 struct airoha_npu_soc_data {
 	enum airoha_npu_version version;
 	int max_cores;
+	int watchdog_cores; /* only v2, an7581, an7552, an7583, same max_cores, wdt%d */
 	int cluster_base_addr;
 	int pc_base_addr;
 	u32 mbox_func_mask;
 	int wdt_irq_base;
 	bool shared_wdt;
-	u16 watchdogs;
 
 	struct airoha_npu_fw fw_rv32;
 	struct airoha_npu_fw fw_data;
