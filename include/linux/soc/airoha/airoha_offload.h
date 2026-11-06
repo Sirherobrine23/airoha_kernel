@@ -6,6 +6,7 @@
 #ifndef AIROHA_OFFLOAD_H
 #define AIROHA_OFFLOAD_H
 
+#include <linux/err.h>
 #include <linux/io.h>
 #include <linux/skbuff.h>
 #include <linux/spinlock.h>
@@ -165,8 +166,19 @@ struct airoha_npu_tx_dma_desc {
 } __packed;
 
 enum airoha_npu_version {
-	NPU_V1,
-	NPU_V2,
+	NPU_V1 = 1, /* EN7523 */
+	NPU_V2,     /* AN7581 */
+	NPU_V2_S,   /* AN7552 */
+	NPU_V2_P,   /* AN7583 */
+};
+
+enum airoha_npu_wlan_chip {
+	AIROHA_NPU_WLAN_NONE,
+	AIROHA_NPU_WLAN_MT7915,
+	AIROHA_NPU_WLAN_MT7916,
+	AIROHA_NPU_WLAN_MT7990,
+	AIROHA_NPU_WLAN_MT7992,
+	AIROHA_NPU_WLAN_MT7996,
 };
 
 enum airoha_npu_wlan_set_cmd {

@@ -1533,7 +1533,11 @@ void airoha_qdma_stop(struct airoha_qdma *qdma);
 
 static inline u16 airoha_qdma_get_txq(struct airoha_qdma *qdma, u16 qid)
 {
-	return qid % qdma->eth->soc->tx_ring;
+	qid %= qdma->eth->soc->tx_ring;
+	if (qid == 6 && qdma->eth->soc->version == airoha_en7523 &&
+	    qdma == &qdma->eth->qdma[0])
+		qid++;
+	return qid;
 }
 
 static inline bool airoha_is_lan_gdm_dev(struct airoha_gdm_dev *dev)

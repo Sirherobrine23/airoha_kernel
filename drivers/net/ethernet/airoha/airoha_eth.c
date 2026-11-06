@@ -3657,9 +3657,13 @@ static int airoha_qdma_modern_hw_init(struct airoha_qdma *qdma)
 		airoha_qdma_irq_enable(&qdma->irq_banks[i], QDMA_INT_REG_IDX3,
 				       INT_RX3_MASK(RX_IRQ_BANK_PIN_MASK(i)));
 	}
-	/* setup tx irqs */
-	airoha_qdma_irq_enable(&qdma->irq_banks[0], QDMA_INT_REG_IDX0,
-			       TX_COHERENT_LOW_INT_MASK | INT_TX_MASK);
+	/* setup tx irqs, TX IRQ queue 1 stays with the NPU on EN7523 */
+	if (airoha_is(qdma->eth, airoha_en7523) && qdma == &qdma->eth->qdma[0])
+		airoha_qdma_irq_enable(&qdma->irq_banks[0], QDMA_INT_REG_IDX0,
+				       TX_COHERENT_LOW_INT_MASK | TX_DONE_INT_MASK(0));
+	else
+		airoha_qdma_irq_enable(&qdma->irq_banks[0], QDMA_INT_REG_IDX0,
+				       TX_COHERENT_LOW_INT_MASK | INT_TX_MASK);
 	if (!compact_irq)
 		airoha_qdma_irq_enable(&qdma->irq_banks[0], QDMA_INT_REG_IDX4,
 				       TX_COHERENT_HIGH_INT_MASK);
@@ -11639,6 +11643,8 @@ static int airoha_eth_probe(struct platform_device *pdev)
 		goto error;
 
 	err = airoha_npu_start(eth->dev);
+	if (err == -EPROBE_DEFER)
+		goto error;
 	if (err && err != -ENODEV && err != -EPROBE_DEFER &&
 	    err != -EOPNOTSUPP)
 		dev_warn(eth->dev, "failed to start NPU: %d\n", err);

@@ -29,7 +29,7 @@
 
 		npu_binary: npu-binary@84000000 {
 			no-map;
-			reg = <0x84000000 0x00100000>;
+			reg = <0x84000000 0x00400000>;
 		};
 
 		npu_pkt: npu-pkt@84d00000 {
