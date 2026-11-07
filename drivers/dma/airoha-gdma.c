@@ -17,6 +17,7 @@
 #include "virt-dma.h"
 
 #define GDMA_CHANNELS		8
+#define GDMA_CHANNEL_MASK	GENMASK(GDMA_CHANNELS - 1, 0)
 #define GDMA_SRC(id)		((id) * 0x10)
 #define GDMA_DST(id)		(GDMA_SRC(id) + 0x04)
 #define GDMA_CTRL0(id)		(GDMA_SRC(id) + 0x08)
@@ -60,6 +61,7 @@ struct airoha_gdma {
 	const struct airoha_gdma_soc *soc;
 	struct reset_control *reset;
 	struct airoha_gdma_chan chan[GDMA_CHANNELS];
+	u32 channel_mask;
 	int irq;
 };
 
@@ -175,6 +177,10 @@ static irqreturn_t airoha_gdma_irq(int irq, void *data)
 
 	for (i = 0; i < GDMA_CHANNELS; i++) {
 		struct airoha_gdma_chan *chan = &gdma->chan[i];
+
+		/* Firmware polls its own completion bits. */
+		if (!(gdma->channel_mask & BIT(i)))
+			continue;
 		spin_lock(&chan->vc.lock);
 
 		/* Read and acknowledge under the lock also used for cancellation. */
@@ -315,10 +321,54 @@ static void airoha_gdma_cleanup_channels(struct airoha_gdma *gdma)
 	unsigned int i;
 
 	for (i = 0; i < GDMA_CHANNELS; i++) {
+		if (!(gdma->channel_mask & BIT(i)))
+			continue;
 		airoha_gdma_free_chan_resources(&gdma->chan[i].vc.chan);
 		tasklet_kill(&gdma->chan[i].vc.task);
 		list_del(&gdma->chan[i].vc.chan.device_node);
 	}
+}
+
+static int airoha_gdma_parse_channels(struct device *dev,
+				      struct airoha_gdma *gdma)
+{
+	u32 seen = 0;
+
+	gdma->channel_mask = GDMA_CHANNEL_MASK;
+	for_each_available_child_of_node_scoped(dev->of_node, child) {
+		u32 id;
+
+		if (of_property_count_u32_elems(child, "reg") != 1 ||
+		    of_property_read_u32(child, "reg", &id) ||
+		    id >= GDMA_CHANNELS)
+			return dev_err_probe(dev, -EINVAL,
+					     "invalid channel number in %pOF\n", child);
+		if (seen & BIT(id))
+			return dev_err_probe(dev, -EINVAL,
+					     "duplicate channel %u\n", id);
+		seen |= BIT(id);
+
+		if (of_property_read_bool(child, "airoha,npu-gdma"))
+			gdma->channel_mask &= ~BIT(id);
+	}
+
+	return 0;
+}
+
+static struct dma_chan *airoha_gdma_of_xlate(struct of_phandle_args *spec,
+					     struct of_dma *ofdma)
+{
+	struct airoha_gdma *gdma = ofdma->of_dma_data;
+	u32 id;
+
+	if (spec->args_count != 1)
+		return NULL;
+	id = spec->args[0];
+	if (id >= GDMA_CHANNELS || !(gdma->channel_mask & BIT(id)))
+		return NULL;
+
+	/* DMAengine numbers registered channels densely, unlike hardware IDs. */
+	return dma_get_slave_channel(&gdma->chan[id].vc.chan);
 }
 
 static int airoha_gdma_probe(struct platform_device *pdev)
@@ -337,6 +387,10 @@ static int airoha_gdma_probe(struct platform_device *pdev)
 	if (!gdma->soc)
 		return -ENODEV;
 
+	ret = airoha_gdma_parse_channels(dev, gdma);
+	if (ret)
+		return ret;
+
 	gdma->base = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(gdma->base))
 		return PTR_ERR(gdma->base);
@@ -344,18 +398,23 @@ static int airoha_gdma_probe(struct platform_device *pdev)
 	gdma->irq = platform_get_irq_optional(pdev, 0);
 	if (gdma->irq < 0 && gdma->irq != -ENXIO && gdma->irq != -ENODEV)
 		return dev_err_probe(dev, gdma->irq, "error on get gdma irq");
+	if (!gdma->channel_mask)
+		gdma->irq = -ENXIO;
 
 	ret = dma_set_mask_and_coherent(dev, DMA_BIT_MASK(gdma->soc->address_bits));
 	if (ret)
 		return ret;
 
-	gdma->reset = devm_reset_control_get_optional_exclusive(dev, NULL);
-	if (IS_ERR(gdma->reset))
-		return dev_err_probe(dev, PTR_ERR(gdma->reset), 
-				     "error on get reset controller");
-	ret = reset_control_reset(gdma->reset);
-	if (ret)
-		return ret;
+	/* A global reset would also stop channels owned by the NPU. */
+	if (gdma->channel_mask == GDMA_CHANNEL_MASK) {
+		gdma->reset = devm_reset_control_get_optional_exclusive(dev, NULL);
+		if (IS_ERR(gdma->reset))
+			return dev_err_probe(dev, PTR_ERR(gdma->reset),
+					     "error on get reset controller");
+		ret = reset_control_reset(gdma->reset);
+		if (ret)
+			return ret;
+	}
 
 	dma = &gdma->dma;
 	dma->dev = dev;
@@ -373,6 +432,8 @@ static int airoha_gdma_probe(struct platform_device *pdev)
 	for (i = 0; i < GDMA_CHANNELS; i++) {
 		struct airoha_gdma_chan *chan = &gdma->chan[i];
 
+		if (!(gdma->channel_mask & BIT(i)))
+			continue;
 		chan->gdma = gdma;
 		chan->id = i;
 		chan->vc.desc_free = airoha_gdma_desc_free;
@@ -383,7 +444,7 @@ static int airoha_gdma_probe(struct platform_device *pdev)
 		airoha_gdma_write(gdma, GDMA_CTRL1(i), GDMA_CTRL1_MASK);
 	}
 
-	airoha_gdma_write(gdma, GDMA_DONE, GENMASK(GDMA_CHANNELS - 1, 0));
+	airoha_gdma_write(gdma, GDMA_DONE, gdma->channel_mask);
 	if (gdma->irq >= 0) {
 		ret = devm_request_irq(dev, gdma->irq, airoha_gdma_irq, 0,
 				       dev_name(dev), gdma);
@@ -395,12 +456,14 @@ static int airoha_gdma_probe(struct platform_device *pdev)
 	if (ret)
 		goto err_irq;
 
-	ret = of_dma_controller_register(dev->of_node, of_dma_xlate_by_chan_id, dma);
+	ret = of_dma_controller_register(dev->of_node, airoha_gdma_of_xlate, gdma);
 	if (ret)
 		goto err_unregister;
 
 	platform_set_drvdata(pdev, gdma);
-	dev_info(dev, "8 GDMA memcpy channels (%s completion)\n",
+	dev_info(dev, "%u GDMA memcpy channels, %u reserved for NPU (%s completion)\n",
+		 hweight32(gdma->channel_mask),
+		 GDMA_CHANNELS - hweight32(gdma->channel_mask),
 		 gdma->irq >= 0 ? "IRQ" : "polled");
 
 	return 0;
@@ -426,6 +489,7 @@ static void airoha_gdma_remove(struct platform_device *pdev)
 		devm_free_irq(&pdev->dev, gdma->irq, gdma);
 
 	airoha_gdma_cleanup_channels(gdma);
+	/* The reset handle is only acquired when all channels belong to Linux. */
 	reset_control_assert(gdma->reset);
 }
 

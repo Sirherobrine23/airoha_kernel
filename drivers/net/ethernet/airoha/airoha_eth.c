@@ -508,7 +508,7 @@ static void econet_qdma_rx_process_one(struct econet_q_rx *q, u32 cpu_i,
 		sport = get_erx_sport(&desc.msg.erx);
 
 	if (airoha_whnat_rx(skb, &q->napi, q->qdma->qdma->id, sport,
-			    get_erx_crsn(&desc.msg.erx), batch))
+			    get_erx_crsn(&desc.msg.erx), hash, batch))
 		return;
 
 	if (econet_rx_before_recv(q->qdma->qdma->eth, skb, sport)) {
@@ -2070,7 +2070,7 @@ static int airoha_whnat_modern_xmit(struct airoha_qdma *qdma,
 	u32 msg0, msg1;
 	u16 index;
 
-	if (!airoha_is(qdma->eth, econet_en7580) || !q->ndesc ||
+	if (!airoha_is(qdma->eth, airoha_en7523, econet_en7580) || !q->ndesc ||
 	    skb_is_nonlinear(skb) || !skb_headlen(skb))
 		return -EOPNOTSUPP;
 
@@ -2095,8 +2095,13 @@ static int airoha_whnat_modern_xmit(struct airoha_qdma *qdma,
 
 	/* LAN QDMA channel 7 feeds the PPE; no netdev/BQL owns this skb. */
 	msg0 = FIELD_PREP(QDMA_ETH_TXMSG_CHAN_MASK, 7);
-	msg1 = FIELD_PREP(EN7580_QDMA_ETH_TXMSG_FPORT_MASK, FE_PSE_PORT_PPE1) |
-	       FIELD_PREP(QDMA_ETH_TXMSG_METER_MASK, 0x7f) | GENMASK(9, 0);
+	msg1 = FIELD_PREP(QDMA_ETH_TXMSG_METER_MASK, 0x7f);
+	if (airoha_is(qdma->eth, airoha_en7523))
+		msg1 |= FIELD_PREP(QDMA_ETH_TXMSG_FPORT_MASK, FE_PSE_PORT_PPE1) |
+			QDMA_ETH_TXMSG_ACNT_G0_MASK | QDMA_ETH_TXMSG_ACNT_G1_MASK;
+	else
+		msg1 |= FIELD_PREP(EN7580_QDMA_ETH_TXMSG_FPORT_MASK, FE_PSE_PORT_PPE1) |
+			GENMASK(9, 0);
 	WRITE_ONCE(desc->ctrl,
 		   cpu_to_le32(FIELD_PREP(EN7523_QDMA_DESC_LEN_MASK, skb->len)));
 	WRITE_ONCE(desc->addr, cpu_to_le32(addr));
@@ -2379,6 +2384,21 @@ airoha_qdma_get_gdm_dev(struct airoha_eth *eth, u32 sport)
 		return ERR_PTR(-ENODEV);
 
 	return port->devs[d] ? port->devs[d] : ERR_PTR(-ENODEV);
+}
+
+static struct airoha_gdm_dev *
+airoha_qdma_get_rx_gdm_dev(struct airoha_qdma *qdma, u32 sport)
+{
+	struct airoha_eth *eth = qdma->eth;
+	struct airoha_gdm_port *port;
+
+	if (!airoha_is(eth, airoha_en7523) || qdma->id ||
+	    sport != FE_PSE_PORT_CDM1 || !airoha_whnat_active())
+		return airoha_qdma_get_gdm_dev(eth, sport);
+
+	/* CPU-origin PPE misses borrow GDM1 until WHNAT restores the vif. */
+	port = eth->ports[0];
+	return port && port->devs[0] ? port->devs[0] : ERR_PTR(-ENODEV);
 }
 
 static struct sk_buff *airoha_qdma_lro_rx_skb(struct airoha_queue *q,
@@ -2738,8 +2758,8 @@ static int airoha_qdma_rx_process(struct airoha_queue *q, int budget)
 		if (xpon_oam)
 			dev = airoha_qdma_get_xpon_dev(eth);
 		else
-			dev = airoha_qdma_get_gdm_dev(
-				eth, airoha_qdma_get_rx_sport(eth, desc));
+			dev = airoha_qdma_get_rx_gdm_dev(
+				q->qdma, airoha_qdma_get_rx_sport(eth, desc));
 		if (IS_ERR(dev)) {
 			if (xpon_oam)
 				dev_warn_ratelimited(eth->dev,
@@ -2882,6 +2902,21 @@ static int airoha_qdma_rx_process(struct airoha_queue *q, int budget)
 		if (airoha_qdma_foe_entry_is_valid(eth, hash))
 			skb_set_hash(q->skb, jhash_1word(hash, 0), PKT_HASH_TYPE_L4);
 
+		if (airoha_whnat_active()) {
+			bool consumed;
+
+			skb_push(q->skb, ETH_HLEN);
+			consumed = airoha_whnat_rx(q->skb, &q->napi, q->qdma->id,
+						   airoha_qdma_get_rx_sport(eth, desc),
+						   reason, hash, NULL);
+			if (consumed) {
+				q->skb = NULL;
+				done++;
+				continue;
+			}
+			skb_pull(q->skb, ETH_HLEN);
+		}
+
 		if (airoha_qdma_foe_entry_is_valid(eth, hash) &&
 		    airoha_qdma_should_check_ppe_skb(eth, reason)) {
 			u16 ingress_gem = AIROHA_PPE_RX_GEM_NONE;
@@ -2902,21 +2937,6 @@ static int airoha_qdma_rx_process(struct airoha_queue *q, int budget)
 
 			skb_push(q->skb, ETH_HLEN);
 			consumed = airoha_xpon_receive_data(dev, q->skb, channel, gem);
-			if (consumed) {
-				q->skb = NULL;
-				done++;
-				continue;
-			}
-			skb_pull(q->skb, ETH_HLEN);
-		}
-
-		if (airoha_whnat_active()) {
-			bool consumed;
-
-			skb_push(q->skb, ETH_HLEN);
-			consumed = airoha_whnat_rx(q->skb, &q->napi, q->qdma->id,
-						   airoha_qdma_get_rx_sport(eth, desc),
-						   reason, NULL);
 			if (consumed) {
 				q->skb = NULL;
 				done++;
@@ -10750,6 +10770,17 @@ static int airoha_eth_ppe_npu_deinit(struct airoha_npu *npu)
 #endif
 }
 
+static int airoha_eth_ppe_npu_foe_commit(struct airoha_npu *npu,
+					 dma_addr_t addr, u32 size, u32 hash,
+					 bool ppe2)
+{
+#if IS_ENABLED(CONFIG_NET_AIROHA_NPU)
+	return npu->ops.ppe_foe_commit_entry(npu, addr, size, hash, ppe2);
+#else
+	return -EOPNOTSUPP;
+#endif
+}
+
 static int airoha_eth_ppe_npu_init_stats(struct airoha_npu *npu,
 					 dma_addr_t addr, u32 entries)
 {
@@ -10784,6 +10815,7 @@ static const struct airoha_ppe_host_ops airoha_ppe_host_ops = {
 	.npu_put = airoha_eth_ppe_npu_put,
 	.npu_ppe_init = airoha_eth_ppe_npu_init,
 	.npu_ppe_deinit = airoha_eth_ppe_npu_deinit,
+	.npu_foe_commit = airoha_eth_ppe_npu_foe_commit,
 	.npu_ppe_init_stats = airoha_eth_ppe_npu_init_stats,
 	.npu_stats_read = airoha_eth_ppe_npu_stats_read,
 	.npu_stats_clear = airoha_eth_ppe_npu_stats_clear,

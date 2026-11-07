@@ -557,6 +557,54 @@
 			reg = <0x0 0x1fbe3400 0x0 0xff>;
 		};
 
+		gdma: dma-controller@1fb30000 {
+			compatible = "airoha,an7581-gdma", "airoha,en7523-gdma";
+			reg = <0x0 0x1fb30000 0x0 0x1000>;
+
+			resets = <&scuclk EN7581_GDMA_RST>;
+
+			#dma-cells = <1>;
+			dma-channels = <8>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			status = "disabled";
+
+			gdma_channel0: dma-channel@0 {
+				reg = <0>;
+				airoha,npu-gdma;
+			};
+
+			gdma_channel1: dma-channel@1 {
+				reg = <1>;
+				airoha,npu-gdma;
+			};
+
+			gdma_channel2: dma-channel@2 {
+				reg = <2>;
+			};
+
+			gdma_channel3: dma-channel@3 {
+				reg = <3>;
+			};
+
+			gdma_channel4: dma-channel@4 {
+				reg = <4>;
+			};
+
+			gdma_channel5: dma-channel@5 {
+				reg = <5>;
+			};
+
+			gdma_channel6: dma-channel@6 {
+				reg = <6>;
+			};
+
+			gdma_channel7: dma-channel@7 {
+				reg = <7>;
+			};
+		};
+
 		scuclk: clock-controller@1fb00000 {
 			compatible = "airoha,en7581-scu", "syscon";
 			reg = <0x0 0x1fb00000 0x0 0x970>;

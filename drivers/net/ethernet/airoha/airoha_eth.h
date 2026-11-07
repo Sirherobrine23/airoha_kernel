@@ -1272,6 +1272,8 @@ struct airoha_ppe_host_ops {
 	void (*npu_put)(struct airoha_npu *npu);
 	int (*npu_ppe_init)(struct airoha_npu *npu);
 	int (*npu_ppe_deinit)(struct airoha_npu *npu);
+	int (*npu_foe_commit)(struct airoha_npu *npu, dma_addr_t addr,
+			      u32 size, u32 hash, bool ppe2);
 	int (*npu_ppe_init_stats)(struct airoha_npu *npu, dma_addr_t addr,
 				  u32 num_stats_entries);
 	void (*npu_stats_read)(struct airoha_npu *npu, u32 index,

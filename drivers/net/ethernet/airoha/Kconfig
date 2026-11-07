@@ -64,11 +64,12 @@ config NET_AIROHA_SOC_WED
 config NET_AIROHA_WHNAT
 	bool "EcoNet PPE WHNAT"
 	depends on NET_AIROHA
-	depends on SOC_ECONET_EN751221 || SOC_ECONET_EN751627 || SOC_ECONET_EN7528 || COMPILE_TEST
+	depends on SOC_ECONET_EN751221 || SOC_ECONET_EN751627 || SOC_ECONET_EN7528 || ARCH_AIROHA || COMPILE_TEST
 	select CFG80211_HEADERS
 	help
 	  Let PPE forward NAT flows from and to WiFi netdevs
-	  whose radios have no WED support.
+	  whose radios have no receive offload. EN7523 can combine this
+	  CPU-assisted ingress with NPU receive transport and WED transmit.
 
 	  If unsure, say N.
 

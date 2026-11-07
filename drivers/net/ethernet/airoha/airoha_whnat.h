@@ -37,7 +37,7 @@ void airoha_whnat_clear_qdma(struct airoha_qdma *qdma);
 void airoha_whnat_batch_init(struct airoha_whnat_batch *batch);
 void airoha_whnat_batch_flush(struct airoha_whnat_batch *batch);
 bool airoha_whnat_rx(struct sk_buff *skb, struct napi_struct *napi,
-		     u8 qdma_id, u8 sport, u8 reason,
+		     u8 qdma_id, u8 sport, u8 reason, u16 hash,
 		     struct airoha_whnat_batch *batch);
 void airoha_whnat_complete(void);
 
@@ -91,7 +91,7 @@ static inline void airoha_whnat_batch_flush(struct airoha_whnat_batch *batch)
 
 static inline bool airoha_whnat_rx(struct sk_buff *skb,
 				   struct napi_struct *napi, u8 qdma_id,
-				   u8 sport, u8 reason,
+				   u8 sport, u8 reason, u16 hash,
 				   struct airoha_whnat_batch *batch)
 {
 	return false;

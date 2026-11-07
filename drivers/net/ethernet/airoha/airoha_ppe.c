@@ -1358,7 +1358,8 @@ static int airoha_ppe_foe_entry_prepare(struct airoha_eth *eth,
 				wifi_idx = airoha_whnat_vif_index(netdev);
 			if (wifi_idx >= 0) {
 				/* CPU-assisted WiFi egress retains the vif in a VLAN tag. */
-				if (data->vlan.num || data->pppoe.num ||
+				if (airoha_is(eth, airoha_en7523) ||
+				    data->vlan.num || data->pppoe.num ||
 				    type != PPE_PKT_TYPE_IPV4_HNAPT)
 					return -EOPNOTSUPP;
 				/* EN7580: disable both six-bit meter/account groups. */
@@ -2006,13 +2007,23 @@ static int airoha_ppe_foe_commit_entry(struct airoha_ppe *ppe,
 		dev_dbg(eth->dev, "NPU not attached, skipping FOE stats setup for entry %u\n",
 			sw_idx);
 
-	/* FOE programming must not depend on the optional NPU/stats path.
-	 * EN7523 systems can run with no attached NPU; in that case DRAM entries
-	 * are already written above through the coherent FOE table, while SRAM
-	 * entries still need the explicit SRAM_CTRL write below.
-	 */
-	if (sw_idx < sram_num_entries)
-		err = airoha_ppe_foe_commit_sram_entry(ppe, sw_idx);
+	if (sw_idx < sram_num_entries) {
+		if (npu && eth->ppe_host_ops && eth->ppe_host_ops->npu_foe_commit) {
+			dma_addr_t addr = ppe->common.foe_dma +
+					  sw_idx * AIROHA_FOE_ENTRY_SIZE;
+			bool ppe2 = sw_idx >= eth->soc->ppe_sram_entries;
+
+			err = eth->ppe_host_ops->npu_foe_commit(npu, addr,
+							   AIROHA_FOE_ENTRY_SIZE,
+							   airoha_ppe_sw_to_hw_idx(ppe, sw_idx),
+							   ppe2);
+		} else {
+			err = -EOPNOTSUPP;
+		}
+		/* A timed-out NPU may still use the window; do not race it. */
+		if (err == -EOPNOTSUPP || err == -ENODEV)
+			err = airoha_ppe_foe_commit_sram_entry(ppe, sw_idx);
+	}
 
 	rcu_read_unlock();
 
@@ -3378,6 +3389,7 @@ static int airoha_ppe_offload_setup(struct airoha_eth *eth)
 
 	rcu_assign_pointer(eth->npu, npu);
 	synchronize_rcu();
+	WRITE_ONCE(ppe->offload_setup_done, true);
 
 	dev_info(eth->dev, "PPE offload setup completed successfully\n");
 	return 0;

@@ -299,9 +299,9 @@ static inline u32 airoha_npu_debugfs_level(struct airoha_npu *npu)
 }
 #endif
 
-static int __airoha_npu_send_msg(struct airoha_npu *npu, int func_id,
-				 const void *data, int len, void *reply,
-				 u16 reply_len)
+static int airoha_npu_send_msg_locked(struct airoha_npu *npu, int func_id,
+				      const void *data, int len, void *reply,
+				      u16 reply_len)
 {
 	struct airoha_npu_core *core = &npu->cores[0]; /* FIXME: core */
 	u32 val, offset = 0;
@@ -332,7 +332,7 @@ static int __airoha_npu_send_msg(struct airoha_npu *npu, int func_id,
 	 * bounce buffer under the per-core lock (also used from PPE
 	 * foe_commit under atomic context).
 	 */
-	spin_lock_bh(&core->lock);
+	lockdep_assert_held(&core->lock);
 
 	memcpy(core->buf, data, len);
 	dma_wmb();
@@ -377,11 +377,23 @@ static int __airoha_npu_send_msg(struct airoha_npu *npu, int func_id,
 	if (!ret && reply)
 		memcpy(reply, core->buf + len - reply_len, reply_len);
 
-	spin_unlock_bh(&core->lock);
-
 	if (airoha_npu_debugfs_level(npu) >= 2)
 		dev_dbg(npu->dev, "mbox func=%d size=%d status=%#x ret=%d\n",
 			func_id, len, val, ret);
+
+	return ret;
+}
+
+static int __airoha_npu_send_msg(struct airoha_npu *npu, int func_id,
+				 const void *data, int len, void *reply,
+				 u16 reply_len)
+{
+	struct airoha_npu_core *core = &npu->cores[0];
+	int ret;
+
+	spin_lock_bh(&core->lock);
+	ret = airoha_npu_send_msg_locked(npu, func_id, data, len, reply, reply_len);
+	spin_unlock_bh(&core->lock);
 
 	return ret;
 }
@@ -610,34 +622,32 @@ static int airoha_npu_foe_commit_entry(struct airoha_npu *npu,
 				       dma_addr_t foe_addr,
 				       u32 entry_size, u32 hash, bool ppe2)
 {
-	struct ppe_mbox_data *ppe_data;
+	struct airoha_npu_core *core = &npu->cores[0];
+	struct ppe_mbox_data msg = {};
 	int err;
 
-	ppe_data = kzalloc(sizeof(*ppe_data), GFP_ATOMIC);
-	if (!ppe_data)
-		return -ENOMEM;
+	if (upper_32_bits(foe_addr) || entry_size != 80)
+		return -EINVAL;
+	msg.func_type = NPU_OP_SET;
+	msg.func_id = PPE_FUNC_SET_WAIT_API;
+	msg.set_info.data = lower_32_bits(foe_addr);
+	msg.set_info.size = entry_size;
+	msg.set_info.func_id = ppe2 ? PPE2_SRAM_SET_ENTRY : PPE_SRAM_SET_ENTRY;
 
-	ppe_data->func_type = NPU_OP_SET;
-	ppe_data->func_id = PPE_FUNC_SET_WAIT_API;
-	ppe_data->set_info.data = foe_addr;
-	ppe_data->set_info.size = entry_size;
-	ppe_data->set_info.func_id = ppe2 ? PPE2_SRAM_SET_ENTRY
-					  : PPE_SRAM_SET_ENTRY;
-
-	err = airoha_npu_send_msg(npu, NPU_FUNC_PPE, ppe_data,
-				  sizeof(*ppe_data));
+	/* The SDK stage/hash pair is one transaction on the shared mailbox. */
+	spin_lock_bh(&core->lock);
+	err = airoha_npu_send_msg_locked(npu, NPU_FUNC_PPE, &msg,
+					 sizeof(msg), NULL, 0);
 	if (err)
 		goto out;
 
-	ppe_data->set_info.func_id = PPE_SRAM_SET_VAL;
-	ppe_data->set_info.data = hash;
-	ppe_data->set_info.size = sizeof(u32);
-
-	err = airoha_npu_send_msg(npu, NPU_FUNC_PPE, ppe_data,
-				  sizeof(*ppe_data));
+	msg.set_info.func_id = PPE_SRAM_SET_VAL;
+	msg.set_info.data = hash;
+	msg.set_info.size = sizeof(u32);
+	err = airoha_npu_send_msg_locked(npu, NPU_FUNC_PPE, &msg,
+					 sizeof(msg), NULL, 0);
 out:
-	kfree(ppe_data);
-
+	spin_unlock_bh(&core->lock);
 	return err;
 }
 

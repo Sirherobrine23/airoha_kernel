@@ -92,6 +92,7 @@ bool airoha_whnat_supported(struct airoha_eth *eth)
 	case econet_en751221:
 	case econet_en751627:
 	case econet_en7528:
+	case airoha_en7523:
 		return true;
 	default:
 		break;
@@ -329,6 +330,10 @@ bool en75_whnat_upstream_early(struct sk_buff *skb)
 	    skb->data - skb_mac_header(skb) != ETH_HLEN)
 		return false;
 
+	/* Broadcast and multicast control traffic stays on the host. */
+	if (is_multicast_ether_addr(eth_hdr(skb)->h_dest))
+		return false;
+
 	rcu_read_lock_bh();
 	ppe = rcu_dereference_bh(active_ppe);
 	qdma = rcu_dereference_bh(active_qdma);
@@ -436,10 +441,11 @@ void airoha_whnat_batch_flush(struct airoha_whnat_batch *batch)
 }
 
 bool airoha_whnat_rx(struct sk_buff *skb, struct napi_struct *napi,
-		     u8 qdma_id, u8 sport, u8 reason,
+		     u8 qdma_id, u8 sport, u8 reason, u16 hash,
 		     struct airoha_whnat_batch *batch)
 {
 	bool bound = reason == CRSN_22;
+	struct airoha_ppe *ppe;
 	struct net_device *dev;
 	u16 proto, idx;
 
@@ -460,6 +466,11 @@ bool airoha_whnat_rx(struct sk_buff *skb, struct napi_struct *napi,
 		return false;
 
 	rcu_read_lock_bh();
+	ppe = rcu_dereference_bh(active_ppe);
+	if (!ppe || (airoha_is(ppe->common.eth, airoha_en7523) && qdma_id)) {
+		rcu_read_unlock_bh();
+		return false;
+	}
 	dev = batch && batch->dev[idx] ? batch->dev[idx] :
 					 rcu_dereference_bh(vifs[idx]);
 	if (!dev || !netif_running(dev)) {
@@ -494,6 +505,13 @@ bool airoha_whnat_rx(struct sk_buff *skb, struct napi_struct *napi,
 		}
 	} else {
 		skb->protocol = eth_type_trans(skb, dev);
+		/* Learn against the original vif, after removing its private tag. */
+		if (airoha_is(ppe->common.eth, airoha_en7523) &&
+		    hash != EN7523_AIROHA_RXD4_FOE_ENTRY_INVALID &&
+		    (reason == AIROHA_PPE_CPU_REASON_FOE_UNHIT ||
+		     reason == AIROHA_PPE_CPU_REASON_HIT_UNBIND ||
+		     reason == AIROHA_PPE_CPU_REASON_HIT_UNBIND_RATE_REACHED))
+			airoha_ppe_check_skb(&ppe->common.dev, skb, hash, true);
 		atomic_inc(&returned);
 		/* Below the mt76 hook: this frame is never offered again. */
 		napi_gro_receive(napi, skb);
