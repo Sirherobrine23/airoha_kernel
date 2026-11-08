@@ -16,6 +16,11 @@
 struct device;
 struct device_node;
 struct net_device;
+struct napi_struct;
+
+/* Consumes a validated Ethernet exception from the EN7523 NPU host ring. */
+void airoha_npu_rx_skb(struct sk_buff *skb, struct napi_struct *napi,
+		       u8 vif, u8 reason, u16 hash);
 
 enum {
 	PPE_CPU_REASON_HIT_UNBIND_RATE_REACHED = 0x0f,
@@ -216,6 +221,8 @@ enum airoha_npu_wlan_set_cmd {
 	WLAN_FUNC_SET_WAIT_ARHT_CHIP_INFO,
 	WLAN_FUNC_SET_WAIT_TX_BUF_CHECK_ADDR,
 	WLAN_FUNC_SET_WAIT_TOKEN_ID_SIZE,
+	WLAN_FUNC_SET_WAIT_EN7523_STA,
+	WLAN_FUNC_SET_WAIT_EN7523_KEY,
 	WLAN_FUNC_SET_WAIT_MAX,
 };
 

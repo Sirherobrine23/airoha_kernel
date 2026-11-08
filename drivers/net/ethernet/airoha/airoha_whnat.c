@@ -373,6 +373,39 @@ out:
 }
 EXPORT_SYMBOL_GPL(en75_whnat_upstream_early);
 
+void airoha_npu_rx_skb(struct sk_buff *skb, struct napi_struct *napi,
+		       u8 vif, u8 reason, u16 hash)
+{
+	struct airoha_ppe *ppe;
+	struct net_device *dev;
+
+	if (vif >= AIROHA_WHNAT_VIFS || skb_headlen(skb) < ETH_HLEN)
+		goto drop;
+	rcu_read_lock_bh();
+	ppe = rcu_dereference_bh(active_ppe);
+	dev = rcu_dereference_bh(vifs[vif]);
+	if (!ppe || !airoha_is(ppe->common.eth, airoha_en7523) ||
+	    !dev || !netif_running(dev)) {
+		rcu_read_unlock_bh();
+		goto drop;
+	}
+	skb->dev = dev;
+	skb->ip_summed = CHECKSUM_NONE;
+	skb->protocol = eth_type_trans(skb, dev);
+	if (hash != EN7523_AIROHA_RXD4_FOE_ENTRY_INVALID &&
+	    (reason == AIROHA_PPE_CPU_REASON_FOE_UNHIT ||
+	     reason == AIROHA_PPE_CPU_REASON_HIT_UNBIND ||
+	     reason == AIROHA_PPE_CPU_REASON_HIT_UNBIND_RATE_REACHED))
+		airoha_ppe_check_skb(&ppe->common.dev, skb, hash, true);
+	/* This packet has already visited the PPE; bypass the mt76 ingress hook. */
+	napi_gro_receive(napi, skb);
+	rcu_read_unlock_bh();
+	return;
+drop:
+	dev_kfree_skb_any(skb);
+}
+EXPORT_SYMBOL_GPL(airoha_npu_rx_skb);
+
 void airoha_whnat_batch_init(struct airoha_whnat_batch *batch)
 {
 	int i;

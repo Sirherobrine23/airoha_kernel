@@ -111,6 +111,11 @@
 
 #define STATIC_L2C_SRAM_SIZE(_SOC)	((_SOC)->version == NPU_V2 ? SZ_256K : SZ_128K)
 
+#define VERSION_MAJOR(version)		(((version) >> 24) & 0xff)
+#define VERSION_MINOR(version)		(((version) >> 16) & 0xff)
+#define VERSION_PATCH(version)		(((version) >> 8)  & 0xff)
+#define VERSION_BUILD(version)		((version) & 0xff)
+
 enum {
 	NPU_OP_SET = 1,
 	NPU_OP_SET_NO_WAIT,
@@ -872,12 +877,15 @@ static int airoha_npu_debugfs_status_show(struct seq_file *m, void *private)
 	seq_printf(m, "npu_interface: v%u\n",
 		   npu->soc_data->version == NPU_V1 ? 1 : 2);
 	seq_printf(m, "cores: %d\n", MAX_NPU_CORES(npu->soc_data));
-	if (dbg->fw_version_valid)
-		seq_printf(m, "firmware: v%u.%u (0x%08x)\n",
-			   dbg->fw_version >> 16, dbg->fw_version & 0xffff,
-			   dbg->fw_version);
-	else
+	if (!dbg->fw_version_valid)
 		seq_puts(m, "firmware: unavailable\n");
+	else
+		seq_printf(m, "firmware: v%u.%u.%u.%u (0x%08x)\n",
+			   VERSION_MAJOR(dbg->fw_version),
+			   VERSION_MINOR(dbg->fw_version),
+			   VERSION_PATCH(dbg->fw_version),
+			   VERSION_BUILD(dbg->fw_version),
+			   dbg->fw_version);
 	seq_printf(m, "boot_config: 0x%08x\n", boot_config);
 	seq_printf(m, "boot_trigger: 0x%08x\n", boot_trigger);
 	seq_printf(m, "wlan_irq_status: 0x%08x\n", irq_status);
@@ -1217,9 +1225,12 @@ static int airoha_npu_debugfs_json_show(struct seq_file *m, void *private)
 		   "\"cores\": %d},\n  \"firmware\": ",
 		   npu->soc_data->version, MAX_NPU_CORES(npu->soc_data));
 	if (dbg->fw_version_valid)
-		seq_printf(m, "{\"major\": %u, \"minor\": %u, "
+		seq_printf(m, "{\"major\": %u, \"minor\": %u, \"patch\": %u, \"build\": %u, "
 			   "\"raw\": %u, \"raw_hex\": \"0x%08x\"}",
-			   dbg->fw_version >> 16, dbg->fw_version & 0xffff,
+			   VERSION_MAJOR(dbg->fw_version),
+			   VERSION_MINOR(dbg->fw_version),
+			   VERSION_PATCH(dbg->fw_version),
+			   VERSION_BUILD(dbg->fw_version),
 			   dbg->fw_version, dbg->fw_version);
 	else
 		seq_puts(m, "null");
@@ -1656,8 +1667,11 @@ static int airoha_npu_probe_cpu_cores(struct airoha_npu *npu)
 	if (!err) {
 		npu_version = le32_to_cpu(fw_version);
 		npu_version_valid = true;
-		dev_info(npu->dev, "NPU fw version: %u.%u\n",
-			 (npu_version >> 16) & 0xffff, npu_version & 0xffff);
+		dev_info(npu->dev, "NPU fw version: v%u.%u.%u.%u\n",
+				   VERSION_MAJOR(npu_version),
+				   VERSION_MINOR(npu_version),
+				   VERSION_PATCH(npu_version),
+				   VERSION_BUILD(npu_version));
 	} else if (err != -EOPNOTSUPP) {
 		dev_err(npu->dev, "cannot get NPU version: %d\n", err);
 	}

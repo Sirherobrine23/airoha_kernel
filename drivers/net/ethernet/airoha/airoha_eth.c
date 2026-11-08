@@ -11470,10 +11470,10 @@ const struct airoha_eth_soc_data airoha_en7523_soc_data = {
 	.max_gdm_ports = 3,
 	.pse_fq_cfg = PSE_FQ_CFG_EN7523,
 	.ppe_stats_entries = 0,
-	/* The vendor PPE runs EN7523 in 80-byte FoE mode with 512 SRAM and
+	/* EN7523 runs in 80-byte FoE mode with 256 SRAM and
 	 * 16K DRAM entries.
 	 */
-	.ppe_sram_entries = 512,
+	.ppe_sram_entries = 256,
 	.ppe_dram_entries = 16 * 1024,
 	.foe_format = AIROHA_FOE_FORMAT_V2,
 	.ops = {
