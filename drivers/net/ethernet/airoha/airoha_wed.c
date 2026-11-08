@@ -1125,8 +1125,8 @@ mtk_wed_configure_irq(struct mtk_wed_device *dev, u32 irq_mask)
 	wdma_w32(dev, MTK_WDMA_INT_GRP2, wdma_mask);
 	wed_w32(dev, MTK_WED_WPDMA_INT_MASK, wpdma_mask);
 	wed_w32(dev, MTK_WED_INT_MASK, core_mask);
-	wed_w32(dev, MTK_WED_EXT_INT_MASK,
-		mtk_wed_ext_irq_mask(dev, irq_mask));
+	/* Keep external errors masked until all DMA engines are running. */
+	wed_w32(dev, MTK_WED_EXT_INT_MASK, 0);
 	wed_w32(dev, MTK_WED_DLY_INT_CFG, MTK_WED_DLY_INT_VALUE);
 	wlan_w32(dev, dev->wlan.wpdma_mask, wlan_mask);
 
@@ -1145,13 +1145,30 @@ mtk_wed_configure_irq(struct mtk_wed_device *dev, u32 irq_mask)
  * DMA enable
  * ------------------------------------------------------------------------- */
 
-static void
+static int
 mtk_wed_dma_enable(struct mtk_wed_device *dev)
 {
+	u32 status;
+	int ret;
+
 	airoha_wed_info(dev, "dma_enable: start wed_glo=%08x wpdma_glo=%08x wdma_glo=%08x\n",
 			       wed_r32(dev, MTK_WED_GLO_CFG),
 			       wed_r32(dev, MTK_WED_WPDMA_GLO_CFG),
 			       wdma_r32(dev, MTK_WDMA_GLO_CFG));
+
+	/* The WED RX driver must leave reset while the WDMA RX DMA is idle. */
+	wdma_clr(dev, MTK_WDMA_GLO_CFG, MTK_WDMA_GLO_CFG_RX_DMA_EN);
+	ret = readx_poll_timeout(mtk_wdma_read_reset, dev, status,
+				 !(status & MTK_WDMA_GLO_CFG_RX_DMA_BUSY),
+				 0, 10000);
+	if (ret) {
+		dev_err(dev->hw->dev, "failed to stop WDMA RX before WED start\n");
+		return ret;
+	}
+
+	/* Discard errors latched while the WED block was being reset. */
+	status = wed_r32(dev, MTK_WED_EXT_INT_STATUS);
+	wed_w32(dev, MTK_WED_EXT_INT_STATUS, status);
 
 	wed_set(dev, MTK_WED_WPDMA_INT_CTRL, MTK_WED_WPDMA_INT_CTRL_SUBRT_ADV);
 	wed_set(dev, MTK_WED_WPDMA_GLO_CFG,
@@ -1170,6 +1187,8 @@ mtk_wed_dma_enable(struct mtk_wed_device *dev)
 			       wed_r32(dev, MTK_WED_WPDMA_CTRL),
 			       wdma_r32(dev, MTK_WDMA_GLO_CFG),
 			       wdma_r32(dev, MTK_WDMA_INT_STATUS));
+
+	return 0;
 }
 
 /* -------------------------------------------------------------------------
@@ -1188,11 +1207,14 @@ mtk_wed_start(struct mtk_wed_device *dev, u32 irq_mask)
 
 	mtk_wed_hw_init(dev);
 	mtk_wed_configure_irq(dev, irq_mask);
-	mtk_wed_set_ext_int(dev, true, irq_mask);
 
 	/* Airoha WED v1 has no PCIe mirror register. */
 
-	mtk_wed_dma_enable(dev);
+	err = mtk_wed_dma_enable(dev);
+	if (err) {
+		mtk_wed_stop(dev);
+		return;
+	}
 	/* The LAN arbiter needs a running WDMA, even for wired traffic. */
 	err = airoha_wed_set_lan_arb(dev->hw, true);
 	if (err) {
@@ -1200,6 +1222,7 @@ mtk_wed_start(struct mtk_wed_device *dev, u32 irq_mask)
 		mtk_wed_stop(dev);
 		return;
 	}
+	mtk_wed_set_ext_int(dev, true, irq_mask);
 	dev->running = true;
 	wed_w32(dev, MTK_WED_INT_MASK,
 		mtk_wed_core_irq_mask(dev, irq_mask));
