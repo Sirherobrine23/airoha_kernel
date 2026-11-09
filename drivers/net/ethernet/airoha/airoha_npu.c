@@ -116,14 +116,14 @@
 #define VERSION_PATCH(version)		(((version) >> 8)  & 0xff)
 #define VERSION_BUILD(version)		((version) & 0xff)
 
-enum {
+enum func_type {
 	NPU_OP_SET = 1,
 	NPU_OP_SET_NO_WAIT,
 	NPU_OP_GET,
 	NPU_OP_GET_NO_WAIT,
 };
 
-enum {
+enum mailbox_callbacks {
 	NPU_FUNC_WIFI,
 	NPU_FUNC_TUNNEL,
 	NPU_FUNC_NOTIFY,
@@ -776,6 +776,7 @@ static int airoha_npu_wlan_init_memory(struct airoha_npu *npu)
 		dev_err(npu->dev, "error on set NPU_BAND0 value: %d\n", err);
 		return err;
 	}
+	dev_info(npu->dev, "NPU_BAND0 value set to %u\n", val);
 
 	cmd = WLAN_FUNC_SET_WAIT_PKT_BUF_ADDR;
 	err = airoha_npu_wlan_set_reserved_memory(npu, 0, "pkt", cmd);
