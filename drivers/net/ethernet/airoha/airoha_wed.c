@@ -35,7 +35,6 @@
 
 #define MTK_WED_PKT_SIZE		1900
 #define MTK_WED_BUF_SIZE		2048
-#define AIROHA_WDMA_DESC_CTRL_LAST_SEG1	BIT(14)
 #define MTK_WED_BUF_PER_PAGE		(PAGE_SIZE / MTK_WED_BUF_SIZE)
 #define MTK_WED_TX_RING_SIZE		2048
 #define MTK_WED_WDMA_RING_SIZE		1024
@@ -567,9 +566,9 @@ mtk_wed_tx_buffer_alloc(struct mtk_wed_device *dev)
 			desc->buf1 = cpu_to_le32(buf_phys + txd_size);
 			ctrl = FIELD_PREP(MTK_WDMA_DESC_CTRL_LEN0,
 					  txd_size) |
-			       AIROHA_WDMA_DESC_CTRL_LAST_SEG1 |
-			       FIELD_PREP(MTK_WDMA_DESC_CTRL_LEN1_V2,
-					  MTK_WED_PKT_SIZE);
+			       MTK_WDMA_DESC_CTRL_LAST_SEG1 |
+			       FIELD_PREP(MTK_WDMA_DESC_CTRL_LEN1,
+					  MTK_WED_BUF_SIZE - txd_size);
 			desc->ctrl = cpu_to_le32(ctrl);
 			desc->info = 0;
 
@@ -727,6 +726,7 @@ mtk_wed_stop(struct mtk_wed_device *dev)
 	wed_w32(dev, MTK_WED_WDMA_INT_TRIGGER, 0);
 	wdma_w32(dev, MTK_WDMA_INT_MASK, 0);
 	wdma_w32(dev, MTK_WDMA_INT_GRP2, 0);
+	dev->running = false;
 
 	airoha_wed_info(dev, "stop: completed\n");
 }
@@ -811,6 +811,8 @@ mtk_wed_hw_init_early(struct mtk_wed_device *dev)
 		   MTK_WED_WDMA_GLO_CFG_AXI_W_AFTER_AW |
 		   MTK_WED_WDMA_GLO_CFG_WCOMPLETE_SEL;
 	u32 set = FIELD_PREP(MTK_WED_WDMA_GLO_CFG_BT_SIZE, 2) |
+		  MTK_WED_WDMA_GLO_CFG_DYNAMIC_SKIP_DMAD_PREP |
+		  MTK_WED_WDMA_GLO_CFG_IDLE_DMAD_SUPPLY |
 		  MTK_WED_WDMA_GLO_CFG_AXI_W_AFTER_AW |
 		  MTK_WED_WDMA_GLO_CFG_WCOMPLETE_SEL;
 
@@ -1513,18 +1515,8 @@ int airoha_wed_flow_add(int index)
 		hw->index, hw->num_flows);
 
 	ret = hw->wed_dev->wlan.offload_enable(hw->wed_dev);
-	if (!ret) {
-		wed_set(hw->wed_dev, MTK_WED_WDMA_GLO_CFG,
-			MTK_WED_WDMA_GLO_CFG_RX_DRV_EN);
-		wdma_set(hw->wed_dev, MTK_WDMA_GLO_CFG,
-			 MTK_WDMA_GLO_CFG_RX_DMA_EN);
-		wed_set(hw->wed_dev, MTK_WED_CTRL,
-			MTK_WED_CTRL_WDMA_INT_AGENT_EN);
-		wed_set(hw->wed_dev, MTK_WED_GLO_CFG,
-			MTK_WED_GLO_CFG_TX_DMA_EN |
-			MTK_WED_GLO_CFG_RX_DMA_EN);
+	if (!ret)
 		hw->num_flows++;
-	}
 
 	dev_dbg(hw->dev, "wed%d: flow_add: ret=%d num_flows=%u\n",
 		hw->index, ret, hw->num_flows);
@@ -1562,8 +1554,6 @@ void airoha_wed_flow_remove(int index)
 	dev_dbg(hw->dev, "wed%d: flow_remove: disabling WLAN offload\n",
 		hw->index);
 	hw->wed_dev->wlan.offload_disable(hw->wed_dev);
-	wdma_clr(hw->wed_dev, MTK_WDMA_GLO_CFG,
-		 MTK_WDMA_GLO_CFG_RX_DMA_EN);
 	mtk_wed_set_ext_int(hw->wed_dev, true, 0);
 
 out:

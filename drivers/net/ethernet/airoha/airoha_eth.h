@@ -800,6 +800,7 @@ struct airoha_ppe_vlan_path {
 	bool ingress_xpon;
 	bool egress_xpon;
 	bool match_tagged;
+	bool logical_vlan_pop;
 	bool output_tagged;
 	bool bridge_preserve;
 	bool output_dsa;
