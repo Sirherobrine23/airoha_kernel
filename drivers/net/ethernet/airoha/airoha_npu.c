@@ -111,10 +111,9 @@
 
 #define STATIC_L2C_SRAM_SIZE(_SOC)	((_SOC)->version == NPU_V2 ? SZ_256K : SZ_128K)
 
-#define VERSION_MAJOR(version)		(((version) >> 24) & 0xff)
-#define VERSION_MINOR(version)		(((version) >> 16) & 0xff)
-#define VERSION_PATCH(version)		(((version) >> 8)  & 0xff)
-#define VERSION_BUILD(version)		((version) & 0xff)
+#define VERSION_MAJOR(version)		(((version) >> 22) & 0xff)
+#define VERSION_MINOR(version)		(((version) >> 12) & 0xff)
+#define VERSION_PATCH(version)		((version) & 0xff)
 
 enum func_type {
 	NPU_OP_SET = 1,
@@ -881,11 +880,10 @@ static int airoha_npu_debugfs_status_show(struct seq_file *m, void *private)
 	if (!dbg->fw_version_valid)
 		seq_puts(m, "firmware: unavailable\n");
 	else
-		seq_printf(m, "firmware: v%u.%u.%u.%u (0x%08x)\n",
+		seq_printf(m, "firmware: v%u.%u.%u (0x%08x)\n",
 			   VERSION_MAJOR(dbg->fw_version),
 			   VERSION_MINOR(dbg->fw_version),
 			   VERSION_PATCH(dbg->fw_version),
-			   VERSION_BUILD(dbg->fw_version),
 			   dbg->fw_version);
 	seq_printf(m, "boot_config: 0x%08x\n", boot_config);
 	seq_printf(m, "boot_trigger: 0x%08x\n", boot_trigger);
@@ -1226,12 +1224,11 @@ static int airoha_npu_debugfs_json_show(struct seq_file *m, void *private)
 		   "\"cores\": %d},\n  \"firmware\": ",
 		   npu->soc_data->version, MAX_NPU_CORES(npu->soc_data));
 	if (dbg->fw_version_valid)
-		seq_printf(m, "{\"major\": %u, \"minor\": %u, \"patch\": %u, \"build\": %u, "
+		seq_printf(m, "{\"major\": %u, \"minor\": %u, \"patch\": %u, "
 			   "\"raw\": %u, \"raw_hex\": \"0x%08x\"}",
 			   VERSION_MAJOR(dbg->fw_version),
 			   VERSION_MINOR(dbg->fw_version),
 			   VERSION_PATCH(dbg->fw_version),
-			   VERSION_BUILD(dbg->fw_version),
 			   dbg->fw_version, dbg->fw_version);
 	else
 		seq_puts(m, "null");
@@ -1668,11 +1665,10 @@ static int airoha_npu_probe_cpu_cores(struct airoha_npu *npu)
 	if (!err) {
 		npu_version = le32_to_cpu(fw_version);
 		npu_version_valid = true;
-		dev_info(npu->dev, "NPU fw version: v%u.%u.%u.%u\n",
+		dev_info(npu->dev, "NPU fw version: v%u.%u.%u\n",
 				   VERSION_MAJOR(npu_version),
 				   VERSION_MINOR(npu_version),
-				   VERSION_PATCH(npu_version),
-				   VERSION_BUILD(npu_version));
+				   VERSION_PATCH(npu_version));
 	} else if (err != -EOPNOTSUPP) {
 		dev_err(npu->dev, "cannot get NPU version: %d\n", err);
 	}
