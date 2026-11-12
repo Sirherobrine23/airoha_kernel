@@ -1445,7 +1445,7 @@ mtk_wed_irq_get(struct mtk_wed_device *dev, u32 mask)
 	if (!dev->hw->num_flows)
 		val &= ~MTK_WED_EXT_INT_STATUS_TKID_WO_PYLD;
 	if (val && net_ratelimit())
-		pr_err("airoha_wed%d: error status=%08x\n", dev->hw->index, val);
+		airoha_wed_info(dev, "airoha_wed%d: error status=%08x\n", dev->hw->index, val);
 
 	val = wed_r32(dev, MTK_WED_INT_STATUS);
 	airoha_wed_info_ratelimited(dev, "irq_get: raw_int_status=%08x mask=%08x wed_int_mask=%08x wpdma_int_ctrl=%08x wpdma_mask=%08x\n",

@@ -570,7 +570,7 @@ static int airoha_npu_ppe_init(struct airoha_npu *npu)
 	ppe_data->func_type = NPU_OP_SET;
 	ppe_data->func_id = PPE_FUNC_SET_WAIT_HWNAT_INIT;
 	ppe_data->init_info.ppe_type = PPE_TYPE_L2B_IPV4_IPV6;
-	ppe_data->init_info.wan_mode = QDMA_WAN_ETHER;
+	ppe_data->init_info.wan_mode = QDMA_WAN_ETHER; /* Needs fix for xPON MAC in use */
 
 	err = airoha_npu_send_msg(npu, NPU_FUNC_PPE, ppe_data,
 				  sizeof(*ppe_data));
