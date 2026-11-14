@@ -40,12 +40,12 @@
 
 		qdma0_buf: qdma0-buf@86400000 {
 			no-map;
-			reg = <0x86400000 0x02000000>;
+			reg = <0x86400000 0x01000000>;
 		};
 
 		qdma1_buf: qdma1-buf@88400000 {
 			no-map;
-			reg = <0x88400000 0x01000000>;
+			reg = <0x88400000 0x00800000>;
 		};
 	};
 
@@ -978,6 +978,9 @@
 		             <GIC_SPI 123 IRQ_TYPE_LEVEL_HIGH>;
 		interrupt-names = "mbox", "wlan0", "wlan1", "wlan2",
 				  "wlan3", "wlan4", "wlan5";
+
+		resets = <&scuclk EN7523_NPU_RST>;
+		reset-names = "npu";
 
 		airoha,scu = <&scuclk>;
 		memory-region = <&npu_binary>, <&npu_pkt>;

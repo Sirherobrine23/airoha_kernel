@@ -36,6 +36,9 @@
 #define NPU_EN7581_FIRMWARE_DATA_MAX_SIZE	0x10000
 #define NPU_DUMP_SIZE				512
 #define NPU_FIRMWARE_RETRY_MS			1000
+#define NPU_V1_BOOT_READY			0xcccccccc
+#define NPU_V1_BOOT_POLL_US			10000
+#define NPU_V1_BOOT_TIMEOUT_US			(40 * USEC_PER_SEC)
 /*
  * Mailbox DMA payload size. Covers sizeof(struct ppe_mbox_data) (28) and
  * WLAN TLV messages (header + payload); largest in-tree WLAN payload today
@@ -175,7 +178,7 @@ struct airoha_npu_soc_data {
 	struct airoha_npu_fw fw_rv32;
 	struct airoha_npu_fw fw_data;
 
-	void (*boot_core)(struct airoha_npu *npu, struct reserved_mem *rmem);
+	int (*boot_core)(struct airoha_npu *npu, struct reserved_mem *rmem);
 };
 
 struct airoha_npu_priv {
@@ -303,6 +306,16 @@ static inline u32 airoha_npu_debugfs_level(struct airoha_npu *npu)
 }
 #endif
 
+/* Temporary trace: only the GET_VERSION transaction, with no extra MMIO. */
+static bool airoha_npu_trace_version(int func_id, const void *data, int len)
+{
+	const struct wlan_mbox_data *msg = data;
+
+	return func_id == NPU_FUNC_WIFI && data && len >= sizeof(*msg) &&
+	       (le32_to_cpu(msg->op) >> 4) == NPU_OP_GET &&
+	       le32_to_cpu(msg->func_id) == WLAN_FUNC_GET_WAIT_NPU_VERSION;
+}
+
 static int airoha_npu_send_msg_locked(struct airoha_npu *npu, int func_id,
 				      const void *data, int len, void *reply,
 				      u16 reply_len)
@@ -310,7 +323,10 @@ static int airoha_npu_send_msg_locked(struct airoha_npu *npu, int func_id,
 	struct airoha_npu_core *core = &npu->cores[0]; /* FIXME: core */
 	u32 val, offset = 0;
 	int ret;
+	bool trace = airoha_npu_trace_version(func_id, data, len);
 
+	if (trace)
+		dev_info(npu->dev, "MBOXTRACE locked transport entered\n");
 	if (!data || len <= 0 || len > AIROHA_NPU_MBOX_SIZE ||
 	    func_id < 0 || func_id > FIELD_MAX(MBOX_MSG_FUNC_ID))
 		return -EINVAL;
@@ -326,7 +342,11 @@ static int airoha_npu_send_msg_locked(struct airoha_npu *npu, int func_id,
 	if (!core->buf)
 		return -ENODEV;
 
+	if (trace)
+		dev_info(npu->dev, "MBOXTRACE request counter begin\n");
 	airoha_npu_debugfs_count(npu, AIROHA_NPU_DBG_MBOX_REQUESTS);
+	if (trace)
+		dev_info(npu->dev, "MBOXTRACE request counter returned\n");
 
 	/*
 	 * Mailbox payloads are bidirectional (CPU request, NPU response).
@@ -338,22 +358,40 @@ static int airoha_npu_send_msg_locked(struct airoha_npu *npu, int func_id,
 	 */
 	lockdep_assert_held(&core->lock);
 
+	if (trace)
+		dev_info(npu->dev, "MBOXTRACE payload copy begin\n");
 	memcpy(core->buf, data, len);
 	dma_wmb();
+	if (trace)
+		dev_info(npu->dev, "MBOXTRACE payload copy/barrier returned\n");
 
+	if (trace)
+		dev_info(npu->dev, "MBOXTRACE CTRL0 write begin; payload=%pad len=%d\n", &core->addr, len);
 	regmap_write(npu->regmap, REG_CR_MBQ0_CTRL(0) + offset, core->addr);
+	if (trace)
+		dev_info(npu->dev, "MBOXTRACE CTRL0 returned; CTRL1 write begin\n");
 	regmap_write(npu->regmap, REG_CR_MBQ0_CTRL(1) + offset, len);
+	if (trace)
+		dev_info(npu->dev, "MBOXTRACE CTRL1 returned; CTRL3 prepare begin\n");
 	val = FIELD_PREP(MBOX_MSG_FUNC_ID, func_id) | MBOX_MSG_WAIT_RSP;
 	regmap_write(npu->regmap, REG_CR_MBQ0_CTRL(3) + offset, val);
+	if (trace)
+		dev_info(npu->dev, "MBOXTRACE CTRL3 returned; CTRL2 read begin\n");
 	/* CTRL2 raises the IRQ after the complete request is visible. */
 	wmb();
 	regmap_read(npu->regmap, REG_CR_MBQ0_CTRL(2) + offset, &val);
+	if (trace)
+		dev_info(npu->dev, "MBOXTRACE CTRL2 read returned; CTRL2 write begin\n");
 	regmap_write(npu->regmap, REG_CR_MBQ0_CTRL(2) + offset, val + 1);
+	if (trace)
+		dev_info(npu->dev, "MBOXTRACE CTRL2 write returned; poll CTRL3 begin\n");
 
 	ret = regmap_read_poll_timeout_atomic(npu->regmap,
 					      REG_CR_MBQ0_CTRL(3) + offset,
 					      val, (val & MBOX_MSG_DONE),
 					      100, 100 * MSEC_PER_SEC);
+	if (trace)
+		dev_info(npu->dev, "MBOXTRACE poll CTRL3 returned ret=%d ctrl=%#x\n", ret, val);
 	if (ret) {
 		if (ret == -ETIMEDOUT)
 			airoha_npu_debugfs_count(npu,
@@ -377,10 +415,14 @@ static int airoha_npu_send_msg_locked(struct airoha_npu *npu, int func_id,
 		airoha_npu_debugfs_count(npu, AIROHA_NPU_DBG_MBOX_SUCCESS);
 	}
 
+	if (trace)
+		dev_info(npu->dev, "MBOXTRACE status decoded; reply copy begin ret=%d\n", ret);
 	/* Copy the trailing reply_len bytes of the response. */
 	if (!ret && reply)
 		memcpy(reply, core->buf + len - reply_len, reply_len);
 
+	if (trace)
+		dev_info(npu->dev, "MBOXTRACE reply copy returned\n");
 	if (airoha_npu_debugfs_level(npu) >= 2)
 		dev_dbg(npu->dev, "mbox func=%d size=%d status=%#x ret=%d\n",
 			func_id, len, val, ret);
@@ -394,10 +436,19 @@ static int __airoha_npu_send_msg(struct airoha_npu *npu, int func_id,
 {
 	struct airoha_npu_core *core = &npu->cores[0];
 	int ret;
+	bool trace = airoha_npu_trace_version(func_id, data, len);
 
+	if (trace)
+		dev_info(npu->dev, "MBOXTRACE core spinlock begin\n");
 	spin_lock_bh(&core->lock);
+	if (trace)
+		dev_info(npu->dev, "MBOXTRACE core spinlock acquired\n");
 	ret = airoha_npu_send_msg_locked(npu, func_id, data, len, reply, reply_len);
+	if (trace)
+		dev_info(npu->dev, "MBOXTRACE locked transport returned ret=%d; unlock begin\n", ret);
 	spin_unlock_bh(&core->lock);
+	if (trace)
+		dev_info(npu->dev, "MBOXTRACE core spinlock released\n");
 
 	return ret;
 }
@@ -720,6 +771,7 @@ static int airoha_npu_wlan_msg_get(struct airoha_npu *npu, int ifindex,
 {
 	struct wlan_mbox_data *wlan_data;
 	int err, len;
+	bool trace = func_id == WLAN_FUNC_GET_WAIT_NPU_VERSION;
 
 	if ((unsigned int)func_id >= WLAN_FUNC_GET_WAIT_MAX ||
 	    ifindex < 0 || ifindex > 0xf || !data ||
@@ -728,15 +780,23 @@ static int airoha_npu_wlan_msg_get(struct airoha_npu *npu, int ifindex,
 		return -EINVAL;
 
 	len = sizeof(*wlan_data) + data_len;
+	if (trace)
+		dev_info(npu->dev, "MBOXTRACE get-version allocation begin\n");
 	wlan_data = kzalloc(len, gfp);
+	if (trace)
+		dev_info(npu->dev, "MBOXTRACE get-version allocation returned\n");
 	if (!wlan_data)
 		return -ENOMEM;
 
 	wlan_data->op = cpu_to_le32(ifindex | (NPU_OP_GET << 4));
 	wlan_data->func_id = cpu_to_le32(func_id);
 
+	if (trace)
+		dev_info(npu->dev, "MBOXTRACE get-version request ready; send begin\n");
 	err = __airoha_npu_send_msg(npu, NPU_FUNC_WIFI, wlan_data, len,
 				    data, data_len);
+	if (trace)
+		dev_info(npu->dev, "MBOXTRACE get-version send returned ret=%d\n", err);
 	kfree(wlan_data);
 
 	return err;
@@ -1555,34 +1615,76 @@ void airoha_npu_put(struct airoha_npu *npu)
 }
 EXPORT_SYMBOL_GPL(airoha_npu_put);
 
-static void airoha_boot_core_v1(struct airoha_npu *npu,
-				struct reserved_mem *rmem)
+static int airoha_boot_core_v1(struct airoha_npu *npu,
+			       struct reserved_mem *rmem)
 {
-	u32 val = 0x1, boot = 0x1;
-	int core;
+	u32 val = 0x1, boot = 0x1, ready = 0;
+	int core, ret;
+
+	/* Do not accept a ready marker left by the previous firmware instance. */
+	ret = regmap_write(npu->regmap, REG_CR_NPU_MIB(31), 0);
+	if (ret)
+		return ret;
 
 	/* setting booting address */
 	for (core = 0; core < MAX_NPU_CORES(npu->soc_data); core++) {
-		regmap_write(npu->regmap, REG_CR_BOOT_BASE(npu->soc_data, core), rmem->base);
+		dev_info(npu->dev, "BOOTTRACE core %d: write boot-base begin\n", core);
+		ret = regmap_write(npu->regmap,
+				   REG_CR_BOOT_BASE(npu->soc_data, core), rmem->base);
+		if (ret)
+			return ret;
+		dev_info(npu->dev, "BOOTTRACE core %d: write boot-base returned\n", core);
 		usleep_range(1000, 2000);
 
 		if (core > 0) {
 			boot = 0x2;
-			regmap_read(npu->regmap, REG_CR_BOOT_CONFIG(npu->soc_data), &val);
+			dev_info(npu->dev, "BOOTTRACE core %d: read boot-config begin\n", core);
+			ret = regmap_read(npu->regmap,
+					  REG_CR_BOOT_CONFIG(npu->soc_data), &val);
+			if (ret)
+				return ret;
+			dev_info(npu->dev, "BOOTTRACE core %d: read boot-config returned\n", core);
 			val &= 0xff;          /* keep old enabled bits */
 			val |= (0x1 << core);   /* add new enable bit for CoreX */
 			val |= (0x100 << core); /* add reboot bit for CoreX */
 		}
 
-		regmap_write(npu->regmap, REG_CR_BOOT_CONFIG(npu->soc_data), val);
-		regmap_write(npu->regmap, REG_CR_BOOT_TRIGGER(npu->soc_data), boot);
+		dev_info(npu->dev, "BOOTTRACE core %d: write boot-config begin\n", core);
+		ret = regmap_write(npu->regmap, REG_CR_BOOT_CONFIG(npu->soc_data), val);
+		if (ret)
+			return ret;
+		dev_info(npu->dev, "BOOTTRACE core %d: write boot-config returned\n", core);
+		dev_info(npu->dev, "BOOTTRACE core %d: write boot-trigger begin\n", core);
+		ret = regmap_write(npu->regmap, REG_CR_BOOT_TRIGGER(npu->soc_data), boot);
+		if (ret)
+			return ret;
+		dev_info(npu->dev, "BOOTTRACE core %d: write boot-trigger returned; delay begin\n", core);
 
 		msleep(100);
+		dev_info(npu->dev, "BOOTTRACE core %d: delay returned\n", core);
 	}
+
+	/* MIB31 is a global firmware-init marker, not a per-core acknowledgment. */
+	dev_info(npu->dev, "waiting for NPU firmware initialization (40 s timeout)\n");
+	ret = regmap_read_poll_timeout(npu->regmap, REG_CR_NPU_MIB(31), ready,
+				       ready == NPU_V1_BOOT_READY,
+				       NPU_V1_BOOT_POLL_US, NPU_V1_BOOT_TIMEOUT_US);
+	if (ret) {
+		if (ret == -ETIMEDOUT)
+			dev_err(npu->dev,
+				"NPU initialization timed out after 40 s (MIB31=%#010x)\n",
+				ready);
+		else
+			dev_err(npu->dev, "failed to read NPU ready marker: %d\n", ret);
+		return ret;
+	}
+
+	dev_info(npu->dev, "NPU firmware initialization ready (MIB31=%#010x)\n", ready);
+	return 0;
 }
 
-static void airoha_boot_core_v2(struct airoha_npu *npu,
-				struct reserved_mem *rmem)
+static int airoha_boot_core_v2(struct airoha_npu *npu,
+			       struct reserved_mem *rmem)
 {
 	int i;
 
@@ -1596,6 +1698,8 @@ static void airoha_boot_core_v2(struct airoha_npu *npu,
 		     GENMASK(MAX_NPU_CORES(npu->soc_data) - 1, 0));
 	regmap_write(npu->regmap, REG_CR_BOOT_TRIGGER(npu->soc_data), 0x1);
 	msleep(100);
+
+	return 0;
 }
 
 static bool is_fpga(struct regmap *scuclk)
@@ -1630,13 +1734,17 @@ static int airoha_npu_probe_cpu_cores(struct airoha_npu *npu)
 	u32 npu_version = 0;
 	int err;
 
+	dev_info(npu->dev, "BOOTTRACE start-lock begin\n");
 	mutex_lock(&priv->start_lock);
+	dev_info(npu->dev, "BOOTTRACE start-lock acquired\n");
 	if (priv->started) {
 		err = 0;
 		goto out_unlock;
 	}
 
+	dev_info(npu->dev, "BOOTTRACE load/copy firmware begin\n");
 	err = airoha_npu_run_firmware(npu->dev, priv->base, priv->fw_addr);
+	dev_info(npu->dev, "BOOTTRACE load/copy firmware returned %d\n", err);
 	if (err) {
 		if (err != -EPROBE_DEFER)
 			dev_err(npu->dev, "failed to run npu firmware: %d\n", err);
@@ -1644,24 +1752,38 @@ static int airoha_npu_probe_cpu_cores(struct airoha_npu *npu)
 	}
 
 	/* Set the information consumed by the NPU firmware before booting it. */
+	dev_info(npu->dev, "BOOTTRACE MIB10 setup begin\n");
 	regmap_write(npu->regmap, REG_CR_NPU_MIB(10),
 		     (u32)priv->rmem->base + npu->soc_data->fw_rv32.max_size);
+	dev_info(npu->dev, "BOOTTRACE MIB11 setup begin\n");
 	regmap_write(npu->regmap, REG_CR_NPU_MIB(11),
 		     sram_size_of_l2c(npu->scu_regmap));
+	dev_info(npu->dev, "BOOTTRACE MIB12 setup begin\n");
 	regmap_write(npu->regmap, REG_CR_NPU_MIB(12),
 		     is_fpga(npu->scu_regmap));
+	dev_info(npu->dev, "BOOTTRACE MIB21 setup begin\n");
 	regmap_write(npu->regmap, REG_CR_NPU_MIB(21),
 		     !of_property_present(npu->dev->of_node,
 					  "airoha,enable_npu_tx_uart"));
+	dev_info(npu->dev, "BOOTTRACE MIB21 setup returned; pre-boot delay begin\n");
 	msleep(100);
+	dev_info(npu->dev, "BOOTTRACE pre-boot delay returned\n");
 
 	/* Firmware and host mailbox buffers are ready before core release. */
-	npu->soc_data->boot_core(npu, priv->rmem);
+	dev_info(npu->dev, "BOOTTRACE boot_core begin\n");
+	err = npu->soc_data->boot_core(npu, priv->rmem);
+	if (err) {
+		dev_err(npu->dev, "failed to boot NPU cores: %d\n", err);
+		goto out_unlock;
+	}
+	dev_info(npu->dev, "BOOTTRACE boot_core returned\n");
 
 	/* Get NPU firmware version when supported. */
+	dev_info(npu->dev, "BOOTTRACE version mailbox begin\n");
 	err = airoha_npu_wlan_msg_get(npu, 0, WLAN_FUNC_GET_WAIT_NPU_VERSION,
 				      &fw_version, sizeof(fw_version),
 				      GFP_KERNEL);
+	dev_info(npu->dev, "BOOTTRACE version mailbox returned %d\n", err);
 	if (!err) {
 		npu_version = le32_to_cpu(fw_version);
 		npu_version_valid = true;
@@ -1673,7 +1795,9 @@ static int airoha_npu_probe_cpu_cores(struct airoha_npu *npu)
 		dev_err(npu->dev, "cannot get NPU version: %d\n", err);
 	}
 
+	dev_info(npu->dev, "BOOTTRACE debugfs setup begin\n");
 	err = airoha_npu_debugfs_init(npu, npu_version, npu_version_valid);
+	dev_info(npu->dev, "BOOTTRACE debugfs setup returned %d\n", err);
 	if (err)
 		dev_warn(npu->dev, "failed to initialize debugfs: %d\n", err);
 
