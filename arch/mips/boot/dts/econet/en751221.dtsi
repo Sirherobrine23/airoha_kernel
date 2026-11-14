@@ -155,6 +155,52 @@
 			reg = <0x1fbf8200 0x1c>;
 		};
 
+		gdma: dma-controller@1fb30000 {
+			compatible = "econet,en751221-gdma";
+			reg = <0x1fb30000 0x1000>;
+
+			resets = <&scuclk EN751221_GDMA_RST>;
+
+			#dma-cells = <1>;
+			dma-channels = <8>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			status = "disabled";
+
+			gdma_channel0: dma-channel@0 {
+				reg = <0>;
+			};
+
+			gdma_channel1: dma-channel@1 {
+				reg = <1>;
+			};
+
+			gdma_channel2: dma-channel@2 {
+				reg = <2>;
+			};
+
+			gdma_channel3: dma-channel@3 {
+				reg = <3>;
+			};
+
+			gdma_channel4: dma-channel@4 {
+				reg = <4>;
+			};
+
+			gdma_channel5: dma-channel@5 {
+				reg = <5>;
+			};
+
+			gdma_channel6: dma-channel@6 {
+				reg = <6>;
+			};
+
+			gdma_channel7: dma-channel@7 {
+				reg = <7>;
+			};
+		};
+
 		scuclk: system-controller@1fb00000 {
 			compatible = "econet,en751221-scu", "syscon";
 			reg = <0x1fb00000 0x1000>;
