@@ -833,25 +833,36 @@ static int airoha_ppe_vlan_path(struct airoha_eth *eth, struct flow_rule *rule,
 		flow_rule_match_vlan(rule, &match);
 		if (match.mask->vlan_id != VLAN_VID_MASK)
 			return -EOPNOTSUPP;
-	
+
 		path->match_tagged = true;
 		path->match_tpid = match.key->vlan_tpid ?: htons(ETH_P_8021Q);
 		path->match_tci = match.key->vlan_id |
 			FIELD_PREP(VLAN_PRIO_MASK, match.key->vlan_priority);
-	
+
 		/* PCP is not part of the L3 hardware key. */
 		if (match.mask->vlan_priority)
 			return -EOPNOTSUPP;
-	
+
 		path->match_mask = VLAN_VID_MASK;
 	}
 	depth = path->match_tagged;
 	flow_action_for_each(i, act, &rule->action) {
 		switch (act->id) {
 		case FLOW_ACTION_VLAN_POP:
-			if (!depth)
-				return -EOPNOTSUPP;
-	
+			if (!depth) {
+				if (!path->ingress_xpon || vlan_action)
+					return -EOPNOTSUPP;
+				/*
+				 * A logical xPON VLAN pop may lack a hardware
+				 * VLAN match. Validate the physical tag and
+				 * ingress GEM when the hardware learns the flow.
+				 */
+				path->logical_vlan_pop = true;
+				vlan_action = true;
+				path->output_tagged = false;
+				break;
+			}
+
 			depth--;
 			path->output_tagged = false;
 			vlan_action = true;
@@ -859,7 +870,7 @@ static int airoha_ppe_vlan_path(struct airoha_eth *eth, struct flow_rule *rule,
 		case FLOW_ACTION_VLAN_PUSH:
 			if (depth)
 				return -EOPNOTSUPP;
-	
+
 			depth++;
 			path->output_tagged = true;
 			path->output_tpid = act->vlan.proto;
@@ -1054,10 +1065,10 @@ static int airoha_ppe_vlan_read(struct sk_buff *skb, __be16 *proto, u16 *tci)
 	if (skb_vlan_tag_present(skb)) {
 		if (eth_type_vlan(vh->h_vlan_proto))
 			return -EOPNOTSUPP;
-	
+
 		*proto = skb->vlan_proto;
 		*tci = skb_vlan_tag_get(skb);
-	
+
 		return 1;
 	}
 
@@ -1075,6 +1086,66 @@ static int airoha_ppe_vlan_read(struct sk_buff *skb, __be16 *proto, u16 *tci)
 	*tci = ntohs(vh->h_vlan_TCI);
 
 	return 1;
+}
+
+/* A VLAN device removes the tag after PPE RX, not before FOE learning. */
+static bool airoha_ppe_xpon_logical_pop_match(struct airoha_ppe *ppe,
+					     struct sk_buff *skb, u16 gem,
+					     __be16 proto, u16 tci)
+{
+	struct airoha_gdm_dev *port = airoha_ppe_xpon_port(ppe->common.eth);
+	struct xpon_vlan_config config;
+	struct net_device *vlan_dev;
+	bool valid = false;
+	u16 vid = tci & VLAN_VID_MASK;
+	int i, ret;
+
+	if (!port || !skb->dev || skb->dev != netdev_from_priv(port) ||
+	    proto != htons(ETH_P_8021Q))
+		return false;
+
+	/* Do not bind a VLAN with no corresponding Linux ingress device. */
+	rcu_read_lock();
+	vlan_dev = __vlan_find_dev_deep_rcu(skb->dev, proto, vid);
+	valid = vlan_dev && netif_running(vlan_dev);
+	rcu_read_unlock();
+	if (!valid)
+		return false;
+
+	/* GEM/VID identify downstream service; PCP is an upstream TX selector. */
+	valid = false;
+	spin_lock_bh(&port->xpon_service_lock);
+	for (i = 0; i < AIROHA_XPON_MAX_SERVICES; i++) {
+		const struct airoha_xpon_service_cfg *svc =
+			&port->xpon_services.rules[i];
+
+		if (!svc->valid || svc->gem_port_id != gem ||
+		    (svc->vlan_valid && svc->vlan_id != vid))
+			continue;
+
+		valid = true;
+		break;
+	}
+
+	if (valid) {
+		const u16 pbits = VLAN_PRIO_MASK | VLAN_CFI_MASK;
+		/* PPE L3 keys do not distinguish PCP/DEI on GPON ingress. */
+		for (i = 0; i < 16; i++) {
+			u16 wire_tci = (tci & ~pbits) |
+				       (i << (VLAN_PRIO_SHIFT - 1));
+			ret = airoha_xpon_vlan_lookup(&port->xpon_vlans, proto,
+					             wire_tci, gem, true, &config);
+			if (ret < 0 || (ret > 0 &&
+			    (config.downstream.drop || config.downstream.new_tpid ||
+			     config.downstream.new_tci_mask))) {
+				valid = false;
+				break;
+			}
+		}
+	}
+	spin_unlock_bh(&port->xpon_service_lock);
+
+	return valid;
 }
 
 /* Match the logical ingress key, but keep the hardware's original wire key. */
@@ -1100,7 +1171,20 @@ static bool airoha_ppe_vlan_match(struct airoha_ppe *ppe,
 		return false;
 
 	tagged = airoha_ppe_vlan_read(skb, &proto, &tci);
-	if (tagged < 0 || tagged != path->match_tagged)
+	if (tagged < 0)
+		return false;
+
+	/* Netfilter has already popped the VLAN at its logical ingress. */
+	if (path->ingress_xpon && path->logical_vlan_pop &&
+	    !path->match_tagged) {
+		if (tagged != 1)
+			return false;
+
+		return airoha_ppe_xpon_logical_pop_match(ppe, skb, gem,
+							proto, tci);
+	}
+
+	if (tagged != path->match_tagged)
 		return false;
 
 	if (!tagged)
@@ -1128,14 +1212,14 @@ static bool airoha_ppe_vlan_match(struct airoha_ppe *ppe,
 			logical = (input & ~rule->new_tci_mask) | rule->new_tci;
 			logical_proto = rule->new_tpid ?: proto;
 		}
-	
+
 		if (logical_proto != path->match_tpid ||
 		    ((logical ^ path->match_tci) & path->match_mask))
 			goto mismatch;
-	
+
 		if (!i)
 			first = logical;
-	
+
 		preserve &= !((logical ^ input) & pbits);
 		constant &= !((logical ^ first) & pbits);
 	}
@@ -1144,7 +1228,7 @@ static bool airoha_ppe_vlan_match(struct airoha_ppe *ppe,
 	if (path->bridge_preserve) {
 		if (!preserve && !constant)
 			return false;
-	
+
 		*output = first;
 		*keep_pcp = preserve;
 	}
@@ -1181,7 +1265,7 @@ static int airoha_ppe_vlan_prepare(struct airoha_ppe *ppe,
 
 		if (!port || READ_ONCE(port->xpon_tx_stopped))
 			return -ENETDOWN;
-	
+
 		if (eth->soc->foe_format == AIROHA_FOE_FORMAT_V1) {
 			ib2 = *airoha_foe_v1_ib2(entry);
 			data = *airoha_foe_v1_data(entry);
@@ -1202,15 +1286,15 @@ static int airoha_ppe_vlan_prepare(struct airoha_ppe *ppe,
 				data = entry->ipv4.data;
 				info.gem_port_id = entry->ipv4.l2.common.etype;
 			}
-	
+
 			info.tcont = FIELD_GET(AIROHA_FOE_CHANNEL, data);
 			info.queue = FIELD_GET(AIROHA_FOE_QID, data);
 		}
-	
+
 		ret = airoha_ppe_vlan_rewrite(port, path, &info, &tci, &keep_pcp);
 		if (ret)
 			return ret;
-	
+
 		return airoha_ppe_vlan_encode(eth, entry, path, tci, keep_pcp, &info);
 	}
 
@@ -1358,7 +1442,8 @@ static int airoha_ppe_foe_entry_prepare(struct airoha_eth *eth,
 				wifi_idx = airoha_whnat_vif_index(netdev);
 			if (wifi_idx >= 0) {
 				/* CPU-assisted WiFi egress retains the vif in a VLAN tag. */
-				if (data->vlan.num || data->pppoe.num ||
+				if (airoha_is(eth, airoha_en7523) ||
+				    data->vlan.num || data->pppoe.num ||
 				    type != PPE_PKT_TYPE_IPV4_HNAPT)
 					return -EOPNOTSUPP;
 				/* EN7580: disable both six-bit meter/account groups. */
@@ -2006,13 +2091,23 @@ static int airoha_ppe_foe_commit_entry(struct airoha_ppe *ppe,
 		dev_dbg(eth->dev, "NPU not attached, skipping FOE stats setup for entry %u\n",
 			sw_idx);
 
-	/* FOE programming must not depend on the optional NPU/stats path.
-	 * EN7523 systems can run with no attached NPU; in that case DRAM entries
-	 * are already written above through the coherent FOE table, while SRAM
-	 * entries still need the explicit SRAM_CTRL write below.
-	 */
-	if (sw_idx < sram_num_entries)
-		err = airoha_ppe_foe_commit_sram_entry(ppe, sw_idx);
+	if (sw_idx < sram_num_entries) {
+		if (npu && eth->ppe_host_ops && eth->ppe_host_ops->npu_foe_commit) {
+			dma_addr_t addr = ppe->common.foe_dma +
+					  sw_idx * AIROHA_FOE_ENTRY_SIZE;
+			bool ppe2 = sw_idx >= eth->soc->ppe_sram_entries;
+
+			err = eth->ppe_host_ops->npu_foe_commit(npu, addr,
+							   AIROHA_FOE_ENTRY_SIZE,
+							   airoha_ppe_sw_to_hw_idx(ppe, sw_idx),
+							   ppe2);
+		} else {
+			err = -EOPNOTSUPP;
+		}
+		/* A timed-out NPU may still use the window; do not race it. */
+		if (err == -EOPNOTSUPP || err == -ENODEV)
+			err = airoha_ppe_foe_commit_sram_entry(ppe, sw_idx);
+	}
 
 	rcu_read_unlock();
 
@@ -3378,6 +3473,7 @@ static int airoha_ppe_offload_setup(struct airoha_eth *eth)
 
 	rcu_assign_pointer(eth->npu, npu);
 	synchronize_rcu();
+	WRITE_ONCE(ppe->offload_setup_done, true);
 
 	dev_info(eth->dev, "PPE offload setup completed successfully\n");
 	return 0;
@@ -4138,7 +4234,6 @@ static int airoha_ppe_v1_netdev_event(struct notifier_block *nb,
 	return NOTIFY_DONE;
 }
 
-#if IS_ENABLED(CONFIG_NET_AIROHA_WHNAT)
 /*
  * A WiFi vif went away: stop its bound flows and keep them from being bound
  * again. They stay listed, so that the flow table's DESTROY, the flush of
@@ -4185,7 +4280,6 @@ void airoha_whnat_invalidate_vif(struct airoha_ppe *ppe, int idx)
 	airoha_ppe_v1_cache_clean(ppe);
 	spin_unlock_bh(&ppe->v1.lock);
 }
-#endif
 
 static u16 airoha_ppe_v1_find_bind_way(struct airoha_ppe *ppe,
 				    struct airoha_flow_table_entry *flow, u16 hash,

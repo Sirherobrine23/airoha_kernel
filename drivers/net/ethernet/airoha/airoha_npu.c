@@ -36,6 +36,9 @@
 #define NPU_EN7581_FIRMWARE_DATA_MAX_SIZE	0x10000
 #define NPU_DUMP_SIZE				512
 #define NPU_FIRMWARE_RETRY_MS			1000
+#define NPU_V1_BOOT_READY			0xcccccccc
+#define NPU_V1_BOOT_POLL_US			10000
+#define NPU_V1_BOOT_TIMEOUT_US			(40 * USEC_PER_SEC)
 /*
  * Mailbox DMA payload size. Covers sizeof(struct ppe_mbox_data) (28) and
  * WLAN TLV messages (header + payload); largest in-tree WLAN payload today
@@ -111,14 +114,18 @@
 
 #define STATIC_L2C_SRAM_SIZE(_SOC)	((_SOC)->version == NPU_V2 ? SZ_256K : SZ_128K)
 
-enum {
+#define VERSION_MAJOR(version)		(((version) >> 22) & 0xff)
+#define VERSION_MINOR(version)		(((version) >> 12) & 0xff)
+#define VERSION_PATCH(version)		((version) & 0xff)
+
+enum func_type {
 	NPU_OP_SET = 1,
 	NPU_OP_SET_NO_WAIT,
 	NPU_OP_GET,
 	NPU_OP_GET_NO_WAIT,
 };
 
-enum {
+enum mailbox_callbacks {
 	NPU_FUNC_WIFI,
 	NPU_FUNC_TUNNEL,
 	NPU_FUNC_NOTIFY,
@@ -130,6 +137,9 @@ enum {
 enum {
 	NPU_MBOX_ERROR,
 	NPU_MBOX_SUCCESS,
+	NPU_MBOX_EINVAL,
+	NPU_MBOX_EOPNOTSUPP,
+	NPU_MBOX_ENODEV,
 };
 
 enum {
@@ -168,7 +178,7 @@ struct airoha_npu_soc_data {
 	struct airoha_npu_fw fw_rv32;
 	struct airoha_npu_fw fw_data;
 
-	void (*boot_core)(struct airoha_npu *npu, struct reserved_mem *rmem);
+	int (*boot_core)(struct airoha_npu *npu, struct reserved_mem *rmem);
 };
 
 struct airoha_npu_priv {
@@ -230,9 +240,8 @@ struct ppe_mbox_data {
 };
 
 struct wlan_mbox_data {
-	u32 ifindex:4;
-	u32 func_type:4;
-	u32 func_id;
+	__le32 op;
+	__le32 func_id;
 	DECLARE_FLEX_ARRAY(u8, d);
 };
 
@@ -297,13 +306,17 @@ static inline u32 airoha_npu_debugfs_level(struct airoha_npu *npu)
 }
 #endif
 
-static int __airoha_npu_send_msg(struct airoha_npu *npu, int func_id,
-				 const void *data, int len, void *reply,
-				 u16 reply_len)
+static int airoha_npu_send_msg_locked(struct airoha_npu *npu, int func_id,
+				      const void *data, int len, void *reply,
+				      u16 reply_len)
 {
 	struct airoha_npu_core *core = &npu->cores[0]; /* FIXME: core */
 	u32 val, offset = 0;
 	int ret;
+
+	if (!data || len <= 0 || len > AIROHA_NPU_MBOX_SIZE ||
+	    func_id < 0 || func_id > FIELD_MAX(MBOX_MSG_FUNC_ID))
+		return -EINVAL;
 
 	if (reply && reply_len > len)
 		return -EINVAL;
@@ -326,17 +339,19 @@ static int __airoha_npu_send_msg(struct airoha_npu *npu, int func_id,
 	 * bounce buffer under the per-core lock (also used from PPE
 	 * foe_commit under atomic context).
 	 */
-	spin_lock_bh(&core->lock);
+	lockdep_assert_held(&core->lock);
 
 	memcpy(core->buf, data, len);
 	dma_wmb();
 
 	regmap_write(npu->regmap, REG_CR_MBQ0_CTRL(0) + offset, core->addr);
 	regmap_write(npu->regmap, REG_CR_MBQ0_CTRL(1) + offset, len);
-	regmap_read(npu->regmap, REG_CR_MBQ0_CTRL(2) + offset, &val);
-	regmap_write(npu->regmap, REG_CR_MBQ0_CTRL(2) + offset, val + 1);
 	val = FIELD_PREP(MBOX_MSG_FUNC_ID, func_id) | MBOX_MSG_WAIT_RSP;
 	regmap_write(npu->regmap, REG_CR_MBQ0_CTRL(3) + offset, val);
+	/* CTRL2 raises the IRQ after the complete request is visible. */
+	wmb();
+	regmap_read(npu->regmap, REG_CR_MBQ0_CTRL(2) + offset, &val);
+	regmap_write(npu->regmap, REG_CR_MBQ0_CTRL(2) + offset, val + 1);
 
 	ret = regmap_read_poll_timeout_atomic(npu->regmap,
 					      REG_CR_MBQ0_CTRL(3) + offset,
@@ -348,7 +363,18 @@ static int __airoha_npu_send_msg(struct airoha_npu *npu, int func_id,
 					   AIROHA_NPU_DBG_MBOX_TIMEOUTS);
 		airoha_npu_debugfs_count(npu, AIROHA_NPU_DBG_MBOX_ERRORS);
 	} else if (FIELD_GET(MBOX_MSG_STATUS, val) != NPU_MBOX_SUCCESS) {
-		ret = -EINVAL;
+		ret = FIELD_GET(MBOX_MSG_STATUS, val);
+		switch (ret) {
+		case NPU_MBOX_EOPNOTSUPP:
+			ret = -EOPNOTSUPP;
+			break;
+		case NPU_MBOX_ENODEV:
+			ret = -ENODEV;
+			break;
+		default:
+			ret = -EINVAL;
+			break;
+		}
 		airoha_npu_debugfs_count(npu, AIROHA_NPU_DBG_MBOX_ERRORS);
 	} else {
 		airoha_npu_debugfs_count(npu, AIROHA_NPU_DBG_MBOX_SUCCESS);
@@ -358,11 +384,23 @@ static int __airoha_npu_send_msg(struct airoha_npu *npu, int func_id,
 	if (!ret && reply)
 		memcpy(reply, core->buf + len - reply_len, reply_len);
 
-	spin_unlock_bh(&core->lock);
-
 	if (airoha_npu_debugfs_level(npu) >= 2)
 		dev_dbg(npu->dev, "mbox func=%d size=%d status=%#x ret=%d\n",
 			func_id, len, val, ret);
+
+	return ret;
+}
+
+static int __airoha_npu_send_msg(struct airoha_npu *npu, int func_id,
+				 const void *data, int len, void *reply,
+				 u16 reply_len)
+{
+	struct airoha_npu_core *core = &npu->cores[0];
+	int ret;
+
+	spin_lock_bh(&core->lock);
+	ret = airoha_npu_send_msg_locked(npu, func_id, data, len, reply, reply_len);
+	spin_unlock_bh(&core->lock);
 
 	return ret;
 }
@@ -535,7 +573,7 @@ static int airoha_npu_ppe_init(struct airoha_npu *npu)
 	ppe_data->func_type = NPU_OP_SET;
 	ppe_data->func_id = PPE_FUNC_SET_WAIT_HWNAT_INIT;
 	ppe_data->init_info.ppe_type = PPE_TYPE_L2B_IPV4_IPV6;
-	ppe_data->init_info.wan_mode = QDMA_WAN_ETHER;
+	ppe_data->init_info.wan_mode = QDMA_WAN_ETHER; /* Needs fix for xPON MAC in use */
 
 	err = airoha_npu_send_msg(npu, NPU_FUNC_PPE, ppe_data,
 				  sizeof(*ppe_data));
@@ -591,34 +629,32 @@ static int airoha_npu_foe_commit_entry(struct airoha_npu *npu,
 				       dma_addr_t foe_addr,
 				       u32 entry_size, u32 hash, bool ppe2)
 {
-	struct ppe_mbox_data *ppe_data;
+	struct airoha_npu_core *core = &npu->cores[0];
+	struct ppe_mbox_data msg = {};
 	int err;
 
-	ppe_data = kzalloc(sizeof(*ppe_data), GFP_ATOMIC);
-	if (!ppe_data)
-		return -ENOMEM;
+	if (upper_32_bits(foe_addr) || entry_size != 80)
+		return -EINVAL;
+	msg.func_type = NPU_OP_SET;
+	msg.func_id = PPE_FUNC_SET_WAIT_API;
+	msg.set_info.data = lower_32_bits(foe_addr);
+	msg.set_info.size = entry_size;
+	msg.set_info.func_id = ppe2 ? PPE2_SRAM_SET_ENTRY : PPE_SRAM_SET_ENTRY;
 
-	ppe_data->func_type = NPU_OP_SET;
-	ppe_data->func_id = PPE_FUNC_SET_WAIT_API;
-	ppe_data->set_info.data = foe_addr;
-	ppe_data->set_info.size = entry_size;
-	ppe_data->set_info.func_id = ppe2 ? PPE2_SRAM_SET_ENTRY
-					  : PPE_SRAM_SET_ENTRY;
-
-	err = airoha_npu_send_msg(npu, NPU_FUNC_PPE, ppe_data,
-				  sizeof(*ppe_data));
+	/* The SDK stage/hash pair is one transaction on the shared mailbox. */
+	spin_lock_bh(&core->lock);
+	err = airoha_npu_send_msg_locked(npu, NPU_FUNC_PPE, &msg,
+					 sizeof(msg), NULL, 0);
 	if (err)
 		goto out;
 
-	ppe_data->set_info.func_id = PPE_SRAM_SET_VAL;
-	ppe_data->set_info.data = hash;
-	ppe_data->set_info.size = sizeof(u32);
-
-	err = airoha_npu_send_msg(npu, NPU_FUNC_PPE, ppe_data,
-				  sizeof(*ppe_data));
+	msg.set_info.func_id = PPE_SRAM_SET_VAL;
+	msg.set_info.data = hash;
+	msg.set_info.size = sizeof(u32);
+	err = airoha_npu_send_msg_locked(npu, NPU_FUNC_PPE, &msg,
+					 sizeof(msg), NULL, 0);
 out:
-	kfree(ppe_data);
-
+	spin_unlock_bh(&core->lock);
 	return err;
 }
 
@@ -660,14 +696,19 @@ static int airoha_npu_wlan_msg_send(struct airoha_npu *npu, int ifindex,
 	struct wlan_mbox_data *wlan_data;
 	int err, len;
 
+	if ((unsigned int)func_id >= WLAN_FUNC_SET_WAIT_MAX ||
+	    ifindex < 0 || ifindex > 0xf || !data ||
+	    data_len < sizeof(u32) ||
+	    data_len > AIROHA_NPU_MBOX_SIZE - sizeof(*wlan_data))
+		return -EINVAL;
+
 	len = sizeof(*wlan_data) + data_len;
 	wlan_data = kzalloc(len, gfp);
 	if (!wlan_data)
 		return -ENOMEM;
 
-	wlan_data->ifindex = ifindex;
-	wlan_data->func_type = NPU_OP_SET;
-	wlan_data->func_id = func_id;
+	wlan_data->op = cpu_to_le32(ifindex | (NPU_OP_SET << 4));
+	wlan_data->func_id = cpu_to_le32(func_id);
 	memcpy(wlan_data->d, data, data_len);
 
 	err = airoha_npu_send_msg(npu, NPU_FUNC_WIFI, wlan_data, len);
@@ -683,15 +724,19 @@ static int airoha_npu_wlan_msg_get(struct airoha_npu *npu, int ifindex,
 	struct wlan_mbox_data *wlan_data;
 	int err, len;
 
+	if ((unsigned int)func_id >= WLAN_FUNC_GET_WAIT_MAX ||
+	    ifindex < 0 || ifindex > 0xf || !data ||
+	    data_len < sizeof(u32) ||
+	    data_len > AIROHA_NPU_MBOX_SIZE - sizeof(*wlan_data))
+		return -EINVAL;
+
 	len = sizeof(*wlan_data) + data_len;
 	wlan_data = kzalloc(len, gfp);
 	if (!wlan_data)
 		return -ENOMEM;
 
-	wlan_data->ifindex = ifindex;
-	wlan_data->func_type = NPU_OP_GET;
-	wlan_data->func_id = func_id;
-
+	wlan_data->op = cpu_to_le32(ifindex | (NPU_OP_GET << 4));
+	wlan_data->func_id = cpu_to_le32(func_id);
 	err = __airoha_npu_send_msg(npu, NPU_FUNC_WIFI, wlan_data, len,
 				    data, data_len);
 	kfree(wlan_data);
@@ -830,14 +875,17 @@ static int airoha_npu_debugfs_status_show(struct seq_file *m, void *private)
 	regmap_read(npu->regmap, REG_IRQ_STATUS, &irq_status);
 
 	seq_printf(m, "device: %s\n", dev_name(npu->dev));
-	seq_printf(m, "npu_interface: v%u\n", npu->soc_data->version + 1);
+	seq_printf(m, "npu_interface: v%u\n",
+		   npu->soc_data->version == NPU_V1 ? 1 : 2);
 	seq_printf(m, "cores: %d\n", MAX_NPU_CORES(npu->soc_data));
-	if (dbg->fw_version_valid)
-		seq_printf(m, "firmware: v%u.%u (0x%08x)\n",
-			   dbg->fw_version >> 16, dbg->fw_version & 0xffff,
-			   dbg->fw_version);
-	else
+	if (!dbg->fw_version_valid)
 		seq_puts(m, "firmware: unavailable\n");
+	else
+		seq_printf(m, "firmware: v%u.%u.%u (0x%08x)\n",
+			   VERSION_MAJOR(dbg->fw_version),
+			   VERSION_MINOR(dbg->fw_version),
+			   VERSION_PATCH(dbg->fw_version),
+			   dbg->fw_version);
 	seq_printf(m, "boot_config: 0x%08x\n", boot_config);
 	seq_printf(m, "boot_trigger: 0x%08x\n", boot_trigger);
 	seq_printf(m, "wlan_irq_status: 0x%08x\n", irq_status);
@@ -1177,9 +1225,11 @@ static int airoha_npu_debugfs_json_show(struct seq_file *m, void *private)
 		   "\"cores\": %d},\n  \"firmware\": ",
 		   npu->soc_data->version, MAX_NPU_CORES(npu->soc_data));
 	if (dbg->fw_version_valid)
-		seq_printf(m, "{\"major\": %u, \"minor\": %u, "
+		seq_printf(m, "{\"major\": %u, \"minor\": %u, \"patch\": %u, "
 			   "\"raw\": %u, \"raw_hex\": \"0x%08x\"}",
-			   dbg->fw_version >> 16, dbg->fw_version & 0xffff,
+			   VERSION_MAJOR(dbg->fw_version),
+			   VERSION_MINOR(dbg->fw_version),
+			   VERSION_PATCH(dbg->fw_version),
 			   dbg->fw_version, dbg->fw_version);
 	else
 		seq_puts(m, "null");
@@ -1506,34 +1556,65 @@ void airoha_npu_put(struct airoha_npu *npu)
 }
 EXPORT_SYMBOL_GPL(airoha_npu_put);
 
-static void airoha_boot_core_v1(struct airoha_npu *npu,
-				struct reserved_mem *rmem)
+static int airoha_boot_core_v1(struct airoha_npu *npu,
+			       struct reserved_mem *rmem)
 {
-	u32 val = 0x1, boot = 0x1;
-	int core;
+	u32 val = 0x1, boot = 0x1, ready = 0;
+	int core, ret;
+
+	/* Do not accept a ready marker left by the previous firmware instance. */
+	ret = regmap_write(npu->regmap, REG_CR_NPU_MIB(31), 0);
+	if (ret)
+		return ret;
 
 	/* setting booting address */
 	for (core = 0; core < MAX_NPU_CORES(npu->soc_data); core++) {
-		regmap_write(npu->regmap, REG_CR_BOOT_BASE(npu->soc_data, core), rmem->base);
+		ret = regmap_write(npu->regmap,
+				   REG_CR_BOOT_BASE(npu->soc_data, core), rmem->base);
+		if (ret)
+			return ret;
 		usleep_range(1000, 2000);
 
 		if (core > 0) {
 			boot = 0x2;
-			regmap_read(npu->regmap, REG_CR_BOOT_CONFIG(npu->soc_data), &val);
+			ret = regmap_read(npu->regmap,
+					  REG_CR_BOOT_CONFIG(npu->soc_data), &val);
+			if (ret)
+				return ret;
 			val &= 0xff;          /* keep old enabled bits */
 			val |= (0x1 << core);   /* add new enable bit for CoreX */
 			val |= (0x100 << core); /* add reboot bit for CoreX */
 		}
 
-		regmap_write(npu->regmap, REG_CR_BOOT_CONFIG(npu->soc_data), val);
-		regmap_write(npu->regmap, REG_CR_BOOT_TRIGGER(npu->soc_data), boot);
+		ret = regmap_write(npu->regmap, REG_CR_BOOT_CONFIG(npu->soc_data), val);
+		if (ret)
+			return ret;
+		ret = regmap_write(npu->regmap, REG_CR_BOOT_TRIGGER(npu->soc_data), boot);
+		if (ret)
+			return ret;
 
 		msleep(100);
 	}
+
+	/* MIB31 is a global firmware-init marker, not a per-core acknowledgment. */
+	ret = regmap_read_poll_timeout(npu->regmap, REG_CR_NPU_MIB(31), ready,
+				       ready == NPU_V1_BOOT_READY,
+				       NPU_V1_BOOT_POLL_US, NPU_V1_BOOT_TIMEOUT_US);
+	if (ret) {
+		if (ret == -ETIMEDOUT)
+			dev_err(npu->dev,
+				"NPU initialization timed out after 40 s (MIB31=%#010x)\n",
+				ready);
+		else
+			dev_err(npu->dev, "failed to read NPU ready marker: %d\n", ret);
+		return ret;
+	}
+
+	return 0;
 }
 
-static void airoha_boot_core_v2(struct airoha_npu *npu,
-				struct reserved_mem *rmem)
+static int airoha_boot_core_v2(struct airoha_npu *npu,
+			       struct reserved_mem *rmem)
 {
 	int i;
 
@@ -1547,6 +1628,8 @@ static void airoha_boot_core_v2(struct airoha_npu *npu,
 		     GENMASK(MAX_NPU_CORES(npu->soc_data) - 1, 0));
 	regmap_write(npu->regmap, REG_CR_BOOT_TRIGGER(npu->soc_data), 0x1);
 	msleep(100);
+
+	return 0;
 }
 
 static bool is_fpga(struct regmap *scuclk)
@@ -1605,19 +1688,23 @@ static int airoha_npu_probe_cpu_cores(struct airoha_npu *npu)
 					  "airoha,enable_npu_tx_uart"));
 	msleep(100);
 
-	/* The Ethernet datapath is fully registered before the cores start. */
-	npu->soc_data->boot_core(npu, priv->rmem);
-	/* Publish the initialized firmware state to airoha_npu_get(). */
-	smp_store_release(&priv->started, true);
-
+	/* Firmware and host mailbox buffers are ready before core release. */
+	err = npu->soc_data->boot_core(npu, priv->rmem);
+	if (err) {
+		dev_err(npu->dev, "failed to boot NPU cores: %d\n", err);
+		goto out_unlock;
+	}
+	
 	/* Get NPU firmware version when supported. */
 	err = airoha_npu_wlan_msg_get(npu, 0, WLAN_FUNC_GET_WAIT_NPU_VERSION,
 				      &npu_version, sizeof(npu_version),
 				      GFP_KERNEL);
 	if (!err) {
 		npu_version_valid = true;
-		dev_info(npu->dev, "NPU fw version: %u.%u\n",
-			 (npu_version >> 16) & 0xffff, npu_version & 0xffff);
+		dev_info(npu->dev, "NPU fw version: v%u.%u.%u\n",
+				   VERSION_MAJOR(npu_version),
+				   VERSION_MINOR(npu_version),
+				   VERSION_PATCH(npu_version));
 	} else if (err != -EOPNOTSUPP) {
 		dev_err(npu->dev, "cannot get NPU version: %d\n", err);
 	}
@@ -1626,7 +1713,8 @@ static int airoha_npu_probe_cpu_cores(struct airoha_npu *npu)
 	if (err)
 		dev_warn(npu->dev, "failed to initialize debugfs: %d\n", err);
 
-	/* Firmware is running even if optional version/debugfs setup failed. */
+	/* Publish after the optional version and debugfs setup is complete. */
+	smp_store_release(&priv->started, true);
 	err = 0;
 
 out_unlock:
@@ -1635,7 +1723,7 @@ out_unlock:
 	return err;
 }
 
-static void airoha_npu_start_work(struct work_struct *work)
+static void airoha_npu_firmware_work(struct work_struct *work)
 {
 	struct airoha_npu_priv *priv;
 	int err;
@@ -1652,52 +1740,6 @@ static void airoha_npu_start_work(struct work_struct *work)
 	if (err)
 		dev_err(priv->npu.dev, "failed to start NPU: %d\n", err);
 }
-
-int airoha_npu_start(struct device *dev)
-{
-	struct platform_device *pdev;
-	struct device_node *np;
-	struct airoha_npu *npu;
-	int err;
-
-	np = of_parse_phandle(dev->of_node, "airoha,npu", 0);
-	if (!np)
-		return -ENODEV;
-
-	if (!of_device_is_available(np)) {
-		of_node_put(np);
-		return -ENODEV;
-	}
-
-	pdev = of_find_device_by_node(np);
-	of_node_put(np);
-	if (!pdev)
-		return -EPROBE_DEFER;
-
-	device_lock(&pdev->dev);
-	npu = platform_get_drvdata(pdev);
-	if (!npu) {
-		err = -EPROBE_DEFER;
-		goto out_unlock_device;
-	}
-
-	err = airoha_npu_probe_cpu_cores(npu);
-	if (err == -EPROBE_DEFER) {
-		mod_delayed_work(system_wq,
-				 &airoha_npu_to_priv(npu)->start_work,
-				 msecs_to_jiffies(NPU_FIRMWARE_RETRY_MS));
-		dev_info(npu->dev,
-			 "firmware unavailable; NPU startup will be retried\n");
-		err = 0;
-	}
-
-out_unlock_device:
-	device_unlock(&pdev->dev);
-	platform_device_put(pdev);
-
-	return err;
-}
-EXPORT_SYMBOL_GPL(airoha_npu_start);
 
 static int airoha_npu_probe(struct platform_device *pdev)
 {
@@ -1720,7 +1762,6 @@ static int airoha_npu_probe(struct platform_device *pdev)
 	npu = &priv->npu;
 	priv->base = base;
 	mutex_init(&priv->start_lock);
-	INIT_DELAYED_WORK(&priv->start_work, airoha_npu_start_work);
 
 	npu->soc_data = of_device_get_match_data(dev);
 	if (!npu->soc_data)
@@ -1819,7 +1860,7 @@ static int airoha_npu_probe(struct platform_device *pdev)
 			irq = platform_get_irq_byname(pdev, watchdog_name);
 			if (irq < 0)
 				return dev_err_probe(dev, irq, "error on get irq to " NPU_WATCHDOG_INTNAME, i);
-	
+
 			err = devm_request_irq(dev, irq, airoha_npu_wdt_handler,
 					       IRQF_SHARED, "airoha-npu-wdt", core);
 			if (err)
@@ -1827,15 +1868,29 @@ static int airoha_npu_probe(struct platform_device *pdev)
 		}
 	}
 
-	platform_set_drvdata(pdev, npu);
-	dev_info(dev, "NPU ready; waiting for Ethernet datapath\n");
+	err = devm_delayed_work_autocancel(dev, &priv->start_work,
+					   airoha_npu_firmware_work);
+	if (err)
+		return err;
 
-	return 0;
+	platform_set_drvdata(pdev, npu);
+	err = airoha_npu_probe_cpu_cores(npu);
+	if (err == -EPROBE_DEFER) {
+		mod_delayed_work(system_wq, &priv->start_work,
+				 msecs_to_jiffies(NPU_FIRMWARE_RETRY_MS));
+		dev_info(dev,
+			 "firmware unavailable; NPU startup will be retried\n");
+		return 0;
+	}
+
+	return err;
 }
 
 static void airoha_npu_remove(struct platform_device *pdev)
 {
 	struct airoha_npu *npu = platform_get_drvdata(pdev);
+
+	cancel_delayed_work_sync(&airoha_npu_to_priv(npu)->start_work);
 	airoha_npu_debugfs_remove(npu);
 }
 

@@ -61,17 +61,6 @@ config NET_AIROHA_SOC_WED
 
 	  If unsure, say N.
 
-config NET_AIROHA_WHNAT
-	bool "EcoNet PPE WHNAT"
-	depends on NET_AIROHA
-	depends on SOC_ECONET_EN751221 || SOC_ECONET_EN751627 || SOC_ECONET_EN7528 || COMPILE_TEST
-	select CFG80211_HEADERS
-	help
-	  Let PPE forward NAT flows from and to WiFi netdevs
-	  whose radios have no WED support.
-
-	  If unsure, say N.
-
 config AIROHA_XPON
 	tristate "Airoha xPON MAC driver"
 	depends on ARCH_AIROHA || ECONET || COMPILE_TEST

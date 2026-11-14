@@ -16,6 +16,11 @@
 struct device;
 struct device_node;
 struct net_device;
+struct napi_struct;
+
+/* Consumes a validated Ethernet exception from the EN7523 NPU host ring. */
+void airoha_npu_rx_skb(struct sk_buff *skb, struct napi_struct *napi,
+		       u8 vif, u8 reason, u16 hash);
 
 enum {
 	PPE_CPU_REASON_HIT_UNBIND_RATE_REACHED = 0x0f,
@@ -175,6 +180,7 @@ enum airoha_npu_version {
 enum airoha_npu_wlan_chip {
 	AIROHA_NPU_WLAN_NONE,
 	AIROHA_NPU_WLAN_MT7915,
+	AIROHA_NPU_WLAN_MT7915_DBDC,
 	AIROHA_NPU_WLAN_MT7916,
 	AIROHA_NPU_WLAN_MT7990,
 	AIROHA_NPU_WLAN_MT7992,
@@ -216,7 +222,6 @@ enum airoha_npu_wlan_set_cmd {
 	WLAN_FUNC_SET_WAIT_ARHT_CHIP_INFO,
 	WLAN_FUNC_SET_WAIT_TX_BUF_CHECK_ADDR,
 	WLAN_FUNC_SET_WAIT_TOKEN_ID_SIZE,
-
 	WLAN_FUNC_SET_WAIT_MAX,
 };
 
@@ -232,7 +237,6 @@ enum airoha_npu_wlan_get_cmd {
 	WLAN_FUNC_GET_WAIT_NPU_SUPPORT_MAP,
 	WLAN_FUNC_GET_WAIT_MDC_LOCK_ADDRESS,
 	WLAN_FUNC_GET_WAIT_NPU_VERSION,
-
 	WLAN_FUNC_GET_WAIT_MAX,
 };
 
@@ -288,7 +292,6 @@ struct airoha_npu {
 };
 
 #if (IS_BUILTIN(CONFIG_NET_AIROHA_NPU) || IS_MODULE(CONFIG_NET_AIROHA_NPU))
-int airoha_npu_start(struct device *dev);
 struct airoha_npu *airoha_npu_get(struct device *dev);
 void airoha_npu_put(struct airoha_npu *npu);
 
@@ -339,11 +342,6 @@ static inline void airoha_npu_wlan_disable_irq(struct airoha_npu *npu, int q)
 	npu->ops.wlan_disable_irq(npu, q);
 }
 #else
-static inline int airoha_npu_start(struct device *dev)
-{
-	return -EOPNOTSUPP;
-}
-
 static inline struct airoha_npu *airoha_npu_get(struct device *dev)
 {
 	return NULL;
