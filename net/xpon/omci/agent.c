@@ -759,7 +759,6 @@ omci_agent_profile_state_locked(struct omci_agent *agent,
 static int omci_agent_profile_reconcile_locked(struct omci_device *odev,
 					       u8 old_profile, u8 new_profile);
 static int omci_agent_clear_services_locked(struct omci_device *odev);
-static int omci_agent_reconcile_services_locked(struct omci_device *odev);
 static void omci_agent_reset_duplicate_locked(struct omci_agent *agent);
 
 static void omci_agent_free_object_array(struct xarray *objects)
@@ -3210,9 +3209,14 @@ static int omci_agent_resolve_bridge_locked(
 		u8 wan_type;
 		unsigned int pcp;
 
+		/*
+		 * A port that is being deleted is still stored, marked, while
+		 * the services are worked out without it.
+		 */
 		if (wan_port->class_id !=
 			    OMCI_CLASS_MAC_BRIDGE_PORT_CONFIG_DATA ||
 		    wan_port == lan_port ||
+		    !omci_mib_object_active(agent, wan_port) ||
 		    get_unaligned_be16(wan_port->data) != bridge_id)
 			continue;
 		wan_type = wan_port->data[3];
@@ -3350,7 +3354,7 @@ static int omci_agent_stage_tagging_op_locked(struct omci_device *odev,
 	return 0;
 }
 
-static int omci_agent_reconcile_services_locked(struct omci_device *odev)
+int omci_agent_reconcile_services_locked(struct omci_device *odev)
 {
 	struct omci_agent *agent = &odev->agent;
 	struct omci_mib_object *object;

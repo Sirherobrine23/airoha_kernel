@@ -838,6 +838,78 @@ static void omci_provider_rollback_test(struct kunit *test)
 		KUNIT_EXPECT_FALSE(test, ctx->vlan_used[i]);
 }
 
+/*
+ * A Delete marks its object, works the services out again and only then
+ * removes it (omci_agent_delete_locked()). Deleting the ANI-side port of a
+ * bridge has to take its service out of the hardware in that step.
+ */
+static void omci_services_deleted_ani_port_test(struct kunit *test)
+{
+	struct omci_services_test_context *ctx = test->priv;
+	struct omci_mib_object *objects, *uni, *lan, *ani, *iwtp, *gem, *tcont;
+	unsigned int i, installed = 0;
+	int ret;
+
+	objects = kunit_kcalloc(test, 6, sizeof(*objects), GFP_KERNEL);
+	KUNIT_ASSERT_NOT_NULL(test, objects);
+	/* Administrative state 0: unlocked */
+	uni = &objects[0];
+	uni->class_id = OMCI_CLASS_PPTP_ETHERNET_UNI;
+	uni->entity_id = 0x101;
+	/* Bridge 1, TP type 1 (PPTP Ethernet UNI) */
+	lan = &objects[1];
+	lan->class_id = OMCI_CLASS_MAC_BRIDGE_PORT_CONFIG_DATA;
+	lan->entity_id = 1;
+	put_unaligned_be16(1, lan->data);
+	lan->data[3] = 1;
+	put_unaligned_be16(uni->entity_id, lan->data + 4);
+	/* Bridge 1, TP type 5 (GEM interworking TP) */
+	ani = &objects[2];
+	ani->class_id = OMCI_CLASS_MAC_BRIDGE_PORT_CONFIG_DATA;
+	ani->entity_id = 2;
+	put_unaligned_be16(1, ani->data);
+	ani->data[3] = 5;
+	put_unaligned_be16(0x201, ani->data + 4);
+	iwtp = &objects[3];
+	iwtp->class_id = OMCI_CLASS_GEM_IWTP;
+	iwtp->entity_id = 0x201;
+	put_unaligned_be16(0x301, iwtp->data);
+	gem = &objects[4];
+	gem->class_id = OMCI_CLASS_GEM_PORT_CTP;
+	gem->entity_id = 0x301;
+	gem->origin = OMCI_MIB_ORIGIN_OLT;
+	put_unaligned_be16(295, gem->data);
+	put_unaligned_be16(0x8000, gem->data + 2);
+	gem->data[4] = OMCI_GEM_PORT_DIRECTION_BIDIRECTIONAL;
+	tcont = &objects[5];
+	tcont->class_id = OMCI_CLASS_TCONT;
+	tcont->entity_id = 0x8000;
+	put_unaligned_be16(295, tcont->data);
+	for (i = 0; i < 6; i++) {
+		unsigned long key = ((unsigned long)objects[i].class_id << 16) |
+				    objects[i].entity_id;
+
+		ret = xa_insert(&ctx->odev.agent.mib, key, &objects[i], GFP_KERNEL);
+		KUNIT_ASSERT_EQ(test, ret, 0);
+	}
+
+	mutex_lock(&ctx->odev.agent.lock);
+	ret = omci_agent_reconcile_services_locked(&ctx->odev);
+	mutex_unlock(&ctx->odev.agent.lock);
+	KUNIT_ASSERT_EQ(test, ret, 0);
+	for (i = 0; i < OMCI_TEST_CAPACITY; i++)
+		installed += ctx->used[i] && ctx->hardware[i].gem_port_id == 295;
+	KUNIT_ASSERT_EQ(test, installed, 1U);
+
+	ani->pending_delete = true;
+	mutex_lock(&ctx->odev.agent.lock);
+	ret = omci_agent_reconcile_services_locked(&ctx->odev);
+	mutex_unlock(&ctx->odev.agent.lock);
+	KUNIT_ASSERT_EQ(test, ret, 0);
+	for (i = 0; i < OMCI_TEST_CAPACITY; i++)
+		KUNIT_EXPECT_FALSE(test, ctx->used[i]);
+}
+
 static struct kunit_case omci_services_test_cases[] = {
 	KUNIT_CASE(omci_services_full_reprovision_test),
 	KUNIT_CASE(omci_services_changed_cookie_test),
@@ -862,6 +934,7 @@ static struct kunit_case omci_services_test_cases[] = {
 	KUNIT_CASE(omci_services_vlan_delete_failure_test),
 	KUNIT_CASE(omci_services_vlan_restart_test),
 	KUNIT_CASE(omci_services_vlan_no_provider_test),
+	KUNIT_CASE(omci_services_deleted_ani_port_test),
 	{}
 };
 

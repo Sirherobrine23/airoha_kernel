@@ -53,6 +53,7 @@ struct omci_service_state {
 
 int omci_agent_apply_services_locked(struct omci_device *odev,
 				     struct xarray *desired);
+int omci_agent_reconcile_services_locked(struct omci_device *odev);
 int omci_service_delete(struct omci_device *odev,
 			const struct omci_service_config *config);
 void omci_ext_vlan_parse_rule(struct omci_extended_vlan_rule *rule,
