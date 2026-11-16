@@ -35,17 +35,17 @@
 
 		npu_pkt: npu-pkt@84d00000 {
 			no-map;
-			reg = <0x84d00000 0x01600000>;
+			reg = <0x84400000 0x01600000>;
 		};
 
 		qdma0_buf: qdma0-buf@86400000 {
 			no-map;
-			reg = <0x86400000 0x01000000>;
+			reg = <0x85a00000 0x01000000>;
 		};
 
 		qdma1_buf: qdma1-buf@88400000 {
 			no-map;
-			reg = <0x88400000 0x00800000>;
+			reg = <0x86a00000 0x00800000>;
 		};
 	};
 
@@ -699,7 +699,7 @@
 		      <0x1fa95700 0x568>;
 		reg-names = "pcie0", "pcie1";
 		#phy-cells = <0>;
-		airoha,chip_scu = <&chip_scu>;
+		airoha,chip-scu = <&chip_scu>;
 	};
 
 	pcie0: pcie@1fa91000 {
@@ -979,12 +979,12 @@
 		interrupt-names = "mbox", "wlan0", "wlan1", "wlan2",
 				  "wlan3", "wlan4", "wlan5";
 
-		resets = <&scuclk EN7523_NPU_RST>;
-		reset-names = "npu";
-
 		airoha,scu = <&scuclk>;
 		memory-region = <&npu_binary>, <&npu_pkt>;
 		memory-region-names = "binary", "pkt";
+
+		airoha,enable_npu_tx_uart;
+		status = "disabled";
 	};
 
 	wed0: wed@1fa02000 {
