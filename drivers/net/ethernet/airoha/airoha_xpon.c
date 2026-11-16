@@ -6412,6 +6412,12 @@ static int airoha_xpon_probe(struct platform_device *pdev)
 
 	eth_node = of_parse_phandle(dev->of_node, "ethernet", 0);
 	if (eth_node) {
+		if (!of_device_is_available(eth_node)) {
+			of_node_put(eth_node);
+			ret = dev_err_probe(dev, -EINVAL,
+					    "xPON GDM frontend is disabled\n");
+			goto err_put_gdm;
+		}
 		priv->gdm_dev = of_find_net_device_by_node(eth_node);
 		dev_info(dev, "%s datapath phandle: %pOF\n",
 			 airoha_xpon_mode_name(priv->mode), eth_node);

@@ -811,8 +811,8 @@
 				};
 			};
 
-			gdm2: ethernet@2 {
-				compatible = "econet,eth-mac";
+			gdm2_pon: ethernet@2 {
+				compatible = "airoha,eth-gdm2-pon", "econet,eth-mac";
 				reg = <2>;
 				phy-mode = "internal";
 

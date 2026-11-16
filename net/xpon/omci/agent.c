@@ -3151,7 +3151,8 @@ int omci_agent_stage_path_locked(struct omci_device *odev,
 					&object->vlan_filter.entries[i], NULL, NULL,
 					selector + i + 1, default_installed,
 					multicast, ani_entity_id, ani_valid);
-				if (ret == -EOPNOTSUPP)
+				if (ret == -EOPNOTSUPP &&
+				    !xpon_device_has_vlan_ops(odev->xpon))
 					continue;
 				if (ret)
 					return ret;

@@ -284,6 +284,11 @@ static int airoha_xdsl_resolve_datapath(struct airoha_xdsl *priv)
 		return dev_err_probe(priv->dev, -EINVAL,
 				     "missing GDM2 ethernet phandle\n");
 
+	if (!of_device_is_available(eth_node)) {
+		of_node_put(eth_node);
+		return dev_err_probe(priv->dev, -EINVAL,
+					     "xDSL GDM frontend is disabled\n");
+	}
 	priv->gdm_dev = of_find_net_device_by_node(eth_node);
 	of_node_put(eth_node);
 	if (!priv->gdm_dev)

@@ -1165,6 +1165,12 @@ struct airoha_xpon_tx_info {
 	bool tag;
 };
 
+enum airoha_gdm_frontend {
+	AIROHA_GDM_FRONTEND_ETHERNET = 1,
+	AIROHA_GDM_FRONTEND_PON,
+	AIROHA_GDM_FRONTEND_XDSL,
+};
+
 struct airoha_gdm_dev {
 	/* Must stay first: shared GDM/phylink and PPE port metadata. */
 	struct airoha_gdm_common common;
@@ -1191,6 +1197,7 @@ struct airoha_gdm_dev {
 
 	u32 flags;
 	int nbq;
+	enum airoha_gdm_frontend frontend;
 
 	struct airoha_hw_stats stats;
 
