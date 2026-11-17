@@ -755,7 +755,7 @@ static int airoha_ppe_vlan_device(struct airoha_eth *eth, struct net_device *dev
 				  bool *xpon, u16 *gem)
 {
 	struct xpon_endpoint_config endpoint;
-	struct airoha_gdm_common *gdm;
+	struct airoha_gdm_dev *gdm;
 	struct net_device *lower;
 
 	*xpon = false;
@@ -772,9 +772,66 @@ static int airoha_ppe_vlan_device(struct airoha_eth *eth, struct net_device *dev
 		dev = lower;
 		*gem = endpoint.wire_id;
 	}
-	gdm = airoha_gdm_common_from_netdev(dev);
+	gdm = airoha_gdm_from_netdev(dev);
 	*xpon = gdm && gdm->eth == eth &&
-		gdm->id == AIROHA_GDM2_IDX && airoha_ppe_xpon_port(eth);
+		gdm->port->id == AIROHA_GDM2_IDX && airoha_ppe_xpon_port(eth);
+
+	return 0;
+}
+
+/* A logical VLAN ingress has already consumed its tag in the network stack. */
+static int airoha_ppe_v1_vlan_ingress(struct airoha_eth *eth,
+				      struct flow_rule *rule,
+				      struct net_device *dev,
+				      struct airoha_ppe_vlan_path *path)
+{
+	if (eth->soc->foe_format != AIROHA_FOE_FORMAT_V1 ||
+	    !path->ingress_xpon || !dev || !is_vlan_dev(dev))
+		return 0;
+
+#if IS_ENABLED(CONFIG_VLAN_8021Q)
+	/* vlan_dev_real_dev() skips stacked VLANs. Check the immediate lower. */
+	if (is_vlan_dev(vlan_dev_priv(dev)->real_dev) ||
+	    vlan_dev_vlan_proto(dev) != htons(ETH_P_8021Q) ||
+	    flow_rule_match_key(rule, FLOW_DISSECTOR_KEY_VLAN))
+		return -EOPNOTSUPP;
+
+	path->ingress_vlan_ifindex = dev->ifindex;
+	path->ingress_lower_ifindex = vlan_dev_priv(dev)->real_dev->ifindex;
+#else
+	return -EOPNOTSUPP;
+#endif
+	path->logical_vlan_pop = true;
+	path->match_tpid = vlan_dev_vlan_proto(dev);
+	path->match_tci = vlan_dev_vlan_id(dev);
+	path->match_mask = VLAN_VID_MASK;
+
+	return 0;
+}
+
+/* A redirect to a VLAN upper implies a tag even without a TC VLAN_PUSH. */
+static int airoha_ppe_v1_vlan_egress(struct airoha_eth *eth,
+				     struct net_device *dev,
+				     struct airoha_ppe_vlan_path *path,
+				     int depth)
+{
+	if (eth->soc->foe_format != AIROHA_FOE_FORMAT_V1 ||
+	    !path->egress_xpon || !dev || !is_vlan_dev(dev))
+		return 0;
+
+	if (depth || path->output_tagged || is_vlan_dev(vlan_dev_real_dev(dev)) ||
+	    vlan_dev_vlan_proto(dev) != htons(ETH_P_8021Q))
+		return -EOPNOTSUPP;
+
+#if IS_ENABLED(CONFIG_VLAN_8021Q)
+	/* The L3 hardware key cannot represent skb priority mappings. */
+	if (READ_ONCE(vlan_dev_priv(dev)->nr_egress_mappings))
+		return -EOPNOTSUPP;
+#endif
+
+	path->output_tagged = true;
+	path->output_tpid = vlan_dev_vlan_proto(dev);
+	path->output_tci = vlan_dev_vlan_id(dev);
 
 	return 0;
 }
@@ -809,10 +866,14 @@ static int airoha_ppe_vlan_path(struct airoha_eth *eth, struct flow_rule *rule,
 		idev = dev_get_by_index_rcu(dev_net(odev), match.key->ingress_ifindex);
 		ret = airoha_ppe_vlan_device(eth, idev, &path->ingress_xpon,
 					     &path->ingress_gem);
+		if (!ret)
+			ret = airoha_ppe_v1_vlan_ingress(eth, rule, idev, path);
 		rcu_read_unlock();
-		if (ret)
-			return ret;
+	} else {
+		ret = airoha_ppe_v1_vlan_ingress(eth, rule, idev, path);
 	}
+	if (ret)
+		return ret;
 	if (!airoha_ppe_vlan_affected(path))
 		return 0;
 
@@ -850,7 +911,8 @@ static int airoha_ppe_vlan_path(struct airoha_eth *eth, struct flow_rule *rule,
 		switch (act->id) {
 		case FLOW_ACTION_VLAN_POP:
 			if (!depth) {
-				if (!path->ingress_xpon || vlan_action)
+				if (!path->ingress_xpon || vlan_action ||
+				    path->logical_vlan_pop)
 					return -EOPNOTSUPP;
 				/*
 				 * A logical xPON VLAN pop may lack a hardware
@@ -889,6 +951,10 @@ static int airoha_ppe_vlan_path(struct airoha_eth *eth, struct flow_rule *rule,
 		path->output_tpid = path->match_tpid;
 		path->output_tci = path->match_tci;
 	}
+
+	ret = airoha_ppe_v1_vlan_egress(eth, odev, path, depth);
+	if (ret)
+		return ret;
 
 	if (path->output_tagged && path->output_tpid != htons(ETH_P_8021Q))
 		return -EOPNOTSUPP;
@@ -1088,29 +1154,81 @@ static int airoha_ppe_vlan_read(struct sk_buff *skb, __be16 *proto, u16 *tci)
 	return 1;
 }
 
+/* Validate the VLAN upper recorded by the flow, not just the physical GDM. */
+static bool airoha_ppe_xpon_ingress_vlan_valid(const struct airoha_ppe_vlan_path *path,
+					       struct net_device *dev, u16 gem,
+					       __be16 proto, u16 vid)
+{
+	struct net_device *vlan_dev;
+#if IS_ENABLED(CONFIG_VLAN_8021Q)
+	struct xpon_endpoint_config endpoint;
+	struct net_device *lower, *physical;
+#endif
+
+	if (!path->ingress_vlan_ifindex) {
+		vlan_dev = __vlan_find_dev_deep_rcu(dev, proto, vid);
+		return vlan_dev && netif_running(vlan_dev);
+	}
+
+#if IS_ENABLED(CONFIG_VLAN_8021Q)
+	vlan_dev = dev_get_by_index_rcu(dev_net(dev), path->ingress_vlan_ifindex);
+	if (!vlan_dev || !is_vlan_dev(vlan_dev) || !netif_running(vlan_dev) ||
+	    vlan_dev_vlan_id(vlan_dev) != vid ||
+	    vlan_dev_vlan_proto(vlan_dev) != proto)
+		return false;
+
+	lower = vlan_dev_priv(vlan_dev)->real_dev;
+	if (lower->ifindex != path->ingress_lower_ifindex ||
+	    is_vlan_dev(lower) || !netif_running(lower) ||
+	    __vlan_find_dev_deep_rcu(lower, proto, vid) != vlan_dev)
+		return false;
+
+	if (lower == dev)
+		return path->ingress_gem == U16_MAX;
+
+	/* GEM endpoints receive data after PPE processing on the physical GDM. */
+	if (xpon_endpoint_get_path(lower, &physical, &endpoint))
+		return false;
+
+	return physical == dev && endpoint.type == XPON_ENDPOINT_GEM &&
+	       endpoint.enabled && endpoint.wire_id == gem &&
+	       path->ingress_gem == gem;
+#else
+	return false;
+#endif
+}
+
 /* A VLAN device removes the tag after PPE RX, not before FOE learning. */
 static bool airoha_ppe_xpon_logical_pop_match(struct airoha_ppe *ppe,
+					     const struct airoha_ppe_vlan_path *path,
 					     struct sk_buff *skb, u16 gem,
 					     __be16 proto, u16 tci)
 {
 	struct airoha_gdm_dev *port = airoha_ppe_xpon_port(ppe->common.eth);
 	struct xpon_vlan_config config;
-	struct net_device *vlan_dev;
+	bool diag = ppe->common.eth->soc->foe_format == AIROHA_FOE_FORMAT_V1 &&
+		    READ_ONCE(ppe->v1.diag_enabled);
 	bool valid = false;
 	u16 vid = tci & VLAN_VID_MASK;
 	int i, ret;
 
 	if (!port || !skb->dev || skb->dev != netdev_from_priv(port) ||
-	    proto != htons(ETH_P_8021Q))
+	    proto != htons(ETH_P_8021Q)) {
+		if (diag)
+			atomic_inc(&ppe->v1.pop_bad_dev);
 		return false;
+	}
 
 	/* Do not bind a VLAN with no corresponding Linux ingress device. */
 	rcu_read_lock();
-	vlan_dev = __vlan_find_dev_deep_rcu(skb->dev, proto, vid);
-	valid = vlan_dev && netif_running(vlan_dev);
+	valid = airoha_ppe_xpon_ingress_vlan_valid(path, skb->dev, gem,
+						   proto, vid);
 	rcu_read_unlock();
-	if (!valid)
+	if (!valid) {
+		if (diag)
+			atomic_inc(&ppe->v1.pop_no_vlan);
 		return false;
+	}
 
 	/* GEM/VID identify downstream service; PCP is an upstream TX selector. */
 	valid = false;
@@ -1127,6 +1245,9 @@ static bool airoha_ppe_xpon_logical_pop_match(struct airoha_ppe *ppe,
 		break;
 	}
 
+	if (!valid && diag)
+		atomic_inc(&ppe->v1.pop_no_service);
+
 	if (valid) {
 		const u16 pbits = VLAN_PRIO_MASK | VLAN_CFI_MASK;
 		/* PPE L3 keys do not distinguish PCP/DEI on GPON ingress. */
@@ -1138,6 +1259,8 @@ static bool airoha_ppe_xpon_logical_pop_match(struct airoha_ppe *ppe,
 			if (ret < 0 || (ret > 0 &&
 			    (config.downstream.drop || config.downstream.new_tpid ||
 			     config.downstream.new_tci_mask))) {
+				if (diag)
+					atomic_inc(&ppe->v1.pop_treatment);
 				valid = false;
 				break;
 			}
@@ -1179,8 +1302,12 @@ static bool airoha_ppe_vlan_match(struct airoha_ppe *ppe,
 	    !path->match_tagged) {
 		if (tagged != 1)
 			return false;
+		if (path->match_mask &&
+		    (proto != path->match_tpid ||
+		     ((tci ^ path->match_tci) & path->match_mask)))
+			return false;
 
-		return airoha_ppe_xpon_logical_pop_match(ppe, skb, gem,
+		return airoha_ppe_xpon_logical_pop_match(ppe, path, skb, gem,
 							proto, tci);
 	}
 
@@ -3334,8 +3461,17 @@ static int airoha_ppe_flow_offload_cmd(struct airoha_eth *eth,
 
 	switch (f->command) {
 	case FLOW_CLS_REPLACE:
-		return v1 ? airoha_ppe_v1_flow_offload_replace(eth->ppe, f, owner, dev) :
-			    airoha_ppe_flow_offload_replace(eth, f);
+		if (v1) {
+			int err;
+
+			err = airoha_ppe_v1_flow_offload_replace(eth->ppe, f, owner, dev);
+			if (err && err != -EEXIST)
+				dev_dbg_ratelimited(eth->dev,
+						    "FoE v1 replace failed: cookie=%lx dev=%s err=%d\n",
+						    f->cookie, dev->name, err);
+			return err;
+		}
+		return airoha_ppe_flow_offload_replace(eth, f);
 	case FLOW_CLS_DESTROY:
 		return v1 ? airoha_ppe_v1_flow_offload_destroy(eth->ppe, f) :
 			    airoha_ppe_flow_offload_destroy(eth, f);
@@ -3964,22 +4100,22 @@ static int airoha_foe_v1_entry_set_xpon(struct airoha_foe_entry *entry,
 
 	err = xpon_endpoint_get_path(odev, &lower, endpoint);
 	if (!err) {
-		struct airoha_gdm_common *gdm;
+		struct airoha_gdm_dev *gdm;
 
-		gdm = airoha_gdm_common_from_netdev(lower);
-		if (!gdm || gdm->family != AIROHA_ETH_FAMILY_ECONET ||
-		    gdm->id != AIROHA_GDM2_IDX ||
+		gdm = airoha_gdm_from_netdev(lower);
+		if (!gdm || !airoha_is_econet(gdm->eth) ||
+		    gdm->port->id != AIROHA_GDM2_IDX ||
 		    endpoint->type != XPON_ENDPOINT_GEM)
 			return -EOPNOTSUPP;
 		info.gem_port_id = endpoint->wire_id;
 		info.tcont = endpoint->channel;
 		info.queue = endpoint->queue;
 	} else if (err == -EOPNOTSUPP) {
-		struct airoha_gdm_common *gdm = airoha_gdm_common_from_netdev(odev);
+		struct airoha_gdm_dev *gdm = airoha_gdm_from_netdev(odev);
 		struct xpon_vlan_rule treatment;
 		u16 tci = vlan_id | FIELD_PREP(VLAN_PRIO_MASK, pcp);
 
-		if (gdm && gdm->id == AIROHA_GDM2_IDX) {
+		if (gdm && gdm->port->id == AIROHA_GDM2_IDX) {
 			struct airoha_gdm_dev *port = airoha_ppe_xpon_port(gdm->eth);
 
 			if (port) {
@@ -4195,6 +4331,25 @@ static void airoha_ppe_v1_free_flow(struct airoha_flow_table_entry *flow)
 
 static void airoha_ppe_v1_l2_kill(struct airoha_ppe *ppe,
 				  struct airoha_flow_table_entry *parent);
+static void airoha_ppe_v1_l2_reap(struct airoha_ppe *ppe,
+				  struct airoha_flow_table_entry *parent,
+				  bool all);
+
+static bool airoha_ppe_v1_ingress_dev_event(struct airoha_ppe *ppe,
+					    struct airoha_flow_table_entry *flow,
+					    struct net_device *dev)
+{
+	const struct airoha_ppe_vlan_path *path = &flow->vlan_path;
+	struct airoha_gdm_dev *port;
+
+	if (!path->ingress_vlan_ifindex ||
+	    (path->ingress_vlan_ifindex != dev->ifindex &&
+	     path->ingress_lower_ifindex != dev->ifindex))
+		return false;
+
+	port = airoha_ppe_xpon_port(ppe->common.eth);
+	return port && dev_net(netdev_from_priv(port)) == dev_net(dev);
+}
 
 static int airoha_ppe_v1_netdev_event(struct notifier_block *nb,
 				      unsigned long event, void *ptr)
@@ -4211,9 +4366,19 @@ static int airoha_ppe_v1_netdev_event(struct notifier_block *nb,
 
 	spin_lock_bh(&ppe->v1.lock);
 	list_for_each_entry(flow, &ppe->v1.flows, v1_list) {
-		if (flow->v1_xpon_dev != dev || flow->v1_dead ||
-		    (event == NETDEV_CHANGE && airoha_ppe_v1_endpoint_valid(flow)))
+		bool ingress = airoha_ppe_v1_ingress_dev_event(ppe, flow, dev);
+		bool egress = flow->v1_xpon_dev == dev;
+
+		if (flow->v1_dead || (!ingress && !egress))
 			continue;
+		if (event == NETDEV_CHANGE &&
+		    (!egress || airoha_ppe_v1_endpoint_valid(flow))) {
+			if (ingress) {
+				airoha_ppe_v1_release_flow_slot(ppe, flow, true);
+				changed = true;
+			}
+			continue;
+		}
 		airoha_ppe_v1_release_flow_slot(ppe, flow, true);
 		flow->v1_dead = true;
 		dev_put(flow->v1_xpon_dev);
@@ -4221,9 +4386,19 @@ static int airoha_ppe_v1_netdev_event(struct notifier_block *nb,
 		changed = true;
 	}
 	list_for_each_entry(flow, &ppe->v1.l2_flows, v1_list) {
-		if (flow->v1_xpon_dev != dev || flow->v1_dead ||
-		    (event == NETDEV_CHANGE && airoha_ppe_v1_endpoint_valid(flow)))
+		bool ingress = airoha_ppe_v1_ingress_dev_event(ppe, flow, dev);
+		bool egress = flow->v1_xpon_dev == dev;
+
+		if (flow->v1_dead || (!ingress && !egress))
 			continue;
+		if (event == NETDEV_CHANGE &&
+		    (!egress || airoha_ppe_v1_endpoint_valid(flow))) {
+			if (ingress) {
+				airoha_ppe_v1_l2_reap(ppe, flow, true);
+				changed = true;
+			}
+			continue;
+		}
 		airoha_ppe_v1_l2_kill(ppe, flow);
 		changed = true;
 	}
@@ -4537,20 +4712,27 @@ static void airoha_ppe_v1_bind_flow(struct airoha_ppe *ppe,
 				    struct sk_buff *skb)
 {
 	struct airoha_foe_entry entry, lookup_raw = {};
+	bool diag = READ_ONCE(ppe->v1.diag_enabled);
 	bool lookup_valid;
 	u16 bind_hash;
 
 	flow->v1_lastused = jiffies;
 	bind_hash = airoha_ppe_v1_find_bind_way(ppe, flow, hash, &lookup_raw,
 						&lookup_valid);
-	if (bind_hash == AIROHA_FOE_V1_INVALID_HASH)
+	if (bind_hash == AIROHA_FOE_V1_INVALID_HASH) {
+		if (diag)
+			flow->v1_diag.slot_busy++;
 		return;
+	}
 	if (ppe->v1.foe_owner[bind_hash] == flow && flow->hash == bind_hash)
 		return;
 
 	entry = flow->data;
-	if (airoha_ppe_vlan_prepare(ppe, flow, skb, ingress_gem, &entry))
+	if (airoha_ppe_vlan_prepare(ppe, flow, skb, ingress_gem, &entry)) {
+		if (diag)
+			flow->v1_diag.prepare_failed++;
 		return;
+	}
 	if (flow->hash != bind_hash)
 		airoha_ppe_v1_release_flow_slot(ppe, flow, true);
 
@@ -4559,6 +4741,8 @@ static void airoha_ppe_v1_bind_flow(struct airoha_ppe *ppe,
 	ppe->v1.foe_owner[bind_hash] = flow;
 	flow->hash = bind_hash;
 	flow->v1_ingress_gem = ingress_gem;
+	if (diag)
+		flow->v1_diag.binds++;
 }
 
 /*
@@ -4728,10 +4912,20 @@ static void airoha_ppe_v1_rx_check(struct airoha_ppe *ppe, struct sk_buff *skb,
 {
 	struct airoha_foe_v1_tuple tuple;
 	struct airoha_flow_table_entry *flow, *parent;
+	bool diag;
+	int dir = ingress_gem != AIROHA_PPE_RX_GEM_NONE;
 
-	if (!ppe || !READ_ONCE(ppe->v1.armed) ||
-	    hash >= ppe->common.eth->soc->ppe_dram_entries)
+	if (!ppe || !READ_ONCE(ppe->v1.armed))
 		return;
+
+	diag = READ_ONCE(ppe->v1.diag_enabled);
+	if (diag && reason < ARRAY_SIZE(ppe->v1.rx_reason[dir]))
+		atomic_inc(&ppe->v1.rx_reason[dir][reason]);
+	if (hash >= ppe->common.eth->soc->ppe_dram_entries) {
+		if (diag)
+			atomic_inc(&ppe->v1.rx_bad_hash[dir]);
+		return;
+	}
 	if (reason == AIROHA_PPE_CPU_REASON_KEEPALIVE_DUP_OLD_HDR) {
 		airoha_ppe_v1_rx_keepalive(ppe, skb, hash, ingress_gem);
 		return;
@@ -4767,9 +4961,23 @@ static void airoha_ppe_v1_rx_check(struct airoha_ppe *ppe, struct sk_buff *skb,
 			u16 tci;
 			bool keep;
 
+			if (diag) {
+				struct airoha_ppe_v1_flow_diag *d = &flow->v1_diag;
+
+				d->tuple_hits++;
+				d->gem = ingress_gem;
+				d->hash = hash;
+				d->reason = reason;
+				d->tci = 0;
+				d->tpid = 0;
+				d->tags = airoha_ppe_vlan_read(skb, &d->tpid, &d->tci);
+			}
 			if (!airoha_ppe_vlan_match(ppe, &flow->vlan_path, skb, ingress_gem,
-						   &tci, &keep))
+						   &tci, &keep)) {
+				if (diag)
+					flow->v1_diag.vlan_rejects++;
 				continue;
+			}
 		}
 
 		/* A rule can race an endpoint reconfiguration before joining this
@@ -5123,23 +5331,25 @@ static void airoha_ppe_v1_engine_disarm(struct airoha_ppe *ppe)
 
 static struct airoha_ppe *airoha_ppe_from_netdev(struct net_device *netdev)
 {
-	struct airoha_gdm_common *gdm;
+	struct airoha_gdm_dev *gdm = airoha_gdm_from_netdev(netdev);
+	struct airoha_ppe_dev *ppe;
 
-	gdm = airoha_gdm_common_from_netdev(netdev);
-	if (!gdm || !gdm->ppe)
+	if (!gdm)
 		return NULL;
 
-	return gdm->ppe->priv;
+	ppe = READ_ONCE(gdm->eth->ppe_dev);
+	return ppe ? ppe->priv : NULL;
 }
 
 static int airoha_ppe_v1_flow_set_output(struct airoha_ppe *ppe,
 					 struct airoha_foe_entry *entry,
 					 struct net_device *odev, bool vlan_valid,
 					 u16 vlan_id, u8 vlan_prio, bool *xpon,
+					 bool egress_xpon,
 					 struct xpon_endpoint_config *endpoint)
 {
 	struct airoha_wdma_info info = {};
-	struct airoha_gdm_common *gdm;
+	struct airoha_gdm_dev *gdm;
 	u8 dmac[ETH_ALEN];
 	u32 *l2 = airoha_foe_v1_l2(entry);
 	struct dsa_port *dp;
@@ -5218,12 +5428,12 @@ static int airoha_ppe_v1_flow_set_output(struct airoha_ppe *ppe,
 			*xpon = true;
 			return 0;
 		}
-		if (err != -EOPNOTSUPP)
+		if (egress_xpon || err != -EOPNOTSUPP)
 			return err;
 	}
 
-	gdm = airoha_gdm_common_from_netdev(odev);
-	if (!gdm || gdm->family != AIROHA_ETH_FAMILY_ECONET)
+	gdm = airoha_gdm_from_netdev(odev);
+	if (!gdm || !airoha_is_econet(gdm->eth))
 		return -EOPNOTSUPP;
 
 	/*
@@ -5237,7 +5447,7 @@ static int airoha_ppe_v1_flow_set_output(struct airoha_ppe *ppe,
 	 * The DSA destination is still selected by the in-band special tag.
 	 * Other GDM egress keeps the default queue without PSE_QOS.
 	 */
-	if (dsa_port >= 0 && gdm->pse_port == FE_PSE_PORT_GDM1) {
+	if (dsa_port >= 0 && gdm->port->id == FE_PSE_PORT_GDM1) {
 		u32 *data = airoha_foe_v1_data(entry);
 
 		airoha_foe_v1_entry_set_pse_port(entry, AIROHA_FOE_V1_FP_QDMA_LAN);
@@ -5246,7 +5456,7 @@ static int airoha_ppe_v1_flow_set_output(struct airoha_ppe *ppe,
 		return 0;
 	}
 
-	airoha_foe_v1_entry_set_pse_port(entry, gdm->pse_port);
+	airoha_foe_v1_entry_set_pse_port(entry, gdm->port->id);
 
 	return 0;
 }
@@ -5325,6 +5535,8 @@ static int airoha_ppe_v1_l2_flow_replace(struct airoha_ppe *ppe,
 		vlan_prio = FIELD_GET(VLAN_PRIO_MASK, vlan_path.output_tci);
 		vlan_proto = vlan_path.output_tpid;
 	}
+	if (vlan_path.egress_xpon && is_vlan_dev(odev))
+		odev = vlan_dev_real_dev(odev);
 
 	airoha_foe_v1_entry_prepare(&entry, 0, PPE_PKT_TYPE_IPV4_HNAPT,
 				    FE_PSE_PORT_GDM1, addrs.key->src,
@@ -5336,7 +5548,8 @@ static int airoha_ppe_v1_l2_flow_replace(struct airoha_ppe *ppe,
 			return err;
 	}
 	err = airoha_ppe_v1_flow_set_output(ppe, &entry, odev, vlan_push, vlan_id,
-					    vlan_prio, &xpon, &endpoint);
+					    vlan_prio, &xpon, vlan_path.egress_xpon,
+					    &endpoint);
 	if (err)
 		return err;
 	if (vlan_push && !xpon && !vlan_path.ingress_xpon)
@@ -5548,14 +5761,21 @@ static int airoha_ppe_v1_flow_offload_replace(struct airoha_ppe *ppe,
 	}
 
 	err = airoha_ppe_vlan_path(ppe->common.eth, rule, odev, false, &vlan_path, idev);
-	if (err)
+	if (err) {
+		dev_dbg(ppe->common.eth->dev,
+			"FoE v1 VLAN path rejected: cookie=%lx in=%s out=%s err=%d\n",
+			cls->cookie, idev ? idev->name : "none",
+			odev ? odev->name : "none", err);
 		return err;
+	}
 	if (airoha_ppe_vlan_affected(&vlan_path)) {
 		vlan_push = vlan_path.output_tagged;
 		vlan_id = vlan_path.output_tci & VLAN_VID_MASK;
 		vlan_prio = FIELD_GET(VLAN_PRIO_MASK, vlan_path.output_tci);
 		vlan_proto = vlan_path.output_tpid;
 	}
+	if (vlan_path.egress_xpon && is_vlan_dev(odev))
+		odev = vlan_dev_real_dev(odev);
 
 	airoha_foe_v1_entry_prepare(&entry, l4proto, pkt_type, FE_PSE_PORT_GDM1,
 				 data.eth.h_source, data.eth.h_dest);
@@ -5584,9 +5804,14 @@ static int airoha_ppe_v1_flow_offload_replace(struct airoha_ppe *ppe,
 		airoha_foe_v1_entry_set_pppoe(&entry, pppoe_sid);
 
 	err = airoha_ppe_v1_flow_set_output(ppe, &entry, odev, vlan_push, vlan_id,
-					    vlan_prio, &xpon, &endpoint);
-	if (err)
+					    vlan_prio, &xpon, vlan_path.egress_xpon,
+					    &endpoint);
+	if (err) {
+		dev_dbg(ppe->common.eth->dev,
+			"FoE v1 output rejected: cookie=%lx out=%s vid=%u err=%d\n",
+			cls->cookie, odev ? odev->name : "none", vlan_id, err);
 		return err;
+	}
 	if (vlan_push && !xpon && !vlan_path.ingress_xpon)
 		return -EOPNOTSUPP;
 

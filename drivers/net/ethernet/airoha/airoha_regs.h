@@ -207,6 +207,9 @@
 #define CDM_VLAN_MASK			GENMASK(31, 16)
 #define STAG_EN				BIT(0)
 
+#define REG_CDM_CSG_CFG(_n)		CDM_BASE(_n)
+#define CDM_CSG_TPID_MASK		GENMASK(31, 16)
+
 #define REG_CDM_FWD_CFG(_n)		(CDM_BASE(_n) + 0x08)
 #define CDM_OAM_QSEL_MASK		GENMASK(31, 27)
 /* EN7523 follows the 4-bit legacy OAM selector at bits 31:28.
@@ -254,6 +257,10 @@
 #define GDM_MCFQ_MASK			GENMASK(7, 4)
 #define GDM_OCFQ_MASK			GENMASK(3, 0)
 
+#define REG_GDM_MAC_ADDR_L(_n)		(GDM_BASE(_n) + 0x08)
+#define REG_GDM_MAC_ADDR_H(_n)		(GDM_BASE(_n) + 0x0c)
+#define GDM_MAC_ADDR_LSB_MASK		GENMASK(23, 16)
+
 #define REG_GDM_INGRESS_CFG(_n)		(GDM_BASE(_n) + 0x10)
 #define GDM_INGRESS_FC_EN_MASK		BIT(1)
 #define GDM_STAG_EN_MASK		BIT(0)
@@ -278,6 +285,9 @@
 #define LPBK_EN_MASK			BIT(0)
 
 #define REG_GDM_CHN_RLS(_n)		(GDM_BASE(_n) + 0x20)
+#define GDM_CHANNEL_RETIRE_CHANNEL_MASK	GENMASK(8, 4)
+#define GDM_CHANNEL_RETIRE_DONE		BIT(1)
+#define GDM_CHANNEL_RETIRE_RELEASE	BIT(0)
 #define MBI_RX_AGE_SEL_MASK		GENMASK(26, 25)
 #define MBI_TX_AGE_SEL_MASK		GENMASK(18, 17)
 
@@ -314,6 +324,7 @@
 #define FE_RX_MIB_ID_MASK		GENMASK(7, 0)
 
 #define REG_FE_GDM_TX_OK_PKT_CNT_L(_n)		(GDM_BASE(_n) + 0x104)
+#define REG_FE_GDM_TX_DROP_CNT(_n)		(GDM_BASE(_n) + 0x108)
 #define REG_FE_GDM_TX_OK_BYTE_CNT_L(_n)		(GDM_BASE(_n) + 0x10c)
 #define REG_FE_GDM_TX_ETH_PKT_CNT_L(_n)		(GDM_BASE(_n) + 0x110)
 #define REG_FE_GDM_TX_ETH_BYTE_CNT_L(_n)	(GDM_BASE(_n) + 0x114)

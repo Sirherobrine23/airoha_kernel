@@ -17,6 +17,26 @@
 	#address-cells = <1>;
 	#size-cells = <1>;
 
+	reserved-memory {
+		#address-cells = <1>;
+		#size-cells = <1>;
+		ranges;
+
+		qdma0_buf: qdma0-buf {
+			size = <0x00400000>;
+			alignment = <0x00010000>;
+			alloc-ranges = <0x00200000 0x0fe00000>;
+			no-map;
+		};
+
+		qdma1_buf: qdma1-buf {
+			size = <0x00200000>;
+			alignment = <0x00010000>;
+			alloc-ranges = <0x00200000 0x0fe00000>;
+			no-map;
+		};
+	};
+
 	chosen {
 		stdout-path = "serial0:115200n8";
 	};
@@ -952,6 +972,9 @@
 			      <0x1fb56000 0x2000>,
 			      <0x1fbf9000 0x1000>;
 			reg-names = "fe", "qdma0", "qdma1", "gdmp";
+
+			memory-region = <&qdma0_buf>, <&qdma1_buf>;
+			memory-region-names = "qdma0-buf", "qdma1-buf";
 
 			resets = <&scuclk EN7580_FE_RST>,
 				 <&scuclk EN7580_FE_QDMA1_RST>,

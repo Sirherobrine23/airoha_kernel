@@ -673,6 +673,9 @@ static int airoha_ppe_v1_debugfs_flows_show(struct seq_file *m, void *private)
 	struct airoha_flow_table_entry *flow;
 	struct {
 		struct airoha_foe_entry data;
+		struct airoha_ppe_vlan_path path;
+		struct airoha_ppe_v1_flow_diag diag;
+		bool dead;
 		unsigned long cookie;
 		u32 hash;
 	} *snapshot;
@@ -695,6 +698,9 @@ static int airoha_ppe_v1_debugfs_flows_show(struct seq_file *m, void *private)
 		if (n == count)
 			break;
 		snapshot[n].data = flow->data;
+		snapshot[n].path = flow->vlan_path;
+		snapshot[n].diag = flow->v1_diag;
+		snapshot[n].dead = flow->v1_dead;
 		snapshot[n].cookie = flow->cookie;
 		snapshot[n].hash = flow->hash;
 		n++;
@@ -702,6 +708,8 @@ static int airoha_ppe_v1_debugfs_flows_show(struct seq_file *m, void *private)
 	spin_unlock_bh(&ppe->v1.lock);
 
 	for (i = 0; i < n; i++) {
+		const struct airoha_ppe_vlan_path *path = &snapshot[i].path;
+		const struct airoha_ppe_v1_flow_diag *d = &snapshot[i].diag;
 		u32 type = FIELD_GET(AIROHA_FOE_IB1_BIND_PACKET_TYPE,
 				     snapshot[i].data.ib1);
 
@@ -711,6 +719,16 @@ static int airoha_ppe_v1_debugfs_flows_show(struct seq_file *m, void *private)
 			airoha_ppe_v1_debugfs_print_ipv6(m, &snapshot[i].data);
 		else
 			airoha_ppe_v1_debugfs_print_ipv4(m, &snapshot[i].data);
+		seq_printf(m, " in_xpon=%u out_xpon=%u pop=%u tagged=%u match=%04x/%04x gem=%u dead=%u",
+			   path->ingress_xpon, path->egress_xpon, path->logical_vlan_pop,
+			   path->match_tagged, path->match_tci, path->match_mask,
+			   path->ingress_gem, snapshot[i].dead);
+		seq_printf(m, " hits=%u vlan_reject=%u slot_busy=%u prep_fail=%u binds=%u",
+			   d->tuple_hits, d->vlan_rejects, d->slot_busy,
+			   d->prepare_failed, d->binds);
+		seq_printf(m, " rx_hash=%04x rx_reason=%02x rx_gem=%u rx_tags=%d rx_tpid=%04x rx_tci=%04x",
+			   d->hash, d->reason, d->gem, d->tags,
+			   ntohs(d->tpid), d->tci);
 		seq_putc(m, '\n');
 	}
 
@@ -725,6 +743,7 @@ static int airoha_ppe_v1_debugfs_regs_show(struct seq_file *m, void *private)
 	struct airoha_eth *eth = ppe->common.eth;
 	struct airoha_flow_table_entry *flow;
 	u32 flows = 0;
+	int dir, i;
 
 	spin_lock_bh(&ppe->v1.lock);
 	list_for_each_entry(flow, &ppe->v1.flows, v1_list)
@@ -741,6 +760,23 @@ static int airoha_ppe_v1_debugfs_regs_show(struct seq_file *m, void *private)
 		   READ_ONCE(ppe->v1.l2_subflow_full));
 	seq_printf(m, "l2_lookups=%u\n", READ_ONCE(ppe->v1.l2_lookups));
 	seq_printf(m, "l2_misses=%u\n", READ_ONCE(ppe->v1.l2_misses));
+	seq_printf(m, "diag_enabled=%u\n", READ_ONCE(ppe->v1.diag_enabled));
+	for (dir = 0; dir < ARRAY_SIZE(ppe->v1.rx_reason); dir++) {
+		const char *name = dir ? "gem" : "no_gem";
+
+		seq_printf(m, "rx_%s_bad_hash=%u\n", name,
+			   (u32)atomic_read(&ppe->v1.rx_bad_hash[dir]));
+		for (i = 0; i < ARRAY_SIZE(ppe->v1.rx_reason[dir]); i++) {
+			u32 value = atomic_read(&ppe->v1.rx_reason[dir][i]);
+
+			if (value)
+				seq_printf(m, "rx_%s_reason_%02x=%u\n", name, i, value);
+		}
+	}
+	seq_printf(m, "pop_bad_dev=%u\n", (u32)atomic_read(&ppe->v1.pop_bad_dev));
+	seq_printf(m, "pop_no_vlan=%u\n", (u32)atomic_read(&ppe->v1.pop_no_vlan));
+	seq_printf(m, "pop_no_service=%u\n", (u32)atomic_read(&ppe->v1.pop_no_service));
+	seq_printf(m, "pop_treatment=%u\n", (u32)atomic_read(&ppe->v1.pop_treatment));
 	seq_printf(m, "flows=%u\n", flows);
 	seq_printf(m, "foe_cpu=%px\n", ppe->common.foe);
 	seq_printf(m, "foe_dma=%pad\n", &ppe->common.foe_dma);
@@ -874,6 +910,13 @@ int airoha_ppe_debugfs_init(struct airoha_ppe_common *common)
 		v1 ? &airoha_ppe_v1_debugfs_foe_bind_fops : &airoha_ppe_debugfs_foe_bind_fops);
 	if (err)
 		return err;
+
+	if (v1) {
+		struct airoha_ppe *ppe = common->dev.priv;
+
+		debugfs_create_bool("diag", 0600, common->debugfs_dir,
+				    &ppe->v1.diag_enabled);
+	}
 
 	debugfs_create_file("raw", 0444, common->debugfs_dir,
 			    common->dev.priv, &airoha_ppe_debugfs_foe_raw_fops);

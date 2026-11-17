@@ -70,6 +70,7 @@ struct airoha_xpon_match_data {
 	u8 gpon_guard_bits_override;
 	u8 gpon_sn_tx_power_mode;
 	bool gpon_dbru_48b;
+	bool gpon_disable_bwm_len_check;
 	bool gpon_has_del_rx_stop;
 	bool gpon_reset_dbg_dly;
 	bool mac_irq_via_eth;

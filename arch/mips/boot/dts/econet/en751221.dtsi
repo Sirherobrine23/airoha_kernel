@@ -16,6 +16,26 @@
 	#address-cells = <1>;
 	#size-cells = <1>;
 
+	reserved-memory {
+		#address-cells = <1>;
+		#size-cells = <1>;
+		ranges;
+
+		qdma0_buf: qdma0-buf {
+			size = <0x00200000>;
+			alignment = <0x00010000>;
+			alloc-ranges = <0x00200000 0x0fe00000>;
+			no-map;
+		};
+
+		qdma1_buf: qdma1-buf {
+			size = <0x00800000>;
+			alignment = <0x00010000>;
+			alloc-ranges = <0x00200000 0x0fe00000>;
+			no-map;
+		};
+	};
+
 	aliases {
 		serial0 = &uart1;
 	};
@@ -580,6 +600,9 @@
 			      <0x1fb55000 0x1000>,
 			      <0x1fbf9000 0x1000>;
 			reg-names = "fe", "qdma0", "qdma1", "gdmp";
+
+			memory-region = <&qdma0_buf>, <&qdma1_buf>;
+			memory-region-names = "qdma0-buf", "qdma1-buf";
 
 			interrupts = <21>, <22>;
 			interrupt-names = "qdma0", "qdma1";

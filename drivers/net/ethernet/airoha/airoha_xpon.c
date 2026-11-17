@@ -904,7 +904,7 @@ static int gpon_prepare_hardware(struct xpon_priv *priv)
 	if (priv->match_data->gpon_dbru_48b)
 		gpon_rmw(priv, GPON_GBL_CFG, GBL_CFG_SR_BLK_SIZE_MASK,
 			 GPON_DBRU_BLOCK_SIZE_48B);
-	if (priv->mode == XPON_MODE_GPON)
+	if (priv->match_data->gpon_disable_bwm_len_check)
 		gpon_clear_bits(priv, GPON_DBG_BWM_FILTER_CTRL,
 				BWM_FILTER_LEN_VALID_CHECK_EN);
 
@@ -6396,6 +6396,7 @@ static const struct airoha_xpon_match_data en7580_xpon_data = {
 	.gpon_fine_delay = DBG_DLY_FINE_INT_DEFAULT,
 	.gpon_rsp_time_activation = GPON_RSP_TIME_ACT_EN7523,
 	.gpon_idle_gem_threshold = GPON_IDLE_GEM_THLD_EN7523,
+	.gpon_disable_bwm_len_check = true,
 	.gpon_reset_on_start = true,
 	.xpon_mode_comp = XPON_MODE_GPON |
 			  XPON_MODE_EPON |
@@ -6410,6 +6411,9 @@ static const struct airoha_xpon_match_data en7523_xpon_data = {
 	.gpon_fine_delay = DBG_DLY_FINE_INT_DEFAULT,
 	.gpon_rsp_time_activation = GPON_RSP_TIME_ACT_EN7523,
 	.gpon_idle_gem_threshold = GPON_IDLE_GEM_THLD_EN7523,
+	.gpon_dbru_48b = true,
+	.gpon_reset_dbg_dly = true,
+	.gpon_disable_bwm_len_check = true,
 	.gpon_reset_on_start = true,
 	.xpon_mode_comp = XPON_MODE_GPON |
 			  XPON_MODE_EPON,
@@ -6425,6 +6429,9 @@ static const struct airoha_xpon_match_data an7552_xpon_data = {
 	.gpon_fine_delay = DBG_DLY_FINE_INT_DEFAULT,
 	.gpon_rsp_time_activation = GPON_RSP_TIME_ACT_EN7523,
 	.gpon_idle_gem_threshold = GPON_IDLE_GEM_THLD_AN7552,
+	.gpon_dbru_48b = true,
+	.gpon_reset_dbg_dly = true,
+	.gpon_disable_bwm_len_check = true,
 	.gpon_reset_on_start = true,
 	.xpon_mode_comp = XPON_MODE_GPON |
 			  XPON_MODE_EPON,

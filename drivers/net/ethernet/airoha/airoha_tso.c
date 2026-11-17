@@ -270,11 +270,15 @@ static void airoha_tso_wake(struct airoha_tso *tso,
 			continue;
 		for (j = 0; j < ARRAY_SIZE(port->devs); j++) {
 			struct airoha_gdm_dev *dev = port->devs[j];
+			struct net_device *netdev;
 
-			if (dev && dev->common.netdev != stopping &&
-			    netif_running(dev->common.netdev) &&
+			if (!dev)
+				continue;
+
+			netdev = netdev_from_priv(dev);
+			if (netdev != stopping && netif_running(netdev) &&
 			    !READ_ONCE(dev->xpon_tx_stopped))
-				netif_tx_wake_all_queues(dev->common.netdev);
+				netif_tx_wake_all_queues(netdev);
 		}
 	}
 }
