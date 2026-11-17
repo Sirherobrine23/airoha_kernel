@@ -1469,6 +1469,8 @@ enum airoha_tso_version {
 	AIROHA_TSO_V2,
 };
 
+struct xpon_priv;
+
 struct airoha_eth {
 	struct device *dev;
 
@@ -1499,6 +1501,7 @@ struct airoha_eth {
 
 	struct airoha_qdma qdma[AIROHA_MAX_NUM_QDMA];
 	struct airoha_gdm_port **ports;
+	struct xpon_priv *xpon;
 
 	/* retire_all releases each GDM2 channel instead of dropping */
 	bool channel_retire;
@@ -5303,4 +5306,26 @@ struct airoha_qdma_mips {
 		__r.w;                                    \
 	})
 
+#if IS_ENABLED(CONFIG_AIROHA_XPON)
+int airoha_xpon_add_hw(struct airoha_eth *eth, struct device_node *np,
+		       struct net_device *netdev);
+void airoha_xpon_del_hw(struct airoha_eth *eth);
+void airoha_xpon_shutdown_hw(struct airoha_eth *eth);
+#else
+static inline int airoha_xpon_add_hw(struct airoha_eth *eth,
+				     struct device_node *np,
+				     struct net_device *netdev)
+{
+	return 0;
+}
+
+static inline void airoha_xpon_del_hw(struct airoha_eth *eth)
+{
+}
+
+static inline void airoha_xpon_shutdown_hw(struct airoha_eth *eth)
+{
+}
+#endif
+	
 #endif /* AIROHA_ETH_H */

@@ -734,7 +734,6 @@
 			ethernet = <&gdm2>;
 			airoha,scu = <&scuclk>;
 
-			status = "disabled";
 		};
 
 		wed0: wed@1fa02000 {
@@ -799,7 +798,7 @@
 			#size-cells = <0>;
 
 			gdm1: ethernet@1 {
-				compatible = "econet,eth-mac";
+				compatible = "airoha,eth-mac";
 				reg = <1>;
 				phy-mode = "internal";
 				status = "disabled";
@@ -812,10 +811,10 @@
 			};
 
 			gdm2_pon: ethernet@2 {
-				compatible = "airoha,eth-gdm2-pon", "econet,eth-mac";
+				compatible = "airoha,eth-pon", "airoha,eth-mac";
 				reg = <2>;
+				airoha,xpon = <&xpon>;
 				phy-mode = "internal";
-
 				status = "disabled";
 			};
 		};

@@ -527,7 +527,6 @@
 			ethernet = <&gdm2_pon>;
 			airoha,scu = <&scuclk>;
 
-			status = "disabled";
 		};
 
 		xdsl: dsl@1f900000 {
@@ -611,7 +610,7 @@
 			#size-cells = <0>;
 
 			gdm1: ethernet@1 {
-				compatible = "econet,eth-mac";
+				compatible = "airoha,eth-mac";
 				reg = <1>;
 				phy-mode = "internal";
 				status = "disabled";
@@ -624,7 +623,7 @@
 			};
 
 			ethernet@2 {
-				compatible = "econet,eth-mac";
+				compatible = "airoha,eth-mac";
 				reg = <2>;
 
 				#address-cells = <1>;
@@ -633,6 +632,7 @@
 				gdm2_pon: ethernet-port@0 {
 					compatible = "airoha,eth-pon";
 					reg = <0>;
+					airoha,xpon = <&xpon>;
 					phy-mode = "internal";
 					status = "disabled";
 				};

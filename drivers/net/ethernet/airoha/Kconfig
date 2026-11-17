@@ -62,13 +62,13 @@ config NET_AIROHA_SOC_WED
 	  If unsure, say N.
 
 config AIROHA_XPON
-	tristate "Airoha xPON MAC driver"
+	bool "Airoha xPON MAC support"
 	depends on ARCH_AIROHA || ECONET || COMPILE_TEST
-	depends on NET_AIROHA
+	depends on NET_AIROHA != n
 	depends on OF
-	depends on OPTICAL_FRONTEND
+	depends on OPTICAL_FRONTEND != n
 	depends on MFD_SYSCON
-	depends on PTP_1588_CLOCK_OPTIONAL
+	depends on PTP_1588_CLOCK_OPTIONAL != n
 	select PHY_AIROHA_XPON
 	select XPON
 	select XPON_OMCI

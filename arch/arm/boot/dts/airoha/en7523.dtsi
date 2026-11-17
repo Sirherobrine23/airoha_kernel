@@ -899,7 +899,6 @@
 		ethernet = <&gdm2_pon>;
 		airoha,scu = <&scuclk>;
 
-		status = "disabled";
 	};
 
 	pon_pcs: pcs@1fa08000 {
@@ -1082,6 +1081,7 @@
 			gdm2_pon: ethernet-port@0 {
 				compatible = "airoha,eth-pon";
 				reg = <0>;
+				airoha,xpon = <&xpon>;
 				phy-mode = "internal";
 				status = "disabled";
 			};

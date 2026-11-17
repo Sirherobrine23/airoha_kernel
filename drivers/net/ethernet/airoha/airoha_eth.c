@@ -3982,7 +3982,8 @@ void airoha_qdma_cleanup(struct airoha_qdma *qdma)
 		return;
 	}
 
-	if (airoha_is(qdma->eth, econet_en7580, airoha_an7552)) {
+	if (airoha_is(qdma->eth, econet_en7580, airoha_an7552,
+		      airoha_en7523)) {
 		airoha_qdma_wr(qdma, REG_QDMA_GLOBAL_CFG, 0);
 		if (qdma->irq_banks) {
 			for (i = 0; i < qdma->eth->soc->irq_banks; i++) {
@@ -6020,7 +6021,7 @@ static int airoha_xpon_qdma_channel_close(struct airoha_gdm_dev *dev,
 	value = close ? (value | mask) : (value & ~mask);
 	dev->xpon_txq_disabled[idx] = value;
 	airoha_qdma_wr(qdma, REG_QUEUE_CLOSE_CFG(channel), value);
-	
+
 	spin_unlock_irqrestore(&dev->xpon_txq_lock, flags);
 
 	return 0;
@@ -10614,96 +10615,12 @@ static int airoha_alloc_gdm_device(struct airoha_eth *eth,
 	return airoha_setup_phylink(netdev);
 }
 
-/* GDM2 has one hardware MAC and only one active datapath frontend. */
-static int airoha_gdm2_select_frontend(struct airoha_eth *eth,
-				       struct device_node *np,
-				       struct device_node **active,
-				       enum airoha_gdm_frontend *frontend)
-{
-	struct device_node *child;
-	bool has_children = false;
-	int ret = 0;
-
-	*active = NULL;
-	*frontend = AIROHA_GDM_FRONTEND_ETHERNET;
-
-	/* EN7528 has an unambiguous PON-only GDM2 configuration. */
-	if (of_device_is_compatible(np, "airoha,eth-gdm2-pon")) {
-		if (of_get_child_count(np))
-			return dev_err_probe(eth->dev, -EINVAL,
-					     "GDM2: PON-only MAC cannot have frontends\n");
-		*active = of_node_get(np);
-		*frontend = AIROHA_GDM_FRONTEND_PON;
-		return 0;
-	}
-
-	for_each_child_of_node(np, child) {
-		enum airoha_gdm_frontend kind;
-		u32 reg;
-
-		if (!of_node_name_eq(child, "ethernet-port"))
-			continue;
-
-		has_children = true;
-		if (!of_device_is_available(child))
-			continue;
-
-		if (*active) {
-			dev_err(eth->dev,
-				"GDM2: multiple active frontends: %pOF and %pOF\n",
-				*active, child);
-			ret = -EINVAL;
-			goto err_put;
-		}
-
-		if (of_device_is_compatible(child, "airoha,eth-pon")) {
-			kind = AIROHA_GDM_FRONTEND_PON;
-		} else if (of_device_is_compatible(child, "airoha,eth-xdsl")) {
-			kind = AIROHA_GDM_FRONTEND_XDSL;
-		} else if (of_device_is_compatible(child, "airoha,eth-port")) {
-			kind = AIROHA_GDM_FRONTEND_ETHERNET;
-		} else {
-			dev_err(eth->dev, "GDM2: unknown frontend %pOF\n", child);
-			ret = -EINVAL;
-			goto err_put;
-		}
-
-		if (of_property_read_u32(child, "reg", &reg) ||
-		    (kind == AIROHA_GDM_FRONTEND_PON ? reg != 0 : reg != 1)) {
-			dev_err(eth->dev, "GDM2: invalid frontend ID in %pOF\n",
-				child);
-			ret = -EINVAL;
-			goto err_put;
-		}
-
-		*active = of_node_get(child);
-		*frontend = kind;
-	}
-
-	if (!has_children) {
-		/* Keep existing board DTs without GDM2 frontend children working. */
-		*active = of_node_get(np);
-		return 0;
-	}
-
-	if (!*active)
-		return dev_err_probe(eth->dev, -EINVAL,
-				     "GDM2: no active frontend\n");
-
-	return 0;
-
-err_put:
-	of_node_put(child);
-	of_node_put(*active);
-	*active = NULL;
-	return ret;
-}
-
 static int airoha_alloc_gdm_port(struct airoha_eth *eth,
 				 struct device_node *np)
 {
 	struct airoha_gdm_port *port;
 	struct device_node *node;
+	enum airoha_gdm_frontend kind = AIROHA_GDM_FRONTEND_ETHERNET;
 	bool econet = airoha_is_econet(eth);
 	int err, nbq, p, d = 0;
 	u32 id, max_ports = eth->soc->max_gdm_ports;
@@ -10744,21 +10661,41 @@ static int airoha_alloc_gdm_port(struct airoha_eth *eth,
 	      airoha_is(eth, airoha_en7581, airoha_en7523) ? 4 : 0;
 
 	if (id == AIROHA_GDM2_IDX) {
-		struct device_node *active;
-		enum airoha_gdm_frontend frontend;
+		int enableds = 0;
+		for_each_child_of_node(np, node) {
+			if (!of_device_is_available(node))
+				continue;
+			if (of_device_is_compatible(node, "airoha,eth-port"))
+				enableds++;
+			else if (of_device_is_compatible(node, "airoha,eth-pon"))
+				enableds++;
+			else if (of_device_is_compatible(node, "airoha,eth-xdsl"))
+				enableds++;
+		}
+		if (enableds >= 2) {
+			dev_err(eth->dev, "more than nodes enabled in gdm2 (enableds %d)", enableds);
+			return -EINVAL;
+		} else if (enableds == 0 && of_device_is_compatible(np, "airoha,eth-pon"))
+			kind = AIROHA_GDM_FRONTEND_PON;
 
-		err = airoha_gdm2_select_frontend(eth, np, &active, &frontend);
-		if (err)
-			return err;
+		for_each_child_of_node(np, node) {
+			bool is_pon, is_xdsl;
+			if (!of_device_is_available(node))
+				continue;
+			is_pon = of_device_is_compatible(node, "airoha,eth-pon");
+			is_xdsl = of_device_is_compatible(node, "airoha,eth-xdsl");
 
-		err = airoha_alloc_gdm_device(eth, port, 0, active, frontend);
-		of_node_put(active);
-		return err;
+			if(is_pon)
+				kind = AIROHA_GDM_FRONTEND_PON;
+			else if(is_xdsl)
+				kind = AIROHA_GDM_FRONTEND_XDSL;
+			else
+				break;
+			return airoha_alloc_gdm_device(eth, port, nbq, node, kind);
+		}
+
+		return airoha_alloc_gdm_device(eth, port, nbq, np, kind);
 	}
-
-	if (econet)
-		return airoha_alloc_gdm_device(eth, port, 0, np,
-					       AIROHA_GDM_FRONTEND_ETHERNET);
 
 	for_each_child_of_node(np, node) {
 		const __be32 *nbq_ptr;
@@ -10784,37 +10721,36 @@ static int airoha_alloc_gdm_port(struct airoha_eth *eth,
 			return err;
 		}
 
-		err = airoha_alloc_gdm_device(eth, port, nbq, node,
-					      AIROHA_GDM_FRONTEND_ETHERNET);
+		err = airoha_alloc_gdm_device(eth, port, nbq, node, kind);
 		if (err) {
 			of_node_put(node);
 			return err;
 		}
 	}
 
-	return !d ? airoha_alloc_gdm_device(eth, port, nbq, np,
-					    AIROHA_GDM_FRONTEND_ETHERNET) : 0;
+	return !d ? airoha_alloc_gdm_device(eth, port, nbq, np, kind) : 0;
 }
 
 static int airoha_register_gdm_devices(struct airoha_eth *eth)
 {
-	int i;
+	struct airoha_gdm_port *port;
+	struct airoha_gdm_dev *dev;
+	struct net_device *netdev;
+	struct device_node *np;
+	int i, j, err;
 
 	for (i = 0; i < eth->soc->max_gdm_ports; i++) {
-		struct airoha_gdm_port *port = eth->ports[i];
-		int j;
-
+		port = eth->ports[i];
 		if (!port)
 			continue;
 
 		for (j = 0; j < ARRAY_SIZE(port->devs); j++) {
-			struct airoha_gdm_dev *dev = port->devs[j];
-			int err;
-
+			dev = port->devs[j];
 			if (!dev)
 				continue;
 
-			err = register_netdev(netdev_from_priv(dev));
+			netdev = netdev_from_priv(dev);
+			err = register_netdev(netdev);
 			if (err)
 				return err;
 
@@ -10840,7 +10776,45 @@ static int airoha_register_gdm_devices(struct airoha_eth *eth)
 
 	set_bit(DEV_STATE_REGISTERED, &eth->state);
 
-	return 0;
+	port = eth->ports[AIROHA_GDM2_IDX - 1];
+	if (!port || !port->devs[0])
+		return 0;
+
+	dev = port->devs[0];
+	netdev = netdev_from_priv(dev);
+
+	switch (dev->frontend) {
+	case AIROHA_GDM_FRONTEND_PON:
+		np = of_parse_phandle(netdev->dev.of_node,
+				      "airoha,xpon", 0);
+		if (!np)
+			return dev_err_probe(eth->dev, -EINVAL,
+					     "GDM2: missing xPON phandle\n");
+
+		if (!of_device_is_available(np)) {
+			of_node_put(np);
+			return dev_err_probe(eth->dev, -EINVAL,
+					     "GDM2: xPON hardware disabled\n");
+		}
+
+		err = airoha_xpon_add_hw(eth, np, netdev);
+		of_node_put(np);
+
+		return err;
+
+	case AIROHA_GDM_FRONTEND_XDSL:
+		/*
+		 * xDSL still uses an independent platform driver.
+		 * Its provider registers through the existing link ops.
+		 */
+		return 0;
+
+	case AIROHA_GDM_FRONTEND_ETHERNET:
+		return 0;
+
+	default:
+		return -EINVAL;
+	}
 }
 
 static struct airoha_npu *airoha_eth_ppe_npu_get(struct airoha_eth *eth)
@@ -10928,6 +10902,8 @@ static void airoha_eth_cleanup(struct airoha_eth *eth)
 {
 	int i;
 
+	/* The xPON services and IRQs must stop before unregistering GDM2. */
+	airoha_xpon_del_hw(eth);
 	airoha_fe_irq_cleanup(eth);
 	airoha_wed_exit();
 	if (test_and_clear_bit(DEV_STATE_NAPI_STARTED, &eth->state)) {
@@ -11597,9 +11573,6 @@ static const struct airoha_eth_soc_data an7552_soc_data = {
 	.max_gdm_ports = 4,
 	.pse_fq_cfg = PSE_FQ_CFG,
 	.ppe_stats_entries = 0,
-	/* AN7552 uses 80-byte extended FoE entries with TB_ENTRY_SIZE=0,
-	 * 512 SRAM entries and a default 16K DRAM table in the vendor SDK.
-	 */
 	.ppe_sram_entries = 512,
 	.ppe_dram_entries = 16 * 1024,
 	.foe_format = AIROHA_FOE_FORMAT_V2_TUNNEL,
@@ -11616,7 +11589,6 @@ static int airoha_eth_probe(struct platform_device *pdev)
 	struct reset_control_bulk_data *xsi_rsts;
 	struct device_node *np;
 	struct airoha_eth *eth;
-	bool econet;
 	int i, err;
 
 	soc = of_device_get_match_data(&pdev->dev);
@@ -11636,7 +11608,6 @@ static int airoha_eth_probe(struct platform_device *pdev)
 	/* fe.c: EN7580 retires the GDM2 channels, every other SoC drops them */
 	eth->channel_retire = airoha_is(eth, econet_en7580);
 	eth->ppe_host_ops = &airoha_ppe_host_ops;
-	econet = airoha_is_econet(eth);
 	platform_set_drvdata(pdev, eth);
 
 	err = airoha_eth_set_dma_mask(eth->dev);
@@ -11712,40 +11683,20 @@ static int airoha_eth_probe(struct platform_device *pdev)
 		goto error;
 	}
 
-	/* Airoha GDMs are allocated before DMA is started so an nvmem backed
-	 * MAC address can defer probe safely. EcoNet queue counts are described
-	 * by the MIPS QDMA profile, therefore those two GDMs are allocated after
-	 * airoha_hw_init() has instantiated QDMA0/QDMA1.
-	 */
-	if (!econet) {
-		for_each_available_child_of_node(pdev->dev.of_node, np) {
-			if (!of_device_is_compatible(np, "airoha,eth-mac"))
-				continue;
+	for_each_available_child_of_node(pdev->dev.of_node, np) {
+		if (!of_device_is_compatible(np, "airoha,eth-mac"))
+			continue;
 
-			err = airoha_alloc_gdm_port(eth, np);
-			if (err) {
-				of_node_put(np);
-				goto error;
-			}
+		err = airoha_alloc_gdm_port(eth, np);
+		if (err) {
+			of_node_put(np);
+			goto error;
 		}
 	}
 
 	err = airoha_hw_init(pdev, eth);
 	if (err)
 		goto error;
-
-	if (econet) {
-		for_each_available_child_of_node(pdev->dev.of_node, np) {
-			if (!of_device_is_compatible(np, "econet,eth-mac"))
-				continue;
-
-			err = airoha_alloc_gdm_port(eth, np);
-			if (err) {
-				of_node_put(np);
-				goto error;
-			}
-		}
-	}
 
 	err = airoha_tso_init(eth);
 	if (err)
@@ -11780,6 +11731,14 @@ error:
 	airoha_eth_cleanup(eth);
 	platform_set_drvdata(pdev, NULL);
 	return err;
+}
+
+static void airoha_eth_shutdown(struct platform_device *pdev)
+{
+	struct airoha_eth *eth = platform_get_drvdata(pdev);
+
+	if (eth)
+		airoha_xpon_shutdown_hw(eth);
 }
 
 static void airoha_eth_remove(struct platform_device *pdev)
@@ -12259,6 +12218,7 @@ MODULE_DEVICE_TABLE(of, airoha_eth_of_match);
 static struct platform_driver airoha_eth_driver = {
 	.probe = airoha_eth_probe,
 	.remove = airoha_eth_remove,
+	.shutdown = airoha_eth_shutdown,
 	.driver = {
 		.name = "airoha-eth",
 		.of_match_table = airoha_eth_of_match,

@@ -571,6 +571,8 @@ struct xpon_priv {
 	u32 xgspon_reg_sent;
 
 	struct device *dev;
+	struct platform_device *pdev;
+	void *devres_group;
 	struct regmap *scu;
 
 	const struct airoha_xpon_match_data *match_data;

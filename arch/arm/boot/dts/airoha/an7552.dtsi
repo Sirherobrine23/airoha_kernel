@@ -653,7 +653,6 @@
 		ethernet = <&gdm2_pon>;
 		airoha,scu = <&scuclk>;
 
-		status = "disabled";
 	};
 
 	eth: ethernet@1fb50000 {
@@ -717,8 +716,9 @@
 			#size-cells = <0>;
 
 			gdm2_pon: ethernet-port@0 {
-				compatible = "airoha,eth-pon";
+				compatible =  "airoha,eth-pon";
 				reg = <0>;
+				airoha,xpon = <&xpon>;
 				phy-mode = "internal";
 				status = "disabled";
 			};

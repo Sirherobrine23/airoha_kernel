@@ -764,12 +764,6 @@
 			phy-names = "xpon";
 			ethernet = <&gdm2_pon>;
 			airoha,scu = <&scuclk>;
-
-			/* Add the optical frontend before enabling.
-			 * Native GPON also requires GDM2 in internal mode, with the
-			 * competing pon_pcs disabled to release the shared resets.
-			 */
-			status = "disabled";
 		};
 
 		wed0: wed@1fa02000 {
@@ -858,18 +852,17 @@
 				};
 			};
 
-			gdm2: ethernet@2 {
+			ethernet@2 {
 				compatible = "airoha,eth-mac";
 				reg = <2>;
 
 				#address-cells = <1>;
 				#size-cells = <0>;
 
-				status = "disabled";
-
 				gdm2_pon: ethernet-port@0 {
 					compatible = "airoha,eth-pon";
 					reg = <0>;
+					airoha,xpon = <&xpon>;
 					phy-mode = "internal";
 					status = "disabled";
 				};

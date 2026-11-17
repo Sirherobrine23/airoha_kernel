@@ -296,7 +296,9 @@ static int xpon_opticals_init(struct xpon_device *xpon)
 
 		frontend = devm_optical_frontend_get_optional(dev, name);
 		if (IS_ERR(frontend))
-			return PTR_ERR(frontend);
+			return dev_err_probe(dev, PTR_ERR(frontend),
+					     "failed to get optical frontend %s\n",
+					     name ?: "pon");
 		if (!frontend) {
 			if (name)
 				return dev_err_probe(dev, -EINVAL,

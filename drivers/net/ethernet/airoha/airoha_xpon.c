@@ -30,6 +30,7 @@
 #include <linux/mutex.h>
 #include <linux/netdevice.h>
 #include <linux/of.h>
+#include <linux/of_platform.h>
 #include <linux/of_net.h>
 #include <linux/platform_device.h>
 #include <linux/property.h>
@@ -46,21 +47,14 @@
 #include <linux/workqueue.h>
 #include <net/xpon/omci.h>
 #include <linux/rtnetlink.h>
-
+#include <net/xpon.h>
+#include <net/xpon/oam.h>
 #include "airoha_eth.h"
 #include "airoha_xpon.h"
 #include "airoha_xpon_tod.h"
 #include "airoha_omci.h"
-#include "airoha_regs.h"
 #include "airoha_ploam.h"
-
-/* Linux 6.18 replaced from_timer() with timer_container_of().
- * Keep the driver buildable on older kernel trees as well.
- */
-#ifndef timer_container_of
-#define timer_container_of(var, callback_timer, timer_fieldname) \
-	from_timer(var, callback_timer, timer_fieldname)
-#endif
+#include "airoha_regs.h"
 
 static const u8 airoha_default_vendor_id[4] = { 'M', 'T', 'K', 'G' };
 
@@ -6357,329 +6351,6 @@ static irqreturn_t airoha_xpon_mac_thread(int irq, void *data)
 	return airoha_xgspon_mac_irq(irq, data);
 }
 
-static int airoha_xpon_probe(struct platform_device *pdev)
-{
-	struct device *dev = &pdev->dev;
-	const struct airoha_xpon_match_data *data;
-	const struct airoha_xpon_link_ops *link_ops;
-	struct device_node *eth_node;
-	struct xpon_priv *priv;
-	struct resource *res;
-	int ret;
-
-	data = device_get_match_data(&pdev->dev);
-	if (!data)
-		return -EINVAL;
-
-	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
-	if (!priv)
-		return -ENOMEM;
-
-	priv->dev = dev;
-	priv->match_data = data;
-	/* The EN7580 dedicated 10G MAC starts in XGS-PON mode. */
-	priv->mode = data->version == econet_en7580 ?
-		XPON_MODE_XGSPON : XPON_MODE_GPON;
-	spin_lock_init(&priv->epon_lock);
-	mutex_init(&priv->xgspon_lock);
-	priv->epon_enabled_links = BIT(0);
-
-	INIT_DELAYED_WORK(&priv->phy_link_work, airoha_xpon_phy_link_work_fn);
-	priv->scu = syscon_regmap_lookup_by_phandle(dev->of_node, "airoha,scu");
-	if (IS_ERR(priv->scu)) {
-		ret = dev_err_probe(dev, PTR_ERR(priv->scu),
-				    "failed to get SCU regmap\n");
-		goto err_put_gdm;
-	}
-
-	priv->mac_reset = devm_reset_control_get_optional_exclusive(dev, "mac");
-	if (IS_ERR(priv->mac_reset)) {
-		ret = dev_err_probe(dev, PTR_ERR(priv->mac_reset),
-				    "failed to get xPON MAC reset\n");
-		goto err_put_gdm;
-	}
-	if (airoha_xpon_is_xgspon(priv) && !priv->mac_reset) {
-		ret = -EINVAL;
-		goto err_put_gdm;
-	}
-
-	priv->phy = devm_phy_get(dev, "xpon");
-	if (IS_ERR(priv->phy)) {
-		ret = dev_err_probe(dev, PTR_ERR(priv->phy),
-				    "failed to get digital xPON PHY\n");
-		goto err_put_gdm;
-	}
-
-	eth_node = of_parse_phandle(dev->of_node, "ethernet", 0);
-	if (eth_node) {
-		if (!of_device_is_available(eth_node)) {
-			of_node_put(eth_node);
-			ret = dev_err_probe(dev, -EINVAL,
-					    "xPON GDM frontend is disabled\n");
-			goto err_put_gdm;
-		}
-		priv->gdm_dev = of_find_net_device_by_node(eth_node);
-		dev_info(dev, "%s datapath phandle: %pOF\n",
-			 airoha_xpon_mode_name(priv->mode), eth_node);
-		of_node_put(eth_node);
-	} else if (airoha_xpon_is_xgspon(priv)) {
-		ret = dev_err_probe(dev, -EINVAL, "missing GDM2 phandle\n");
-		goto err_put_gdm;
-	} else {
-		priv->gdm_dev = airoha_eth_get_xpon_netdev();
-		dev_info(dev, "%s datapath discovered automatically\n",
-			 airoha_xpon_mode_name(priv->mode));
-	}
-	if (!priv->gdm_dev) {
-		ret = dev_err_probe(dev, -EPROBE_DEFER,
-				    "GDM2 netdev is not registered yet\n");
-		goto err_put_gdm;
-	}
-	dev_info(dev, "resolved xPON datapath to %s\n", priv->gdm_dev->name);
-
-	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "mac");
-	if (!res)
-		res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	if (!res) {
-		ret = dev_err_probe(dev, -EINVAL, "missing mac resource\n");
-		goto err_put_gdm;
-	}
-
-	priv->xpon_base = devm_ioremap_resource(dev, res);
-	if (IS_ERR(priv->xpon_base)) {
-		ret = dev_err_probe(dev, PTR_ERR(priv->xpon_base),
-				    "needs xPON mac base\n");
-		goto err_put_gdm;
-	}
-
-	priv->gpon_reg = priv->xpon_base + GPON_REG_OFFSET;
-	priv->xgspon_reg = priv->xpon_base + XGSPON_REG_OFFSET;
-	priv->epon_reg = priv->xpon_base + EPON_REG_OFFSET;
-
-	priv->mac_irq = -1;
-	if (!priv->match_data->mac_irq_via_eth) {
-		priv->mac_irq = platform_get_irq_byname(pdev, "mac");
-		if (priv->mac_irq < 0)
-			priv->mac_irq = platform_get_irq(pdev, 0);
-		if (priv->mac_irq < 0) {
-			ret = dev_err_probe(dev, priv->mac_irq, "needs mac irq\n");
-			goto err_put_gdm;
-		}
-
-		/* One IRQ descriptor for all PON engines.  GPON/EPON run in
-		 * hardirq context; XGS-PON is handed to the threaded callback.
-		 */
-		ret = devm_request_threaded_irq(dev, priv->mac_irq,
-						airoha_xpon_mac_irq,
-						airoha_xpon_mac_thread,
-						IRQF_ONESHOT, "xpon-mac", priv);
-		if (ret) {
-			ret = dev_err_probe(dev, ret, "cannot handle xPON mac irq");
-			goto err_put_gdm;
-		}
-	}
-
-	/* Dying-gasp is optional but must remain available if a runtime
-	 * transition enters GPON. The handler ignores other protocols and
-	 * never queues work after the GPON workqueue has been released.
-	 */
-	priv->dying_gasp_irq = platform_get_irq_byname_optional(pdev, "dying-gasp");
-	if (priv->dying_gasp_irq == -ENXIO ||
-	    priv->dying_gasp_irq == -ENOENT) {
-		priv->dying_gasp_irq = -1;
-	} else if (priv->dying_gasp_irq < 0) {
-		ret = dev_err_probe(dev, priv->dying_gasp_irq,
-				    "failed to get dying-gasp IRQ\n");
-		goto err_put_gdm;
-	} else {
-		ret = devm_request_irq(dev, priv->dying_gasp_irq,
-				       airoha_dying_gasp_irq, 0, "xpon-dying-gasp", priv);
-		if (ret) {
-			ret = dev_err_probe(dev, ret,
-				"failed to request dying-gasp IRQ\n");
-			goto err_put_gdm;
-		}
-	}
-
-	/* ->hw_prepare() executes during registration. Store generic state in
-	 * xpon_device, retaining SoC-specific configuration in xpon_priv.
-	 * Do not advertise protocols whose MAC backend is not implemented yet.
-	 */
-	priv->xpon = xpon_device_alloc(priv->dev, 0);
-	if (IS_ERR(priv->xpon)) {
-		ret = PTR_ERR(priv->xpon);
-		priv->xpon = NULL;
-		goto err_cleanup_mode;
-	}
-	ret = xpon_device_setup(priv->xpon, priv->gdm_dev, &airoha_core_ops,
-				priv, priv->mode,
-				priv->match_data->xpon_mode_comp &
-				(XPON_MODE_GPON | XPON_MODE_EPON | XPON_MODE_XGSPON |
-				 XPON_MODE_XEPON));
-	if (!ret)
-		ret = xpon_device_register_allocated(priv->xpon);
-	if (ret) {
-		xpon_device_free(priv->xpon);
-		priv->xpon = NULL;
-		ret = dev_err_probe(priv->dev, ret,
-				    "failed to configure/register xPON device\n");
-		goto err_cleanup_mode;
-	}
-
-	if (airoha_xpon_is_xgspon(priv)) {
-		ret = airoha_xpon_frontend_set_mode(priv);
-		if (!ret)
-			ret = airoha_xpon_finish_xgspon(priv);
-		if (ret)
-			goto err_xgspon;
-		platform_set_drvdata(pdev, priv);
-		return 0;
-	}
-
-	/* net/xpon has resolved the named or legacy frontend at registration. */
-	ret = airoha_xpon_frontend_set_mode(priv);
-	if (ret) {
-		ret = dev_err_probe(dev, ret,
-				    "failed to configure optical frontend mode\n");
-		goto err_unregister_core;
-	}
-
-	if (!airoha_xpon_is_gpon(priv))
-		xpon_link_report(priv->xpon, 1, 0, XPON_LINK_DISABLED, true);
-
-	link_ops = airoha_xpon_get_link_ops(priv);
-	ret = airoha_eth_register_xpon(priv->gdm_dev, priv->mode, link_ops,
-				       priv);
-	if (ret)
-		goto err_unregister_core;
-
-	airoha_xpon_update_netdev_link(priv, false);
-
-	if (airoha_xpon_is_gpon(priv)) {
-		ret = airoha_xpon_tod_init(pdev, priv);
-		if (ret == -EPROBE_DEFER)
-			goto err_unregister_xpon;
-		if (ret)
-			dev_warn(dev, "ToD unavailable (%d), continuing without it\n", ret);
-		ret = airoha_xpon_register_gpon_omci(priv);
-		if (ret) {
-			ret = dev_err_probe(dev, ret, "error on register OMCI");
-			goto err_unregister_xpon;
-		}
-	}
-
-	if (!airoha_xpon_is_gpon(priv)) {
-		ret = airoha_xpon_register_epon_oam(priv);
-		if (ret)
-			goto err_unregister_xpon;
-	}
-
-	platform_set_drvdata(pdev, priv);
-	if (airoha_xpon_is_gpon(priv)) {
-		ret = devm_device_add_group(dev, &gpon_bip_group);
-		if (ret)
-			dev_warn(dev, "failed to add the BIP sysfs group: %d\n",
-				 ret);
-	}
-	return 0;
-
-err_xgspon:
-	airoha_xgspon_stop_services(priv);
-	airoha_xgspon_stop_hardware(priv);
-	xpon_device_unregister(priv->xpon);
-	priv->xpon = NULL;
-	goto err_put_gdm;
-err_unregister_xpon:
-	airoha_eth_unregister_xpon(priv->gdm_dev, link_ops, priv);
-err_unregister_core:
-	airoha_xpon_tod_remove(priv);
-	airoha_xpon_unregister_epon_oam(priv);
-	xpon_device_unregister(priv->xpon);
-	priv->xpon = NULL;
-err_cleanup_mode:
-	if (airoha_xpon_is_xgspon(priv)) {
-		airoha_xgspon_stop_hardware(priv);
-	} else {
-		/* Registration can fail before hw_prepare() installs the action. */
-		devm_remove_action_nowarn(dev, airoha_xpon_cleanup_legacy, priv);
-		airoha_xpon_cleanup_legacy(priv);
-	}
-err_put_gdm:
-	if (priv->gdm_dev) {
-		dev_put(priv->gdm_dev);
-		priv->gdm_dev = NULL;
-	}
-	return dev_err_probe(dev, ret, "error on register xPON MAC");
-}
-
-static void airoha_xpon_remove(struct platform_device *pdev)
-{
-	const struct airoha_xpon_link_ops *link_ops;
-	struct xpon_priv *priv;
-
-	priv = platform_get_drvdata(pdev);
-	if (!priv)
-		return;
-	if (airoha_xpon_is_xgspon(priv)) {
-		airoha_xgspon_stop_services(priv);
-		airoha_xgspon_stop_hardware(priv);
-		xpon_device_unregister(priv->xpon);
-		priv->xpon = NULL;
-		dev_put(priv->gdm_dev);
-		priv->gdm_dev = NULL;
-		return;
-	}
-
-	dev_info(priv->dev, "removing xPON mode %s\n",
-		 airoha_xpon_mode_name(priv->mode));
-
-	if (airoha_xpon_is_gpon(priv))
-		cancel_delayed_work_sync(&priv->restart_work);
-
-	/* net/omci owns and stops the GPON transport before it is detached. */
-	if (airoha_xpon_is_gpon(priv))
-		airoha_xpon_unregister_gpon_omci(priv);
-
-	link_ops = airoha_xpon_get_link_ops(priv);
-	airoha_eth_unregister_xpon(priv->gdm_dev, link_ops, priv);
-
-	if (!airoha_xpon_is_gpon(priv)) {
-		epon_disable(priv);
-	} else if (airoha_xpon_is_gpon(priv) &&
-		   (READ_ONCE(priv->mac_enabled) || priv->phy_powered)) {
-		/* Defensive fallback for a provider that failed to stop cleanly. */
-		gpon_disable(priv);
-	} else if (airoha_xpon_is_gpon(priv)) {
-		airoha_xpon_tx_enable(priv, false);
-		cancel_work_sync(&priv->irq_work);
-		cancel_delayed_work_sync(&priv->to1_work);
-		cancel_delayed_work_sync(&priv->to2_work);
-	}
-
-	airoha_xpon_tod_remove(priv);
-	airoha_xpon_unregister_epon_oam(priv);
-	xpon_device_unregister(priv->xpon);
-	priv->xpon = NULL;
-
-	devm_remove_action(priv->dev, airoha_xpon_cleanup_legacy, priv);
-	airoha_xpon_cleanup_legacy(priv);
-	dev_put(priv->gdm_dev);
-	priv->gdm_dev = NULL;
-}
-
-static void airoha_xpon_shutdown(struct platform_device *pdev)
-{
-	struct xpon_priv *priv = platform_get_drvdata(pdev);
-
-	if (!priv || !airoha_xpon_is_xgspon(priv))
-		return;
-	if (priv->phy)
-		cancel_delayed_work_sync(&priv->phy_link_work);
-	if (priv->xgspon)
-		omci_device_stop(airoha_xgspon_omci_device(priv->xgspon));
-	airoha_xgspon_stop_hardware(priv);
-}
-
 static const struct airoha_xpon_match_data en751221_xpon_data = {
 	.version = econet_en751221,
 	.wan_mode_mask = SCU_WAN_MODE_MASK_EN751221,
@@ -6812,19 +6483,376 @@ static const struct of_device_id airoha_xpon_of_match[] = {
 	{ .compatible = "airoha,an7583-xpon", .data = &an7583_xpon_data },
 	{}
 };
-MODULE_DEVICE_TABLE(of, airoha_xpon_of_match);
 
-static struct platform_driver airoha_xpon_driver = {
-	.probe = airoha_xpon_probe,
-	.remove = airoha_xpon_remove,
-	.shutdown = airoha_xpon_shutdown,
-	.driver = {
-		.name = "airoha-xpon",
-		.of_match_table = airoha_xpon_of_match,
-	},
-};
+int airoha_xpon_add_hw(struct airoha_eth *eth, struct device_node *np,
+		       struct net_device *netdev)
+{
+	const struct of_device_id *match;
+	struct platform_device *pdev;
+	struct device *dev;
+	void *group;
+	const struct airoha_xpon_match_data *data;
+	const struct airoha_xpon_link_ops *link_ops;
+	struct device_node *eth_node;
+	struct xpon_priv *priv;
+	struct resource *res;
+	int ret;
 
-module_platform_driver(airoha_xpon_driver);
+	if (eth->xpon)
+		return -EBUSY;
+
+	match = of_match_node(airoha_xpon_of_match, np);
+	if (!match)
+		return dev_err_probe(eth->dev, -EINVAL,
+				     "unsupported xPON hardware %pOF\n", np);
+	data = match->data;
+
+	/* Retain the DT platform device for resource, IRQ, PHY and reset
+	 * lookups, but do not bind a second platform driver to it.
+	 */
+	pdev = of_find_device_by_node(np);
+	if (!pdev)
+		return dev_err_probe(eth->dev, -EPROBE_DEFER,
+				     "xPON resource device is not available\n");
+	dev = &pdev->dev;
+
+	group = devres_open_group(dev, NULL, GFP_KERNEL);
+	if (!group) {
+		put_device(dev);
+		return -ENOMEM;
+	}
+
+	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
+	if (!priv) {
+		ret = -ENOMEM;
+		goto err_release;
+	}
+
+	priv->dev = dev;
+	priv->pdev = pdev;
+	priv->devres_group = group;
+	priv->match_data = data;
+	/* The EN7580 dedicated 10G MAC starts in XGS-PON mode. */
+	priv->mode = data->version == econet_en7580 ?
+		XPON_MODE_XGSPON : XPON_MODE_GPON;
+	spin_lock_init(&priv->epon_lock);
+	mutex_init(&priv->xgspon_lock);
+	priv->epon_enabled_links = BIT(0);
+
+	INIT_DELAYED_WORK(&priv->phy_link_work, airoha_xpon_phy_link_work_fn);
+	priv->scu = syscon_regmap_lookup_by_phandle(dev->of_node, "airoha,scu");
+	if (IS_ERR(priv->scu)) {
+		ret = dev_err_probe(dev, PTR_ERR(priv->scu),
+				    "failed to get SCU regmap\n");
+		goto err_put_gdm;
+	}
+
+	priv->mac_reset = devm_reset_control_get_optional_exclusive(dev, "mac");
+	if (IS_ERR(priv->mac_reset)) {
+		ret = dev_err_probe(dev, PTR_ERR(priv->mac_reset),
+				    "failed to get xPON MAC reset\n");
+		goto err_put_gdm;
+	}
+	if (airoha_xpon_is_xgspon(priv) && !priv->mac_reset) {
+		ret = -EINVAL;
+		goto err_put_gdm;
+	}
+
+	priv->phy = devm_phy_get(dev, "xpon");
+	if (IS_ERR(priv->phy)) {
+		ret = dev_err_probe(dev, PTR_ERR(priv->phy),
+				    "failed to get digital xPON PHY\n");
+		goto err_put_gdm;
+	}
+
+	/* The Ethernet core owns and selects GDM2.  Never discover a different
+	 * netdev through the global namespace during xPON initialization.
+	 */
+	eth_node = of_parse_phandle(dev->of_node, "ethernet", 0);
+	if (eth_node) {
+		if (!of_device_is_available(eth_node) ||
+		    eth_node != netdev->dev.of_node) {
+			ret = dev_err_probe(dev, -EINVAL,
+					    "xPON ethernet phandle does not select GDM2 PON\n");
+			of_node_put(eth_node);
+			goto err_put_gdm;
+		}
+		dev_info(dev, "%s datapath phandle: %pOF\n",
+			 airoha_xpon_mode_name(priv->mode), eth_node);
+		of_node_put(eth_node);
+	} else if (airoha_xpon_is_xgspon(priv)) {
+		ret = dev_err_probe(dev, -EINVAL, "missing GDM2 phandle\n");
+		goto err_put_gdm;
+	}
+	dev_hold(netdev);
+	priv->gdm_dev = netdev;
+	dev_info(dev, "resolved xPON datapath to %s\n", priv->gdm_dev->name);
+
+	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "mac");
+	if (!res)
+		res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	if (!res) {
+		ret = dev_err_probe(dev, -EINVAL, "missing mac resource\n");
+		goto err_put_gdm;
+	}
+
+	priv->xpon_base = devm_ioremap_resource(dev, res);
+	if (IS_ERR(priv->xpon_base)) {
+		ret = dev_err_probe(dev, PTR_ERR(priv->xpon_base),
+				    "needs xPON mac base\n");
+		goto err_put_gdm;
+	}
+
+	priv->gpon_reg = priv->xpon_base + GPON_REG_OFFSET;
+	priv->xgspon_reg = priv->xpon_base + XGSPON_REG_OFFSET;
+	priv->epon_reg = priv->xpon_base + EPON_REG_OFFSET;
+
+	priv->mac_irq = -1;
+	if (!priv->match_data->mac_irq_via_eth) {
+		priv->mac_irq = platform_get_irq_byname(pdev, "mac");
+		if (priv->mac_irq < 0)
+			priv->mac_irq = platform_get_irq(pdev, 0);
+		if (priv->mac_irq < 0) {
+			ret = dev_err_probe(dev, priv->mac_irq, "needs mac irq\n");
+			goto err_put_gdm;
+		}
+
+		/* One IRQ descriptor for all PON engines.  GPON/EPON run in
+		 * hardirq context; XGS-PON is handed to the threaded callback.
+		 */
+		ret = devm_request_threaded_irq(dev, priv->mac_irq,
+						airoha_xpon_mac_irq,
+						airoha_xpon_mac_thread,
+						IRQF_ONESHOT,
+						"xpon-mac", priv);
+		if (ret) {
+			ret = dev_err_probe(dev, ret, "cannot handle xPON mac irq");
+			goto err_put_gdm;
+		}
+	}
+
+	/* Dying-gasp is optional but must remain available if a runtime
+	 * transition enters GPON. The handler ignores other protocols and
+	 * never queues work after the GPON workqueue has been released.
+	 */
+	priv->dying_gasp_irq = platform_get_irq_byname_optional(pdev, "dying-gasp");
+	if (priv->dying_gasp_irq == -ENXIO ||
+	    priv->dying_gasp_irq == -ENOENT) {
+		priv->dying_gasp_irq = -1;
+	} else if (priv->dying_gasp_irq < 0) {
+		ret = dev_err_probe(dev, priv->dying_gasp_irq,
+				    "failed to get dying-gasp IRQ\n");
+		goto err_put_gdm;
+	} else {
+		ret = devm_request_irq(dev, priv->dying_gasp_irq,
+				       airoha_dying_gasp_irq, 0, "xpon-dying-gasp", priv);
+		if (ret) {
+			ret = dev_err_probe(dev, ret,
+				"failed to request dying-gasp IRQ\n");
+			goto err_put_gdm;
+		}
+	}
+
+	/* ->hw_prepare() executes during registration. Store generic state in
+	 * xpon_device, retaining SoC-specific configuration in xpon_priv.
+	 * Do not advertise protocols whose MAC backend is not implemented yet.
+	 */
+	priv->xpon = xpon_device_alloc(priv->dev, 0);
+	if (IS_ERR(priv->xpon)) {
+		ret = PTR_ERR(priv->xpon);
+		priv->xpon = NULL;
+		goto err_cleanup_mode;
+	}
+	ret = xpon_device_setup(priv->xpon, priv->gdm_dev, &airoha_core_ops,
+				priv, priv->mode,
+				priv->match_data->xpon_mode_comp &
+				(XPON_MODE_GPON | XPON_MODE_EPON | XPON_MODE_XGSPON |
+				 XPON_MODE_XEPON));
+	if (!ret)
+		ret = xpon_device_register_allocated(priv->xpon);
+	if (ret) {
+		xpon_device_free(priv->xpon);
+		priv->xpon = NULL;
+		ret = dev_err_probe(priv->dev, ret,
+				    "failed to configure/register xPON device\n");
+		goto err_cleanup_mode;
+	}
+
+	if (airoha_xpon_is_xgspon(priv)) {
+		ret = airoha_xpon_frontend_set_mode(priv);
+		if (!ret)
+			ret = airoha_xpon_finish_xgspon(priv);
+		if (ret)
+			goto err_xgspon;
+		platform_set_drvdata(pdev, priv);
+		eth->xpon = priv;
+		devres_close_group(dev, group);
+		return 0;
+	}
+
+	/* net/xpon has resolved the named or legacy frontend at registration. */
+	ret = airoha_xpon_frontend_set_mode(priv);
+	if (ret) {
+		ret = dev_err_probe(dev, ret,
+				    "failed to configure optical frontend mode\n");
+		goto err_unregister_core;
+	}
+
+	if (!airoha_xpon_is_gpon(priv))
+		xpon_link_report(priv->xpon, 1, 0, XPON_LINK_DISABLED, true);
+
+	link_ops = airoha_xpon_get_link_ops(priv);
+	ret = airoha_eth_register_xpon(priv->gdm_dev, priv->mode, link_ops,
+				       priv);
+	if (ret)
+		goto err_unregister_core;
+
+	airoha_xpon_update_netdev_link(priv, false);
+
+	if (airoha_xpon_is_gpon(priv)) {
+		ret = airoha_xpon_tod_init(pdev, priv);
+		if (ret == -EPROBE_DEFER)
+			goto err_unregister_xpon;
+		if (ret)
+			dev_warn(dev, "ToD unavailable (%d), continuing without it\n", ret);
+		ret = airoha_xpon_register_gpon_omci(priv);
+		if (ret) {
+			ret = dev_err_probe(dev, ret, "error on register OMCI");
+			goto err_unregister_xpon;
+		}
+	}
+
+	if (!airoha_xpon_is_gpon(priv)) {
+		ret = airoha_xpon_register_epon_oam(priv);
+		if (ret)
+			goto err_unregister_xpon;
+	}
+
+	platform_set_drvdata(pdev, priv);
+	if (airoha_xpon_is_gpon(priv)) {
+		ret = devm_device_add_group(dev, &gpon_bip_group);
+		if (ret)
+			dev_warn(dev, "failed to add the BIP sysfs group: %d\n",
+				 ret);
+	}
+	eth->xpon = priv;
+	devres_close_group(dev, group);
+	return 0;
+
+err_xgspon:
+	airoha_xgspon_stop_services(priv);
+	airoha_xgspon_stop_hardware(priv);
+	xpon_device_unregister(priv->xpon);
+	priv->xpon = NULL;
+	goto err_put_gdm;
+err_unregister_xpon:
+	airoha_eth_unregister_xpon(priv->gdm_dev, link_ops, priv);
+err_unregister_core:
+	airoha_xpon_tod_remove(priv);
+	airoha_xpon_unregister_epon_oam(priv);
+	xpon_device_unregister(priv->xpon);
+	priv->xpon = NULL;
+err_cleanup_mode:
+	if (airoha_xpon_is_xgspon(priv)) {
+		airoha_xgspon_stop_hardware(priv);
+	} else {
+		/* Registration can fail before hw_prepare() installs the action. */
+		devm_remove_action_nowarn(dev, airoha_xpon_cleanup_legacy, priv);
+		airoha_xpon_cleanup_legacy(priv);
+	}
+err_put_gdm:
+	if (priv->gdm_dev) {
+		dev_put(priv->gdm_dev);
+		priv->gdm_dev = NULL;
+	}
+err_release:
+	ret = dev_err_probe(dev, ret, "error on register xPON MAC");
+	devres_release_group(dev, group);
+	put_device(dev);
+	return ret;
+}
+
+void airoha_xpon_del_hw(struct airoha_eth *eth)
+{
+	const struct airoha_xpon_link_ops *link_ops;
+	struct platform_device *pdev;
+	struct xpon_priv *priv;
+	struct device *dev;
+	void *group;
+
+	dev_info(eth->dev, "stoping xPON MAC\n");
+	priv = eth->xpon;
+	if (!priv)
+		return;
+
+	eth->xpon = NULL;
+	pdev = priv->pdev;
+	dev = priv->dev;
+	group = priv->devres_group;
+	if (airoha_xpon_is_xgspon(priv)) {
+		airoha_xgspon_stop_services(priv);
+		airoha_xgspon_stop_hardware(priv);
+		xpon_device_unregister(priv->xpon);
+		priv->xpon = NULL;
+		dev_put(priv->gdm_dev);
+		priv->gdm_dev = NULL;
+		goto release;
+	}
+
+	dev_info(eth->dev, "removing xPON mode %s\n",
+		 airoha_xpon_mode_name(priv->mode));
+
+	if (airoha_xpon_is_gpon(priv))
+		cancel_delayed_work_sync(&priv->restart_work);
+
+	/* net/omci owns and stops the GPON transport before it is detached. */
+	if (airoha_xpon_is_gpon(priv))
+		airoha_xpon_unregister_gpon_omci(priv);
+
+	link_ops = airoha_xpon_get_link_ops(priv);
+	airoha_eth_unregister_xpon(priv->gdm_dev, link_ops, priv);
+
+	if (!airoha_xpon_is_gpon(priv)) {
+		epon_disable(priv);
+	} else if (airoha_xpon_is_gpon(priv) &&
+		   (READ_ONCE(priv->mac_enabled) || priv->phy_powered)) {
+		/* Defensive fallback for a provider that failed to stop cleanly. */
+		gpon_disable(priv);
+	} else if (airoha_xpon_is_gpon(priv)) {
+		airoha_xpon_tx_enable(priv, false);
+		cancel_work_sync(&priv->irq_work);
+		cancel_delayed_work_sync(&priv->to1_work);
+		cancel_delayed_work_sync(&priv->to2_work);
+	}
+
+	airoha_xpon_tod_remove(priv);
+	airoha_xpon_unregister_epon_oam(priv);
+	xpon_device_unregister(priv->xpon);
+	priv->xpon = NULL;
+
+	devm_remove_action(priv->dev, airoha_xpon_cleanup_legacy, priv);
+	airoha_xpon_cleanup_legacy(priv);
+	dev_put(priv->gdm_dev);
+	priv->gdm_dev = NULL;
+
+release:
+	platform_set_drvdata(pdev, NULL);
+	devres_release_group(dev, group);
+	put_device(dev);
+}
+
+void airoha_xpon_shutdown_hw(struct airoha_eth *eth)
+{
+	struct xpon_priv *priv = eth->xpon;
+
+	if (!priv || !airoha_xpon_is_xgspon(priv))
+		return;
+	if (priv->phy)
+		cancel_delayed_work_sync(&priv->phy_link_work);
+	if (priv->xgspon)
+		omci_device_stop(airoha_xgspon_omci_device(priv->xgspon));
+	airoha_xgspon_stop_hardware(priv);
+}
 
 MODULE_DESCRIPTION("Airoha PON MAC driver");
 MODULE_AUTHOR("Matheus Sampaio Queiroga <srherobrine20@gmail.com>");
