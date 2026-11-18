@@ -906,9 +906,12 @@ static void en751221_trgmii_pair_setup(struct mt7530_priv *ext,
 	mt7530_clear(ondie, MT753X_AGC, EN751221_AGC_L2LEN_CHK);
 
 	/*
-	 * The EN7512 vendor SDK disables global switch flow control on both
-	 * sides of the cascade for throughput operation. Keep this separate
-	 * from ingress/egress rate-limit accounting, which is not changed here.
+	 * Global flow-control register of both sides of the cascade, with
+	 * the value of the EN7512 vendor SDK. Bit 31 is the global enable
+	 * (the vendor code clears it to close flow control) and it is set:
+	 * flow control stays on, and the pause bits of each MAC control
+	 * register decide per port. Ingress/egress rate-limit accounting is
+	 * not changed here.
 	 */
 	mt7530_write(ondie, EN751221_GSW_FC_CTL, EN751221_GSW_FC_CTL_VAL);
 	mt7530_write(ext, EN751221_GSW_FC_CTL, EN751221_GSW_FC_CTL_VAL);
