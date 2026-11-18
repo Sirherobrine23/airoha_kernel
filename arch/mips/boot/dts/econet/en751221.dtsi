@@ -380,7 +380,6 @@
 			reg = <0x1fbf0000 0x30>;
 			reg-io-width = <4>;
 			reg-shift = <2>;
-			native-endian;
 			clock-frequency = <20000000>;
 	
 			interrupts = <0>;
