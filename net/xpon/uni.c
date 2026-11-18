@@ -103,7 +103,9 @@ int xpon_uni_set_admin(struct xpon_device *xpon, u32 id, bool enabled)
 	struct net_device *dev;
 	int ret;
 
-	rtnl_lock();
+	/* Protocol work can be drained by a mode switch holding RTNL. */
+	if (!rtnl_trylock())
+		return -EAGAIN;
 	dev = xpon_uni_get_netdev(xpon, id);
 	if (!dev) {
 		ret = -ENODEV;

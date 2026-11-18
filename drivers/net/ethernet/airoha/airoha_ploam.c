@@ -274,8 +274,9 @@ static void handle_upstream_overhead(struct ploam_priv *pp,
 	delay_mode = (c[7] >> 5) & 1;
 	delay_time = ((u16)c[8] << 8) | c[9];
 
-	pp->ops->set_overhead(pp->hw_priv, c[0], c[1], c[2], c[3],
-			      delim, delay_mode, delay_time);
+	if (pp->ops->set_overhead(pp->hw_priv, c[0], c[1], c[2], c[3],
+				  delim, delay_mode, delay_time))
+		return;
 	ploam_set_state(pp, GPON_O3_SERIAL_NUMBER);
 }
 
@@ -737,8 +738,8 @@ void ploam_handle_downstream(struct ploam_priv *pp,
 
 void ploam_notify_dying_gasp(struct ploam_priv *pp)
 {
-	/* An ONU in emergency stop must not transmit at all. */
-	if (pp->state >= GPON_O2_STANDBY &&
+	/* O1/O2 have no upstream registration; O7 forbids transmission. */
+	if (pp->state >= GPON_O3_SERIAL_NUMBER &&
 	    pp->state != GPON_O7_EMERGENCY_STOP)
 		ploam_send_dying_gasp(pp);
 }

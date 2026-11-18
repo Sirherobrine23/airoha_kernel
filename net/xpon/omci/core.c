@@ -1205,7 +1205,7 @@ static void omci_rx_work(struct work_struct *work)
 
 		spin_lock_bh(&odev->state_lock);
 		onu_id = odev->onu_id;
-		if (cb->generation != odev->generation) {
+		if (!READ_ONCE(odev->started) || cb->generation != odev->generation) {
 			spin_unlock_bh(&odev->state_lock);
 			atomic64_inc(&odev->rx_dropped);
 			dev_kfree_skb_any(skb);
@@ -1451,7 +1451,6 @@ void omci_device_stop(struct omci_device *odev)
 	if (!odev->started)
 		goto out;
 
-	/* Let the provider drain the active OMCC before rejecting new traffic. */
 	if (odev->ops->stop)
 		odev->ops->stop(odev);
 	WRITE_ONCE(odev->started, false);
@@ -1459,6 +1458,21 @@ out:
 	mutex_unlock(&odev->lifecycle_lock);
 }
 EXPORT_SYMBOL_GPL(omci_device_stop);
+
+/* For providers whose MAC and control RX outlive the netdev. */
+void omci_device_set_admin(struct omci_device *odev, bool up)
+{
+	if (!odev)
+		return;
+
+	spin_lock_bh(&odev->state_lock);
+	if (odev->started != up) {
+		WRITE_ONCE(odev->started, up);
+		odev->generation++;
+	}
+	spin_unlock_bh(&odev->state_lock);
+}
+EXPORT_SYMBOL_GPL(omci_device_set_admin);
 
 void omci_device_unregister(struct omci_device *odev)
 {
@@ -1673,13 +1687,14 @@ void omci_device_receive(struct omci_device *odev, struct sk_buff *skb,
 		dev_kfree_skb_any(skb);
 		return;
 	}
-	if (!READ_ONCE(odev->started)) {
+	spin_lock_bh(&odev->state_lock);
+	if (!odev->started) {
+		spin_unlock_bh(&odev->state_lock);
 		atomic64_inc(&odev->rx_dropped);
 		dev_kfree_skb_any(skb);
 		return;
 	}
 
-	spin_lock_bh(&odev->state_lock);
 	channel_up = odev->channel_up;
 	configured_gem = odev->gem_port_id;
 	generation = odev->generation;

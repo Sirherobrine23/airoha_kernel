@@ -56,6 +56,7 @@ enum xpon_event {
 	XPON_EVENT_OMCI		= BIT(7),
 	XPON_EVENT_OAM		= BIT(8),
 	XPON_EVENT_ENDPOINT	= BIT(9),
+	XPON_EVENT_ACTIVATION	= BIT(10),
 };
 
 struct xpon_notifier_info {
@@ -240,6 +241,26 @@ struct xpon_device_ops {
 	int (*set_report)(struct xpon_device *xpon, u32 id,
 			  const struct xpon_report_config *config);
 };
+
+/**
+ * struct xpon_activation_ops - administrative activation interlock
+ * @set_admin: start or suspend the protocol agent, independently of MAC RX
+ * @deactivate: discard the active session and return to discovery
+ *
+ * Callbacks may sleep. They must not call back into activation policy or
+ * acquire RTNL or wait for protocol work. deactivate() queues FSM reset.
+ */
+struct xpon_activation_ops {
+	int (*set_admin)(struct xpon_device *xpon, bool up);
+	void (*deactivate)(struct xpon_device *xpon);
+};
+
+/* Attach only once the hardware and protocol controller are ready. */
+int xpon_device_activation_attach(struct xpon_device *xpon,
+				  const struct xpon_activation_ops *ops);
+void xpon_device_activation_detach(struct xpon_device *xpon);
+bool xpon_device_activation_allowed(struct xpon_device *xpon);
+void xpon_device_activation_request(struct xpon_device *xpon);
 
 /* Each physical BOB/LDDLA may support a different set of PON modes. */
 struct xpon_optical_path {

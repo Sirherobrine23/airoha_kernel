@@ -131,6 +131,7 @@ struct xpon_device *xpon_device_alloc(struct device *parent, int priv_size)
 	xpon_endpoint_work_init(xpon);
 	spin_lock_init(&xpon->state_lock);
 	mutex_init(&xpon->mode_lock);
+	xpon_activation_init(xpon);
 	INIT_WORK(&xpon->notify_work, xpon_notify_work);
 	BLOCKING_INIT_NOTIFIER_HEAD(&xpon->notifier);
 	xpon->parent = parent;
@@ -469,6 +470,7 @@ void xpon_device_unregister(struct xpon_device *xpon)
 	if (!xpon)
 		return;
 
+	xpon_device_activation_detach(xpon);
 	rtnl_lock();
 	if (WARN_ON_ONCE(!xpon->registered)) {
 		rtnl_unlock();
@@ -830,6 +832,17 @@ struct xpon_device *xpon_device_find_by_ifindex(u32 ifindex)
 	}
 	mutex_unlock(&xpon_devices_lock);
 	return NULL;
+}
+
+/* NETLINK_URELEASE only supplies a portid, not a device identifier. */
+void xpon_activation_release(u32 owner)
+{
+	struct xpon_device *xpon;
+
+	mutex_lock(&xpon_devices_lock);
+	list_for_each_entry(xpon, &xpon_devices, list)
+		xpon_activation_bind(xpon, owner, false);
+	mutex_unlock(&xpon_devices_lock);
 }
 
 void xpon_device_put(struct xpon_device *xpon)

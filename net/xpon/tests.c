@@ -264,6 +264,60 @@ static void xpon_test_queued_config_is_copied(struct kunit *test)
 	KUNIT_EXPECT_EQ(test, observed.wire_id, (u16)7);
 }
 
+static int xpon_test_activation_admin(struct xpon_device *xpon, bool up)
+{
+	return 0;
+}
+
+static void xpon_test_activation_deactivate(struct xpon_device *xpon)
+{
+}
+
+static const struct xpon_activation_ops xpon_test_activation_ops = {
+	.set_admin = xpon_test_activation_admin,
+	.deactivate = xpon_test_activation_deactivate,
+};
+
+static void xpon_test_activation_policy(struct kunit *test)
+{
+	struct xpon_test_context *ctx = test->priv;
+	struct xpon_device *xpon = ctx->xpon;
+	u32 cookie;
+
+	KUNIT_ASSERT_EQ(test, xpon_device_activation_attach(xpon,
+							    &xpon_test_activation_ops), 0);
+	KUNIT_EXPECT_FALSE(test, xpon_device_activation_allowed(xpon));
+	KUNIT_EXPECT_EQ(test, xpon_activation_set(xpon, 0, 0, true), -ENETDOWN);
+	xpon_activation_admin(xpon, true);
+	KUNIT_ASSERT_EQ(test, xpon_activation_set(xpon, 0, 0, true), 0);
+	KUNIT_EXPECT_TRUE(test, xpon_device_activation_allowed(xpon));
+	xpon_activation_admin(xpon, false);
+	KUNIT_EXPECT_FALSE(test, xpon_device_activation_allowed(xpon));
+	xpon_activation_admin(xpon, true);
+	KUNIT_EXPECT_TRUE(test, xpon_device_activation_allowed(xpon));
+	xpon_activation_admin(xpon, false);
+	flush_delayed_work(&xpon->activation_work);
+	xpon_activation_admin(xpon, true);
+	KUNIT_EXPECT_FALSE(test, xpon_device_activation_allowed(xpon));
+
+	KUNIT_ASSERT_EQ(test, xpon_activation_bind(xpon, 42, true), 0);
+	cookie = xpon->activation_cookie;
+	KUNIT_EXPECT_EQ(test, xpon_activation_set(xpon, 0, 0, true), -EPERM);
+	KUNIT_EXPECT_EQ(test, xpon_activation_set(xpon, 42, cookie - 1, true),
+			-ESTALE);
+	KUNIT_ASSERT_EQ(test, xpon_activation_set(xpon, 42, cookie, true), 0);
+	xpon_device_activation_request(xpon);
+	KUNIT_EXPECT_FALSE(test, xpon_device_activation_allowed(xpon));
+	KUNIT_EXPECT_EQ(test, xpon_activation_set(xpon, 42, cookie, true),
+			-ESTALE);
+	KUNIT_ASSERT_EQ(test, xpon_activation_set(xpon, 42,
+						  xpon->activation_cookie, true), 0);
+	KUNIT_ASSERT_EQ(test, xpon_activation_bind(xpon, 42, false), 0);
+	flush_delayed_work(&xpon->activation_work);
+	KUNIT_EXPECT_FALSE(test, xpon_device_activation_allowed(xpon));
+	xpon_device_activation_detach(xpon);
+}
+
 static struct kunit_case xpon_test_cases[] = {
 	KUNIT_CASE(xpon_test_duplicate_wire),
 	KUNIT_CASE(xpon_test_capacity),
@@ -273,6 +327,7 @@ static struct kunit_case xpon_test_cases[] = {
 	KUNIT_CASE(xpon_test_mode_with_endpoint),
 	KUNIT_CASE(xpon_test_queued_delete_wins),
 	KUNIT_CASE(xpon_test_queued_config_is_copied),
+	KUNIT_CASE(xpon_test_activation_policy),
 	{}
 };
 

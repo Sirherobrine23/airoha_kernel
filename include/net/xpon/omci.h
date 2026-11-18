@@ -361,7 +361,7 @@ struct omci_ani_topology {
 
 /**
  * struct omci_device_ops - hardware transport and provisioning operations
- * @start: acquire and start the OMCI transport independently of netdev state
+ * @start: optional start of a provider-owned OMCI transport
  * @stop: stop and release the OMCI transport
  * @xmit: transmit an OMCI PDU; consumes @skb only on success
  * @get_ani_topology: describe pre-existing ANI scheduling resources
@@ -413,6 +413,7 @@ omci_device_register(struct xpon_device *xpon, u32 capabilities,
 void omci_device_unregister(struct omci_device *odev);
 int omci_device_start(struct omci_device *odev);
 void omci_device_stop(struct omci_device *odev);
+void omci_device_set_admin(struct omci_device *odev, bool up);
 
 void *omci_device_priv(const struct omci_device *odev);
 u32 omci_device_id(const struct omci_device *odev);

@@ -2,9 +2,11 @@
 
 #include <linux/etherdevice.h>
 #include <linux/module.h>
+#include <linux/netlink.h>
 #include <linux/rtnetlink.h>
 #include <net/genetlink.h>
 #include <net/net_namespace.h>
+#include <net/netlink.h>
 #include <net/xpon/oam.h>
 
 #include "internal.h"
@@ -23,6 +25,8 @@ static const struct nla_policy xpon_genl_policy[XPON_ATTR_MAX + 1] = {
 	[XPON_ATTR_REPORT_SETS] = { .type = NLA_U8 },
 	[XPON_ATTR_REPORT_SET] = { .type = NLA_U8 },
 	[XPON_ATTR_THRESHOLD_TQ] = { .type = NLA_U32 },
+	[XPON_ATTR_ACTIVATION] = NLA_POLICY_MAX(NLA_U8, 1),
+	[XPON_ATTR_ACTIVATION_COOKIE] = { .type = NLA_U32 },
 };
 
 static struct genl_family xpon_genl_family;
@@ -47,6 +51,25 @@ static int xpon_genl_put_state(struct sk_buff *msg, struct xpon_device *xpon)
 	}
 	if (xpon->oam)
 		caps |= XPON_CAP_OAM;
+	mutex_lock(&xpon->activation_lock);
+	if (xpon->activation_ops) {
+		bool pending = xpon->activation_admin_up &&
+			       !xpon->activation_approved &&
+			       !xpon->activation_reset_pending;
+
+		caps |= XPON_CAP_ACTIVATION;
+		if (nla_put_u8(msg, XPON_ATTR_ACTIVATION,
+			       xpon->activation_approved) ||
+		    nla_put_u8(msg, XPON_ATTR_ACTIVATION_PENDING, pending) ||
+		    nla_put_u32(msg, XPON_ATTR_ACTIVATION_OWNER,
+				xpon->activation_owner) ||
+		    nla_put_u32(msg, XPON_ATTR_ACTIVATION_COOKIE,
+				xpon->activation_cookie)) {
+			mutex_unlock(&xpon->activation_lock);
+			return -EMSGSIZE;
+		}
+	}
+	mutex_unlock(&xpon->activation_lock);
 	if (nla_put_u32(msg, XPON_ATTR_IFINDEX, xpon->netdev->ifindex) ||
 	    nla_put_u32(msg, XPON_ATTR_MODE, state.mode) ||
 	    nla_put_u32(msg, XPON_ATTR_AVAILABLE_MODES, xpon->modes) ||
@@ -155,6 +178,20 @@ static int xpon_genl_doit(struct sk_buff *skb, struct genl_info *info)
 		goto unlock;
 	}
 	switch (cmd) {
+	case XPON_CMD_AGENT_BIND:
+	case XPON_CMD_AGENT_UNBIND:
+		ret = xpon_activation_bind(xpon, info->snd_portid,
+					   cmd == XPON_CMD_AGENT_BIND);
+		goto out;
+	case XPON_CMD_ACTIVATION_SET:
+		if (!a[XPON_ATTR_ACTIVATION] || !a[XPON_ATTR_ACTIVATION_COOKIE]) {
+			ret = -EINVAL;
+			goto out;
+		}
+		ret = xpon_activation_set(xpon, info->snd_portid,
+					  nla_get_u32(a[XPON_ATTR_ACTIVATION_COOKIE]),
+					  nla_get_u8(a[XPON_ATTR_ACTIVATION]));
+		goto out;
 	case XPON_CMD_SET_MODE:
 		ret = a[XPON_ATTR_MODE] ?
 			      xpon_device_set_mode(
@@ -370,6 +407,9 @@ static const struct genl_ops xpon_genl_ops[] = {
 	XPON_OP(XPON_CMD_OAM_TX, GENL_ADMIN_PERM),
 	XPON_OP(XPON_CMD_REPORT_GET, 0),
 	XPON_OP(XPON_CMD_REPORT_SET, GENL_ADMIN_PERM),
+	XPON_OP(XPON_CMD_AGENT_BIND, GENL_ADMIN_PERM),
+	XPON_OP(XPON_CMD_AGENT_UNBIND, GENL_ADMIN_PERM),
+	XPON_OP(XPON_CMD_ACTIVATION_SET, GENL_ADMIN_PERM),
 };
 
 static const struct genl_multicast_group xpon_mcgrps[] = {
@@ -433,12 +473,36 @@ free:
 }
 EXPORT_SYMBOL_GPL(xpon_genl_oam_receive);
 
+static int xpon_netlink_notify(struct notifier_block *nb, unsigned long state,
+			       void *data)
+{
+	struct netlink_notify *notify = data;
+
+	if (state == NETLINK_URELEASE && notify->protocol == NETLINK_GENERIC &&
+	    net_eq(notify->net, &init_net))
+		xpon_activation_release(notify->portid);
+	return NOTIFY_DONE;
+}
+
+static struct notifier_block xpon_netlink_nb = {
+	.notifier_call = xpon_netlink_notify,
+};
+
 int xpon_genl_init(void)
 {
-	return genl_register_family(&xpon_genl_family);
+	int ret;
+
+	ret = netlink_register_notifier(&xpon_netlink_nb);
+	if (ret)
+		return ret;
+	ret = genl_register_family(&xpon_genl_family);
+	if (ret)
+		netlink_unregister_notifier(&xpon_netlink_nb);
+	return ret;
 }
 
 void xpon_genl_exit(void)
 {
 	genl_unregister_family(&xpon_genl_family);
+	netlink_unregister_notifier(&xpon_netlink_nb);
 }

@@ -67,6 +67,7 @@ airoha_ploam_encode(struct airoha_ploam_msg *raw,
  *   PLOAM. guard_bits is the raw message value (PHY_TX_EN_BIT_LEN_CONST=24
  *   should be written to G_PLOu_GUARD_BIT). t1/t2/t3 go to G_PLOu_PRMBL_*,
  *   delim/delay_mode/delay_time go to the PHY and G_PRE_ASSIGNED_DLY.
+ *   Return an error to hold O2, including when activation is not authorized.
  * @set_t3_preamble: program G_PLOu_PRMBL_TYPE3 from Extended_Burst_Length.
  * @set_key_switch_time: write the AES key-switch superframe counter to
  *   G_AES_CFG so the shadow key becomes active at the OLT-specified frame.
@@ -88,9 +89,9 @@ struct ploam_ops {
 	void (*set_eqd_o4)(void *priv, u32 byte_delay, u32 bit_delay);
 	void (*adjust_eqd_o5)(void *priv, u32 new_eqd);
 	void (*enable_us_fec)(void *priv);
-	void (*set_overhead)(void *priv, u8 guard_bits, u8 t1_pbits, u8 t2_pbits,
-			     u8 t3_pbits, const u8 delim[3],
-			     bool delay_mode, u16 delay_time);
+	int (*set_overhead)(void *priv, u8 guard_bits, u8 t1_pbits, u8 t2_pbits,
+			    u8 t3_pbits, const u8 delim[3],
+			    bool delay_mode, u16 delay_time);
 	void (*set_t3_preamble)(void *priv, u8 o3_t3, u8 o5_t3);
 	void (*set_key_switch_time)(void *priv, u32 superframe);
 	void (*request_new_key)(void *priv);

@@ -17,13 +17,10 @@ struct omci_service_config;
 struct sk_buff;
 struct xpon_device;
 
-/* MAC operations are passed in by the provider, keeping the common OMCI
- * module independent of the driver that uses it. start/stop/xmit are required;
- * absent provisioning callbacks remain unsupported by the shared agent.
+/* MAC operations are passed in by the provider. The MAC and control QDMA
+ * lifecycle is independent of the OMCI agent; xmit is required.
  */
 struct airoha_gpon_omci_hw_ops {
-	int (*start)(void *priv);
-	void (*stop)(void *priv);
 	int (*xmit)(void *priv, struct sk_buff *skb, u16 port_id);
 	int (*get_ani_topology)(void *priv, struct omci_ani_topology *topology);
 	int (*set_tcont)(void *priv, u16 entity_id, u16 alloc_id, bool valid);
@@ -53,8 +50,6 @@ int airoha_gpon_omci_register(struct airoha_gpon_omci *omci,
 			      const struct airoha_gpon_omci_hw_ops *hw_ops,
 			      void *hw_priv,
 			      const struct omci_identity *identity, bool has_tod);
-int airoha_gpon_omci_start(struct airoha_gpon_omci *omci);
-void airoha_gpon_omci_stop(struct airoha_gpon_omci *omci);
 void airoha_gpon_omci_unregister(struct airoha_gpon_omci *omci);
 void airoha_gpon_omci_set_onu_id(struct airoha_gpon_omci *omci, u16 onu_id);
 void airoha_gpon_omci_set_channel(struct airoha_gpon_omci *omci,
@@ -68,8 +63,6 @@ bool airoha_gpon_omci_receive(void *data, struct sk_buff *skb, u8 channel,
 
 int airoha_gpon_omci_hw_get_ani_topology(void *hw_priv,
 					 struct omci_ani_topology *topology);
-int airoha_gpon_omci_hw_start(void *hw_priv);
-void airoha_gpon_omci_hw_stop(void *hw_priv);
 int airoha_gpon_omci_hw_set_tcont(void *hw_priv, u16 entity_id,
 				  u16 alloc_id, bool valid);
 int airoha_gpon_omci_hw_set_gem_port(void *hw_priv, u16 entity_id,

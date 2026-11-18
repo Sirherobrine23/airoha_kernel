@@ -6,6 +6,8 @@
 #include <linux/string.h>
 #include <net/xpon.h>
 
+#include <net/net_namespace.h>
+
 #include "internal.h"
 
 struct class *xpon_class;
@@ -202,7 +204,64 @@ static ssize_t los_show(struct device *dev, struct device_attribute *attr,
 }
 static DEVICE_ATTR_RO(los);
 
+static ssize_t activation_show(struct device *dev,
+			       struct device_attribute *attr, char *buf)
+{
+	struct xpon_device *xpon = dev_get_drvdata(dev);
+
+	return sysfs_emit(buf, "%u\n", READ_ONCE(xpon->activation_approved));
+}
+
+static ssize_t activation_store(struct device *dev,
+				struct device_attribute *attr,
+				const char *buf, size_t count)
+{
+	struct xpon_device *xpon = dev_get_drvdata(dev);
+	bool enable;
+	int ret;
+
+	ret = kstrtobool(buf, &enable);
+	if (ret)
+		return ret;
+	rtnl_lock();
+	ret = xpon_activation_set(xpon, 0, 0, enable);
+	rtnl_unlock();
+	return ret ? ret : count;
+}
+static DEVICE_ATTR_RW(activation);
+
+static ssize_t activation_pending_show(struct device *dev,
+				       struct device_attribute *attr, char *buf)
+{
+	struct xpon_device *xpon = dev_get_drvdata(dev);
+	bool pending;
+
+	mutex_lock(&xpon->activation_lock);
+	pending = xpon->activation_ops && xpon->activation_admin_up &&
+		  !xpon->activation_approved && !xpon->activation_reset_pending;
+	mutex_unlock(&xpon->activation_lock);
+	return sysfs_emit(buf, "%u\n", pending);
+}
+static DEVICE_ATTR_RO(activation_pending);
+
+static ssize_t activation_owner_show(struct device *dev,
+				     struct device_attribute *attr, char *buf)
+{
+	struct xpon_device *xpon = dev_get_drvdata(dev);
+	const char *owner;
+
+	mutex_lock(&xpon->activation_lock);
+	owner = xpon->activation_owner ? "agent" :
+		(xpon->activation_approved ? "sysfs" : "none");
+	mutex_unlock(&xpon->activation_lock);
+	return sysfs_emit(buf, "%s\n", owner);
+}
+static DEVICE_ATTR_RO(activation_owner);
+
 static struct attribute *xpon_attrs[] = {
+	&dev_attr_activation.attr,
+	&dev_attr_activation_pending.attr,
+	&dev_attr_activation_owner.attr,
 	&dev_attr_mode_available.attr,
 	&dev_attr_mode_current.attr,
 	&dev_attr_xepon_profile.attr,
@@ -220,14 +279,19 @@ static int xpon_netdev_event(struct notifier_block *nb, unsigned long event,
 	struct net_device *netdev = netdev_notifier_info_to_dev(ptr);
 	struct xpon_device *xpon;
 
-	if (event != NETDEV_CHANGENAME)
+	if (dev_net(netdev) != &init_net ||
+	    (event != NETDEV_CHANGENAME && event != NETDEV_UP &&
+	     event != NETDEV_GOING_DOWN && event != NETDEV_DOWN))
 		return NOTIFY_DONE;
 
 	xpon = xpon_device_find_by_ifindex(netdev->ifindex);
 	if (!xpon)
 		return NOTIFY_DONE;
 
-	device_rename(xpon->class_dev, netdev->name);
+	if (event == NETDEV_CHANGENAME)
+		device_rename(xpon->class_dev, netdev->name);
+	else
+		xpon_activation_admin(xpon, event == NETDEV_UP);
 	xpon_device_put(xpon);
 	return NOTIFY_DONE;
 }
@@ -317,6 +381,11 @@ void xpon_sysfs_notify(struct xpon_device *xpon, unsigned long changed)
 {
 	if (!xpon->class_dev)
 		return;
+	if (changed & XPON_EVENT_ACTIVATION) {
+		sysfs_notify(&xpon->class_dev->kobj, NULL, "activation");
+		sysfs_notify(&xpon->class_dev->kobj, NULL, "activation_pending");
+		sysfs_notify(&xpon->class_dev->kobj, NULL, "activation_owner");
+	}
 	if (changed & XPON_EVENT_MODE)
 		sysfs_notify(&xpon->class_dev->kobj, NULL, "mode_current");
 	if (changed & XPON_EVENT_REGISTRATION)

@@ -79,11 +79,29 @@ struct xpon_device {
 	u8 pon_led_mode;
 	u8 los_led_mode;
 
+	/* Policy is serialized independently of protocol mode transitions. */
+	struct mutex activation_lock;
+	struct delayed_work activation_work;
+	const struct xpon_activation_ops *activation_ops;
+	u32 activation_owner;
+	u32 activation_cookie;
+	bool activation_admin_up;
+	bool activation_approved;
+	bool activation_allowed;
+	bool activation_reset_pending;
+
 	void *omci;
 	void *oam;
 };
 
 extern struct class *xpon_class;
+
+void xpon_activation_init(struct xpon_device *xpon);
+void xpon_activation_admin(struct xpon_device *xpon, bool up);
+int xpon_activation_set(struct xpon_device *xpon, u32 owner, u32 cookie,
+			bool enable);
+int xpon_activation_bind(struct xpon_device *xpon, u32 owner, bool bind);
+void xpon_activation_release(u32 owner);
 
 int xpon_sysfs_init(void);
 void xpon_sysfs_exit(void);

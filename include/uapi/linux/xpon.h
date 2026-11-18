@@ -28,6 +28,7 @@ enum xpon_link_state {
 #define XPON_CAP_OAM		(1U << 1)
 #define XPON_CAP_REPORT		(1U << 2)
 #define XPON_CAP_LINK_ADMIN	(1U << 3)
+#define XPON_CAP_ACTIVATION	(1U << 4)
 
 /* Each mode is a single bit; capability masks combine these values. */
 enum xpon_mode {
@@ -81,6 +82,9 @@ enum xpon_cmd {
 	XPON_CMD_OAM_RX,
 	XPON_CMD_REPORT_GET,
 	XPON_CMD_REPORT_SET,
+	XPON_CMD_AGENT_BIND,
+	XPON_CMD_AGENT_UNBIND,
+	XPON_CMD_ACTIVATION_SET,
 
 	__XPON_CMD_MAX,
 };
@@ -121,6 +125,10 @@ enum xpon_attr {
 	XPON_ATTR_REPORT_SET,
 	XPON_ATTR_THRESHOLD_TQ,
 	XPON_ATTR_MAX_REPORT_SETS,
+	XPON_ATTR_ACTIVATION, /* u8, approved */
+	XPON_ATTR_ACTIVATION_PENDING, /* u8, awaiting approval */
+	XPON_ATTR_ACTIVATION_OWNER, /* u32, agent portid (zero for sysfs) */
+	XPON_ATTR_ACTIVATION_COOKIE, /* u32, current request generation */
 
 	__XPON_ATTR_MAX,
 };

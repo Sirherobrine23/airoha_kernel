@@ -5070,9 +5070,8 @@ static int econet_xpon_control_start(struct net_device *netdev)
 		goto out;
 	}
 
-	/* OMCI activation is allowed while pon0 is administratively down. Keep
-	 * QDMA1 alive independently from ndo_open(), mirroring the vendor WAN
-	 * QDMA control-plane ownership.
+	/* Keep QDMA1 available for the PON control plane independently of
+	 * ndo_open(). The xPON core gates protocol activation and OMCI.
 	 */
 	airoha_qdma_start(port->qdma);
 	port->xpon_control_started = true;

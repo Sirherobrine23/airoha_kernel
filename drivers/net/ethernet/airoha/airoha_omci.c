@@ -16,20 +16,6 @@
 #include "airoha_eth.h"
 #include "airoha_omci.h"
 
-static int airoha_gpon_omci_start_transport(struct omci_device *odev)
-{
-	struct airoha_gpon_omci *omci = omci_device_priv(odev);
-
-	return omci->hw_ops->start(omci->hw_priv);
-}
-
-static void airoha_gpon_omci_stop_transport(struct omci_device *odev)
-{
-	struct airoha_gpon_omci *omci = omci_device_priv(odev);
-
-	omci->hw_ops->stop(omci->hw_priv);
-}
-
 static int airoha_gpon_omci_xmit(struct omci_device *odev,
 				 struct sk_buff *skb, u16 gem_port_id)
 {
@@ -159,13 +145,11 @@ int airoha_gpon_omci_register(struct airoha_gpon_omci *omci,
 	u32 capabilities = OMCI_CAP_HW_MIC;
 	int ret;
 
-	if (!hw_ops || !hw_ops->start || !hw_ops->stop || !hw_ops->xmit)
+	if (!hw_ops || !hw_ops->xmit)
 		return -EINVAL;
 	omci->hw_ops = hw_ops;
 	omci->hw_priv = hw_priv;
 	omci->ops = (struct omci_device_ops) {
-		.start = airoha_gpon_omci_start_transport,
-		.stop = airoha_gpon_omci_stop_transport,
 		.xmit = airoha_gpon_omci_xmit,
 		.get_ani_topology = hw_ops->get_ani_topology ?
 			airoha_gpon_omci_get_ani_topology : NULL,
@@ -197,8 +181,11 @@ int airoha_gpon_omci_register(struct airoha_gpon_omci *omci,
 	omci->odev = omci_device_register(xpon,
 					  capabilities,
 					  &omci->ops, omci);
-	if (IS_ERR(omci->odev))
-		return PTR_ERR(omci->odev);
+	if (IS_ERR(omci->odev)) {
+		ret = PTR_ERR(omci->odev);
+		omci->odev = NULL;
+		return ret;
+	}
 
 	omci_device_set_identity_info(omci->odev, identity);
 	ret = omci_device_set_dying_gasp_enabled(omci->odev, true,
@@ -209,16 +196,6 @@ int airoha_gpon_omci_register(struct airoha_gpon_omci *omci,
 	}
 
 	return ret;
-}
-
-int airoha_gpon_omci_start(struct airoha_gpon_omci *omci)
-{
-	return omci_device_start(omci->odev);
-}
-
-void airoha_gpon_omci_stop(struct airoha_gpon_omci *omci)
-{
-	omci_device_stop(omci->odev);
 }
 
 void airoha_gpon_omci_unregister(struct airoha_gpon_omci *omci)
