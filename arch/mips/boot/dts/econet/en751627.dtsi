@@ -328,7 +328,7 @@
 			reg-io-width = <4>;
 			reg-shift = <2>;
 			big-endian;
-	
+
 			interrupts = <GIC_SHARED 2 IRQ_TYPE_LEVEL_HIGH>;
 		};
 
@@ -543,7 +543,6 @@
 			reset-names = "mac";
 			phys = <&xpon_phy>;
 			phy-names = "xpon";
-			ethernet = <&gdm2_pon>;
 			airoha,scu = <&scuclk>;
 
 		};
@@ -662,6 +661,7 @@
 				gdm2_xdsl: ethernet-port@1 {
 					compatible = "airoha,eth-xdsl";
 					reg = <1>;
+					airoha,xdsl = <&xdsl>;
 					phy-mode = "internal";
 					status = "disabled";
 				};
@@ -686,11 +686,20 @@
 				#address-cells = <1>;
 				#size-cells = <0>;
 
+				gsw_port0: port@0 {
+					reg = <0>;
+					phy-mode = "internal";
+					phy-handle = <&gsw_phy0>;
+					status = "disabled";
+					label = "lan1";
+				};
+
 				gsw_port1: port@1 {
 					reg = <1>;
 					phy-mode = "internal";
 					phy-handle = <&gsw_phy1>;
 					status = "disabled";
+					label = "lan2";
 				};
 
 				gsw_port2: port@2 {
@@ -698,6 +707,7 @@
 					phy-mode = "internal";
 					phy-handle = <&gsw_phy2>;
 					status = "disabled";
+					label = "lan3";
 				};
 
 				gsw_port3: port@3 {
@@ -705,6 +715,7 @@
 					phy-mode = "internal";
 					phy-handle = <&gsw_phy3>;
 					status = "disabled";
+					label = "lan4";
 				};
 
 				gsw_port4: port@4 {
@@ -712,6 +723,7 @@
 					phy-mode = "internal";
 					phy-handle = <&gsw_phy4>;
 					status = "disabled";
+					label = "lan5";
 				};
 
 				gsw_port6: port@6 {
@@ -730,6 +742,33 @@
 			mdio: mdio {
 				#address-cells = <1>;
 				#size-cells = <0>;
+
+				gsw_phy0: ethernet-phy@8 {
+					compatible = "ethernet-phy-ieee802.3-c22";
+					reg = <8>;
+					phy-mode = "internal";
+					status = "disabled";
+
+					airoha,scu = <&scuclk>;
+
+					leds {
+						#address-cells = <1>;
+						#size-cells = <0>;
+
+						gsw_phy0_led0: led@0 {
+							reg = <0>;
+							function = LED_FUNCTION_LAN;
+							active-low;
+						};
+
+						gsw_phy0_led1: led@1 {
+							reg = <1>;
+							function = LED_FUNCTION_ACTIVITY;
+							status = "disabled";
+							active-low;
+						};
+					};
+				};
 
 				gsw_phy1: ethernet-phy@9 {
 					compatible = "ethernet-phy-ieee802.3-c22";

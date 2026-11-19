@@ -3435,6 +3435,20 @@ static void en7528_mac_port_get_caps(struct dsa_switch *ds, int port,
 	}
 }
 
+/* EN751627 has one additional GPHY on port 0 (MDIO address 8). */
+static void en751627_mac_port_get_caps(struct dsa_switch *ds, int port,
+				       struct phylink_config *config)
+{
+	if (port == 0) {
+		__set_bit(PHY_INTERFACE_MODE_INTERNAL,
+			  config->supported_interfaces);
+		config->mac_capabilities |= MAC_10 | MAC_100 | MAC_1000FD;
+		return;
+	}
+
+	en7528_mac_port_get_caps(ds, port, config);
+}
+
 static void en751221_mac_port_get_caps(struct dsa_switch *ds, int port,
 				       struct phylink_config *config)
 {
@@ -3703,7 +3717,7 @@ static void mt753x_phylink_get_caps(struct dsa_switch *ds, int port,
 	 * phylink disables EEE on these PHYs and refuses to enable it from
 	 * userspace.
 	 */
-	if (priv->id != ID_EN7528 &&
+	if (priv->id != ID_EN7528 && priv->id != ID_EN751627 &&
 	    config->mac_capabilities & (MAC_100FD | MAC_1000FD)) {
 		u32 eeecr = mt7530_read(priv, MT753X_PMEEECR_P(port));
 
@@ -3846,7 +3860,8 @@ mt753x_conduit_state_change(struct dsa_switch *ds,
 	 * interface is up.
 	 */
 	if (priv->id != ID_MT7530 && priv->id != ID_MT7621 &&
-	    priv->id != ID_EN7528 && priv->id != ID_EN751221)
+	    priv->id != ID_EN7528 && priv->id != ID_EN751627 &&
+	    priv->id != ID_EN751221)
 		return;
 
 	mask = BIT(cpu_dp->index);
@@ -4089,6 +4104,16 @@ const struct mt753x_info mt753x_table[] = {
 		.phy_read_c45 = mt7531_ind_c45_phy_read,
 		.phy_write_c45 = mt7531_ind_c45_phy_write,
 		.mac_port_get_caps = en7528_mac_port_get_caps,
+	},
+	[ID_EN751627] = {
+		.id = ID_EN751627,
+		.pcs_ops = &mt7530_pcs_ops,
+		.sw_setup = mt7988_setup,
+		.phy_read_c22 = mt7531_ind_c22_phy_read,
+		.phy_write_c22 = mt7531_ind_c22_phy_write,
+		.phy_read_c45 = mt7531_ind_c45_phy_read,
+		.phy_write_c45 = mt7531_ind_c45_phy_write,
+		.mac_port_get_caps = en751627_mac_port_get_caps,
 	},
 	[ID_EN751221] = {
 		.id = ID_EN751221,
