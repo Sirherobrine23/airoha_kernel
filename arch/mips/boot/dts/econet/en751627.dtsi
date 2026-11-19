@@ -323,13 +323,12 @@
 		};
 
 		uart1: serial@1fbf0000 {
-			compatible = "airoha,en7523-uart";
+			compatible = "airoha,en751627-uart";
 			reg = <0x1fbf0000 0x30>;
 			reg-io-width = <4>;
 			reg-shift = <2>;
-			native-endian;
-			clock-frequency = <20000000>;
-
+			big-endian;
+	
 			interrupts = <GIC_SHARED 2 IRQ_TYPE_LEVEL_HIGH>;
 		};
 

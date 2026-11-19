@@ -51,6 +51,14 @@ struct airoha_uart_variant {
 	unsigned int max_baud;
 	unsigned int fifo_size;
 	bool high_speed;
+	bool legacy_uart1;
+};
+
+/* The EN7516 UART1 is boot-initialized and kept at 115200 by the SDK. */
+static const struct airoha_uart_variant en751627_uart1 = {
+	.max_baud = 115200,
+	.fifo_size = 1,
+	.legacy_uart1 = true,
 };
 
 static const struct airoha_uart_variant en7523_uart = {
@@ -126,6 +134,10 @@ static void airoha_uart_set_divisor(struct uart_port *port, unsigned int baud,
 	struct uart_8250_port *up = up_to_u8250p(port);
 	struct airoha_uart_data *data = port->private_data;
 
+	/* UART1: SDK tc3162_uart.c never rewrites the boot baud divider. */
+	if (data->variant->legacy_uart1)
+		return;
+
 	airoha_uart_set_baud(port, baud, up->lcr, data->variant);
 }
 
@@ -149,6 +161,21 @@ static void airoha_uart_serial_out(struct uart_port *port, unsigned int offset,
 		iowrite32be(value, reg);
 	else
 		writel(value, reg);
+}
+
+/* EN7516 UART1: SDK accesses 8-bit registers in the last byte lane
+ * of each 32-bit register slot (CR_UART_RBR / IER / LSR, etc.).
+ * This is intentionally separate from UART2/3, which use 32-bit I/O.
+ */
+static u32 airoha_uart1_serial_in(struct uart_port *port, unsigned int offset)
+{
+	return readb(port->membase + (offset << port->regshift) + 3);
+}
+
+static void airoha_uart1_serial_out(struct uart_port *port,
+				     unsigned int offset, u32 value)
+{
+	writeb(value, port->membase + (offset << port->regshift) + 3);
 }
 
 static unsigned int airoha_uart_get_mctrl(struct uart_port *port)
@@ -182,10 +209,18 @@ static void airoha_uart_set_termios(struct uart_port *port,
 	if (termios->c_cflag & CRTSCTS)
 		port->status |= UPSTAT_AUTOCTS | UPSTAT_AUTORTS;
 
-	baud = uart_get_baud_rate(port, termios, old, AIROHA_UART_MIN_BAUD,
-				  data->variant->max_baud);
-	if (tty_termios_baud_rate(termios))
+	if (data->variant->legacy_uart1) {
+		/* Keep tty settings consistent with the fixed 115200 baud hardware. */
+		baud = 115200;
+		termios->c_cflag |= CREAD;
 		tty_termios_encode_baud_rate(termios, baud, baud);
+	} else {
+		baud = uart_get_baud_rate(port, termios, old,
+					  AIROHA_UART_MIN_BAUD,
+					  data->variant->max_baud);
+		if (tty_termios_baud_rate(termios))
+			tty_termios_encode_baud_rate(termios, baud, baud);
+	}
 
 	serial8250_do_set_termios(port, termios, old);
 }
@@ -267,13 +302,20 @@ static int airoha_uart_probe(struct platform_device *pdev)
 
 	up.port.set_divisor = airoha_uart_set_divisor;
 	up.port.set_termios = airoha_uart_set_termios;
-	up.port.serial_out = airoha_uart_serial_out;
+	if (data->variant->legacy_uart1) {
+		up.port.serial_in = airoha_uart1_serial_in;
+		up.port.serial_out = airoha_uart1_serial_out;
+	} else {
+		up.port.serial_out = airoha_uart_serial_out;
+	}
 	up.port.get_mctrl = airoha_uart_get_mctrl;
 	/* The SDK polls THRE before each byte, even on FIFO-equipped ports. */
 	up.tx_loadsz = 1;
 	up.bugs = UART_BUG_NOMSR;
 	up.capabilities = UART_CAP_FIFO;
-	if (!up.port.fifosize)
+	if (data->variant->legacy_uart1)
+		up.port.fifosize = 1;
+	else if (!up.port.fifosize)
 		up.port.fifosize = data->variant->fifo_size;
 	if (device_property_read_bool(dev, "auto-flow-control"))
 		up.capabilities |= UART_CAP_AFE;
@@ -329,6 +371,7 @@ static SIMPLE_DEV_PM_OPS(airoha_uart_pm_ops, airoha_uart_suspend,
 			 airoha_uart_resume);
 
 static const struct of_device_id airoha_uart_of_match[] = {
+	{ .compatible = "airoha,en751627-uart", .data = &en751627_uart1 },
 	{ .compatible = "airoha,en7523-uart", .data = &en7523_uart },
 	{ .compatible = "airoha,en7581-hsuart", .data = &en7581_hsuart },
 	{ }
@@ -388,6 +431,26 @@ airoha_uart_early_setup_variant(struct earlycon_device *device,
 	return 0;
 }
 
+static int __init airoha_uart1_early_setup(struct earlycon_device *device,
+					   const char *options)
+{
+	struct uart_port *port = &device->port;
+	int ret;
+
+	if (!port->membase || port->regshift != 2)
+		return -EINVAL;
+
+	/* Leave the bootloader's UART1 baud and fractional dividers intact. */
+	port->uartclk = 0;
+	ret = early_serial8250_setup(device, options);
+	if (ret)
+		return ret;
+
+	port->serial_in = airoha_uart1_serial_in;
+	port->serial_out = airoha_uart1_serial_out;
+	return 0;
+}
+
 static int __init airoha_uart_early_setup(struct earlycon_device *device,
 					  const char *options)
 {
@@ -400,6 +463,8 @@ static int __init airoha_hsuart_early_setup(struct earlycon_device *device,
 	return airoha_uart_early_setup_variant(device, options, &en7581_hsuart);
 }
 
+OF_EARLYCON_DECLARE(airoha_en751627, "airoha,en751627-uart",
+			    airoha_uart1_early_setup);
 OF_EARLYCON_DECLARE(airoha, "airoha,en7523-uart", airoha_uart_early_setup);
 OF_EARLYCON_DECLARE(airoha_hsuart, "airoha,en7581-hsuart", airoha_hsuart_early_setup);
 #endif
