@@ -1054,6 +1054,19 @@ static int en7528_phy_config_init(struct phy_device *phydev)
 				MTK_PHY_LED_BCR_EXT_CTRL);
 }
 
+/* EN751627's five internal GPHYs report the same ID as MT7988.
+ * Reject them here even if the MediaTek module probes first.
+ */
+static int mt7988_phy_match(struct phy_device *phydev,
+			    const struct phy_driver *phydrv)
+{
+	if (!genphy_match_phy_device(phydev, phydrv))
+		return 0;
+
+	return !(of_machine_is_compatible("econet,en751627") &&
+		 phydev->mdio.addr >= 8 && phydev->mdio.addr <= 12);
+}
+
 static struct phy_driver mtk_socphy_driver[] = {
 	{
 		PHY_ID_MATCH_EXACT(MTK_GPHY_ID_MT7981),
@@ -1075,6 +1088,7 @@ static struct phy_driver mtk_socphy_driver[] = {
 	{
 		PHY_ID_MATCH_EXACT(MTK_GPHY_ID_MT7988),
 		.name		= "MediaTek MT7988 PHY",
+		.match_phy_device = mt7988_phy_match,
 		.config_init	= mt798x_phy_config_init,
 		.config_intr	= genphy_no_config_intr,
 		.handle_interrupt = genphy_handle_interrupt_no_ack,
