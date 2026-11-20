@@ -754,7 +754,7 @@ static void econet_qdma_rx_process_one(struct airoha_queue *q, u32 cpu_i,
 				     q->qdma->id, skb, &desc.msg))
 		return;
 
-	if (airoha_is(q->qdma->eth, econet_en7528))
+	if (airoha_is(q->qdma->eth, econet_en751627, econet_en7528))
 		sport = FIELD_GET(EN7528_ERX_SPORT_MASK,
 				  desc.msg.erx.bitfield_0);
 	else
@@ -897,7 +897,7 @@ static u32 __iomem *econet_irq_status_reg(struct airoha_qdma *qdma,
 	if (reg == 0)
 		return &econet_qdma_regs(qdma)->int_status;
 
-	if (!airoha_is(qdma->eth, econet_en7528))
+	if (!airoha_is(qdma->eth, econet_en751627, econet_en7528))
 		return NULL;
 
 	return (u32 __iomem *)(base +
@@ -913,7 +913,7 @@ static u32 __iomem *econet_irq_enable_reg(struct airoha_qdma *qdma,
 	if (bank >= qdma->eth->soc->irq_banks || reg >= ECONET_QDMA_IRQ_REGS)
 		return NULL;
 
-	if (!airoha_is(qdma->eth, econet_en7528))
+	if (!airoha_is(qdma->eth, econet_en751627, econet_en7528))
 		return bank == 0 && reg == 0 ? &econet_qdma_regs(qdma)->int_enable : NULL;
 
 	/* EN7516/EN7527 INT1 keeps ENABLE0 at 0x54. The remaining
@@ -968,7 +968,7 @@ static int econet_qdma_set_xpon_irq_mips(struct airoha_qdma *qdma,
 	union irq_bit bit;
 
 	if (!qdma || qdma->id != 1 ||
-	    !airoha_is(qdma->eth, econet_en751221, econet_en7528))
+	    !airoha_is(qdma->eth, econet_en751221, econet_en751627, econet_en7528))
 		return -EINVAL;
 
 	switch (mode) {
@@ -1745,7 +1745,7 @@ static void econet_init_en751221_qdma(struct airoha_qdma *qdma)
 	econet_wreg(val, &econet_qdma_regs(qdma)->buf_usage_cfg);
 
 	/* Match qdma_dev.c: 16-byte WRR scale, accounting weights by byte. */
-	if (airoha_is(qdma->eth, econet_en7528))
+	if (airoha_is(qdma->eth, econet_en751627, econet_en7528))
 		set_qregs_wrr_mode_use_16b(&wrr, false);
 	else
 		set_qregs_wrr_mode_use_16b(&wrr, true);
@@ -1984,7 +1984,12 @@ static int econet_qdma_hw_init(struct airoha_qdma *qdma)
 
 	qcfg = (struct qregs_qcfg) { 0 };
 	set_qregs_qcfg_msg_word_swap(&qcfg, true);
-	set_qregs_qcfg_dscp_byte_swap(&qcfg, airoha_is(qdma->eth, econet_en751221));
+	/* EN751627 uses the EN7528 family datapath for now, but the
+	 * legacy QDMA descriptor endianness follows EN751221 instead.
+	 * Keep the platform match local until EN751627 gets dedicated soc_data.
+	 */
+	set_qregs_qcfg_dscp_byte_swap(&qcfg,
+		airoha_is(qdma->eth, econet_en751221, econet_en751627));
 	set_qregs_qcfg_payload_byte_sw(&qcfg, true);
 	if (airoha_is_econet(qdma->eth))
 		set_qregs_qcfg_dma_pref(&qcfg, QREGS_QCFG_DMA_PREF_ROUND_ROBIN);
@@ -1999,7 +2004,7 @@ static int econet_qdma_hw_init(struct airoha_qdma *qdma)
 	set_qregs_qcfg_check_done(&qcfg, !airoha_is_econet(qdma->eth));
 	set_qregs_qcfg_tx_wb_done(&qcfg, true);
 
-	if (airoha_is(qdma->eth, econet_en7528) &&
+	if (airoha_is(qdma->eth, econet_en751627, econet_en7528, econet_en751627) &&
 	    qdma->id == 0)
 		set_qregs_qcfg_tx_immediate_done(&qcfg, true);
 
@@ -4225,7 +4230,7 @@ static int econet_validate_xpon_gdm2(struct net_device *netdev,
 
 	port = netdev_priv(netdev);
 	if (!port->eth ||
-	    !airoha_is(port->eth, econet_en751221, econet_en7528) ||
+	    !airoha_is(port->eth, econet_en751221, econet_en751627, econet_en7528) ||
 	    port->fport != ETX_FPORT_GDM2)
 		return -EOPNOTSUPP;
 
@@ -4468,11 +4473,11 @@ static netdev_tx_t __econet_qdma_xmit(struct sk_buff *skb, struct net_device *de
 	}
 
 	/*
-	 * EN751221 keeps the MediaTek DSA special tag in-band, unlike newer
-	 * Airoha QDMA which can move it to descriptor metadata. The logical
-	 * port-mask/channel classification is nevertheless shared.
+	 * EN751221 and EN751627 keep the MediaTek DSA special tag in-band.
+	 * Derive the TX channel from the DSA destination-port mask; deriving
+	 * it only from qid sends ordinary DSA traffic to channel zero.
 	 */
-	if (!xpon && airoha_is(port->eth, econet_en751221)) {
+	if (!xpon && airoha_is(port->eth, econet_en751221, econet_en751627)) {
 		airoha_qdma_skb_get_mtk_meta(skb, dev, AIROHA_MTK_TAG_IN_SKB,
 					     &skb_meta);
 		if (skb_meta.has_mtk_tag &&
@@ -5531,7 +5536,7 @@ static void airoha_retire_drop(struct airoha_eth *eth,
 	u8 drop;
 	int ret;
 
-	en7512 = airoha_is(eth, econet_en751221, econet_en7528);
+	en7512 = airoha_is(eth, econet_en751221, econet_en751627, econet_en7528);
 	drop = en7512 ? ETX_FPORT_DROP : FE_PSE_PORT_DROP;
 
 	txchn = airoha_fe_rr(eth, REG_GDM_TXCHN_EN(AIROHA_GDM2_IDX));
@@ -5632,9 +5637,9 @@ static u16 econet_rx_xpon_metadata(struct airoha_qdma *qdma,
 	u8 sport;
 
 	/* Word 0 carries GPON metadata on the managed WAN path. */
-	if (!airoha_is(eth, econet_en751221, econet_en7528) || qdma->id != 1)
+	if (!airoha_is(eth, econet_en751221, econet_en751627, econet_en7528) || qdma->id != 1)
 		return AIROHA_PPE_RX_GEM_NONE;
-	sport = airoha_is(eth, econet_en7528) ?
+	sport = airoha_is(eth, econet_en751627, econet_en7528) ?
 		FIELD_GET(EN7528_ERX_SPORT_MASK, msg->erx.bitfield_0) :
 		FIELD_GET(ERX_SPORT_MASK, msg->erx.bitfield_0);
 	port = airoha_qdma_get_gdm_dev(eth, sport);
@@ -5658,10 +5663,10 @@ static bool econet_xpon_receive_data(struct airoha_eth *eth, u8 qdma_id,
 	u32 raw = READ_ONCE(msg->raw[0]);
 
 	if (qdma_id != 1 ||
-	    !airoha_is(eth, econet_en751221, econet_en7528))
+	    !airoha_is(eth, econet_en751221, econet_en751627, econet_en7528))
 		return false;
 	port = airoha_qdma_get_gdm_dev(eth,
-				       airoha_is(eth, econet_en7528) ?
+				       airoha_is(eth, econet_en751627, econet_en7528) ?
 				       FIELD_GET(EN7528_ERX_SPORT_MASK, msg->erx.bitfield_0) :
 		get_erx_sport(&msg->erx));
 	if (IS_ERR(port) || !(READ_ONCE(port->flags) & AIROHA_PRIV_F_XPON_MANAGED))
@@ -5682,7 +5687,7 @@ bool econet_rx_xpon_oam(struct airoha_eth *eth, u8 qdma_id,
 	u32 skb_len;
 	bool consumed = false;
 
-	if (!airoha_is(eth, econet_en751221, econet_en7528) ||
+	if (!airoha_is(eth, econet_en751221, econet_en751627, econet_en7528) ||
 	    qdma_id != 1)
 		return false;
 
@@ -5739,7 +5744,7 @@ void econet_xpon_irq(struct airoha_eth *eth, u8 qdma_id,
 	struct airoha_gdm_dev *port;
 	void *xpon_priv;
 
-	if (!airoha_is(eth, econet_en751221, econet_en7528) || qdma_id != 1)
+	if (!airoha_is(eth, econet_en751221, econet_en751627, econet_en7528) || qdma_id != 1)
 		return;
 
 	port = airoha_eth_get_gdm_dev(eth, AIROHA_GDM2_IDX);
@@ -5861,7 +5866,7 @@ static int airoha_validate_xpon_link_gdm2(struct net_device *netdev,
 	 * protocol-specific FE and descriptor operations remain separate.
 	 */
 	if (airoha_is_econet(dev->eth)) {
-		if (!airoha_is(dev->eth, econet_en7528, econet_en7580))
+		if (!airoha_is(dev->eth, econet_en751627, econet_en7528, econet_en7580))
 			return -EOPNOTSUPP;
 	} else if (!dev->eth->soc->gpon_metadata) {
 		return -EOPNOTSUPP;
@@ -6291,7 +6296,7 @@ static int airoha_xpon_register_link(struct net_device *netdev,
 	 * stack still delivers GPON/EPON MAC events through QDMA_WAN external
 	 * interrupt bits 16/17.
 	 */
-	if (airoha_is(dev->eth, econet_en7528)) {
+	if (airoha_is(dev->eth, econet_en751627, econet_en7528)) {
 		ret = airoha_qdma_mips_set_xpon_irq(dev->qdma, mode, true);
 		if (ret) {
 			dev->flags &= ~AIROHA_PRIV_F_XPON_MANAGED;
@@ -6329,7 +6334,7 @@ static void airoha_xpon_unregister_link(struct net_device *netdev,
 	if (READ_ONCE(dev->xpon_ops) != ops || READ_ONCE(dev->xpon_priv) != priv)
 		return;
 
-	if (airoha_is(dev->eth, econet_en7528))
+	if (airoha_is(dev->eth, econet_en751627, econet_en7528))
 		airoha_qdma_mips_set_xpon_irq(dev->qdma, dev->xpon_mode, false);
 
 	airoha_gdm_xpon_stop(dev);
@@ -6626,7 +6631,7 @@ static void airoha_fe_vip_setup(struct airoha_eth *eth)
 	/* The newer EN7528 SDK deliberately leaves BOOTP/DHCPv4 out of
 	 * the VIP table. Keep the legacy EN751221 and Airoha behaviour.
 	 */
-	if (!airoha_is(eth, econet_en7528)) {
+	if (!airoha_is(eth, econet_en751627, econet_en7528)) {
 		/* BOOTP (0x43) */
 		airoha_fe_wr(eth, REG_FE_VIP_PATN(8), 0x43);
 		airoha_fe_wr(eth, REG_FE_VIP_EN(8),
@@ -6873,7 +6878,7 @@ static int airoha_fe_mc_vlan_clear(struct airoha_eth *eth)
  */
 static bool airoha_fe_crsn_qsel_is_4bit(struct airoha_eth *eth)
 {
-	return airoha_is(eth, airoha_en7523, econet_en7528,
+	return airoha_is(eth, airoha_en7523, econet_en751627, econet_en7528,
 			 econet_en7580);
 }
 
@@ -7054,7 +7059,7 @@ static void airoha_fe_pse_iq_init(struct airoha_eth *eth)
 	 */
 	if (airoha_is(eth, econet_en751221))
 		p2 = 0x20;
-	else if (airoha_is(eth, econet_en7528))
+	else if (airoha_is(eth, econet_en751627, econet_en7528))
 		p5 = 0x80;
 
 	airoha_fe_rmw(eth, REG_PSE_IQ_REV1, PSE_IQ_RES1_P2_MASK,
@@ -7200,7 +7205,7 @@ static int airoha_fe_init(struct airoha_eth *eth)
 	 * become effective. QDMA is not initialized yet at this point, so only
 	 * the FE reset line needs to be pulsed here.
 	 */
-	if (airoha_is(eth, econet_en7528)) {
+	if (airoha_is(eth, econet_en751627, econet_en7528)) {
 		airoha_fe_rmw(eth, REG_EN7528_PSE_FQFC_CFG, EN7528_PSE_FQ_MAX_MASK,
 			      FIELD_PREP(EN7528_PSE_FQ_MAX_MASK, EN7528_PSE_FQ_MAX));
 
@@ -7229,7 +7234,7 @@ static int airoha_fe_init(struct airoha_eth *eth)
 	 */
 	if (airoha_is_econet(eth)) {
 		airoha_fe_vip_setup(eth);
-		if (airoha_is(eth, econet_en7528, econet_en7580))
+		if (airoha_is(eth, econet_en751627, econet_en7528, econet_en7580))
 			airoha_fe_crsn_qsel_init(eth);
 		/* Match the SDK GDM3 padding and RX CRC stripping setup. */
 		if (airoha_is(eth, econet_en7580))
@@ -7683,7 +7688,7 @@ static void airoha_update_hw_stats(struct airoha_gdm_dev *dev)
 static void airoha_gdm_update_hw_stats(struct airoha_gdm_dev *dev)
 {
 	if (airoha_is(dev->eth, econet_en751221, econet_en751627,
-		      econet_en7528, econet_en7580))
+		      econet_en751627, econet_en7528, econet_en7580))
 		econet_update_hw_stats(dev);
 	else
 		airoha_update_hw_stats(dev);
@@ -9022,7 +9027,7 @@ netdev_tx_t airoha_eth_xmit_xpon_data(struct net_device *netdev,
 	skb_set_queue_mapping(skb, queue % netdev->real_num_tx_queues);
 	txq = skb_get_tx_queue(netdev, skb);
 	__netif_tx_lock_bh(txq);
-	if (airoha_is(dev->eth, econet_en751221, econet_en7528))
+	if (airoha_is(dev->eth, econet_en751221, econet_en751627, econet_en7528))
 		ret = __econet_qdma_xmit(skb, netdev, &info);
 	else
 		ret = __airoha_dev_xmit(skb, netdev, &info);
@@ -11343,6 +11348,30 @@ const struct airoha_eth_soc_data econet_en751221_soc_data = {
 	},
 };
 
+const struct airoha_eth_soc_data econet_en751627_soc_data = {
+	.version = econet_en751627,
+	.xpon_ops = &en7528_xpon_ops,
+	.num_ppe = 1,
+	.legacy_qdma = true,
+	.rx_ring = QDMA_NUM_CHAINS,
+	.tx_ring = QDMA_NUM_CHAINS,
+	.tx_irq_num = QDMA_NUM_TX_DONE,
+	.ppe_datapath = true,
+	.irq_banks = 4,
+	.max_gdm_ports = 2,
+	.pse_fq_cfg = PSE_FQ_CFG,
+	.ppe_dram_entries = 16 * 1024,
+	.foe_format = AIROHA_FOE_FORMAT_V1,
+	.ppe_fport = EN751221_GDM_FPORT_PPE,
+	.ppe_cpu_fport = {
+		EN751221_GDM_FPORT_QDMA0_CPU,
+		EN751221_GDM_FPORT_QDMA1_CPU,
+	},
+	.ops = {
+		.get_sport = airoha_en7528_get_sport,
+		.get_dev_from_sport = airoha_en7528_get_dev_from_sport,
+	},
+};
 const struct airoha_eth_soc_data econet_en7528_soc_data = {
 	.version = econet_en7528,
 	.xpon_ops = &en7528_xpon_ops,
@@ -12098,7 +12127,7 @@ EXPORT_SYMBOL_GPL(airoha_eth_xdsl_update_link);
 
 static const struct of_device_id airoha_eth_of_match[] = {
 	{ .compatible = "econet,en751221-eth", .data = &econet_en751221_soc_data },
-	{ .compatible = "econet,en751627-eth", .data = &econet_en7528_soc_data },
+	{ .compatible = "econet,en751627-eth", .data = &econet_en751627_soc_data },
 	{ .compatible = "econet,en7528-eth", .data = &econet_en7528_soc_data },
 	{ .compatible = "econet,en7580-eth", .data = &econet_en7580_soc_data },
 	{ .compatible = "airoha,en7523-eth", .data = &airoha_en7523_soc_data },
