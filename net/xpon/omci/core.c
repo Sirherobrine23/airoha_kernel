@@ -45,6 +45,10 @@ static const struct nla_policy omci_policy[OMCI_ATTR_MAX + 1] = {
 		.type = NLA_BINARY,
 		.len = OMCI_MAX_ATTR_DATA,
 	},
+	[OMCI_ATTR_ATTR_DATA_EXT] = {
+		.type = NLA_BINARY,
+		.len = OMCI_MAX_EXT_ATTR_DATA,
+	},
 	[OMCI_ATTR_ORIGIN] = { .type = NLA_U8 },
 	[OMCI_ATTR_INDEX] = { .type = NLA_U32 },
 	[OMCI_ATTR_CONFIG_KEY] = { .type = NLA_U16 },
@@ -625,11 +629,15 @@ static int omci_put_mib_object(struct sk_buff *msg,
 	if (nla_put_u16(msg, OMCI_ATTR_CLASS_ID, object->class_id) ||
 	    nla_put_u16(msg, OMCI_ATTR_ENTITY_ID, object->entity_id) ||
 	    nla_put_u16(msg, OMCI_ATTR_ATTR_MASK, object->attr_mask) ||
-	    nla_put(msg, OMCI_ATTR_ATTR_DATA, sizeof(object->data),
-		    object->data) ||
+	    nla_put(msg, OMCI_ATTR_ATTR_DATA, OMCI_MAX_ATTR_DATA,
+		    omci_mib_const_data(object)) ||
 	    nla_put_u8(msg, OMCI_ATTR_ORIGIN, object->origin) ||
 	    nla_put_u32(msg, OMCI_ATTR_INDEX, next_index) ||
 	    (name && nla_put_string(msg, OMCI_ATTR_NAME, name)))
+		return -EMSGSIZE;
+	if (omci_mib_data_size(object) > OMCI_MAX_ATTR_DATA &&
+	    nla_put(msg, OMCI_ATTR_ATTR_DATA_EXT, omci_mib_data_size(object),
+		    omci_mib_const_data(object)))
 		return -EMSGSIZE;
 	if (omci_put_olt_g(msg, object) ||
 	    omci_put_vlan_filter(msg, object) ||
@@ -954,10 +962,20 @@ static int omci_cmd_mib_set(struct sk_buff *skb, struct genl_info *info)
 	object->entity_id = nla_get_u16(info->attrs[OMCI_ATTR_ENTITY_ID]);
 	object->attr_mask = info->attrs[OMCI_ATTR_ATTR_MASK] ?
 		nla_get_u16(info->attrs[OMCI_ATTR_ATTR_MASK]) : 0xffff;
+	if (info->attrs[OMCI_ATTR_ATTR_DATA_EXT])
+		data = info->attrs[OMCI_ATTR_ATTR_DATA_EXT];
+	if (object->class_id == OMCI_CLASS_HUAWEI_PRODUCT_ID &&
+	    (!data || nla_len(data) != OMCI_HUAWEI_PRODUCT_LEN)) {
+		kfree(object);
+		return -EMSGSIZE;
+	}
 	if (data) {
-		object->data_len = min_t(size_t, nla_len(data),
-					 sizeof(object->data));
-		memcpy(object->data, nla_data(data), object->data_len);
+		if (nla_len(data) > omci_mib_data_size(object)) {
+			kfree(object);
+			return -E2BIG;
+		}
+		object->data_len = nla_len(data);
+		memcpy(omci_mib_data(object), nla_data(data), object->data_len);
 	}
 
 	mutex_lock(&omci_devices_lock);

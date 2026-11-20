@@ -39,13 +39,35 @@ struct omci_mib_object {
 	u16 attr_mask;
 	u8 origin;
 	u8 owner_profile;
-	u8 data_len;
+	u16 data_len;
 	bool pending_delete;
 	u8 data[OMCI_MAX_ATTR_DATA];
 	struct omci_olt_g olt_g;
 	struct omci_vlan_tagging_filter vlan_filter;
-	struct omci_extended_vlan extended_vlan;
+	union {
+		struct omci_extended_vlan extended_vlan;
+		u8 huawei_product[OMCI_HUAWEI_PRODUCT_LEN];
+	};
 };
+
+/* A large identification ME shares storage with the class-specific tables. */
+static inline u8 *omci_mib_data(struct omci_mib_object *object)
+{
+	return object->class_id == OMCI_CLASS_HUAWEI_PRODUCT_ID ?
+		object->huawei_product : object->data;
+}
+
+static inline const u8 *omci_mib_const_data(const struct omci_mib_object *object)
+{
+	return object->class_id == OMCI_CLASS_HUAWEI_PRODUCT_ID ?
+		object->huawei_product : object->data;
+}
+
+static inline size_t omci_mib_data_size(const struct omci_mib_object *object)
+{
+	return object->class_id == OMCI_CLASS_HUAWEI_PRODUCT_ID ?
+		sizeof(object->huawei_product) : sizeof(object->data);
+}
 
 struct omci_service_state {
 	struct omci_service_config config;

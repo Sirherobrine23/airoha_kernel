@@ -499,25 +499,24 @@ static const struct omci_attr_desc omci_veip_attrs[] = {
 	OMCI_ATTR(11, 29, 2, OMCI_R),
 };
 
+/* Attribute numbering and wire lengths from the vendor ME definitions. */
 static const struct omci_attr_desc omci_huawei_350_attrs[] = {
-	OMCI_ATTR(15, 0, 1, OMCI_RW),
-	OMCI_ATTR(14, 1, 1, OMCI_R),
-	OMCI_ATTR(13, 2, 1, OMCI_RW),
-	OMCI_ATTR(12, 3, 1, OMCI_RW),
-	OMCI_ATTR(11, 4, 2, OMCI_R),
-	OMCI_ATTR(10, 6, 4, OMCI_RW),
-	OMCI_ATTR(9, 10, 16, OMCI_R),
-	OMCI_ATTR(8, 26, 4, OMCI_R),
-	OMCI_ATTR(7, 30, 6, OMCI_RW),
-};
-
-static const struct omci_attr_desc omci_huawei_352_attrs[] = {
-	OMCI_ATTR(15, 0, 2, OMCI_RW_SC),
-	OMCI_ATTR(14, 2, 2, OMCI_RW_SC),
-	OMCI_ATTR(13, 4, 2, OMCI_RW_SC),
-	OMCI_ATTR(12, 6, 1, OMCI_RW_SC),
-	OMCI_ATTR(11, 7, 4, OMCI_RW_SC),
-	OMCI_ATTR(10, 11, 4, OMCI_RW_SC),
+	OMCI_ATTR(15, 0, 4, OMCI_RW),
+	OMCI_ATTR(14, 4, 2, OMCI_RW),
+	OMCI_ATTR(13, 6, 2, OMCI_RW),
+	OMCI_ATTR(12, 8, 2, OMCI_RW),
+	OMCI_ATTR(11, 10, 2, OMCI_RW),
+	OMCI_ATTR(10, 12, 2, OMCI_RW),
+	OMCI_ATTR(9, 14, 1, OMCI_RW),
+	OMCI_ATTR(8, 15, 4, OMCI_RW),
+	OMCI_ATTR(7, 19, 3, OMCI_RW),
+	OMCI_ATTR(6, 22, 1, OMCI_RW),
+	OMCI_ATTR(5, 23, 1, OMCI_RW),
+	OMCI_ATTR(4, 24, 1, OMCI_RW),
+	OMCI_ATTR(3, 25, 1, OMCI_RW),
+	OMCI_ATTR(2, 26, 4, OMCI_RW),
+	OMCI_ATTR(1, 30, 6, OMCI_RW),
+	OMCI_ATTR(0, 36, 2, OMCI_RW),
 };
 
 static const struct omci_attr_desc omci_huawei_353_attrs[] = {
@@ -525,15 +524,32 @@ static const struct omci_attr_desc omci_huawei_353_attrs[] = {
 	OMCI_ATTR(14, 14, 1, OMCI_R),
 	OMCI_ATTR(13, 15, 1, OMCI_R),
 	OMCI_ATTR(12, 16, 1, OMCI_R),
-	OMCI_ATTR(11, 17, 4, OMCI_RW),
+	OMCI_ATTR(11, 17, 4, OMCI_R),
 };
 
-static const struct omci_attr_desc omci_huawei_multicast_attrs[] = {
+static const struct omci_attr_desc omci_huawei_370_attrs[] = {
+	OMCI_ATTR(15, 0, 2, OMCI_RW),
+	OMCI_ATTR(14, 2, 4, OMCI_RW),
+	OMCI_ATTR(13, 6, 4, OMCI_RW),
+};
+
+static const struct omci_attr_desc omci_huawei_373_attrs[] = {
 	OMCI_ATTR(15, 0, 1, OMCI_RW),
-	OMCI_ATTR(14, 1, 2, OMCI_RW),
-	OMCI_ATTR(13, 3, 2, OMCI_RW),
-	OMCI_ATTR(12, 5, 2, OMCI_RW),
-	OMCI_ATTR(11, 7, 4, OMCI_RW),
+	OMCI_ATTR(14, 1, OMCI_HUAWEI_PRODUCT_PART_LEN, OMCI_RW),
+	OMCI_ATTR(13, 26, OMCI_HUAWEI_PRODUCT_PART_LEN, OMCI_RW),
+	OMCI_ATTR(12, 51, OMCI_HUAWEI_PRODUCT_PART_LEN, OMCI_RW),
+	OMCI_ATTR(11, 76, OMCI_HUAWEI_PRODUCT_PART_LEN, OMCI_RW),
+	OMCI_ATTR(10, 101, OMCI_HUAWEI_PRODUCT_PART_LEN, OMCI_RW),
+	OMCI_ATTR(9, 126, OMCI_HUAWEI_PRODUCT_PART_LEN, OMCI_RW),
+	OMCI_ATTR(8, 151, OMCI_HUAWEI_PRODUCT_PART_LEN, OMCI_RW),
+	OMCI_ATTR(7, 176, OMCI_HUAWEI_PRODUCT_PART_LEN, OMCI_RW),
+	OMCI_ATTR(6, 201, OMCI_HUAWEI_PRODUCT_PART_LEN, OMCI_RW),
+	OMCI_ATTR(5, 226, OMCI_HUAWEI_PRODUCT_PART_LEN, OMCI_RW),
+	OMCI_ATTR(4, 251, OMCI_HUAWEI_PRODUCT_PART_LEN, OMCI_RW),
+	OMCI_ATTR(3, 276, OMCI_HUAWEI_PRODUCT_PART_LEN, OMCI_RW),
+	OMCI_ATTR(2, 301, OMCI_HUAWEI_PRODUCT_PART_LEN, OMCI_RW),
+	OMCI_ATTR(1, 326, OMCI_HUAWEI_PRODUCT_PART_LEN, OMCI_RW),
+	OMCI_ATTR(0, 351, OMCI_HUAWEI_PRODUCT_PART_LEN, OMCI_RW),
 };
 
 static const struct omci_attr_desc omci_nokia_65295_attrs[] = {
@@ -721,42 +737,30 @@ static const struct omci_me_desc omci_me_descs[] = {
 		      OMCI_CLASS_CATEGORY_UNI, OMCI_CLASS_SUPPORT_PROVISIONED,
 		      omci_veip_attrs),
 
-	VENDOR_DESC(OMCI_CLASS_HUAWEI_FLOW_MAPPING,
-		    "Huawei flow mapping configuration", OMCI_OLT_PROFILE_HUAWEI,
-		    STANDARD_ACTIONS, OMCI_ME_F_ONU_CREATED,
-		    GENMASK(15, 7), GENMASK(15, 7), 36,
-		    OMCI_CLASS_CATEGORY_VENDOR, OMCI_CLASS_SUPPORT_NATIVE,
+	VENDOR_DESC(OMCI_CLASS_HUAWEI_ONU_MANAGEMENT,
+		    "Huawei ONU management", OMCI_OLT_PROFILE_HUAWEI,
+		    STANDARD_ACTIONS, OMCI_ME_F_ONU_CREATED | OMCI_ME_F_NO_FAKE,
+		    0xffff, 0xffff, 38,
+		    OMCI_CLASS_CATEGORY_VENDOR, OMCI_CLASS_SUPPORT_SHADOW,
 		    omci_huawei_350_attrs),
-	VENDOR_DESC(OMCI_CLASS_HUAWEI_VLAN_MAPPING,
-		    "Huawei VLAN mapping configuration", OMCI_OLT_PROFILE_HUAWEI,
-		    OLT_CREATED_ACTIONS, OMCI_ME_F_NO_MIB_UPLOAD | OMCI_ME_F_DATAPATH,
-		    GENMASK(15, 10), 0, 15, OMCI_CLASS_CATEGORY_VENDOR,
-		    OMCI_CLASS_SUPPORT_SHADOW, omci_huawei_352_attrs),
-	VENDOR_DESC(OMCI_CLASS_HUAWEI_SW_IMAGE_EXT,
-		    "Huawei software image extension", OMCI_OLT_PROFILE_HUAWEI,
-		    STANDARD_ACTIONS, OMCI_ME_F_ONU_CREATED,
+	VENDOR_DESC(OMCI_CLASS_HUAWEI_VOIP_IMAGE,
+		    "Huawei VoIP image", OMCI_OLT_PROFILE_HUAWEI,
+		    OMCI_ME_ACTION_GET, OMCI_ME_F_ONU_CREATED | OMCI_ME_F_NO_FAKE,
 		    GENMASK(15, 11), GENMASK(15, 11), 21,
-		    OMCI_CLASS_CATEGORY_VENDOR, OMCI_CLASS_SUPPORT_NATIVE,
+		    OMCI_CLASS_CATEGORY_VENDOR, OMCI_CLASS_SUPPORT_SHADOW,
 		    omci_huawei_353_attrs),
-#define HUAWEI_MULTICAST_DESC(_class, _name) \
-	VENDOR_DESC((_class), (_name), OMCI_OLT_PROFILE_HUAWEI, STANDARD_ACTIONS, \
-		    OMCI_ME_F_ONU_CREATED | OMCI_ME_F_DATAPATH, GENMASK(15, 11), \
-		    GENMASK(15, 11), 11, \
-		    OMCI_CLASS_CATEGORY_MULTICAST, OMCI_CLASS_SUPPORT_SHADOW, \
-		    omci_huawei_multicast_attrs)
-	HUAWEI_MULTICAST_DESC(OMCI_CLASS_HUAWEI_MULTICAST_367,
-			      "Huawei multicast configuration 367"),
-	HUAWEI_MULTICAST_DESC(OMCI_CLASS_HUAWEI_MULTICAST_370,
-			      "Huawei multicast configuration 370"),
-	HUAWEI_MULTICAST_DESC(OMCI_CLASS_HUAWEI_MULTICAST_373,
-			      "Huawei multicast configuration 373"),
-	HUAWEI_MULTICAST_DESC(OMCI_CLASS_HUAWEI_MULTICAST_65408,
-			      "Huawei multicast configuration 65408"),
-	HUAWEI_MULTICAST_DESC(OMCI_CLASS_HUAWEI_MULTICAST_65414,
-			      "Huawei multicast configuration 65414"),
-	HUAWEI_MULTICAST_DESC(OMCI_CLASS_HUAWEI_MULTICAST_65425,
-			      "Huawei multicast configuration 65425"),
-#undef HUAWEI_MULTICAST_DESC
+	VENDOR_DESC(OMCI_CLASS_HUAWEI_UNI_QOS,
+		    "Huawei UNI QoS", OMCI_OLT_PROFILE_HUAWEI,
+		    STANDARD_ACTIONS, OMCI_ME_F_ONU_CREATED | OMCI_ME_F_NO_FAKE,
+		    GENMASK(15, 13), GENMASK(15, 13), 10,
+		    OMCI_CLASS_CATEGORY_UNI, OMCI_CLASS_SUPPORT_SHADOW,
+		    omci_huawei_370_attrs),
+	VENDOR_DESC(OMCI_CLASS_HUAWEI_PRODUCT_ID,
+		    "Huawei product identification", OMCI_OLT_PROFILE_HUAWEI,
+		    STANDARD_ACTIONS, OMCI_ME_F_ONU_CREATED | OMCI_ME_F_NO_FAKE,
+		    0xffff, 0xffff, OMCI_HUAWEI_PRODUCT_LEN,
+		    OMCI_CLASS_CATEGORY_EQUIPMENT, OMCI_CLASS_SUPPORT_NATIVE,
+		    omci_huawei_373_attrs),
 
 	VENDOR_DESC(OMCI_CLASS_NOKIA_OPTICAL_SUPERVISION,
 		    "Nokia ONT optical supervision status",
@@ -965,10 +969,10 @@ int omci_me_decode_create(const struct omci_me_desc *desc,
 
 		if (!(attr->access & OMCI_ATTR_ACCESS_SET_CREATE))
 			continue;
-		if (attr->offset + attr->len > sizeof(object->data) ||
+		if (attr->offset + attr->len > omci_mib_data_size(object) ||
 		    len < attr->len)
 			return -EINVAL;
-		memcpy(object->data + attr->offset, data, attr->len);
+		memcpy(omci_mib_data(object) + attr->offset, data, attr->len);
 		data += attr->len;
 		len -= attr->len;
 		mask |= attr->mask;
@@ -998,13 +1002,16 @@ int omci_me_decode_set(const struct omci_me_desc *desc,
 		attr = omci_me_find_attr(desc, attr_mask);
 		if (!attr || !(attr->access & OMCI_ATTR_ACCESS_WRITE))
 			return -EACCES;
-		if (attr->offset + attr->len > sizeof(object->data) ||
+		if (attr->offset + attr->len > omci_mib_data_size(object) ||
 		    len < attr->len)
 			return -EINVAL;
-		memcpy(object->data + attr->offset, data, attr->len);
+		memcpy(omci_mib_data(object) + attr->offset, data, attr->len);
 		data += attr->len;
 		len -= attr->len;
 	}
+	if (object->class_id == OMCI_CLASS_HUAWEI_PRODUCT_ID &&
+	    object->huawei_product[0] > OMCI_HUAWEI_PRODUCT_PARTS)
+		return -EINVAL;
 	object->attr_mask |= mask;
 
 	return 0;
@@ -1031,11 +1038,11 @@ int omci_me_encode_attributes(const struct omci_me_desc *desc,
 		attr = omci_me_find_attr(desc, attr_mask);
 		if (!attr || !(attr->access & OMCI_ATTR_ACCESS_READ))
 			continue;
-		if (attr->offset + attr->len > sizeof(object->data))
+		if (attr->offset + attr->len > omci_mib_data_size(object))
 			return -EINVAL;
 		if (len - used < attr->len)
 			break;
-		memcpy(data + used, object->data + attr->offset, attr->len);
+		memcpy(data + used, omci_mib_const_data(object) + attr->offset, attr->len);
 		used += attr->len;
 		encoded |= attr_mask;
 	}
@@ -1045,6 +1052,88 @@ int omci_me_encode_attributes(const struct omci_me_desc *desc,
 		*encoded_len = used;
 
 	return encoded ? 0 : -ENOSPC;
+}
+
+static u16 omci_me_upload_mask(const struct omci_me_desc *desc,
+			       const struct omci_mib_object *object)
+{
+	u16 mask = 0;
+	unsigned int i;
+
+	for (i = 0; i < desc->num_attrs; i++)
+		if (desc->attrs[i].access & OMCI_ATTR_ACCESS_READ)
+			mask |= desc->attrs[i].mask;
+	return mask & object->attr_mask & desc->mib_upload_mask;
+}
+
+unsigned int omci_me_upload_records(const struct omci_me_desc *desc,
+				    const struct omci_mib_object *object)
+{
+	unsigned int records = 0, i;
+	size_t used = 0;
+	u16 mask;
+
+	if (!desc)
+		return 1;
+	mask = omci_me_upload_mask(desc, object);
+	for (i = 0; i < 16; i++) {
+		const struct omci_attr_desc *attr;
+		u16 bit = BIT(15 - i);
+
+		if (!(mask & bit))
+			continue;
+		attr = omci_me_find_attr(desc, bit);
+		if (!attr)
+			return 0;
+		if (attr->len > 26)
+			return 0;
+		if (used + attr->len > 26) {
+			records++;
+			used = 0;
+		}
+		used += attr->len;
+	}
+	return records + !!used;
+}
+
+int omci_me_encode_upload(const struct omci_me_desc *desc,
+			  const struct omci_mib_object *object, unsigned int record,
+			  u8 *data, u16 *encoded_mask, size_t *encoded_len)
+{
+	u16 remaining;
+	unsigned int i;
+	int ret;
+
+	if (!desc)
+		return -ENOENT;
+	remaining = omci_me_upload_mask(desc, object);
+	for (i = 0; remaining; i++) {
+		ret = omci_me_encode_attributes(desc, object, remaining, data, 26,
+						encoded_mask, encoded_len);
+		if (ret)
+			return ret;
+		if (i == record)
+			return 0;
+		remaining &= ~*encoded_mask;
+	}
+	return -ENOENT;
+}
+
+int omci_huawei_validate(const struct omci_mib_object *object)
+{
+	switch (object->class_id) {
+	case OMCI_CLASS_HUAWEI_ONU_MANAGEMENT:
+		/* Calendar/NTP control needs a provider; do not acknowledge a no-op. */
+		return memchr_inv(object->data + 15, 0, 7) ? -EOPNOTSUPP : 0;
+	case OMCI_CLASS_HUAWEI_UNI_QOS:
+		/* Nonzero vendor QoS modes are not implemented by the backend. */
+		return memchr_inv(object->data + 2, 0, 4) ? -EOPNOTSUPP : 0;
+	case OMCI_CLASS_HUAWEI_PRODUCT_ID:
+		return object->huawei_product[0] > OMCI_HUAWEI_PRODUCT_PARTS ?
+			-EINVAL : 0;
+	default:
+		return 0;
+	}
 }
 
 unsigned int omci_me_attr_count(const struct omci_agent *agent)

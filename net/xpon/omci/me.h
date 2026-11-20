@@ -10,17 +10,17 @@ struct omci_device;
 struct omci_me_class;
 struct omci_mib_object;
 
-#define OMCI_CLASS_ONU_DATA		2
-#define OMCI_CLASS_CARDHOLDER		5
-#define OMCI_CLASS_CIRCUIT_PACK		6
-#define OMCI_CLASS_SOFTWARE_IMAGE	7
-#define OMCI_CLASS_PPTP_ETHERNET_UNI	11
+#define OMCI_CLASS_ONU_DATA			2
+#define OMCI_CLASS_CARDHOLDER			5
+#define OMCI_CLASS_CIRCUIT_PACK			6
+#define OMCI_CLASS_SOFTWARE_IMAGE		7
+#define OMCI_CLASS_PPTP_ETHERNET_UNI		11
 #define OMCI_CLASS_MAC_BRIDGE_SERVICE_PROFILE	45
 #define OMCI_CLASS_MAC_BRIDGE_CONFIG_DATA	46
 #define OMCI_CLASS_MAC_BRIDGE_PORT_CONFIG_DATA	47
 #define OMCI_CLASS_VLAN_TAGGING_OPERATION	78
 #define OMCI_CLASS_VLAN_TAGGING_FILTER_DATA	84
-#define OMCI_CLASS_8021P_MAPPER		130
+#define OMCI_CLASS_8021P_MAPPER			130
 
 /*
  * 802.1p mapper instances seeded for the Nokia/ALCL profile. One per GEM
@@ -51,55 +51,58 @@ struct omci_mib_object;
  * pick.
  */
 #define OMCI_ONU2G_CONNECTIVITY_CAPABILITY	0x007f
-#define OMCI_CLASS_TCONT		262
-#define OMCI_CLASS_ANI_G		263
-#define OMCI_CLASS_UNI_G		264
-#define OMCI_CLASS_GEM_IWTP		266
-#define OMCI_CLASS_GEM_PORT_CTP	268
-#define OMCI_CLASS_GAL_ETHERNET_PROFILE	272
-#define OMCI_CLASS_PRIORITY_QUEUE	277
-#define OMCI_CLASS_TRAFFIC_SCHEDULER	278
-#define OMCI_CLASS_MULTICAST_GEM_IWTP	281
-#define OMCI_CLASS_OMCI		287
-#define OMCI_CLASS_MANAGED_ENTITY	288
-#define OMCI_CLASS_ATTRIBUTE		289
-#define OMCI_CLASS_VEIP		329
+#define OMCI_CLASS_TCONT			262
+#define OMCI_CLASS_ANI_G			263
+#define OMCI_CLASS_UNI_G			264
+#define OMCI_CLASS_GEM_IWTP			266
+#define OMCI_CLASS_GEM_PORT_CTP			268
+#define OMCI_CLASS_GAL_ETHERNET_PROFILE		272
+#define OMCI_CLASS_PRIORITY_QUEUE		277
+#define OMCI_CLASS_TRAFFIC_SCHEDULER		278
+#define OMCI_CLASS_MULTICAST_GEM_IWTP		281
+#define OMCI_CLASS_OMCI				287
+#define OMCI_CLASS_MANAGED_ENTITY		288
+#define OMCI_CLASS_ATTRIBUTE			289
+#define OMCI_CLASS_VEIP				329
 
-#define OMCI_CLASS_HUAWEI_FLOW_MAPPING	350
-#define OMCI_CLASS_HUAWEI_VLAN_MAPPING	352
-#define OMCI_CLASS_HUAWEI_SW_IMAGE_EXT	353
-#define OMCI_CLASS_HUAWEI_MULTICAST_367	367
-#define OMCI_CLASS_HUAWEI_MULTICAST_370	370
-#define OMCI_CLASS_HUAWEI_MULTICAST_373	373
-#define OMCI_CLASS_HUAWEI_MULTICAST_65408	65408
-#define OMCI_CLASS_HUAWEI_MULTICAST_65414	65414
-#define OMCI_CLASS_HUAWEI_MULTICAST_65425	65425
+/* Layouts verified against the Realtek Huawei interoperability MEs. */
+#define OMCI_CLASS_HUAWEI_ONU_MANAGEMENT	350
+#define OMCI_CLASS_HUAWEI_VOIP_IMAGE		353
+#define OMCI_CLASS_HUAWEI_UNI_QOS		370
+#define OMCI_CLASS_HUAWEI_PRODUCT_ID		373
+#define OMCI_HUAWEI_PRODUCT_PARTS		15
+#define OMCI_HUAWEI_PRODUCT_PART_LEN		25
+#define OMCI_HUAWEI_PRODUCT_LEN			(1 + OMCI_HUAWEI_PRODUCT_PARTS * \
+						 OMCI_HUAWEI_PRODUCT_PART_LEN)
+/* This SDK defines 65408 as CTC Extended ONU-G, not Huawei multicast. */
+#define OMCI_CLASS_CTC_EXTENDED_ONU_G		65408
 
 #define OMCI_CLASS_NOKIA_OPTICAL_SUPERVISION	65295
-#define OMCI_CLASS_NOKIA_ONT_GENERIC_V2	65296
+#define OMCI_CLASS_NOKIA_ONT_GENERIC_V2		65296
 #define OMCI_CLASS_NOKIA_UNI_SUPPLEMENTAL_V2	65297
-#define OMCI_CLASS_NOKIA_GEM_PM_PART2	65300
+#define OMCI_CLASS_NOKIA_GEM_PM_PART2		65300
 #define OMCI_CLASS_NOKIA_VLAN_DS_SUPPLEMENTAL	65305
 #define OMCI_CLASS_NOKIA_VLAN_US_POLICER	65306
 
-#define OMCI_ME_ACTION_CREATE		BIT(4)
-#define OMCI_ME_ACTION_DELETE		BIT(6)
-#define OMCI_ME_ACTION_SET		BIT(8)
-#define OMCI_ME_ACTION_GET		BIT(9)
-#define OMCI_ME_ACTION_GET_NEXT		BIT(26)
-#define OMCI_ME_ACTION_MIB_UPLOAD	BIT(13)
-#define OMCI_ME_ACTION_MIB_UPLOAD_NEXT	BIT(14)
-#define OMCI_ME_ACTION_MIB_RESET	BIT(15)
-#define OMCI_ME_ACTION_SET_TABLE	BIT(29)
+#define OMCI_ME_ACTION_CREATE			BIT(4)
+#define OMCI_ME_ACTION_DELETE			BIT(6)
+#define OMCI_ME_ACTION_SET			BIT(8)
+#define OMCI_ME_ACTION_GET			BIT(9)
+#define OMCI_ME_ACTION_GET_NEXT			BIT(26)
+#define OMCI_ME_ACTION_MIB_UPLOAD		BIT(13)
+#define OMCI_ME_ACTION_MIB_UPLOAD_NEXT		BIT(14)
+#define OMCI_ME_ACTION_MIB_RESET		BIT(15)
+#define OMCI_ME_ACTION_SET_TABLE		BIT(29)
 
-#define OMCI_ME_F_NO_MIB_UPLOAD	BIT(0)
-#define OMCI_ME_F_ONU_CREATED		BIT(1)
-#define OMCI_ME_F_DATAPATH		BIT(2)
-#define OMCI_ME_F_SAFE_FAKE		BIT(3)
-#define OMCI_ME_F_VENDOR		BIT(4)
+#define OMCI_ME_F_NO_MIB_UPLOAD			BIT(0)
+#define OMCI_ME_F_ONU_CREATED			BIT(1)
+#define OMCI_ME_F_DATAPATH			BIT(2)
+#define OMCI_ME_F_SAFE_FAKE			BIT(3)
+#define OMCI_ME_F_VENDOR			BIT(4)
+#define OMCI_ME_F_NO_FAKE			BIT(5)
 
-#define OMCI_PROFILE_BIT(_profile)	BIT(_profile)
-#define OMCI_PROFILE_STANDARD_MASK	GENMASK(7, 1)
+#define OMCI_PROFILE_BIT(_profile)		BIT(_profile)
+#define OMCI_PROFILE_STANDARD_MASK		GENMASK(7, 1)
 
 enum omci_attr_access {
 	OMCI_ATTR_ACCESS_READ		= BIT(0),
@@ -109,7 +112,7 @@ enum omci_attr_access {
 
 struct omci_attr_desc {
 	u16 mask;
-	u8 offset;
+	u16 offset;
 	u8 len;
 	u8 access;
 };
@@ -122,7 +125,7 @@ struct omci_me_desc {
 	u32 flags;
 	u16 valid_attr_mask;
 	u16 mib_upload_mask;
-	u8 data_len;
+	u16 data_len;
 	u8 category;
 	u8 support;
 	const struct omci_attr_desc *attrs;
@@ -146,6 +149,14 @@ int omci_me_encode_attributes(const struct omci_me_desc *desc,
 			      const struct omci_mib_object *object,
 			      u16 mask, u8 *data, size_t len,
 			      u16 *encoded_mask, size_t *encoded_len);
+
+/* Each upload record has room for 26 bytes of complete attributes. */
+unsigned int omci_me_upload_records(const struct omci_me_desc *desc,
+				    const struct omci_mib_object *object);
+int omci_me_encode_upload(const struct omci_me_desc *desc,
+			  const struct omci_mib_object *object, unsigned int record,
+			  u8 *data, u16 *encoded_mask, size_t *encoded_len);
+int omci_huawei_validate(const struct omci_mib_object *object);
 
 const char *omci_me_class_name(u16 class_id);
 int omci_me_class_get(struct omci_device *odev, u16 class_id,

@@ -922,7 +922,7 @@ static bool omci_agent_should_fake_result(const struct omci_agent *agent,
 {
 	const struct omci_me_desc *desc = omci_me_lookup(agent, class_id);
 
-	if (desc && (desc->flags & OMCI_ME_F_DATAPATH))
+	if (desc && (desc->flags & (OMCI_ME_F_DATAPATH | OMCI_ME_F_NO_FAKE)))
 		return false;
 
 	return omci_agent_fakes_unsupported(agent) &&
@@ -953,7 +953,8 @@ static int omci_mib_add_default_profile_mask(struct omci_agent *agent,
 	object->data_len = desc ? desc->data_len :
 				  min_t(size_t, len, sizeof(object->data));
 	if (data)
-		memcpy(object->data, data, min(len, sizeof(object->data)));
+		memcpy(omci_mib_data(object), data,
+		       min(len, omci_mib_data_size(object)));
 
 	ret = omci_mib_store_locked(agent, object);
 	kfree(object);
@@ -980,66 +981,43 @@ static int omci_mib_add_default(struct omci_agent *agent, u16 class_id,
 					 data, len);
 }
 
+static void omci_huawei_product_default(struct omci_agent *agent, u8 *data)
+{
+	size_t len = strnlen(agent->config.equipment_id,
+			     sizeof(agent->config.equipment_id));
+
+	memset(data, 0, OMCI_HUAWEI_PRODUCT_LEN);
+	data[0] = DIV_ROUND_UP(len, OMCI_HUAWEI_PRODUCT_PART_LEN);
+	memcpy(data + 1, agent->config.equipment_id, len);
+}
+
 static int omci_agent_seed_huawei_locked(struct omci_device *odev, u8 profile)
 {
 	struct omci_agent *agent = &odev->agent;
-	u8 data[OMCI_MAX_ATTR_DATA] = {};
+	u8 data[OMCI_HUAWEI_PRODUCT_LEN] = {};
 	int ret;
 
-	data[1] = agent->config.traffic_mgmt_option;
+	/* Unknown capability words stay zero; do not copy another ONU's identity. */
 	ret = omci_mib_add_default_profile_mask(agent, profile,
-						OMCI_CLASS_HUAWEI_FLOW_MAPPING,
-						0, GENMASK(15, 7), data,
-						sizeof(data));
+		OMCI_CLASS_HUAWEI_ONU_MANAGEMENT, 0, 0xffff, data, 38);
 	if (ret)
 		return ret;
 
-	memset(data, 0, sizeof(data));
-	memcpy(data, agent->config.version,
-	       min_t(size_t, 14, sizeof(agent->config.version)));
-	data[14] = 1;
-	data[15] = 1;
-	data[16] = 1;
+	/* No separate VoIP image is registered by the current provider. */
 	ret = omci_mib_add_default_profile_mask(agent, profile,
-						OMCI_CLASS_HUAWEI_SW_IMAGE_EXT,
-						0, GENMASK(15, 11), data,
-						sizeof(data));
+		OMCI_CLASS_HUAWEI_VOIP_IMAGE, 0, GENMASK(15, 11), data, 21);
 	if (ret)
 		return ret;
 
-	memset(data, 0, sizeof(data));
+	put_unaligned_be16(0x0201, data);
 	ret = omci_mib_add_default_profile_mask(agent, profile,
-						OMCI_CLASS_HUAWEI_MULTICAST_367,
-						0, GENMASK(15, 11), data,
-						sizeof(data));
-	if (ret)
-		return ret;
-	ret = omci_mib_add_default_profile_mask(agent, profile,
-						OMCI_CLASS_HUAWEI_MULTICAST_370,
-						0x0101, GENMASK(15, 11), data,
-						sizeof(data));
-	if (ret)
-		return ret;
-	ret = omci_mib_add_default_profile_mask(agent, profile,
-						OMCI_CLASS_HUAWEI_MULTICAST_373,
-						0, GENMASK(15, 11), data,
-						sizeof(data));
-	if (ret)
-		return ret;
-	ret = omci_mib_add_default_profile_mask(
-		agent, profile, OMCI_CLASS_HUAWEI_MULTICAST_65408, 0,
-		GENMASK(15, 11), data, sizeof(data));
-	if (ret)
-		return ret;
-	ret = omci_mib_add_default_profile_mask(
-		agent, profile, OMCI_CLASS_HUAWEI_MULTICAST_65414, 0,
-		GENMASK(15, 11), data, sizeof(data));
+		OMCI_CLASS_HUAWEI_UNI_QOS, 0x0101, GENMASK(15, 13), data, 10);
 	if (ret)
 		return ret;
 
-	return omci_mib_add_default_profile_mask(
-		agent, profile, OMCI_CLASS_HUAWEI_MULTICAST_65425, 0,
-		GENMASK(15, 11), data, sizeof(data));
+	omci_huawei_product_default(agent, data);
+	return omci_mib_add_default_profile_mask(agent, profile,
+		OMCI_CLASS_HUAWEI_PRODUCT_ID, 0, 0xffff, data, sizeof(data));
 }
 
 static int omci_agent_seed_nokia_locked(struct omci_device *odev, u8 profile)
@@ -1467,10 +1445,9 @@ static void omci_agent_refresh_identity_locked(struct omci_agent *agent)
 		put_unaligned_be16(1, object->data + 40);
 	}
 
-	object = omci_mib_lookup(agent, OMCI_CLASS_HUAWEI_SW_IMAGE_EXT, 0);
+	object = omci_mib_lookup(agent, OMCI_CLASS_HUAWEI_PRODUCT_ID, 0);
 	if (object)
-		memcpy(object->data, agent->config.software_version[0],
-		       min_t(size_t, 14, OMCI_SOFTWARE_VERSION_LEN));
+		omci_huawei_product_default(agent, omci_mib_data(object));
 
 	object = omci_mib_lookup(agent, OMCI_CLASS_NOKIA_ONT_GENERIC_V2, 0);
 	if (object) {
@@ -2594,7 +2571,8 @@ static unsigned int omci_mib_count_locked(struct omci_agent *agent)
 
 	xa_for_each(&agent->mib, index, object)
 		if (omci_mib_object_uploadable(agent, object))
-			count++;
+			count += omci_me_upload_records(omci_me_lookup(agent,
+							     object->class_id), object);
 	return count;
 }
 
@@ -2694,6 +2672,11 @@ static int omci_agent_hw_update(struct omci_device *odev,
 	u16 value;
 	int ret;
 
+	if (action != OMCI_MSG_TYPE_DELETE) {
+		ret = omci_huawei_validate(object);
+		if (ret)
+			return ret;
+	}
 	desc = omci_me_lookup(&odev->agent, object->class_id);
 	if (action != OMCI_MSG_TYPE_DELETE && desc &&
 	    (desc->flags & OMCI_ME_F_DATAPATH) &&
@@ -3623,7 +3606,8 @@ static u8 omci_agent_create_locked(struct omci_device *odev, u16 class_id,
 		 * attributes into the seeded instance instead of returning
 		 * INSTANCE_EXISTS, which aborts the OLT provisioning sequence.
 		 */
-		memcpy(stored->data, object->data, sizeof(stored->data));
+		memcpy(omci_mib_data(stored), omci_mib_const_data(object),
+		       omci_mib_data_size(stored));
 		stored->data_len = object->data_len;
 		stored->attr_mask = object->attr_mask;
 		stored->origin = OMCI_MIB_ORIGIN_OLT;
@@ -4348,14 +4332,19 @@ static int omci_agent_upload_next_locked(struct omci_agent *agent, u16 sequence,
 	unsigned long index;
 	size_t encoded_len = 0;
 	u16 encoded_mask = 0;
-	u16 upload_pos = 0;
+	unsigned int record = sequence;
 	int ret;
 
 	xa_for_each(&agent->mib, index, object) {
+		unsigned int records;
+
 		if (!omci_mib_object_uploadable(agent, object))
 			continue;
-		if (upload_pos++ == sequence)
+		desc = omci_me_lookup(agent, object->class_id);
+		records = omci_me_upload_records(desc, object);
+		if (record < records)
 			goto found;
+		record -= records;
 	}
 
 	return -ENOENT;
@@ -4363,19 +4352,15 @@ static int omci_agent_upload_next_locked(struct omci_agent *agent, u16 sequence,
 found:
 	put_unaligned_be16(object->class_id, content);
 	put_unaligned_be16(object->entity_id, content + 2);
-	desc = omci_me_lookup(agent, object->class_id);
 	if (desc) {
-		u16 mask = object->attr_mask & desc->mib_upload_mask;
-
-		ret = omci_me_encode_attributes(desc, object, mask, content + 6,
-						26, &encoded_mask,
-						&encoded_len);
-		if (ret && mask)
+		ret = omci_me_encode_upload(desc, object, record, content + 6,
+					    &encoded_mask, &encoded_len);
+		if (ret)
 			return ret;
 	} else {
 		encoded_mask = object->attr_mask;
 		encoded_len = min_t(size_t, object->data_len ?: 26, 26);
-		memcpy(content + 6, object->data, encoded_len);
+		memcpy(content + 6, omci_mib_const_data(object), encoded_len);
 	}
 	put_unaligned_be16(encoded_mask, content + 4);
 	if (encoded_len < 26)
@@ -4442,6 +4427,7 @@ static int omci_agent_build_response_locked(
 	bool *fake, bool *profile_changed)
 {
 	struct omci_agent *agent = &odev->agent;
+	const struct omci_me_desc *desc = omci_me_lookup(agent, request->class_id);
 	u8 action = request->message_type & 0x1f;
 	u16 class_id = request->class_id;
 	u16 entity_id = request->entity_id;
@@ -4459,6 +4445,13 @@ static int omci_agent_build_response_locked(
 	*fake = false;
 	*profile_changed = false;
 	*content_len = 1;
+
+	if (desc && (desc->flags & OMCI_ME_F_NO_FAKE) &&
+	    !omci_me_action_allowed(agent, class_id, action)) {
+		content[0] = OMCI_RESULT_NOT_SUPPORTED;
+		*unsupported = true;
+		return 0;
+	}
 
 	switch (action) {
 	case OMCI_MSG_TYPE_CREATE:
@@ -5390,7 +5383,7 @@ int omci_agent_mib_set(struct omci_device *odev,
 				       OMCI_OLT_PROFILE_UNSPEC;
 	if (!local->data_len)
 		local->data_len = desc ? desc->data_len : sizeof(local->data);
-	if (local->data_len > sizeof(local->data)) {
+	if (local->data_len > omci_mib_data_size(local)) {
 		ret = -E2BIG;
 		goto unlock;
 	}
@@ -5408,6 +5401,9 @@ int omci_agent_mib_set(struct omci_device *odev,
 						  local->data);
 	}
 
+	ret = omci_huawei_validate(local);
+	if (ret)
+		goto unlock;
 	ret = omci_mib_store_locked(agent, local);
 	if (ret)
 		goto unlock;
