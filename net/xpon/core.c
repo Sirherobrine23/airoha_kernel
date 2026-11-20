@@ -154,6 +154,13 @@ bool xpon_device_has_vlan_ops(struct xpon_device *xpon)
 }
 EXPORT_SYMBOL_GPL(xpon_device_has_vlan_ops);
 
+enum xpon_vlan_domain xpon_device_vlan_domain(struct xpon_device *xpon)
+{
+	return xpon && xpon->ops ? xpon->ops->vlan_domain :
+				 XPON_VLAN_DOMAIN_UNI;
+}
+EXPORT_SYMBOL_GPL(xpon_device_vlan_domain);
+
 int xpon_device_validate_vlans(struct xpon_device *xpon,
 			       const struct xpon_vlan_config *configs, size_t count)
 {

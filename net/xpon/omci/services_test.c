@@ -13,6 +13,7 @@
 
 struct omci_services_test_context {
 	struct omci_device odev;
+	struct xpon_device_ops xpon_ops;
 	struct xarray desired;
 	struct net_device *netdev;
 	struct omci_service_config hardware[OMCI_TEST_CAPACITY];
@@ -180,8 +181,9 @@ static int omci_services_test_init(struct kunit *test)
 		ret = PTR_ERR(ctx->odev.xpon);
 		goto netdev;
 	}
+	ctx->xpon_ops = omci_services_vlan_ops;
 	ret = xpon_device_setup(ctx->odev.xpon, ctx->netdev,
-				&omci_services_vlan_ops, ctx,
+				&ctx->xpon_ops, ctx,
 				XPON_MODE_GPON, XPON_MODE_GPON);
 	if (ret) {
 		xpon_device_free(ctx->odev.xpon);
@@ -739,6 +741,7 @@ static void omci_provider_mapper_test(struct kunit *test)
 	objects[4].entity_id = 0x101;
 	objects[4].vlan_filter.valid = true;
 	objects[4].vlan_filter.num_entries = 1;
+	objects[4].vlan_filter.forward_operation = 0x10;
 	objects[4].vlan_filter.entries[0].vid = 1894;
 	for (i = 0; i < 5; i++) {
 		unsigned long key = ((unsigned long)objects[i].class_id << 16) |
@@ -910,6 +913,290 @@ static void omci_services_deleted_ani_port_test(struct kunit *test)
 		KUNIT_EXPECT_FALSE(test, ctx->used[i]);
 }
 
+/* A UNI, mapper, IWTP and bridge port deliberately use distinct IDs. */
+struct omci_ani_fixture {
+	struct omci_mib_object lan;
+	struct omci_mib_object gem;
+	struct omci_mib_object iwtp;
+	struct omci_mib_object tcont;
+	struct omci_mib_object vlan;
+	struct omci_mib_object filter;
+};
+
+static const u8 omci_huawei_insert_rows[][OMCI_EXT_VLAN_RULE_LEN] = {
+	{ 0xf8, 0, 0, 0, 0xf8, 0, 0, 0, 0, 0x0f, 0, 0, 0, 0, 0x01, 0x18 },
+	{ 0xf8, 0, 0, 0, 0xf8, 0, 0, 0, 0, 0x0f, 0, 0, 0, 3, 0x4e, 0x30 },
+	{ 0xf8, 0, 0, 0, 0xf8, 0, 0, 0, 0, 0x0f, 0, 0, 0, 5, 0x0a, 0x78 },
+};
+
+static void omci_ani_insert_object(struct kunit *test,
+				   struct omci_mib_object *object)
+{
+	struct omci_services_test_context *ctx = test->priv;
+	unsigned long key = ((unsigned long)object->class_id << 16) |
+			    object->entity_id;
+
+	KUNIT_ASSERT_EQ(test, xa_insert(&ctx->odev.agent.mib, key, object,
+					GFP_KERNEL), 0);
+}
+
+static struct omci_ani_fixture *omci_ani_fixture_init(struct kunit *test)
+{
+	struct omci_ani_fixture *f;
+
+	f = kunit_kzalloc(test, sizeof(*f), GFP_KERNEL);
+	if (!f)
+		return NULL;
+	f->lan.class_id = OMCI_CLASS_MAC_BRIDGE_PORT_CONFIG_DATA;
+	f->lan.entity_id = 1;
+	f->lan.data[3] = 1; /* PPTP Ethernet UNI */
+	put_unaligned_be16(0x101, f->lan.data + 4);
+	f->gem.class_id = OMCI_CLASS_GEM_PORT_CTP;
+	f->gem.entity_id = 4;
+	f->gem.origin = OMCI_MIB_ORIGIN_OLT;
+	put_unaligned_be16(388, f->gem.data);
+	put_unaligned_be16(0x8001, f->gem.data + 2);
+	f->gem.data[4] = OMCI_GEM_PORT_DIRECTION_BIDIRECTIONAL;
+	f->iwtp.class_id = OMCI_CLASS_GEM_IWTP;
+	f->iwtp.entity_id = 3;
+	put_unaligned_be16(f->gem.entity_id, f->iwtp.data);
+	f->tcont.class_id = OMCI_CLASS_TCONT;
+	f->tcont.entity_id = 0x8001;
+	put_unaligned_be16(388, f->tcont.data);
+	f->vlan.class_id = OMCI_CLASS_EXTENDED_VLAN;
+	/* This ID collides with the bridge port, not with its association. */
+	f->vlan.entity_id = f->lan.entity_id;
+	f->vlan.extended_vlan.valid = true;
+	f->vlan.extended_vlan.association_type = 2;
+	f->vlan.extended_vlan.associated_me = 0x101;
+	f->vlan.extended_vlan.rule_count = 1;
+	f->vlan.extended_vlan.input_tpid = ETH_P_8021Q;
+	f->vlan.extended_vlan.output_tpid = ETH_P_8021Q;
+	omci_ext_vlan_parse_rule(&f->vlan.extended_vlan.rules[0],
+				 omci_huawei_insert_rows[0]);
+	omci_ani_insert_object(test, &f->gem);
+	omci_ani_insert_object(test, &f->iwtp);
+	omci_ani_insert_object(test, &f->tcont);
+	omci_ani_insert_object(test, &f->vlan);
+	return f;
+}
+
+static int omci_ani_stage(struct omci_services_test_context *ctx,
+			  struct omci_ani_fixture *f, u8 pcp, bool mapper)
+{
+	bool default_installed = false;
+	int ret;
+
+	omci_services_test_free(&ctx->desired);
+	xa_init(&ctx->desired);
+	mutex_lock(&ctx->odev.agent.lock);
+	ret = omci_agent_stage_path_locked(&ctx->odev, &ctx->desired,
+					   &f->lan,
+					   get_unaligned_be16(f->lan.data + 4),
+					   6, 2, f->iwtp.entity_id, pcp, mapper,
+					   false, 0, false, &default_installed);
+	mutex_unlock(&ctx->odev.agent.lock);
+	return ret;
+}
+
+static void omci_services_ani_insertion_test(struct kunit *test)
+{
+	static const u16 vids[] = { 35, 2502, 335 };
+	static const u8 pcps[] = { 0, 3, 5 };
+	struct omci_services_test_context *ctx = test->priv;
+	struct omci_ani_fixture *f = omci_ani_fixture_init(test);
+	struct omci_service_state *state;
+	unsigned long index;
+	unsigned int i, count;
+
+	KUNIT_ASSERT_NOT_NULL(test, f);
+	ctx->xpon_ops.vlan_domain = XPON_VLAN_DOMAIN_ANI;
+	for (i = 0; i < ARRAY_SIZE(vids); i++) {
+		omci_ext_vlan_parse_rule(&f->vlan.extended_vlan.rules[0],
+					 omci_huawei_insert_rows[i]);
+		KUNIT_ASSERT_EQ(test, omci_ani_stage(ctx, f, pcps[i], true), 0);
+		count = 0;
+		xa_for_each(&ctx->desired, index, state) {
+			count++;
+			KUNIT_EXPECT_TRUE(test, state->config.vlan_valid);
+			KUNIT_EXPECT_EQ(test, state->config.vlan_id, vids[i]);
+			KUNIT_EXPECT_EQ(test, state->config.pcp, pcps[i]);
+			KUNIT_EXPECT_EQ(test, state->config.queue, pcps[i]);
+			KUNIT_EXPECT_EQ(test, state->config.gem_port_id, 388);
+			KUNIT_EXPECT_EQ(test, state->config.alloc_id, 388);
+			KUNIT_EXPECT_FALSE(test, state->config.vlan_rewrite);
+		}
+		KUNIT_EXPECT_EQ(test, count, 1U);
+		/* The output PCP belongs to its mapper branch, not all eight. */
+		KUNIT_ASSERT_EQ(test, omci_ani_stage(ctx, f, (pcps[i] + 1) % 8,
+						     true), 0);
+		KUNIT_EXPECT_TRUE(test, xa_empty(&ctx->desired));
+	}
+	/* Real UNI input still needs insertion support and must report it. */
+	ctx->xpon_ops.vlan_domain = XPON_VLAN_DOMAIN_UNI;
+	KUNIT_EXPECT_EQ(test, omci_ani_stage(ctx, f, pcps[2], true), -EOPNOTSUPP);
+}
+
+static void omci_services_association_namespace_test(struct kunit *test)
+{
+	static const struct {
+		u8 association, uni_type;
+		u16 pointer;
+		bool mapper, match;
+	} cases[] = {
+		{ 0, 1, 1, true, true },
+		{ 0, 1, 6, true, true },
+		{ 0, 1, 2, true, false },
+		{ 1, 1, 2, true, true },
+		{ 1, 1, 2, false, false },
+		{ 2, 1, 0x101, true, true },
+		{ 2, 1, 2, true, false },
+		{ 2, 11, 0x101, true, false },
+		{ 5, 1, 3, true, true },
+		{ 5, 1, 2, true, false },
+		{ 6, 1, 3, true, false },
+		{ 10, 11, 0x101, true, true },
+		{ 10, 1, 0x101, true, false },
+		{ 10, 11, 2, true, false },
+	};
+	struct omci_services_test_context *ctx = test->priv;
+	struct omci_ani_fixture *f = omci_ani_fixture_init(test);
+	struct omci_service_state *state;
+	unsigned long index;
+	unsigned int i, matches;
+
+	KUNIT_ASSERT_NOT_NULL(test, f);
+	ctx->xpon_ops.vlan_domain = XPON_VLAN_DOMAIN_ANI;
+	for (i = 0; i < ARRAY_SIZE(cases); i++) {
+		f->vlan.extended_vlan.association_type = cases[i].association;
+		f->vlan.extended_vlan.associated_me = cases[i].pointer;
+		f->lan.data[3] = cases[i].uni_type;
+		KUNIT_ASSERT_EQ(test, omci_ani_stage(ctx, f, 0, cases[i].mapper), 0);
+		matches = 0;
+		xa_for_each(&ctx->desired, index, state)
+			matches += state->config.vlan_valid;
+		KUNIT_EXPECT_LE(test, matches, 1U);
+		KUNIT_EXPECT_EQ_MSG(test, matches == 1, cases[i].match,
+				    "association case %u", i);
+	}
+}
+
+static void omci_services_ani_filter_test(struct kunit *test)
+{
+	struct omci_services_test_context *ctx = test->priv;
+	struct omci_ani_fixture *f = omci_ani_fixture_init(test);
+	struct omci_service_state *state;
+	unsigned long index;
+	unsigned int count = 0;
+
+	KUNIT_ASSERT_NOT_NULL(test, f);
+	ctx->xpon_ops.vlan_domain = XPON_VLAN_DOMAIN_ANI;
+	f->vlan.extended_vlan.rule_count = 0;
+	f->filter.class_id = OMCI_CLASS_VLAN_TAGGING_FILTER_DATA;
+	f->filter.entity_id = 6;
+	f->filter.vlan_filter.valid = true;
+	f->filter.vlan_filter.forward_operation = 0x10;
+	f->filter.vlan_filter.num_entries = 1;
+	f->filter.vlan_filter.entries[0].vid = 2501;
+	omci_ani_insert_object(test, &f->filter);
+	/* VID-only filter: preserve mapper PCP 5 despite zero TCI PCP bits. */
+	KUNIT_ASSERT_EQ(test, omci_ani_stage(ctx, f, 5, true), 0);
+	xa_for_each(&ctx->desired, index, state) {
+		count++;
+		KUNIT_EXPECT_EQ(test, state->config.vlan_id, 2501);
+		KUNIT_EXPECT_EQ(test, state->config.pcp, 5);
+		KUNIT_EXPECT_EQ(test, state->config.queue, 5);
+	}
+	KUNIT_EXPECT_EQ(test, count, 1U);
+	/* A UNI's VLAN 35 insertion must not add VLAN 35 to the 2501 path. */
+	f->vlan.extended_vlan.rule_count = 1;
+	KUNIT_ASSERT_EQ(test, omci_ani_stage(ctx, f, 0, true), 0);
+	count = 0;
+	xa_for_each(&ctx->desired, index, state) {
+		count++;
+		KUNIT_EXPECT_EQ(test, state->config.vlan_id, 2501);
+	}
+	KUNIT_EXPECT_EQ(test, count, 1U);
+	/* TCI filtering, unlike VID-only filtering, does constrain priority. */
+	f->vlan.extended_vlan.rule_count = 0;
+	f->filter.vlan_filter.forward_operation = 0x0c;
+	f->filter.vlan_filter.entries[0].pbit = 3;
+	KUNIT_ASSERT_EQ(test, omci_ani_stage(ctx, f, 5, true), 0);
+	KUNIT_EXPECT_TRUE(test, xa_empty(&ctx->desired));
+	KUNIT_ASSERT_EQ(test, omci_ani_stage(ctx, f, 3, true), 0);
+	KUNIT_EXPECT_FALSE(test, xa_empty(&ctx->desired));
+	f->filter.vlan_filter.entries[0].vid = 35;
+	f->vlan.extended_vlan.rule_count = 1; /* Emits PCP 0, not PCP 3. */
+	KUNIT_ASSERT_EQ(test, omci_ani_stage(ctx, f, 0, true), 0);
+	KUNIT_EXPECT_TRUE(test, xa_empty(&ctx->desired));
+	f->vlan.extended_vlan.rule_count = 0;
+	/* ME 84 entity 2 is not attached to bridge port 6 or LAN port 1. */
+	xa_erase(&ctx->odev.agent.mib,
+		 ((unsigned long)f->filter.class_id << 16) | f->filter.entity_id);
+	f->filter.entity_id = 2; /* Coincides only with the mapper ID. */
+	omci_ani_insert_object(test, &f->filter);
+	KUNIT_ASSERT_EQ(test, omci_ani_stage(ctx, f, 3, true), 0);
+	xa_for_each(&ctx->desired, index, state)
+		KUNIT_EXPECT_FALSE(test, state->config.vlan_valid);
+}
+
+static void omci_services_ani_discard_test(struct kunit *test)
+{
+	static const u8 discard[OMCI_EXT_VLAN_RULE_LEN] = {
+		0xe8, 0, 0, 0, 0xe8, 0, 0, 0, 0xc0, 0x0f, 0, 0, 0, 0x0f, 0, 0,
+	};
+	struct omci_services_test_context *ctx = test->priv;
+	struct omci_ani_fixture *f = omci_ani_fixture_init(test);
+
+	KUNIT_ASSERT_NOT_NULL(test, f);
+	ctx->xpon_ops.vlan_domain = XPON_VLAN_DOMAIN_ANI;
+	omci_ext_vlan_parse_rule(&f->vlan.extended_vlan.rules[0], discard);
+	KUNIT_ASSERT_EQ(test, omci_ani_stage(ctx, f, 0, true), 0);
+	/* No global ANI drop rule, and no wildcard forwarding fallback. */
+	KUNIT_EXPECT_TRUE(test, xa_empty(&ctx->desired));
+	KUNIT_EXPECT_EQ(test, ctx->vlan_replace_calls, 0U);
+}
+
+/* Replay every VID/GEM pair advertised in hiedgm's old ME 84/268 dump. */
+static void omci_services_ani_network_paths_test(struct kunit *test)
+{
+	static const u16 vids[] = { 2501, 35, 36, 2502, 335 };
+	static const u16 gems[] = { 260, 388, 516, 644, 772 };
+	struct omci_services_test_context *ctx = test->priv;
+	struct omci_ani_fixture *f = omci_ani_fixture_init(test);
+	struct omci_service_state *state;
+	unsigned int i, pcp, count;
+	unsigned long index;
+
+	KUNIT_ASSERT_NOT_NULL(test, f);
+	ctx->xpon_ops.vlan_domain = XPON_VLAN_DOMAIN_ANI;
+	f->filter.class_id = OMCI_CLASS_VLAN_TAGGING_FILTER_DATA;
+	f->filter.entity_id = 6;
+	f->filter.vlan_filter.valid = true;
+	f->filter.vlan_filter.forward_operation = 0x10;
+	f->filter.vlan_filter.num_entries = 1;
+	omci_ani_insert_object(test, &f->filter);
+	for (i = 0; i < ARRAY_SIZE(vids); i++) {
+		f->filter.vlan_filter.entries[0].vid = vids[i];
+		put_unaligned_be16(gems[i], f->gem.data);
+		put_unaligned_be16(gems[i], f->tcont.data);
+		for (pcp = 0; pcp < 8; pcp++) {
+			KUNIT_ASSERT_EQ(test, omci_ani_stage(ctx, f, pcp, true), 0);
+			count = 0;
+			xa_for_each(&ctx->desired, index, state) {
+				count++;
+				KUNIT_EXPECT_TRUE(test, state->config.vlan_valid);
+				KUNIT_EXPECT_EQ(test, state->config.vlan_id, vids[i]);
+				KUNIT_EXPECT_EQ(test, state->config.gem_port_id, gems[i]);
+				KUNIT_EXPECT_EQ(test, state->config.pcp, pcp);
+				KUNIT_EXPECT_EQ(test, state->config.alloc_id, gems[i]);
+				KUNIT_EXPECT_FALSE(test, state->config.vlan_rewrite);
+			}
+			KUNIT_EXPECT_GT(test, count, 0U);
+		}
+	}
+}
+
 static struct kunit_case omci_services_test_cases[] = {
 	KUNIT_CASE(omci_services_full_reprovision_test),
 	KUNIT_CASE(omci_services_changed_cookie_test),
@@ -935,6 +1222,11 @@ static struct kunit_case omci_services_test_cases[] = {
 	KUNIT_CASE(omci_services_vlan_restart_test),
 	KUNIT_CASE(omci_services_vlan_no_provider_test),
 	KUNIT_CASE(omci_services_deleted_ani_port_test),
+	KUNIT_CASE(omci_services_ani_insertion_test),
+	KUNIT_CASE(omci_services_association_namespace_test),
+	KUNIT_CASE(omci_services_ani_filter_test),
+	KUNIT_CASE(omci_services_ani_discard_test),
+	KUNIT_CASE(omci_services_ani_network_paths_test),
 	{}
 };
 

@@ -110,6 +110,12 @@ enum xpon_vlan_tag_mode {
 	XPON_VLAN_UNTAGGED,
 };
 
+/* VLAN domain of the provider netdevice, independent of the ONU type. */
+enum xpon_vlan_domain {
+	XPON_VLAN_DOMAIN_UNI,
+	XPON_VLAN_DOMAIN_ANI,
+};
+
 /**
  * struct xpon_vlan_rule - match existing VLAN tags and modify the first tag
  * @tpid: first tag protocol to match, or zero for any VLAN protocol
@@ -195,6 +201,8 @@ struct xpon_device_limits {
  * @hw_fallback: recover a safe mode after either transition callback fails;
  *               report the mode actually recovered in @recovered
  * @get_mode: read the hardware-selected mode
+ * @vlan_domain: UNI packets need OMCI treatment; ANI packets already carry
+ *               network-side VLANs. Zero preserves the UNI rewrite contract.
  * @validate_vlans: optional read-only validation of the complete VLAN rule set
  * @replace_vlan: atomically add or replace a VLAN rewrite by cookie
  * @delete_vlan: remove both directions of a VLAN rewrite by cookie
@@ -224,6 +232,7 @@ struct xpon_device_ops {
 			   enum xpon_mode *recovered);
 	int (*set_mode)(struct xpon_device *xpon, enum xpon_mode mode);
 	int (*get_mode)(struct xpon_device *xpon, enum xpon_mode *mode);
+	enum xpon_vlan_domain vlan_domain;
 	int (*validate_vlans)(struct xpon_device *xpon,
 			      const struct xpon_vlan_config *configs, size_t count);
 	int (*replace_vlan)(struct xpon_device *xpon,
@@ -300,6 +309,7 @@ int xpon_device_get_limits(struct xpon_device *xpon,
 			   struct xpon_device_limits *limits);
 int xpon_device_get_hw_mode(struct xpon_device *xpon, enum xpon_mode *mode);
 bool xpon_device_has_vlan_ops(struct xpon_device *xpon);
+enum xpon_vlan_domain xpon_device_vlan_domain(struct xpon_device *xpon);
 int xpon_device_validate_vlans(struct xpon_device *xpon,
 			       const struct xpon_vlan_config *configs, size_t count);
 int xpon_device_replace_vlan(struct xpon_device *xpon,

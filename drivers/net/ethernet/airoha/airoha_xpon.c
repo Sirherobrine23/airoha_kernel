@@ -6028,6 +6028,8 @@ static const struct xpon_device_ops airoha_core_ops = {
 	.hw_fallback = airoha_xpon_mode_fallback,
 	.set_mode = airoha_xpon_change_mode,
 	.get_mode = airoha_xpon_get_current_mode,
+	/* The host PON netdevice carries network VLANs, not physical UNI input. */
+	.vlan_domain = XPON_VLAN_DOMAIN_ANI,
 	.validate_vlans = airoha_xpon_validate_vlans,
 	.replace_vlan = airoha_xpon_replace_vlan,
 	.delete_vlan = airoha_xpon_delete_vlan,
