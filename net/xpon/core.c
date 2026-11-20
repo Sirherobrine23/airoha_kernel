@@ -834,17 +834,6 @@ struct xpon_device *xpon_device_find_by_ifindex(u32 ifindex)
 	return NULL;
 }
 
-/* NETLINK_URELEASE only supplies a portid, not a device identifier. */
-void xpon_activation_release(u32 owner)
-{
-	struct xpon_device *xpon;
-
-	mutex_lock(&xpon_devices_lock);
-	list_for_each_entry(xpon, &xpon_devices, list)
-		xpon_activation_bind(xpon, owner, false);
-	mutex_unlock(&xpon_devices_lock);
-}
-
 void xpon_device_put(struct xpon_device *xpon)
 {
 	if (xpon)

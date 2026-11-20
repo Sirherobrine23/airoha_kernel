@@ -282,38 +282,32 @@ static void xpon_test_activation_policy(struct kunit *test)
 {
 	struct xpon_test_context *ctx = test->priv;
 	struct xpon_device *xpon = ctx->xpon;
-	u32 cookie;
+	int ret;
 
 	KUNIT_ASSERT_EQ(test, xpon_device_activation_attach(xpon,
 							    &xpon_test_activation_ops), 0);
 	KUNIT_EXPECT_FALSE(test, xpon_device_activation_allowed(xpon));
-	KUNIT_EXPECT_EQ(test, xpon_activation_set(xpon, 0, 0, true), -ENETDOWN);
-	xpon_activation_admin(xpon, true);
-	KUNIT_ASSERT_EQ(test, xpon_activation_set(xpon, 0, 0, true), 0);
+
+	rtnl_lock();
+	ret = dev_open(ctx->netdev, NULL);
+	rtnl_unlock();
+	KUNIT_ASSERT_EQ(test, ret, 0);
 	KUNIT_EXPECT_TRUE(test, xpon_device_activation_allowed(xpon));
-	xpon_activation_admin(xpon, false);
-	KUNIT_EXPECT_FALSE(test, xpon_device_activation_allowed(xpon));
-	xpon_activation_admin(xpon, true);
-	KUNIT_EXPECT_TRUE(test, xpon_device_activation_allowed(xpon));
-	xpon_activation_admin(xpon, false);
-	flush_delayed_work(&xpon->activation_work);
-	xpon_activation_admin(xpon, true);
+
+	rtnl_lock();
+	dev_close(ctx->netdev);
+	rtnl_unlock();
 	KUNIT_EXPECT_FALSE(test, xpon_device_activation_allowed(xpon));
 
-	KUNIT_ASSERT_EQ(test, xpon_activation_bind(xpon, 42, true), 0);
-	cookie = xpon->activation_cookie;
-	KUNIT_EXPECT_EQ(test, xpon_activation_set(xpon, 0, 0, true), -EPERM);
-	KUNIT_EXPECT_EQ(test, xpon_activation_set(xpon, 42, cookie - 1, true),
-			-ESTALE);
-	KUNIT_ASSERT_EQ(test, xpon_activation_set(xpon, 42, cookie, true), 0);
-	xpon_device_activation_request(xpon);
-	KUNIT_EXPECT_FALSE(test, xpon_device_activation_allowed(xpon));
-	KUNIT_EXPECT_EQ(test, xpon_activation_set(xpon, 42, cookie, true),
-			-ESTALE);
-	KUNIT_ASSERT_EQ(test, xpon_activation_set(xpon, 42,
-						  xpon->activation_cookie, true), 0);
-	KUNIT_ASSERT_EQ(test, xpon_activation_bind(xpon, 42, false), 0);
-	flush_delayed_work(&xpon->activation_work);
+	rtnl_lock();
+	ret = dev_open(ctx->netdev, NULL);
+	rtnl_unlock();
+	KUNIT_ASSERT_EQ(test, ret, 0);
+	KUNIT_EXPECT_TRUE(test, xpon_device_activation_allowed(xpon));
+
+	rtnl_lock();
+	dev_close(ctx->netdev);
+	rtnl_unlock();
 	KUNIT_EXPECT_FALSE(test, xpon_device_activation_allowed(xpon));
 	xpon_device_activation_detach(xpon);
 }

@@ -2649,7 +2649,6 @@ static void gpon_cb_state_changed(void *hw_priv, enum gpon_state state)
 	 */
 	switch (state) {
 	case GPON_O2_STANDBY:
-		xpon_device_activation_request(priv->xpon);
 		phy_state = AIROHA_XPON_PHY_GPON_OPER_DISABLED;
 		break;
 	case GPON_O3_SERIAL_NUMBER:
@@ -4430,9 +4429,12 @@ static const struct airoha_gpon_omci_hw_ops airoha_gpon_omci_hw_ops = {
 static int airoha_gpon_set_admin(struct xpon_device *xpon, bool up)
 {
 	struct xpon_priv *priv = xpon_device_priv(xpon);
+	int ret = 0;
 
+	if (!up)
+		ret = airoha_xpon_tx_enable(priv, false);
 	omci_device_set_admin(priv->omci.odev, up);
-	return 0;
+	return ret;
 }
 
 static void airoha_gpon_deactivate(struct xpon_device *xpon)

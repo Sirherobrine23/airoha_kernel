@@ -243,12 +243,12 @@ struct xpon_device_ops {
 };
 
 /**
- * struct xpon_activation_ops - administrative activation interlock
- * @set_admin: start or suspend the protocol agent, independently of MAC RX
- * @deactivate: discard the active session and return to discovery
+ * struct xpon_activation_ops - interface-driven PON activation
+ * @set_admin: start or stop protocol services and gate optical TX on DOWN
+ * @deactivate: queue an asynchronous session reset on interface DOWN
  *
- * Callbacks may sleep. They must not call back into activation policy or
- * acquire RTNL or wait for protocol work. deactivate() queues FSM reset.
+ * Callbacks may sleep but must not acquire RTNL, wait for the protocol FSM,
+ * or call back into the activation helper.
  */
 struct xpon_activation_ops {
 	int (*set_admin)(struct xpon_device *xpon, bool up);
@@ -260,7 +260,6 @@ int xpon_device_activation_attach(struct xpon_device *xpon,
 				  const struct xpon_activation_ops *ops);
 void xpon_device_activation_detach(struct xpon_device *xpon);
 bool xpon_device_activation_allowed(struct xpon_device *xpon);
-void xpon_device_activation_request(struct xpon_device *xpon);
 
 /* Each physical BOB/LDDLA may support a different set of PON modes. */
 struct xpon_optical_path {

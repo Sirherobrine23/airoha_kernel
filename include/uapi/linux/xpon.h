@@ -28,6 +28,7 @@ enum xpon_link_state {
 #define XPON_CAP_OAM		(1U << 1)
 #define XPON_CAP_REPORT		(1U << 2)
 #define XPON_CAP_LINK_ADMIN	(1U << 3)
+/* Reserved for compatibility; no agent-controlled activation is advertised. */
 #define XPON_CAP_ACTIVATION	(1U << 4)
 
 /* Each mode is a single bit; capability masks combine these values. */
@@ -82,6 +83,7 @@ enum xpon_cmd {
 	XPON_CMD_OAM_RX,
 	XPON_CMD_REPORT_GET,
 	XPON_CMD_REPORT_SET,
+	/* Legacy command numbers; the kernel no longer implements them. */
 	XPON_CMD_AGENT_BIND,
 	XPON_CMD_AGENT_UNBIND,
 	XPON_CMD_ACTIVATION_SET,
@@ -125,6 +127,7 @@ enum xpon_attr {
 	XPON_ATTR_REPORT_SET,
 	XPON_ATTR_THRESHOLD_TQ,
 	XPON_ATTR_MAX_REPORT_SETS,
+	/* Reserved legacy agent-activation attributes. */
 	XPON_ATTR_ACTIVATION, /* u8, approved */
 	XPON_ATTR_ACTIVATION_PENDING, /* u8, awaiting approval */
 	XPON_ATTR_ACTIVATION_OWNER, /* u32, agent portid (zero for sysfs) */
