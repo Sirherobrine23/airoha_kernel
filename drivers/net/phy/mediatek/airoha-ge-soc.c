@@ -3627,7 +3627,7 @@ static int en751627_phy_match(struct phy_device *phydev,
 static struct phy_driver mtk_socphy_driver[] = {
 	{
 		PHY_ID_MATCH_EXACT(AIROHA_GPHY_ID_EN751627),
-		.name		= "EcoNet EN751627 5-port GPHY",
+		.name		= "EcoNet EN751627 GPHY",
 		.match_phy_device = en751627_phy_match,
 		.config_init	= en751627_phy_config_init,
 		.config_intr	= genphy_no_config_intr,
@@ -3644,7 +3644,7 @@ static struct phy_driver mtk_socphy_driver[] = {
 	},
 	{
 		PHY_ID_MATCH_EXACT(AIROHA_GPHY_ID_EN7512),
-		.name		= "EcoNet EN7512/EN7521 GPHY",
+		.name		= "EcoNet EN751221 GPHY",
 		.config_init	= en7512_phy_config_init,
 		.config_intr	= genphy_no_config_intr,
 		.handle_interrupt = genphy_handle_interrupt_no_ack,
