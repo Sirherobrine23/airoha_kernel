@@ -1,0 +1,185 @@
+perf-script-python(1)
+====================
+
+NAME
+----
+perf-script-python - Process trace data with a Python script using perf module
+
+SYNOPSIS
+--------
+[verse]
+'perf script' <script>.py
+
+DESCRIPTION
+-----------
+
+This document describes how to use the `perf` Python module to process
+trace data recorded by `perf record`.
+
+With the removal of embedded Python interpreter from `perf`, scripts
+are now run as standalone Python programs that import the `perf`
+module to access trace data. Symbol configuration options (`--vmlinux`,
+`--kallsyms`, and `--symfs`) and `--itrace` options passed to `perf script`
+are forwarded via `PERF_SYMBOL_*` and `PERF_ITRACE` environment variables
+to `perf.session`, and can also be passed directly to `perf.session`.
+Trace filtering command-line
+options (`-C`, `-c`, `--pid`, `--tid`, `--time`, `--dlfilter`, `--dlarg`) passed
+to `perf script` are not applied to standalone scripts.
+
+A QUICK EXAMPLE
+---------------
+
+This section shows how to create a simple Python script that reads a
+`perf.data` file and prints event information.
+
+Create a file named `print_events.py` with the following content:
+
+    #!/usr/bin/env python3
+    import perf
+
+    def process_event(sample):
+        print(f"Event: {sample.evsel} on CPU {sample.sample_cpu} at {sample.sample_time}")
+
+    # Open the session with perf.data file
+    session = perf.session(perf.data("perf.data"), sample=process_event)
+
+    # Process all events
+    session.process_events()
+
+Make the script executable:
+    $ chmod +x print_events.py
+
+Record some data:
+    $ perf record -a sleep 1
+
+Run the script:
+    $ perf script print_events.py
+
+Or run it directly with Python, ensuring `perf.so` is in your `PYTHONPATH`:
+    $ PYTHONPATH=/path/to/perf/python python3 print_events.py
+
+THE PERF MODULE
+---------------
+
+The `perf` module provides several classes and functions to interact
+with trace data.
+
+Module Functions
+~~~~~~~~~~~~~~~~
+
+- `config_get(name)`: Get a perf config value.
+- `metrics()`: Returns a list of metrics represented as string values in dictionaries.
+- `tracepoint(sys, name)`: Get the tracepoint ID for a given subsystem and event name.
+- `parse_events(evlist_str, cpus=None, threads=None)`: Parse a string of events and return an `evlist`.
+- `parse_metrics(metrics_str, pmu=None, cpus=None, threads=None)`: Parse a string of metrics or metric groups and return an `evlist`.
+- `pmus()`: Returns a sequence of PMUs.
+- `syscall_name(id, elf_machine=0)`: Convert a syscall number to its name.
+- `syscall_id(name, elf_machine=0)`: Convert a syscall name to its number.
+
+perf.pmu
+~~~~~~~~
+
+Represents a Performance Monitoring Unit.
+
+- `events()`: Returns a sequence of events encoded as dictionaries.
+- `name()`: Name of the PMU including suffixes.
+
+perf.evlist
+~~~~~~~~~~~
+
+Represents a list of event selectors.
+
+- `all_cpus()`: CPU map union of all evsel CPU maps.
+- `metrics()`: List of metric names within the evlist.
+- `compute_metric(name, cpu, thread)`: Compute metric for given name, cpu and thread.
+- `mmap(pages=128, overwrite=False)`: mmap the file descriptor table.
+- `open()`: open the file descriptors.
+- `close()`: close the file descriptors.
+- `poll(timeout=-1)`: poll the file descriptor table.
+- `get_pollfd()`: get the poll file descriptor table.
+- `add(evsel)`: adds an event selector to the list.
+- `read_on_cpu(cpu, sample_id_all=True)`: reads an event from the specified CPU ring buffer.
+- `config()`: Apply default record options to the evlist.
+- `disable()`: Disable the evsels in the evlist.
+- `enable()`: Enable the evsels in the evlist.
+
+perf.evsel
+~~~~~~~~~~
+
+Represents an event selector.
+
+- `open()`: open the event selector file descriptor table.
+- `cpus()`: CPUs the event is to be used with.
+- `threads()`: threads the event is to be used with.
+- `read(cpu, thread)`: read counters. Returns a count object with `val`, `ena`, and `run` attributes.
+
+perf.session
+~~~~~~~~~~~~
+
+Manages a trace session.
+
+- `__init__(data, sample=None, stat=None, context_switch=None, call_return=None, itrace=None, vmlinux=None, kallsyms=None, symfs=None)`: Creates a new session. `data` is a `perf.data` object. `sample` is a callback function called for each sample event. `vmlinux`, `kallsyms`, and `symfs` configure symbol resolution paths.
+- `process_events()`: Reads the trace data and calls the sample callback for each event.
+- `find_thread(pid, tid=-1)`: Returns the thread associated with a PID/TID.
+- `e_machine`: ELF machine architecture ID (`EM_*`) of the session.
+- `is_64_bit`: Boolean indicating whether the traced session is 64-bit.
+
+perf.data
+~~~~~~~~~
+
+Represents a trace file.
+
+- `__init__(path=None, fd=-1)`: Opens a trace file.
+
+Sample Object
+~~~~~~~~~~~~~
+
+Passed to the `sample` callback function in `perf.session` (or returned by `evlist.read_on_cpu()`).
+
+- `evsel`: The event selector (`perf.evsel` object; `str(sample.evsel)` gives the event name).
+- `sample_cpu`: The CPU on which the event occurred.
+- `sample_time`: The timestamp of the event in nanoseconds.
+- `sample_pid`: The PID of the process.
+- `sample_tid`: The TID of the thread.
+- `sample_ip`: The sampled instruction pointer.
+- `sample_addr`: The sampled target/data address.
+- `sample_period`: The sample period.
+- `machine_pid`: The guest VM machine PID (`0` for host).
+- `vcpu`: The virtual CPU number for guest events.
+- `raw_buf`: Raw buffer (`bytes`) containing event-specific data.
+- `dso`: Short name of the resolved DSO for `sample_ip`.
+- `dso_long_name`: Full path/long name of the resolved DSO for `sample_ip`.
+- `dso_bid`: Build ID of the resolved DSO.
+- `symbol`: Resolved symbol name for `sample_ip`.
+- `sym_start`: Start address of the resolved symbol.
+- `sym_end`: End address of the resolved symbol.
+- `sym_offset`: Offset of `sample_ip` within the resolved symbol (or `None` if unresolved).
+- `addr_dso`: Resolved DSO name for `sample_addr` (or `None`).
+- `addr_symbol`: Resolved symbol name for `sample_addr` (or `None`).
+- `addr_sym_offset`: Offset of `sample_addr` within `addr_symbol` (or `None`).
+- `branch_type`: Branch type flags (`PERF_IP_FLAG_*` masked with `PERF_BRANCH_MASK`).
+- `in_tx`: `1` if the sample occurred inside a hardware transaction, else `0`.
+- `flags`: Raw sample flags (`PERF_IP_FLAG_*`).
+- `transaction`: Transaction abort/status code.
+- `brstack`: Sequence of branch stack entries (`from_ip`, `to_ip`, `mispred`, `predicted`, `in_tx`, `abort`, `cycles`, `type`), or `None`.
+- `callchain`: Sequence of callchain nodes (`ip`, `symbol`, `dso`), or `None`.
+- `srccode(addr=sample_ip)`: Returns a `(filename, line_number, srcline)` tuple for `addr` (defaults to `sample_ip`), or `None`.
+- `insn()`: Returns the raw instruction `bytes` for the sample, or `None`.
+- Dynamic tracepoint fields: For tracepoint events (`PERF_TYPE_TRACEPOINT`), tracepoint format fields can be accessed directly as attributes on the sample object (e.g. `sample.prev_pid`, `sample.id`, `sample.common_flags`).
+
+COUNTER AND METRIC APIS
+-----------------------
+
+The following APIs are used in `tools/perf/python/ilist.py` for
+interactive listing and reading of counters and metrics:
+
+- `perf.pmus()`: Used to get all available PMUs.
+- `pmu.events()`: Used to get all events for a specific PMU.
+- `perf.metrics()`: Used to get all available metrics.
+- `perf.parse_metrics(metric_name, pmu)`: Used to parse a metric and get an `evlist`.
+- `evlist.compute_metric(metric_name, cpu, thread)`: Used to compute a metric value for a specific CPU and thread.
+- `evsel.read(cpu, thread)`: Used to read raw counter values.
+
+SEE ALSO
+--------
+linkperf:perf-script[1]

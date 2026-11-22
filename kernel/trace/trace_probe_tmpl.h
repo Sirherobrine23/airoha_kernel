@@ -1,0 +1,363 @@
+/* SPDX-License-Identifier: GPL-2.0 */
+/*
+ * Traceprobe fetch helper inlines
+ */
+
+static nokprobe_inline void
+fetch_store_raw(unsigned long val, struct fetch_insn *code, void *buf)
+{
+	switch (code->size) {
+	case 1:
+		*(u8 *)buf = (u8)val;
+		break;
+	case 2:
+		*(u16 *)buf = (u16)val;
+		break;
+	case 4:
+		*(u32 *)buf = (u32)val;
+		break;
+	case 8:
+		//TBD: 32bit signed
+		*(u64 *)buf = (u64)val;
+		break;
+	default:
+		*(unsigned long *)buf = val;
+	}
+}
+
+static nokprobe_inline void
+fetch_apply_bitfield(struct fetch_insn *code, void *buf)
+{
+	switch (code->basesize) {
+	case 1:
+		*(u8 *)buf <<= code->lshift;
+		*(u8 *)buf >>= code->rshift;
+		break;
+	case 2:
+		*(u16 *)buf <<= code->lshift;
+		*(u16 *)buf >>= code->rshift;
+		break;
+	case 4:
+		*(u32 *)buf <<= code->lshift;
+		*(u32 *)buf >>= code->rshift;
+		break;
+	case 8:
+		*(u64 *)buf <<= code->lshift;
+		*(u64 *)buf >>= code->rshift;
+		break;
+	}
+}
+
+/*
+ * These functions must be defined for each callsite.
+ * Return consumed dynamic data size (>= 0), or error (< 0).
+ * If dest is NULL, don't store result and return required dynamic data size.
+ */
+static int
+process_fetch_insn(struct fetch_insn *code, void *rec, void *edata,
+		   void *dest, void *base);
+static nokprobe_inline int fetch_store_strlen(unsigned long addr);
+static nokprobe_inline int
+fetch_store_string(unsigned long addr, void *dest, void *base);
+static nokprobe_inline int fetch_store_strlen_user(unsigned long addr);
+static nokprobe_inline int
+fetch_store_string_user(unsigned long addr, void *dest, void *base);
+static nokprobe_inline int
+probe_mem_read(void *dest, void *src, size_t size);
+static nokprobe_inline int
+probe_mem_read_user(void *dest, void *src, size_t size);
+
+static nokprobe_inline int
+fetch_store_symstrlen(unsigned long addr)
+{
+	char namebuf[KSYM_SYMBOL_LEN];
+	int ret;
+
+	ret = sprint_symbol(namebuf, addr);
+	if (ret < 0)
+		return 0;
+
+	return ret + 1;
+}
+
+/*
+ * Fetch a null-terminated symbol string + offset. Caller MUST set *(u32 *)buf
+ * with max length and relative data location.
+ */
+static nokprobe_inline int
+fetch_store_symstring(unsigned long addr, void *dest, void *base)
+{
+	char namebuf[KSYM_SYMBOL_LEN];
+	int maxlen = get_loc_len(*(u32 *)dest);
+	void *__dest;
+	int len;
+
+	if (unlikely(!maxlen))
+		return -ENOMEM;
+
+	__dest = get_loc_data(dest, base);
+	/* Do not dereference NULL pointers */
+	len = addr ? sprint_symbol(namebuf, addr) : -1;
+	if (len < 0) {
+		*(u32 *)dest = make_data_loc(0, __dest - base);
+		return 0;
+	}
+
+	len = min(len, maxlen - 1);
+	memcpy(__dest, namebuf, len);
+	((char *)__dest)[len] = '\0';
+	*(u32 *)dest = make_data_loc(len + 1, __dest - base);
+
+	return len + 1;
+}
+
+/* common part of process_fetch_insn*/
+static nokprobe_inline int
+process_common_fetch_insn(struct fetch_insn *code, unsigned long *val)
+{
+	switch (code->op) {
+	case FETCH_OP_IMM:
+		*val = code->immediate;
+		break;
+	case FETCH_OP_COMM:
+		*val = (unsigned long)current->comm;
+		break;
+	case FETCH_OP_IMMSTR:
+		*val = (unsigned long)code->data;
+		break;
+	case FETCH_OP_CURRENT:
+		*val = (unsigned long)current;
+		break;
+	default:
+		return -EILSEQ;
+	}
+	return 0;
+}
+
+/* On failure, zero out the destination */
+static nokprobe_inline int
+do_probe_mem_read_user(void *dest, void *src, size_t size)
+{
+	int ret;
+
+	/* Do not dereference NULL pointers */
+	ret = src ? probe_mem_read_user(dest, src, size) : -1;
+	if (ret < 0)
+		memset(dest, 0, size);
+	return ret;
+}
+
+/* On failure, zero out the destination */
+static nokprobe_inline int
+do_probe_mem_read(void *dest, void *src, size_t size)
+{
+	int ret;
+
+	/* Do not dereference NULL pointers */
+	ret = src ? probe_mem_read(dest, src, size) : -1;
+	if (ret < 0)
+		memset(dest, 0, size);
+	return ret;
+}
+
+static nokprobe_inline int
+do_fetch_store_string(unsigned long addr, void *dest, void *base)
+{
+	/* NULL addr gets zero size string */
+	if (!addr) {
+		void *__dest = get_loc_data(dest, base);
+
+		*(u32 *)dest = make_data_loc(0, __dest - base);
+		return 0;
+	}
+	return fetch_store_string(addr, dest, base);
+}
+
+static nokprobe_inline int
+do_fetch_store_string_user(unsigned long addr, void *dest, void *base)
+{
+	/* NULL addr gets zero size string */
+	if (!addr) {
+		void *__dest = get_loc_data(dest, base);
+
+		*(u32 *)dest = make_data_loc(0, __dest - base);
+		return 0;
+	}
+	return fetch_store_string_user(addr, dest, base);
+}
+
+/* From the 2nd stage, routine is same */
+static nokprobe_inline int
+process_fetch_insn_bottom(struct fetch_insn *code, unsigned long val,
+			   void *dest, void *base)
+{
+	struct fetch_insn *s3 = NULL;
+	int total = 0, ret = 0, i = 0, offset;
+	u32 loc = 0;
+	unsigned long lval, llval = val;
+
+stage2:
+	/* 2nd stage: dereference memory if needed */
+	do {
+		lval = val;
+		/* Prevent dereferencing NULL val pointer */
+		offset = val ? code->offset : 0;
+		switch (code->op) {
+		case FETCH_OP_DEREF:
+			do_probe_mem_read(&val, (void *)val + offset,
+					  sizeof(val));
+			break;
+		case FETCH_OP_UDEREF:
+			do_probe_mem_read_user(&val, (void *)val + offset,
+					       sizeof(val));
+			break;
+		case FETCH_OP_CPU_PTR:
+			/* Do not dereference NULL pointers */
+			if (val)
+				val = (unsigned long)this_cpu_ptr((void __percpu *)val);
+			break;
+		default:
+			lval = llval;
+			goto out;
+		}
+		llval = lval;
+		code++;
+	} while (1);
+out:
+
+	s3 = code;
+stage3:
+	/* 3rd stage: store value to buffer */
+	if (unlikely(!dest)) {
+		offset = code->offset;
+		switch (code->op) {
+		case FETCH_OP_ST_STRING:
+			ret = val ? fetch_store_strlen(val + offset) : 0;
+			code++;
+			goto array;
+		case FETCH_OP_ST_USTRING:
+			ret = val ? fetch_store_strlen_user(val + offset) : 0;
+			code++;
+			goto array;
+		case FETCH_OP_ST_SYMSTR:
+			ret = val ? fetch_store_symstrlen(val + offset) : 0;
+			code++;
+			goto array;
+		default:
+			return -EILSEQ;
+		}
+	}
+
+	/*
+	 * Once val is zero, it is pointing to NULL. Any new dereference is
+	 * also treated as a NULL pointer.
+	 */
+	offset = val ? code->offset : 0;
+
+	switch (code->op) {
+	case FETCH_OP_ST_RAW:
+		fetch_store_raw(val, code, dest);
+		break;
+	case FETCH_OP_ST_MEM:
+		do_probe_mem_read(dest, (void *)val + offset, code->size);
+		break;
+	case FETCH_OP_ST_UMEM:
+		do_probe_mem_read_user(dest, (void *)val + offset, code->size);
+		break;
+	case FETCH_OP_ST_STRING:
+		loc = *(u32 *)dest;
+		ret = do_fetch_store_string(val + offset, dest, base);
+		break;
+	case FETCH_OP_ST_USTRING:
+		loc = *(u32 *)dest;
+		ret = do_fetch_store_string_user(val + offset, dest, base);
+		break;
+	case FETCH_OP_ST_SYMSTR:
+		loc = *(u32 *)dest;
+		ret = fetch_store_symstring(val + offset, dest, base);
+		break;
+	default:
+		return -EILSEQ;
+	}
+	code++;
+
+	/* 4th stage: modify stored value if needed */
+	if (code->op == FETCH_OP_MOD_BF) {
+		fetch_apply_bitfield(code, dest);
+		code++;
+	}
+
+array:
+	/* the last stage: Loop on array */
+	if (code->op == FETCH_OP_LP_ARRAY) {
+		if (ret < 0)
+			ret = 0;
+		total += ret;
+		if (++i < code->param) {
+			code = s3;
+			if (s3->op != FETCH_OP_ST_STRING &&
+			    s3->op != FETCH_OP_ST_USTRING) {
+				dest += s3->size;
+				/* Only update a non NULL val */
+				if (val)
+					val += s3->size;
+				goto stage3;
+			}
+			code--;
+			val = lval ? lval + sizeof(char *) : 0;
+			if (dest) {
+				dest += sizeof(u32);
+				*(u32 *)dest = update_data_loc(loc, ret);
+			}
+			goto stage2;
+		}
+		code++;
+		ret = total;
+	}
+
+	return code->op == FETCH_OP_END ? ret : -EILSEQ;
+}
+
+/* Sum up total data length for dynamic arrays (strings) */
+static nokprobe_inline int
+__get_data_size(struct trace_probe *tp, void *regs, void *edata)
+{
+	struct probe_arg *arg;
+	int i, len, ret = 0;
+
+	for (i = 0; i < tp->nr_args; i++) {
+		arg = tp->args + i;
+		if (unlikely(arg->dynamic)) {
+			len = process_fetch_insn(arg->code, regs, edata, NULL, NULL);
+			if (len > 0)
+				ret += len;
+		}
+	}
+
+	return ret;
+}
+
+/* Store the value of each argument */
+static nokprobe_inline void
+store_trace_args(void *data, struct trace_probe *tp, void *rec, void *edata,
+		 int header_size, int maxlen)
+{
+	struct probe_arg *arg;
+	void *base = data - header_size;
+	void *dyndata = data + tp->size;
+	u32 *dl;	/* Data location */
+	int ret, i;
+
+	for (i = 0; i < tp->nr_args; i++) {
+		arg = tp->args + i;
+		dl = data + arg->offset;
+		/* Point the dynamic data area if needed */
+		if (unlikely(arg->dynamic))
+			*dl = make_data_loc(maxlen, dyndata - base);
+		ret = process_fetch_insn(arg->code, rec, edata, dl, base);
+		if (arg->dynamic && likely(ret > 0)) {
+			dyndata += ret;
+			maxlen -= ret;
+		}
+	}
+}
