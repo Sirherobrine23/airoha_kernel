@@ -751,7 +751,7 @@
 			reset-names = "mac";
 			phys = <&xpon_phy>;
 			phy-names = "xpon";
-			ethernet = <&gdm2>;
+			ethernet = <&gdm2_pon>;
 			airoha,scu = <&scuclk>;
 
 		};
@@ -782,7 +782,7 @@
 
 			interrupts = <GIC_SHARED 52 IRQ_TYPE_LEVEL_HIGH>,
 			             <GIC_SHARED 56 IRQ_TYPE_LEVEL_HIGH>,
-			             <GIC_SHARED 56 IRQ_TYPE_LEVEL_HIGH>,
+			             <GIC_SHARED 57 IRQ_TYPE_LEVEL_HIGH>,
 			             <GIC_SHARED 58 IRQ_TYPE_LEVEL_HIGH>;
 			interrupt-names = "wed", "wdma-port0",
 			                  "wdma-port1", "wdma-woe";

@@ -491,7 +491,7 @@
 		};
 
 		spi0: spi@1fa10000 {
-			compatible = "econet,en7580-spi";
+			compatible = "airoha,en751627-spi";
 			reg = <0x1fa10000 0x140>,
 			      <0x1fa11000 0x160>;
 			reg-names = "ctrl", "nfi";

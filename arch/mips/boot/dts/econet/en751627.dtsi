@@ -152,7 +152,7 @@
 				interrupt-controller;
 				#interrupt-cells = <2>;
 
-				gpio-ranges = <&pinctrl 0 0 42>;
+				gpio-ranges = <&pinctrl 0 0 49>;
 
 				pcie0_rst_pins: pcie0-rst-pins {
 					mux {
@@ -244,6 +244,20 @@
 						groups = "gpio37";
 					};
 				};
+
+				swp5_led0: switch_port-5-led0 {
+					mux {
+						function = "phy5_led0";
+						groups = "gpio38";
+					};
+				};
+
+				swp5_led1: switch_port-5-led1 {
+					mux {
+						function = "phy5_led1";
+						groups = "gpio39";
+					};
+				};
 			};
 		};
 
@@ -261,15 +275,13 @@
 		};
 
 		spi0: spi@1fa10000 {
-			compatible = "airoha,en7523-spi";
+			compatible = "airoha,en751627-spi";
 			reg = <0x1fa10000 0x140>,
-			      <0x1fa11000 0x160>;
+			      <0x1fa11000 0x600>;
+			reg-names = "ctrl", "nfi";
 
 			clocks = <&scuclk EN7523_CLK_SPI>;
 			clock-names = "spi";
-
-			airoha,scu = <&scuclk>, <&chip_scu>;
-			airoha,scu-names = "scuclk", "chip-scu";
 
 			#address-cells = <1>;
 			#size-cells = <0>;
@@ -305,16 +317,19 @@
 			status = "disabled";
 		};
 
-		usb_phy: usb-phy@1fa80000 {
+		usb_phy: usb-phy@1fa80800 {
 			compatible = "econet,en751627-usb-phy";
-			reg = <0x1fa80000 0x1400>;
+			reg = <0x1fa80800 0x900>,
+			      <0x1fa80000 0x114>;
+			reg-names = "phy", "fm";
+			airoha,scu = <&scuclk>;
 			#phy-cells = <1>;
 		};
 
 		usb0: usb@1fb90000 {
 			compatible = "econet,en751627-xhci";
 			reg = <0x1fb90000 0x3e00>,
-			      <0x1fb93e00 0x100>;
+			      <0x1fa80700 0x100>;
 			reg-names = "mac", "ippc";
 			interrupts = <GIC_SHARED 17 IRQ_TYPE_LEVEL_HIGH>;
 			phys = <&usb_phy PHY_TYPE_USB2>, <&usb_phy PHY_TYPE_USB3>;
@@ -440,7 +455,7 @@
 				 <0x82000000 0 0x28000000 0x28000000 0 0x08000000>;
 
 			pinctrl-names = "default";
-			pinctrl-0 = <&pcie0_rst_pins>;
+			pinctrl-0 = <&pcie1_rst_pins>;
 
 			status = "disabled";
 
@@ -566,38 +581,6 @@
 			status = "disabled";
 		};
 
-		wed0: wed@1fa02000 {
-			compatible = "econet,en7528-wed", "syscon";
-			reg = <0x1fa02000 0xb00>,
-			      <0x1fa06000 0x400>;
-			reg-names = "wed", "wdma";
-
-			airoha,scu = <&scuclk>;
-
-			interrupts = <GIC_SHARED 51 IRQ_TYPE_LEVEL_HIGH>,
-			             <GIC_SHARED 53 IRQ_TYPE_LEVEL_HIGH>,
-			             <GIC_SHARED 54 IRQ_TYPE_LEVEL_HIGH>,
-			             <GIC_SHARED 55 IRQ_TYPE_LEVEL_HIGH>;
-			interrupt-names = "wed", "wdma-port0",
-			                  "wdma-port1", "wdma-woe";
-		};
-
-		wed1: wed@1fa03000 {
-			compatible = "econet,en7528-wed", "syscon";
-			reg = <0x1fa03000 0xb00>,
-			      <0x1fa06400 0x400>;
-			reg-names = "wed", "wdma";
-
-			airoha,scu = <&scuclk>;
-
-			interrupts = <GIC_SHARED 52 IRQ_TYPE_LEVEL_HIGH>,
-			             <GIC_SHARED 56 IRQ_TYPE_LEVEL_HIGH>,
-			             <GIC_SHARED 56 IRQ_TYPE_LEVEL_HIGH>,
-			             <GIC_SHARED 58 IRQ_TYPE_LEVEL_HIGH>;
-			interrupt-names = "wed", "wdma-port0",
-			                  "wdma-port1", "wdma-woe";
-		};
-
 		eth: ethernet@1fb50000 {
 			compatible = "econet,en751627-eth";
 			status = "disabled";
@@ -616,7 +599,6 @@
 				 <&scuclk EN751627_GDMP_RST>;
 			reset-names = "fe", "pdma", "qdma", "gdmp";
 
-			airoha,wed = <&wed0>, <&wed1>;
 			interrupts = <GIC_SHARED 21 IRQ_TYPE_LEVEL_HIGH>,  /* QDMA LAN0 */
 				     <GIC_SHARED 22 IRQ_TYPE_LEVEL_HIGH>,  /* QDMA WAN0 */
 				     <GIC_SHARED 39 IRQ_TYPE_LEVEL_HIGH>,  /* QDMA LAN1 */
@@ -747,8 +729,11 @@
 					compatible = "ethernet-phy-ieee802.3-c22";
 					reg = <8>;
 					phy-mode = "internal";
+
 					status = "disabled";
 
+					pinctrl-names = "gbe-led";
+					pinctrl-0 = <&swp1_led0 &swp1_led1>;
 					airoha,scu = <&scuclk>;
 
 					leds {
@@ -758,6 +743,7 @@
 						gsw_phy0_led0: led@0 {
 							reg = <0>;
 							function = LED_FUNCTION_LAN;
+							status = "disabled";
 							active-low;
 						};
 
@@ -777,7 +763,7 @@
 					status = "disabled";
 
 					pinctrl-names = "gbe-led";
-					pinctrl-0 = <&swp1_led0 &swp1_led1>;
+					pinctrl-0 = <&swp2_led0 &swp2_led1>;
 					airoha,scu = <&scuclk>;
 
 					leds {
@@ -807,7 +793,7 @@
 					status = "disabled";
 
 					pinctrl-names = "gbe-led";
-					pinctrl-0 = <&swp2_led0 &swp2_led1>;
+					pinctrl-0 = <&swp3_led0 &swp3_led1>;
 					airoha,scu = <&scuclk>;
 
 					leds {
@@ -837,7 +823,7 @@
 					status = "disabled";
 
 					pinctrl-names = "gbe-led";
-					pinctrl-0 = <&swp3_led0 &swp3_led1>;
+					pinctrl-0 = <&swp4_led0 &swp4_led1>;
 					airoha,scu = <&scuclk>;
 
 					leds {
@@ -867,7 +853,7 @@
 					status = "disabled";
 
 					pinctrl-names = "gbe-led";
-					pinctrl-0 = <&swp4_led0 &swp4_led1>;
+					pinctrl-0 = <&swp5_led0 &swp5_led1>;
 					airoha,scu = <&scuclk>;
 
 					leds {
