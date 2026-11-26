@@ -3899,6 +3899,10 @@ error_flow_table_destroy:
 static void airoha_ppe_datapath_deinit(struct airoha_eth *eth)
 {
 	struct airoha_npu *npu;
+	int i;
+
+	for (i = 0; i < eth->soc->num_ppe; i++)
+		airoha_fe_clear(eth, REG_PPE_GLO_CFG(i), PPE_GLO_CFG_EN_MASK);
 
 	airoha_whnat_clear_ppe(eth->ppe);
 	mutex_lock(&flow_offload_mutex);
