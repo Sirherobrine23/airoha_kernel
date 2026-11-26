@@ -1036,6 +1036,14 @@ static const struct airoha_spi_soc_data en751221_spi_data = {
 	.manual_dummy = 1,
 };
 
+static const struct airoha_spi_soc_data en751627_spi_data = {
+	.has_nfi = true,
+	.has_nfi2spi = true,
+	.has_boot_trp = false,
+	.double_cs = false,
+	.manual_dummy = 0,
+};
+
 static const struct airoha_spi_soc_data en7523_spi_data = {
 	.has_nfi = true,
 	.has_nfi2spi = true,
@@ -1044,17 +1052,9 @@ static const struct airoha_spi_soc_data en7523_spi_data = {
 	.manual_dummy = 0,
 };
 
-static const struct airoha_spi_soc_data en7580_spi_data = {
-	.has_nfi = true,
-	.has_nfi2spi = true,
-	.has_boot_trp = false,
-	.double_cs = false,
-	.manual_dummy = 0,
-};
-
 static const struct of_device_id airoha_spi_ids[] = {
 	{ .compatible = "econet,en751221-spi", .data = &en751221_spi_data },
-	{ .compatible = "econet,en7580-spi", .data = &en7580_spi_data },
+	{ .compatible = "airoha,en751627-spi", .data = &en751627_spi_data },
 	{ .compatible = "airoha,en7523-spi", .data = &en7523_spi_data },
 	{ /* sentinel */ }
 };
