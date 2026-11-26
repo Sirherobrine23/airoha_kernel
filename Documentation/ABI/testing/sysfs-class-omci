@@ -113,3 +113,16 @@ Contact:	Matheus Sampaio Queiroga <srherobrine20@gmail.com>
 Description:
 		Read-only OLT-G identity learned from the OLT.  "unknown" is returned
 		until the corresponding OLT-G attribute has been received.
+
+What:		/sys/class/omci/omciX/omci/ctc_extension
+Date:		November 2026
+Contact:	Linux xPON maintainers
+Description:
+		Read/write boolean, default 0. Enable the CTC OLT location
+		configuration ME (65527, instance 0) independently of the OLT
+		manufacturer profile. The equivalent netlink configuration key is
+		OMCI_CONFIG_CTC_EXTENSION, with a one-byte value (0 or 1).
+		The location attributes are retained across MIB Reset and profile
+		changes, and excluded from MIB Upload as in the reference layout.
+		Disabling removes the instance. This does not enable factory reset,
+		LOID authentication, loop detection or multicast extensions.

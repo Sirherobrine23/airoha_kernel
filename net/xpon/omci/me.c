@@ -6,6 +6,7 @@
 #include <linux/errno.h>
 #include <linux/kernel.h>
 #include <linux/string.h>
+#include <linux/unaligned.h>
 #include <net/xpon/omci.h>
 
 #include "internal.h"
@@ -499,6 +500,38 @@ static const struct omci_attr_desc omci_veip_attrs[] = {
 	OMCI_ATTR(11, 29, 2, OMCI_R),
 };
 
+/* ZTE ME 247: only the 14-byte model string is readable. */
+static const struct omci_attr_desc omci_zte_247_attrs[] = {
+	OMCI_ATTR(15, 0, 2, OMCI_ATTR_ACCESS_WRITE),
+	OMCI_ATTR(14, 2, 2, OMCI_ATTR_ACCESS_WRITE),
+	OMCI_ATTR(13, 4, 14, OMCI_R),
+	OMCI_ATTR(12, 18, 2, OMCI_ATTR_ACCESS_WRITE),
+	OMCI_ATTR(11, 20, 2, OMCI_ATTR_ACCESS_WRITE),
+	OMCI_ATTR(10, 22, 2, OMCI_ATTR_ACCESS_WRITE),
+	OMCI_ATTR(9, 24, 2, OMCI_ATTR_ACCESS_WRITE),
+	OMCI_ATTR(8, 26, 2, OMCI_ATTR_ACCESS_WRITE),
+	OMCI_ATTR(7, 28, 2, OMCI_ATTR_ACCESS_WRITE),
+	OMCI_ATTR(6, 30, 2, OMCI_ATTR_ACCESS_WRITE),
+	OMCI_ATTR(5, 32, 2, OMCI_ATTR_ACCESS_WRITE),
+	OMCI_ATTR(4, 34, 2, OMCI_ATTR_ACCESS_WRITE),
+	OMCI_ATTR(3, 36, 2, OMCI_ATTR_ACCESS_WRITE),
+	OMCI_ATTR(2, 38, 2, OMCI_ATTR_ACCESS_WRITE),
+	OMCI_ATTR(1, 40, 2, OMCI_ATTR_ACCESS_WRITE),
+	OMCI_ATTR(0, 42, 1, OMCI_ATTR_ACCESS_WRITE),
+};
+
+/* CTC ME 65527 is location metadata, not an OLT vendor identity. */
+static const struct omci_attr_desc omci_ctc_location_attrs[] = {
+	OMCI_ATTR(15, 0, 4, OMCI_RW),
+	OMCI_ATTR(14, 4, 4, OMCI_RW),
+	OMCI_ATTR(13, 8, 2, OMCI_RW),
+	OMCI_ATTR(12, 10, 2, OMCI_RW),
+	OMCI_ATTR(11, 12, 2, OMCI_RW),
+	OMCI_ATTR(10, 14, 8, OMCI_RW),
+	OMCI_ATTR(9, 22, 4, OMCI_RW),
+	OMCI_ATTR(8, 26, 8, OMCI_RW),
+};
+
 /* Attribute numbering and wire lengths from the vendor ME definitions. */
 static const struct omci_attr_desc omci_huawei_350_attrs[] = {
 	OMCI_ATTR(15, 0, 4, OMCI_RW),
@@ -737,6 +770,26 @@ static const struct omci_me_desc omci_me_descs[] = {
 		      OMCI_CLASS_CATEGORY_UNI, OMCI_CLASS_SUPPORT_PROVISIONED,
 		      omci_veip_attrs),
 
+	VENDOR_DESC(OMCI_CLASS_ZTE_EXTENDED_ONU_G, "ZTE extended ONU-G",
+		    OMCI_OLT_PROFILE_ZTE, STANDARD_ACTIONS,
+		    OMCI_ME_F_ONU_CREATED | OMCI_ME_F_NO_FAKE,
+		    0xffff, BIT(13), 43,
+		    OMCI_CLASS_CATEGORY_VENDOR, OMCI_CLASS_SUPPORT_SHADOW,
+		    omci_zte_247_attrs),
+	{
+		.class_id = OMCI_CLASS_CTC_OLT_LOCATION,
+		.name = "CTC OLT location configuration data",
+		.actions = STANDARD_ACTIONS,
+		.flags = OMCI_ME_F_CTC | OMCI_ME_F_ONU_CREATED |
+			 OMCI_ME_F_NO_MIB_UPLOAD | OMCI_ME_F_NO_FAKE,
+		.valid_attr_mask = GENMASK(15, 8),
+		.data_len = 34,
+		.category = OMCI_CLASS_CATEGORY_VENDOR,
+		.support = OMCI_CLASS_SUPPORT_NATIVE,
+		.attrs = omci_ctc_location_attrs,
+		.num_attrs = ARRAY_SIZE(omci_ctc_location_attrs),
+	},
+
 	VENDOR_DESC(OMCI_CLASS_HUAWEI_ONU_MANAGEMENT,
 		    "Huawei ONU management", OMCI_OLT_PROFILE_HUAWEI,
 		    STANDARD_ACTIONS, OMCI_ME_F_ONU_CREATED | OMCI_ME_F_NO_FAKE,
@@ -914,7 +967,21 @@ const struct omci_me_desc *omci_me_lookup_profile(u8 profile, u16 class_id)
 const struct omci_me_desc *omci_me_lookup(const struct omci_agent *agent,
 					  u16 class_id)
 {
+	unsigned int i;
+
+	if (agent->config.ctc_extension)
+		for (i = 0; i < ARRAY_SIZE(omci_me_descs); i++)
+			if (omci_me_descs[i].class_id == class_id &&
+			    (omci_me_descs[i].flags & OMCI_ME_F_CTC))
+				return &omci_me_descs[i];
 	return omci_me_lookup_profile(agent->profile_effective, class_id);
+}
+
+const char *omci_me_name(const struct omci_agent *agent, u16 class_id)
+{
+	const struct omci_me_desc *desc = omci_me_lookup(agent, class_id);
+
+	return desc ? desc->name : omci_me_class_name(class_id);
 }
 
 bool omci_me_active(const struct omci_agent *agent, u16 class_id)
@@ -1119,15 +1186,23 @@ int omci_me_encode_upload(const struct omci_me_desc *desc,
 	return -ENOENT;
 }
 
-int omci_huawei_validate(const struct omci_mib_object *object)
+int omci_vendor_validate(const struct omci_mib_object *object)
 {
 	switch (object->class_id) {
 	case OMCI_CLASS_HUAWEI_ONU_MANAGEMENT:
 		/* Calendar/NTP control needs a provider; do not acknowledge a no-op. */
 		return memchr_inv(object->data + 15, 0, 7) ? -EOPNOTSUPP : 0;
 	case OMCI_CLASS_HUAWEI_UNI_QOS:
-		/* Nonzero vendor QoS modes are not implemented by the backend. */
-		return memchr_inv(object->data + 2, 0, 4) ? -EOPNOTSUPP : 0;
+		/* Other modes retain standard queue management in the SDK. */
+		return get_unaligned_be32(object->data + 2) == 0x03000000 ?
+			-EOPNOTSUPP : 0;
+	case OMCI_CLASS_ZTE_EXTENDED_ONU_G:
+		/* Local imports cannot imply a factory reset either. */
+		if (object->entity_id)
+			return -EINVAL;
+		return object->data[42] ? -EOPNOTSUPP : 0;
+	case OMCI_CLASS_CTC_OLT_LOCATION:
+		return object->entity_id ? -EINVAL : 0;
 	case OMCI_CLASS_HUAWEI_PRODUCT_ID:
 		return object->huawei_product[0] > OMCI_HUAWEI_PRODUCT_PARTS ?
 			-EINVAL : 0;
@@ -1256,7 +1331,7 @@ int omci_me_class_get(struct omci_device *odev, u16 class_id,
 		return -ENOENT;
 
 	desc = omci_me_lookup(&odev->agent, class_id);
-	name = omci_me_class_name(class_id);
+	name = omci_me_name(&odev->agent, class_id);
 	class->class_id = class_id;
 	class->category = desc ? desc->category :
 			  omci_class_category(class_id, name);

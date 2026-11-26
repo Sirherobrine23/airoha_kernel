@@ -116,6 +116,8 @@ struct omci_agent_config {
 	u8 olt_profile_force;
 	u8 olt_profile_source;
 	u8 olt_profile_force_source;
+	bool ctc_extension;
+	u8 ctc_extension_source;
 	u8 dying_gasp_source;
 	u8 reboot_source;
 };

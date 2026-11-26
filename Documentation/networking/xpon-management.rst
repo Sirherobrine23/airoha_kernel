@@ -157,3 +157,66 @@ provider and do not prove MAC, QDMA, PHY or OLT interoperability. Cross-build
 net/xpon and the Airoha Ethernet objects on ARM and MIPS BE/LE. Hardware
 validation should cover registration loss, a changed assigned LLID, repeated
 service creation/deletion, UNI lock/unlock and OAM while data is locked.
+
+OMCI OLT profiles and CTC metadata
+--------------------------------
+
+OLT profiles select interoperability policy, not the identity of the ONU.
+``auto`` uses the received OLT-G identity; ``generic`` has no manufacturer
+extensions. Forcing a profile must not invent an OLT-G vendor or equipment
+identifier. In particular, forcing ``nokia-alcl`` before receiving OLT-G
+leaves that identity unknown and returning to ``auto`` selects ``generic``.
+Once received, the real OLT-G identity survives manufacturer profile changes.
+
+The Realtek OMCI reference tables establish the following wire layouts.
+This implementation describes those layouts independently; it does not
+import Realtek hardware calls, board defaults or another ONU's identity.
+
+====================== =========== ===========================================
+Profile or extension   ME          Behavior
+====================== =========== ===========================================
+``huawei``             350/353/373 Existing management, VoIP image and product MEs
+``huawei``             370         Standard queue modes remain accepted
+``zte``                247         43-byte extended ONU-G; 14-byte model at byte 4
+``ctc_extension``      65527       Optional 34-byte OLT location metadata
+====================== =========== ===========================================
+
+ZTE ME 247 is ONU-created, instance zero. Attribute 3 is the only readable
+attribute; its model follows the configured ONU equipment ID, truncated to
+14 bytes. Attributes 1, 2 and 4 through 15 are opaque write-only fields.
+Only the model is included in MIB Upload. Attribute 16 requests factory reset:
+the reference invokes reset whenever its mask bit is present, including a
+zero-valued write. Until a factory-reset provider exists, those requests fail
+and leave every attribute unchanged, including in permissive/fake OMCI mode.
+
+Huawei ME 370 selects proprietary queue programming only with mode
+``0x03000000``. That mode still fails without a provider. Other modes retain
+standard priority-queue management, as in the reference implementation.
+Calendar/NTP control and VoIP firmware downloads retain their existing limits.
+
+CTC is an operator extension, independent of the OLT manufacturer. Enable
+location metadata explicitly through the one-byte netlink configuration key
+``OMCI_CONFIG_CTC_EXTENSION`` or through sysfs::
+
+    echo 1 > /sys/class/omci/omci0/omci/ctc_extension
+
+The default is disabled. ME 65527 instance zero supports Get and Set of
+longitude, latitude, elevation, horizontal error, altitude error, area code,
+timestamp and GIS digest. Its eight attribute lengths are 4, 4, 2, 2, 2, 8,
+4 and 8 bytes. It is excluded from MIB Upload. Values survive network MIB
+Reset and manufacturer profile changes. Disabling removes the instance;
+a complete local MIB reset recreates it with zero values when still enabled.
+Repeated enable writes preserve its attributes.
+
+This extension does not claim support for CTC reset ME 65408, LOID, ONU loop
+detection or extended multicast. Huawei ME 65427 is also deferred: its
+reference capability data advertises other proprietary MEs that are not
+implemented here. The existing DASAN and FiberHome policies and Nokia VLAN
+extensions are retained pending matching captures and backend validation.
+No ADTRAN or Calix profile is inferred from unrelated ONU source files.
+
+The layout sources in the supplied Realtek OMCI tree are
+``MIB/src/tables/mib_ExtendedOnuGZTE.c``, ``mib_Me370.c`` and
+``mib_OltLocationCfgData.c``, together with their MIB headers and
+``OMCI/inc/omci_protocol.h``. Class names and capabilities use the active
+profile's descriptor in both the local catalogue and ME 288 responses.

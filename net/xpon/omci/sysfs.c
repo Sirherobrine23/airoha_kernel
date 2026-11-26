@@ -289,6 +289,7 @@ OMCI_CONFIG_BOOL_ATTR_RW(agent_permissive, OMCI_CONFIG_AGENT_PERMISSIVE);
 OMCI_CONFIG_BOOL_ATTR_RW(agent_fake_omci, OMCI_CONFIG_AGENT_FAKE_OMCI);
 OMCI_CONFIG_BOOL_ATTR_RW(agent_dying_gasp, OMCI_CONFIG_AGENT_DYING_GASP);
 OMCI_CONFIG_BOOL_ATTR_RW(agent_reboot, OMCI_CONFIG_AGENT_REBOOT);
+OMCI_CONFIG_BOOL_ATTR_RW(ctc_extension, OMCI_CONFIG_CTC_EXTENSION);
 
 static ssize_t omci_sysfs_string_show(struct omci_device *odev, u16 key,
 				      char *buf)
@@ -700,6 +701,7 @@ static struct attribute *omci_attrs[] = {
 	&dev_attr_onu_type_id.attr,
 	&dev_attr_uni_count.attr,
 	&dev_attr_omcc_version.attr,
+	&dev_attr_ctc_extension.attr,
 	&dev_attr_olt_profile.attr,
 	&dev_attr_olt_profile_force.attr,
 	&dev_attr_olt_profile_effective.attr,

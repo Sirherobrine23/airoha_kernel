@@ -33,6 +33,7 @@ struct omci_mib_object;
 #define OMCI_CLASS_NETWORK_ADDRESS	137
 #define OMCI_CLASS_AUTH_METHOD		148
 #define OMCI_CLASS_EXTENDED_VLAN	171
+#define OMCI_CLASS_ZTE_EXTENDED_ONU_G	247
 #define OMCI_CLASS_ONU_G		256
 #define OMCI_CLASS_ONU2_G		257
 
@@ -76,6 +77,7 @@ struct omci_mib_object;
 						 OMCI_HUAWEI_PRODUCT_PART_LEN)
 /* This SDK defines 65408 as CTC Extended ONU-G, not Huawei multicast. */
 #define OMCI_CLASS_CTC_EXTENDED_ONU_G		65408
+#define OMCI_CLASS_CTC_OLT_LOCATION		65527
 
 #define OMCI_CLASS_NOKIA_OPTICAL_SUPERVISION	65295
 #define OMCI_CLASS_NOKIA_ONT_GENERIC_V2		65296
@@ -100,6 +102,7 @@ struct omci_mib_object;
 #define OMCI_ME_F_SAFE_FAKE			BIT(3)
 #define OMCI_ME_F_VENDOR			BIT(4)
 #define OMCI_ME_F_NO_FAKE			BIT(5)
+#define OMCI_ME_F_CTC				BIT(6)
 
 #define OMCI_PROFILE_BIT(_profile)		BIT(_profile)
 #define OMCI_PROFILE_STANDARD_MASK		GENMASK(7, 1)
@@ -135,6 +138,7 @@ struct omci_me_desc {
 const struct omci_me_desc *omci_me_lookup(const struct omci_agent *agent,
 					  u16 class_id);
 const struct omci_me_desc *omci_me_lookup_profile(u8 profile, u16 class_id);
+const char *omci_me_name(const struct omci_agent *agent, u16 class_id);
 bool omci_me_active(const struct omci_agent *agent, u16 class_id);
 bool omci_me_action_allowed(const struct omci_agent *agent, u16 class_id,
 			    u8 message_type);
@@ -156,7 +160,7 @@ unsigned int omci_me_upload_records(const struct omci_me_desc *desc,
 int omci_me_encode_upload(const struct omci_me_desc *desc,
 			  const struct omci_mib_object *object, unsigned int record,
 			  u8 *data, u16 *encoded_mask, size_t *encoded_len);
-int omci_huawei_validate(const struct omci_mib_object *object);
+int omci_vendor_validate(const struct omci_mib_object *object);
 
 const char *omci_me_class_name(u16 class_id);
 int omci_me_class_get(struct omci_device *odev, u16 class_id,

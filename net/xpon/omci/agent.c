@@ -991,6 +991,30 @@ static void omci_huawei_product_default(struct omci_agent *agent, u8 *data)
 	memcpy(data + 1, agent->config.equipment_id, len);
 }
 
+static int omci_agent_seed_zte_locked(struct omci_device *odev, u8 profile)
+{
+	struct omci_agent *agent = &odev->agent;
+	u8 data[43] = {};
+
+	memcpy(data + 4, agent->config.equipment_id, 14);
+	return omci_mib_add_default_profile_mask(agent, profile,
+		OMCI_CLASS_ZTE_EXTENDED_ONU_G, 0, 0xffff, data, sizeof(data));
+}
+
+static int omci_agent_ctc_extension_locked(struct omci_agent *agent, bool enable)
+{
+	struct omci_mib_object *object;
+	u8 data[34] = {};
+
+	if (enable)
+		return omci_mib_add_default(agent, OMCI_CLASS_CTC_OLT_LOCATION,
+					    0, data, sizeof(data));
+	object = xa_erase(&agent->mib,
+			  omci_mib_key(OMCI_CLASS_CTC_OLT_LOCATION, 0));
+	kfree(object);
+	return 0;
+}
+
 static int omci_agent_seed_huawei_locked(struct omci_device *odev, u8 profile)
 {
 	struct omci_agent *agent = &odev->agent;
@@ -1279,23 +1303,6 @@ static int omci_agent_seed_nokia_locked(struct omci_device *odev, u8 profile)
 			data, sizeof(data));
 		if (ret)
 			return ret;
-
-		/*
-		 * Class 131 (OLT-G): pre-seed the Nokia/ALCL OLT identity. An
-		 * OLT that named itself is why we are here: its Set is still
-		 * using the object, and its identity is the real one.
-		 */
-		if (omci_agent_olt_g_locked(agent))
-			return 0;
-		memset(data, 0, sizeof(data));
-		memcpy(data, "ALCL", 4);
-		memcpy(data + 4, "ISAM                ", 20);
-		ret = omci_mib_add_default_profile_mask(agent, profile,
-							OMCI_CLASS_OLT_G, 0,
-							GENMASK(15, 14), data,
-							sizeof(data));
-		if (ret)
-			return ret;
 	}
 
 	return 0;
@@ -1304,6 +1311,8 @@ static int omci_agent_seed_nokia_locked(struct omci_device *odev, u8 profile)
 static int omci_agent_seed_profile_locked(struct omci_device *odev, u8 profile)
 {
 	switch (profile) {
+	case OMCI_OLT_PROFILE_ZTE:
+		return omci_agent_seed_zte_locked(odev, profile);
 	case OMCI_OLT_PROFILE_HUAWEI:
 		return omci_agent_seed_huawei_locked(odev, profile);
 	case OMCI_OLT_PROFILE_NOKIA_ALCL:
@@ -1444,6 +1453,10 @@ static void omci_agent_refresh_identity_locked(struct omci_agent *agent)
 				   object->data + 35);
 		put_unaligned_be16(1, object->data + 40);
 	}
+
+	object = omci_mib_lookup(agent, OMCI_CLASS_ZTE_EXTENDED_ONU_G, 0);
+	if (object)
+		memcpy(object->data + 4, agent->config.equipment_id, 14);
 
 	object = omci_mib_lookup(agent, OMCI_CLASS_HUAWEI_PRODUCT_ID, 0);
 	if (object)
@@ -1876,6 +1889,8 @@ int omci_agent_init(struct omci_device *odev)
 	agent->config.olt_profile_force = OMCI_OLT_PROFILE_UNSPEC;
 	agent->config.olt_profile_source = OMCI_CONFIG_SOURCE_DEFAULT;
 	agent->config.olt_profile_force_source = OMCI_CONFIG_SOURCE_DEFAULT;
+	agent->config.ctc_extension = false;
+	agent->config.ctc_extension_source = OMCI_CONFIG_SOURCE_DEFAULT;
 	memcpy(agent->config.serial_number, "OPEN0001", 8);
 	memcpy(agent->config.vendor_id, "OPEN", 4);
 	strscpy(agent->config.version, "OpenWrt",
@@ -2323,7 +2338,7 @@ static u8 omci_agent_get_managed_entity_locked(struct omci_device *odev,
 			continue;
 		switch (attr_mask) {
 		case OMCI_MANAGED_ENTITY_NAME_MASK: {
-			const char *name = omci_me_class_name(entity_id);
+			const char *name = omci_me_name(agent, entity_id);
 			size_t len = strnlen(name, OMCI_CAPABILITY_NAME_LEN);
 
 			if (used + OMCI_CAPABILITY_NAME_LEN > response_capacity)
@@ -2627,6 +2642,9 @@ static int omci_agent_mib_reset_locked(struct omci_device *odev, bool all,
 	 * expose the same MIB and capability table as a fresh agent.
 	 */
 	ret = omci_agent_populate_defaults(odev);
+	if (!ret && agent->config.ctc_extension &&
+	    !omci_mib_lookup(agent, OMCI_CLASS_CTC_OLT_LOCATION, 0))
+		ret = omci_agent_ctc_extension_locked(agent, true);
 	if (!ret && olt.valid) {
 		object = omci_mib_lookup(agent, OMCI_CLASS_OLT_G, 0);
 		if (object)
@@ -2673,7 +2691,7 @@ static int omci_agent_hw_update(struct omci_device *odev,
 	int ret;
 
 	if (action != OMCI_MSG_TYPE_DELETE) {
-		ret = omci_huawei_validate(object);
+		ret = omci_vendor_validate(object);
 		if (ret)
 			return ret;
 	}
@@ -3671,6 +3689,9 @@ static u8 omci_agent_set_locked(struct omci_device *odev, u16 class_id,
 
 	mask = get_unaligned_be16(content);
 	desc = omci_me_lookup(agent, class_id);
+	if (entity_id && (class_id == OMCI_CLASS_ZTE_EXTENDED_ONU_G ||
+			  class_id == OMCI_CLASS_CTC_OLT_LOCATION))
+		return OMCI_RESULT_UNKNOWN_INSTANCE;
 	allow_create = agent->permissive || agent->fake_omci ||
 		       omci_agent_profile_has_quirk(
 			       agent, OMCI_OLT_QUIRK_ALLOW_SET_CREATE);
@@ -3724,6 +3745,10 @@ static u8 omci_agent_set_locked(struct omci_device *odev, u16 class_id,
 							profile_changed);
 		if (ret)
 			goto rollback_processing;
+	}
+	if (class_id == OMCI_CLASS_ZTE_EXTENDED_ONU_G && (mask & BIT(0))) {
+		ret = -EOPNOTSUPP;
+		goto rollback_processing;
 	}
 	ret = omci_agent_hw_update(odev, object, action, content);
 	if (ret)
@@ -4948,6 +4973,11 @@ int omci_agent_config_get(struct omci_device *odev, u16 key, void *value,
 		source = &scalar;
 		source_len = sizeof(scalar);
 		break;
+	case OMCI_CONFIG_CTC_EXTENSION:
+		scalar = agent->config.ctc_extension;
+		source = &scalar;
+		source_len = sizeof(scalar);
+		break;
 	case OMCI_CONFIG_OLT_PROFILE:
 		scalar = agent->config.olt_profile;
 		source = &scalar;
@@ -5098,6 +5128,21 @@ static int __omci_agent_config_set_source(struct omci_device *odev, u16 key,
 		changed = memcmp(agent->config.password, value, len);
 		memcpy(agent->config.password, value, len);
 		agent->config.password_source = source;
+		break;
+	case OMCI_CONFIG_CTC_EXTENSION:
+		if (len != sizeof(scalar) || *(const u8 *)value > 1) {
+			ret = -EINVAL;
+			break;
+		}
+		scalar = *(const u8 *)value;
+		changed = agent->config.ctc_extension != scalar;
+		if (changed) {
+			ret = omci_agent_ctc_extension_locked(agent, scalar);
+			if (ret)
+				break;
+		}
+		agent->config.ctc_extension = scalar;
+		agent->config.ctc_extension_source = source;
 		break;
 	case OMCI_CONFIG_OLT_PROFILE:
 		if (len != sizeof(scalar)) {
@@ -5316,6 +5361,9 @@ int omci_agent_config_source_get(struct omci_device *odev, u16 key, u8 *source)
 	case OMCI_CONFIG_ONU_TYPE:
 		*source = agent->config.onu_type_source;
 		break;
+	case OMCI_CONFIG_CTC_EXTENSION:
+		*source = agent->config.ctc_extension_source;
+		break;
 	case OMCI_CONFIG_OLT_PROFILE:
 		*source = agent->config.olt_profile_source;
 		break;
@@ -5401,7 +5449,7 @@ int omci_agent_mib_set(struct omci_device *odev,
 						  local->data);
 	}
 
-	ret = omci_huawei_validate(local);
+	ret = omci_vendor_validate(local);
 	if (ret)
 		goto unlock;
 	ret = omci_mib_store_locked(agent, local);
@@ -5482,7 +5530,7 @@ int omci_agent_mib_next(struct omci_device *odev, u32 index,
 	if (!ret) {
 		memcpy(object, stored, sizeof(*object));
 		*next_index = xa_index + 1;
-		*name = omci_me_class_name(stored->class_id);
+		*name = omci_me_name(agent, stored->class_id);
 	}
 	mutex_unlock(&agent->lock);
 	return ret;
