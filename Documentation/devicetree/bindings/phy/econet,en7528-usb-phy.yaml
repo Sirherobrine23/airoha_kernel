@@ -10,6 +10,8 @@ maintainers:
   - Matheus Sampaio Queiroga <srherobrine20@gmail.com>
 
 description:
+  EN751627 has two USB2 PHYs and a shared USB3 PLL. Its frequency meter
+  is mapped separately to leave the host controller IPPC region unclaimed.
   EN7528 has two USB2 PHYs sharing a frequency meter and one USB3 PHY.
   EN7580 has one USB2 PHY, one USB3 PHY and an independent frequency meter
   for each of its two host controllers. PHY_TYPE_USB2 and PHY_TYPE_USB3
@@ -23,7 +25,17 @@ properties:
       - econet,en7580-usb-phy
 
   reg:
-    maxItems: 1
+    minItems: 1
+    maxItems: 2
+
+  reg-names:
+    items:
+      - const: phy
+      - const: fm
+
+  airoha,scu:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: SCU containing the USB reference clock selection strap.
 
   "#phy-cells":
     const: 1
@@ -50,6 +62,26 @@ required:
   - compatible
   - reg
   - "#phy-cells"
+
+allOf:
+  - if:
+      properties:
+        compatible:
+          const: econet,en751627-usb-phy
+    then:
+      properties:
+        reg:
+          minItems: 2
+          maxItems: 2
+      required:
+        - reg-names
+        - airoha,scu
+    else:
+      properties:
+        reg:
+          maxItems: 1
+        reg-names: false
+        airoha,scu: false
 
 additionalProperties: false
 
