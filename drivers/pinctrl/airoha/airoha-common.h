@@ -76,7 +76,7 @@ struct airoha_pinctrl_func_group {
 		u32 offset;
 		u32 mask;
 		u32 val;
-	} regmap[2];
+	} regmap[4];
 	int regmap_size;
 };
 
@@ -95,6 +95,8 @@ struct airoha_pinctrl_gpio_mux {
 	u32 pin;
 	enum airoha_pinctrl_mux_func mux;
 	struct airoha_pinctrl_reg reg;
+	/* Defaults to zero for selectors that must be cleared for GPIO. */
+	u32 val;
 };
 
 struct airoha_gpiochip_regs {

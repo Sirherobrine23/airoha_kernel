@@ -435,21 +435,25 @@ static int airoha_pinmux_set_mux(struct pinctrl_dev *pctrl_dev,
 			continue;
 
 		for (j = 0; j < group->regmap_size; j++) {
+			int err;
+
 			switch (group->regmap[j].mux) {
 			case AIROHA_FUNC_PWM_EXT_MUX:
 			case AIROHA_FUNC_PWM_MUX:
-				regmap_update_bits(pinctrl->regmap,
-						   group->regmap[j].offset,
-						   group->regmap[j].mask,
-						   group->regmap[j].val);
+				err = regmap_update_bits(pinctrl->regmap,
+							 group->regmap[j].offset,
+							 group->regmap[j].mask,
+							 group->regmap[j].val);
 				break;
 			default:
-				regmap_update_bits(pinctrl->chip_scu,
-						   group->regmap[j].offset,
-						   group->regmap[j].mask,
-						   group->regmap[j].val);
+				err = regmap_update_bits(pinctrl->chip_scu,
+							 group->regmap[j].offset,
+							 group->regmap[j].mask,
+							 group->regmap[j].val);
 				break;
 			}
+			if (err)
+				return err;
 		}
 		return 0;
 	}
@@ -492,11 +496,11 @@ airoha_pinmux_gpio_request_enable(struct pinctrl_dev *pctrl_dev,
 			continue;
 
 		if (mux->mux == AIROHA_FUNC_MUX)
-			err = regmap_clear_bits(pinctrl->chip_scu, mux->reg.offset,
-						mux->reg.mask);
+			err = regmap_update_bits(pinctrl->chip_scu, mux->reg.offset,
+						 mux->reg.mask, mux->val);
 		else
-			err = regmap_clear_bits(pinctrl->regmap, mux->reg.offset,
-						mux->reg.mask);
+			err = regmap_update_bits(pinctrl->regmap, mux->reg.offset,
+						 mux->reg.mask, mux->val);
 		if (err)
 			return err;
 	}

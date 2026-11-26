@@ -20,6 +20,7 @@ config PINCTRL_AIROHA
 	imply PINCTRL_AIROHA_EN7523
 	imply PINCTRL_AIROHA_EN7528
 	imply PINCTRL_AIROHA_EN751221
+	imply PINCTRL_AIROHA_EN751627
 	imply PINCTRL_AIROHA_EN7580
 	help
 	  Shared pin controller and gpio driver code for different
@@ -76,6 +77,15 @@ config PINCTRL_AIROHA_EN751221
 	  EcoNet EN7512, EN7513, EN7521 and EN7526 SoC families. The driver
 	  provides GPIO, GPIO interrupt and pin multiplexing support through
 	  the common Airoha pin controller implementation.
+
+config PINCTRL_AIROHA_EN751627
+	tristate "EN7516/EN7527 experimental pinctrl"
+	depends on MIPS || COMPILE_TEST
+	depends on PINCTRL_AIROHA
+	help
+	  Support the EcoNet EN7516 and EN7527 GPIO and pin controller using
+	  the shared Airoha pinctrl core. This exposes GPIO0 through GPIO41,
+	  peripheral mux groups and GPIO flash mode selection.
 
 config PINCTRL_AIROHA_EN7580
 	tristate "EN7580 pinctrl"

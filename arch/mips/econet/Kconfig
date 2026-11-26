@@ -29,7 +29,7 @@ choice
 		select MIPS_GIC
 		select PINCTRL
 		select PINCTRL_AIROHA
-		select PINCTRL_AIROHA_EN7528
+		select PINCTRL_AIROHA_EN751627
 		select SMP
 		select SMP_UP
 		select SYS_SUPPORTS_HIGHMEM
