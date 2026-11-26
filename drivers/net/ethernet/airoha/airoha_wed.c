@@ -160,10 +160,6 @@ static const struct mtk_wed_soc_data airoha_wed_v1_data = {
 	.wdma_desc_size    = sizeof(struct mtk_wdma_desc),
 };
 
-static const struct airoha_wed_soc_data en751221_wed_data = {
-	.pcie_base = { 0x1fb81000, 0x1fb83000 },
-};
-
 static const struct airoha_wed_soc_data en7528_wed_data = {
 	.pcie_base = { 0x1fb81000, 0x1fb83000 },
 	.set_lan_arb = true,
@@ -179,8 +175,6 @@ static const struct airoha_wed_soc_data en7523_wed_data = {
 };
 
 static const struct of_device_id airoha_wed_of_match[] = {
-	{ .compatible = "econet,en751221-wed", .data = &en751221_wed_data },
-	{ .compatible = "econet,en751627-wed", .data = &en7528_wed_data },
 	{ .compatible = "econet,en7528-wed", .data = &en7528_wed_data },
 	{ .compatible = "econet,en7580-wed", .data = &en7580_wed_data },
 	{ .compatible = "airoha,en7523-wed", .data = &en7523_wed_data },
@@ -332,24 +326,27 @@ mtk_wed_poll_busy(struct mtk_wed_device *dev, u32 reg, u32 mask)
 				 timeout, false, dev, reg, mask);
 }
 
-static void
+static int
 mtk_wed_reset(struct mtk_wed_device *dev, u32 mask)
 {
 	u32 status;
+	int ret;
 
 	airoha_wed_info(dev, "reset: mask=%08x reset_before=%08x\n",
 			       mask, wed_r32(dev, MTK_WED_RESET));
 
 	wed_w32(dev, MTK_WED_RESET, mask);
-	if (readx_poll_timeout(mtk_wed_read_reset, dev, status,
-			       !(status & mask), 0, 1000)) {
+	ret = readx_poll_timeout(mtk_wed_read_reset, dev, status,
+				 !(status & mask), 0, 1000);
+	if (ret) {
 		dev_err(dev->hw->dev, "wed%d: reset timeout mask=%08x status=%08x\n",
 			dev->hw->index, mask, status);
-		WARN_ON_ONCE(1);
+		return ret;
 	}
 
 	airoha_wed_info(dev, "reset: mask=%08x reset_after=%08x\n",
 			       mask, wed_r32(dev, MTK_WED_RESET));
+	return 0;
 }
 
 /* -------------------------------------------------------------------------
@@ -427,8 +424,9 @@ mtk_wed_assign(struct mtk_wed_device *dev)
 		struct pci_host_bridge *bridge = pci_find_host_bridge(pdev->bus);
 		struct device_node *np = dev_of_node(bridge->dev.parent);
 		struct resource res;
+		u32 revision, reset;
 		int index = pci_domain_nr(pdev->bus);
-		int i;
+		int i, err;
 
 		/* Dedicated host bridges both expose root-port slot 0. Match
 		 * their controller address before considering the legacy layout.
@@ -461,6 +459,22 @@ found:
 			dev_dbg(device,
 				"wed assign: no WED hardware registered for index %d\n",
 				index);
+			return NULL;
+		}
+
+		/* Reject an inaccessible block before changing WLAN IRQ routing. */
+		err = regmap_read(hw->regs, 0, &revision);
+		if (!err)
+			err = regmap_read(hw->regs, MTK_WED_RESET, &reset);
+		if (err) {
+			dev_err(hw->dev, "WED%d register read failed: %d\n",
+				hw->index, err);
+			return NULL;
+		}
+		if (revision == 0xdeadbeef || reset == 0xdeadbeef) {
+			dev_err(hw->dev,
+				"WED%d MMIO unavailable: revision=%08x reset=%08x\n",
+				hw->index, revision, reset);
 			return NULL;
 		}
 
@@ -800,7 +814,7 @@ mtk_wed_set_wpdma(struct mtk_wed_device *dev)
 		(dev->wlan.wpdma_tx - dev->wlan.wpdma_phys));
 }
 
-static void
+static int
 mtk_wed_hw_init_early(struct mtk_wed_device *dev)
 {
 	u32 mask = MTK_WED_WDMA_GLO_CFG_BT_SIZE |
@@ -815,9 +829,13 @@ mtk_wed_hw_init_early(struct mtk_wed_device *dev)
 		  MTK_WED_WDMA_GLO_CFG_IDLE_DMAD_SUPPLY |
 		  MTK_WED_WDMA_GLO_CFG_AXI_W_AFTER_AW |
 		  MTK_WED_WDMA_GLO_CFG_WCOMPLETE_SEL;
+	int ret;
 
 	mtk_wed_deinit(dev);
-	mtk_wed_reset(dev, MTK_WED_RESET_WED);
+	ret = mtk_wed_reset(dev, MTK_WED_RESET_WED);
+	if (ret)
+		return ret;
+
 	mtk_wed_set_wpdma(dev);
 	wed_m32(dev, MTK_WED_WDMA_GLO_CFG, mask, set);
 
@@ -838,6 +856,7 @@ mtk_wed_hw_init_early(struct mtk_wed_device *dev)
 		 MTK_WDMA_GLO_CFG_RX_INFO2_PRERES |
 		 MTK_WDMA_GLO_CFG_RX_INFO3_PRERES);
 
+	return 0;
 }
 
 /* -------------------------------------------------------------------------
@@ -1298,7 +1317,9 @@ mtk_wed_attach(struct mtk_wed_device *dev)
 	if (ret)
 		goto out;
 
-	mtk_wed_hw_init_early(dev);
+	ret = mtk_wed_hw_init_early(dev);
+	if (ret)
+		goto out;
 	for (i = 0; i < ARRAY_SIZE(dev->rx_wdma); i++) {
 		ret = mtk_wed_wdma_rx_ring_setup(dev, i,
 						 MTK_WED_WDMA_RING_SIZE, false);
@@ -1671,6 +1692,11 @@ int airoha_wed_add_hw(struct airoha_eth *eth, struct device_node *np, int index)
 
 	if (!np)
 		return -EINVAL;
+
+	if (!airoha_has_wed(eth)) {
+		err = -EOPNOTSUPP;
+		goto err_node_put;
+	}
 
 	if (index < 0 || index >= ARRAY_SIZE(hw_list)) {
 		err = -EINVAL;

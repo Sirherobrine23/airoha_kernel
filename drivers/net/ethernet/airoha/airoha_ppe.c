@@ -4198,9 +4198,18 @@ static void airoha_foe_v1_entry_set_bind_metadata(struct airoha_foe_entry *entry
 	u32 *data = airoha_foe_v1_data(entry);
 	u32 *ib2 = airoha_foe_v1_ib2(entry);
 	u8 port = FIELD_GET(AIROHA_FOE_V1_IB2_PSE_PORT, *ib2);
+	/*
+	 * EN7528 WDMA/WED receives (wcid << 6) | bss out-of-band in WDMA RX
+	 * info3 even when VLAN_LAYER=0. Forcing VLAN_LAYER=1 with VPM=0 makes
+	 * PPE inject 4 bytes (etype + vlan1) in-band at offset 12 before
+	 * 0x0800, which MT7915E transmits verbatim and WiFi clients drop.
+	 */
+	bool wdma = port == AIROHA_FOE_V1_FP_QDMA_LAN &&
+		    FIELD_GET(AIROHA_FOE_V1_SHAPER_ID, *data) == 0x7f;
 
 	entry->ib1 &= ~AIROHA_FOE_V1_IB1_BIND_VLAN_LAYER;
-	entry->ib1 |= FIELD_PREP(AIROHA_FOE_V1_IB1_BIND_VLAN_LAYER, 1);
+	if (!wdma)
+		entry->ib1 |= FIELD_PREP(AIROHA_FOE_V1_IB1_BIND_VLAN_LAYER, 1);
 
 	*data &= ~AIROHA_FOE_V1_ACTDP;
 	/* The LAN QDMA still delivers to GDM1. */
@@ -5363,12 +5372,12 @@ static int airoha_ppe_v1_flow_set_output(struct airoha_ppe *ppe,
 
 	put_unaligned_be32(l2[1], dmac);
 	put_unaligned_be16(FIELD_GET(AIROHA_FOE_L2_DMAC_LO, l2[2]), dmac + 4);
-	if (!airoha_ppe_get_wdma_info(odev, dmac, &info)) {
+	if (airoha_is(ppe->common.eth, econet_en7528) &&
+	    !airoha_ppe_get_wdma_info(odev, dmac, &info)) {
 		u8 ring = info.idx * 2 + info.queue;
 		u32 *data = airoha_foe_v1_data(entry);
 
-		if (!airoha_is(ppe->common.eth, econet_en7528) ||
-		    vlan_valid || info.idx > 1 || info.queue > 1 ||
+		if (vlan_valid || info.idx > 1 || info.queue > 1 ||
 		    info.wcid > 0xff || info.bss > 0x3f)
 			return -EOPNOTSUPP;
 
@@ -5453,7 +5462,22 @@ static int airoha_ppe_v1_flow_set_output(struct airoha_ppe *ppe,
 		airoha_foe_v1_entry_set_pse_port(entry, AIROHA_FOE_V1_FP_QDMA_LAN);
 		airoha_foe_v1_entry_set_queue(entry, 0);
 		*data &= ~(AIROHA_FOE_V1_SHAPER_ID | AIROHA_FOE_V1_CHANNEL);
+		if (airoha_is(ppe->common.eth, econet_en7528))
+			*data |= FIELD_PREP(AIROHA_FOE_V1_CHANNEL, 1);
 		return 0;
+	}
+
+	/*
+	 * On EN7528 with WED active, the LAN arbiter (NP_SCU+0x70 = 0x23)
+	 * intercepts channel 0 (WDMA1 RX1) even for direct GDM1 PPE entries.
+	 * Use channel 1 (wired GDM1/GSW) for all non-WDMA GDM1 egress flows.
+	 */
+	if (airoha_is(ppe->common.eth, econet_en7528) &&
+	    gdm->port->id == FE_PSE_PORT_GDM1) {
+		u32 *data = airoha_foe_v1_data(entry);
+
+		*data &= ~(AIROHA_FOE_V1_SHAPER_ID | AIROHA_FOE_V1_CHANNEL);
+		*data |= FIELD_PREP(AIROHA_FOE_V1_CHANNEL, 1);
 	}
 
 	airoha_foe_v1_entry_set_pse_port(entry, gdm->port->id);

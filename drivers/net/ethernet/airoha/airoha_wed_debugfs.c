@@ -107,6 +107,10 @@ wed_txinfo_show(struct seq_file *s, void *data)
 	if (!dev)
 		return 0;
 
+	seq_printf(s, "WED%d version %u, WDMA%d, flow block users %u\n\n",
+		   hw->index, dev->version, dev->wdma_idx,
+		   READ_ONCE(hw->num_flows));
+
 	dump_wed_regs(s, dev, wed_regs);
 
 	dump_wed_tx_rings(s, dev);

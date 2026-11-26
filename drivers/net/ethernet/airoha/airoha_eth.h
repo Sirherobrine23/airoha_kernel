@@ -1533,12 +1533,19 @@ static inline bool airoha_is_lan_gdm_dev(struct airoha_gdm_dev *dev)
 
 static inline bool airoha_is_econet(struct airoha_eth *eth)
 {
-	return airoha_is(eth, econet_en751221, econet_en7528, econet_en7580);
+	return airoha_is(eth, econet_en751221, econet_en751627,
+			 econet_en7528, econet_en7580);
 }
 
 static inline bool airoha_has_legacy_qdma(struct airoha_eth *eth)
 {
 	return eth->soc->legacy_qdma;
+}
+
+static inline bool airoha_has_wed(struct airoha_eth *eth)
+{
+	return IS_ENABLED(CONFIG_NET_AIROHA_SOC_WED) &&
+	       airoha_is(eth, econet_en7528, econet_en7580, airoha_en7523);
 }
 
 static inline bool airoha_qdma_is_lro_queue(struct airoha_queue *q)
