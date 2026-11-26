@@ -3329,10 +3329,7 @@ static int an7581_phy_probe(struct phy_device *phydev)
 	struct pinctrl *pinctrl;
 	int ret;
 
-	/* AN7552 boards may leave the PHY LED pads unconnected. */
-	if ((phydev->drv->phy_id != AIROHA_GPHY_ID_AN7552 &&
-	     phydev->drv->phy_id != AIROHA_GPHY_ID_EN751627) ||
-	    of_property_present(phydev->mdio.dev.of_node, "pinctrl-names")) {
+	if (of_property_present(phydev->mdio.dev.of_node, "pinctrl-names")) {
 		pinctrl = devm_pinctrl_get_select(&phydev->mdio.dev, "gbe-led");
 		if (IS_ERR(pinctrl))
 			dev_err(&phydev->mdio.bus->dev,
@@ -3627,7 +3624,7 @@ static int en751627_phy_match(struct phy_device *phydev,
 static struct phy_driver mtk_socphy_driver[] = {
 	{
 		PHY_ID_MATCH_EXACT(AIROHA_GPHY_ID_EN751627),
-		.name		= "EcoNet EN751627 5-port GPHY",
+		.name		= "EcoNet EN751627 GPHY",
 		.match_phy_device = en751627_phy_match,
 		.config_init	= en751627_phy_config_init,
 		.config_intr	= genphy_no_config_intr,
@@ -3644,7 +3641,7 @@ static struct phy_driver mtk_socphy_driver[] = {
 	},
 	{
 		PHY_ID_MATCH_EXACT(AIROHA_GPHY_ID_EN7512),
-		.name		= "EcoNet EN7512/EN7521 GPHY",
+		.name		= "EcoNet EN751221 GPHY",
 		.config_init	= en7512_phy_config_init,
 		.config_intr	= genphy_no_config_intr,
 		.handle_interrupt = genphy_handle_interrupt_no_ack,
