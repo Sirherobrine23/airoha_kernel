@@ -107,6 +107,9 @@ properties:
           - ns16550a
           - ns16850
           - airoha,an7581-hsuart
+          - airoha,en751221-uart
+          - airoha,en751221-uart2
+          - airoha,en751627-uart
           - airoha,en7523-uart
           - aspeed,ast2400-vuart
           - aspeed,ast2500-vuart
