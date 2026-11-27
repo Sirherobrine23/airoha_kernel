@@ -174,6 +174,22 @@ EARLYCON_DECLARE(uart8250, early_serial8250_setup);
 EARLYCON_DECLARE(uart, early_serial8250_setup);
 OF_EARLYCON_DECLARE(ns16550, "ns16550", early_serial8250_setup);
 OF_EARLYCON_DECLARE(ns16550a, "ns16550a", early_serial8250_setup);
+
+static int __init early_airoha_setup(struct earlycon_device *device,
+				      const char *options)
+{
+	/*
+	 * Airoha EN7523 UART baud rate is programmed via custom XYD/
+	 * XINCLKDR registers (see en7523_set_uart_baud_rate() in
+	 * 8250_en7523.c), not the standard 16550 DLL/DLM divisor.
+	 * Force the "already initialized" path in early_serial8250_setup()
+	 * so it never reprograms DLL/DLM with the wrong formula - trust
+	 * the bootloader's baud rate setup instead.
+	 */
+	device->baud = 0;
+	return early_serial8250_setup(device, options);
+}
+OF_EARLYCON_DECLARE(en7523, "airoha,en7523-uart", early_airoha_setup);
 OF_EARLYCON_DECLARE(uart, "nvidia,tegra20-uart", early_serial8250_setup);
 OF_EARLYCON_DECLARE(uart, "snps,dw-apb-uart", early_serial8250_setup);
 
