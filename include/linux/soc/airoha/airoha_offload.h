@@ -230,6 +230,29 @@ struct airoha_npu {
 struct airoha_npu *airoha_npu_get(struct device *dev);
 void airoha_npu_put(struct airoha_npu *npu);
 
+static inline int airoha_npu_init_ppe(struct airoha_npu *npu)
+{
+	return npu->ops.ppe_init(npu);
+}
+
+static inline int airoha_npu_deinit_ppe(struct airoha_npu *npu)
+{
+	return npu->ops.ppe_deinit(npu);
+}
+
+static inline int airoha_npu_init_ppe_stats(struct airoha_npu *npu,
+					    dma_addr_t addr,
+					    u32 num_stats_entries)
+{
+	return npu->ops.ppe_init_stats(npu, addr, num_stats_entries);
+}
+
+static inline struct airoha_foe_stats __iomem *
+airoha_npu_get_ppe_stats(struct airoha_npu *npu)
+{
+	return npu->stats;
+}
+
 static inline int airoha_npu_wlan_init_reserved_memory(struct airoha_npu *npu)
 {
 	return npu->ops.wlan_init_reserved_memory(npu);
@@ -284,6 +307,29 @@ static inline struct airoha_npu *airoha_npu_get(struct device *dev)
 
 static inline void airoha_npu_put(struct airoha_npu *npu)
 {
+}
+
+static inline int airoha_npu_init_ppe(struct airoha_npu *npu)
+{
+	return -EOPNOTSUPP;
+}
+
+static inline int airoha_npu_deinit_ppe(struct airoha_npu *npu)
+{
+	return 0;
+}
+
+static inline int airoha_npu_init_ppe_stats(struct airoha_npu *npu,
+					    dma_addr_t addr,
+					    u32 num_stats_entries)
+{
+	return -EOPNOTSUPP;
+}
+
+static inline struct airoha_foe_stats __iomem *
+airoha_npu_get_ppe_stats(struct airoha_npu *npu)
+{
+	return NULL;
 }
 
 static inline int airoha_npu_wlan_init_reserved_memory(struct airoha_npu *npu)

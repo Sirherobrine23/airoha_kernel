@@ -68,7 +68,22 @@
 #define PPE_STATS_NUM_ENTRIES		(4 * 1024)
 #define PPE_DRAM_NUM_ENTRIES		(16 * 1024)
 #define PPE_ENTRY_SIZE			80
-#define PPE_RAM_NUM_ENTRIES_SHIFT(_n)	(__ffs((_n) >> 10))
+#define PPE_ENTRY_WORDS			(PPE_ENTRY_SIZE / sizeof(u32))
+
+static inline u32 airoha_ppe_ram_num_entries_shift(u32 n)
+{
+	if (n == 256)
+		return 6;
+	if (n == 512)
+		return 7;
+
+	return __ffs(n >> 10);
+}
+
+#define AIROHA_PPE_CPU_REASON_FOE_UNHIT			0x0d
+#define AIROHA_PPE_CPU_REASON_HIT_UNBIND		0x0e
+#define AIROHA_PPE_CPU_REASON_HIT_UNBIND_RATE_REACHED	0x0f
+#define AN7552_MAX_NUM_LRO_QUEUES			4
 
 #define MTK_HDR_LEN			4
 #define MTK_HDR_XMIT_TAGGED_TPID_8100	1
@@ -372,6 +387,12 @@ struct airoha_foe_mac_info {
 #define AIROHA_FOE_METER_GRP3			GENMASK(8, 5)
 #define AIROHA_FOE_METER_GRP2			GENMASK(4, 0)
 
+#define AIROHA_FOE_L2_ETYPE		GENMASK(31, 16)
+#define AIROHA_FOE_L2_VLAN1		GENMASK(15, 0)
+#define AIROHA_FOE_L2_DMAC_LO		GENMASK(31, 16)
+#define AIROHA_FOE_L2_VLAN2		GENMASK(15, 0)
+#define AIROHA_FOE_L2_SMAC_LO		GENMASK(31, 16)
+
 struct airoha_foe_bridge {
 	u32 dest_mac_hi;
 
@@ -387,6 +408,24 @@ struct airoha_foe_bridge {
 	u32 data;
 
 	struct airoha_foe_mac_info l2;
+};
+
+/* AN7552 L2 entries retain a 24-byte ingress key before the action. */
+struct an7552_foe_bridge {
+	u32 dest_mac_hi;
+	u32 vlan_dest_mac_lo;
+	u32 hsk;
+	u32 src_mac_hi;
+	u32 src_mac_lo;
+	u32 rsv1[4];
+	u32 data;
+	u32 ib2;
+	u32 vlan1_etype;
+	u32 rsv2;
+	u32 vlan2;
+	u32 rsv3;
+	u32 meter;
+	u32 rsv4[3];
 };
 
 struct airoha_foe_ipv4_tuple {
@@ -465,12 +504,14 @@ struct airoha_foe_entry {
 			u32 ib1;
 			union {
 				struct airoha_foe_bridge bridge;
+				struct an7552_foe_bridge an7552_bridge;
 				struct airoha_foe_ipv4 ipv4;
 				struct airoha_foe_ipv4_dslite dslite;
 				struct airoha_foe_ipv6 ipv6;
 				DECLARE_FLEX_ARRAY(u32, d);
 			};
 		};
+		u32 words[PPE_ENTRY_WORDS];
 		u8 data[PPE_ENTRY_SIZE];
 	};
 };
@@ -628,6 +669,12 @@ struct airoha_gdm_port {
 #define AIROHA_RXD4_PPE_CPU_REASON	GENMASK(20, 16)
 #define AIROHA_RXD4_FOE_ENTRY		GENMASK(15, 0)
 
+struct airoha_ppe_lro_entry {
+	struct airoha_foe_entry entry;
+	u32 hash;
+	bool valid;
+};
+
 struct airoha_ppe {
 	struct airoha_ppe_dev dev;
 	struct airoha_eth *eth;
@@ -638,10 +685,14 @@ struct airoha_ppe {
 	struct rhashtable l2_flows;
 
 	struct hlist_head *foe_flow;
+	struct hlist_head pending_flows;
 	u16 *foe_check_time;
 
 	struct airoha_foe_stats *foe_stats;
 	dma_addr_t foe_stats_dma;
+
+	struct airoha_ppe_lro_entry lro[AIROHA_MAX_NUM_QDMA][AN7552_MAX_NUM_LRO_QUEUES];
+	bool offload_setup_done;
 
 	struct dentry *debugfs_dir;
 };
@@ -651,6 +702,9 @@ struct airoha_eth_soc_data {
 	const char * const *xsi_rsts_names;
 	int num_xsi_rsts;
 	int num_ppe;
+	u32 ppe_sram_entries;
+	u32 ppe_dram_entries;
+	u32 ppe_stats_entries;
 	struct {
 		int (*get_sport)(struct airoha_gdm_port *port, int nbq);
 		u32 (*get_vip_port)(struct airoha_gdm_port *port, int nbq);
@@ -721,6 +775,16 @@ static inline bool airoha_is_lan_gdm_dev(struct airoha_gdm_dev *dev)
 	return !test_bit(AIROHA_DEV_F_WAN, &dev->flags);
 }
 
+static inline bool airoha_is_7523(struct airoha_eth *eth)
+{
+	return eth->soc->version == 0x7523;
+}
+
+static inline bool airoha_is_7552(struct airoha_eth *eth)
+{
+	return eth->soc->version == 0x7552;
+}
+
 static inline bool airoha_is_7581(struct airoha_eth *eth)
 {
 	return eth->soc->version == 0x7581;
@@ -769,8 +833,13 @@ void airoha_ppe_init_upd_mem(struct airoha_gdm_dev *dev, const u8 *addr);
 u32 airoha_ppe_get_total_num_entries(struct airoha_ppe *ppe);
 struct airoha_foe_entry *airoha_ppe_foe_get_entry(struct airoha_ppe *ppe,
 						  u32 hash);
+int airoha_ppe_debugfs_read_entry(struct airoha_ppe *ppe, u32 index,
+				  struct airoha_foe_entry *entry);
 void airoha_ppe_foe_entry_get_stats(struct airoha_ppe *ppe, u32 hash,
 				    struct airoha_foe_stats64 *stats);
+void airoha_ppe_lro_flush(struct airoha_eth *eth, unsigned int qdma_id);
+void airoha_ppe_check_lro(struct airoha_qdma *qdma, struct sk_buff *skb,
+			  u16 hash);
 
 #ifdef CONFIG_DEBUG_FS
 int airoha_ppe_debugfs_init(struct airoha_ppe *ppe);

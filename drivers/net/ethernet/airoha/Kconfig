@@ -18,7 +18,7 @@ config NET_AIROHA_NPU
 config NET_AIROHA
 	tristate "Airoha SoC Gigabit Ethernet support"
 	depends on NET_DSA || !NET_DSA
-	select NET_AIROHA_NPU
+	imply NET_AIROHA_NPU
 	select PAGE_POOL
 	help
 	  This driver supports the gigabit ethernet MACs in the
