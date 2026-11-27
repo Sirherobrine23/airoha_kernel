@@ -1299,7 +1299,7 @@ mt753x_cpu_port_enable(struct dsa_switch *ds, int port)
 	 */
 	if (priv->id == ID_MT7531 || priv->id == ID_MT7988 ||
 	    priv->id == ID_EN7581 || priv->id == ID_AN7583 ||
-	    priv->id == ID_EN7523)
+	    priv->id == ID_EN7523 || priv->id == ID_AN7552)
 		regmap_set_bits(priv->regmap, MT7531_CFC,
 				MT7531_CPU_PMAP(BIT(port)));
 
@@ -2652,7 +2652,7 @@ mt7531_setup_common(struct dsa_switch *ds)
 
 	/* Enable Special Tag for rx frames */
 	if (priv->id == ID_EN7581 || priv->id == ID_AN7583 ||
-	    priv->id == ID_EN7523)
+	    priv->id == ID_EN7523 || priv->id == ID_AN7552)
 		regmap_write(priv->regmap, MT753X_CPORT_SPTAG_CFG,
 			     CPORT_SW2FE_STAG_EN | CPORT_FE2SW_STAG_EN);
 
@@ -3308,7 +3308,8 @@ mt753x_conduit_state_change(struct dsa_switch *ds,
 	 */
 	if (priv->id != ID_MT7530 && priv->id != ID_MT7621 &&
 	    priv->id != ID_EN7528 && priv->id != ID_EN7523 &&
-	    priv->id != ID_EN7581 && priv->id != ID_AN7583)
+	    priv->id != ID_AN7552 && priv->id != ID_EN7581 &&
+	    priv->id != ID_AN7583)
 		return;
 
 	mask = BIT(cpu_dp->index);
@@ -3537,6 +3538,16 @@ const struct mt753x_info mt753x_table[] = {
 	},
 	[ID_EN7523] = {
 		.id = ID_EN7523,
+		.pcs_ops = &mt7530_pcs_ops,
+		.sw_setup = mt7988_setup,
+		.phy_read_c22 = mt7531_ind_c22_phy_read,
+		.phy_write_c22 = mt7531_ind_c22_phy_write,
+		.phy_read_c45 = mt7531_ind_c45_phy_read,
+		.phy_write_c45 = mt7531_ind_c45_phy_write,
+		.mac_port_get_caps = en7581_mac_port_get_caps,
+	},
+	[ID_AN7552] = {
+		.id = ID_AN7552,
 		.pcs_ops = &mt7530_pcs_ops,
 		.sw_setup = mt7988_setup,
 		.phy_read_c22 = mt7531_ind_c22_phy_read,

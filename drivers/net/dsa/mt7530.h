@@ -25,6 +25,7 @@ enum mt753x_id {
 	ID_AN7583 = 5,
 	ID_EN7528 = 6,
 	ID_EN7523 = 7,
+	ID_AN7552 = 8,
 };
 
 #define	NUM_TRGMII_CTRL			5
@@ -73,20 +74,23 @@ enum mt753x_id {
 					  id == ID_MT7988 || \
 					  id == ID_EN7581 || \
 					  id == ID_AN7583 || \
-					  id == ID_EN7523) ? \
+					  id == ID_EN7523 || \
+					  id == ID_AN7552) ? \
 					 MT7531_CFC : MT753X_MFC)
 
 #define MT753X_MIRROR_EN(id)		((id == ID_MT7531 || \
 					  id == ID_MT7988 || \
 					  id == ID_EN7581 || \
-					  id == ID_EN7523) ? \
+					  id == ID_EN7523 || \
+					  id == ID_AN7552) ? \
 					 MT7531_MIRROR_EN : MT7530_MIRROR_EN)
 
 #define MT753X_MIRROR_PORT_MASK(id)	((id == ID_MT7531 || \
 					  id == ID_MT7988 || \
 					  id == ID_EN7581 || \
 					  id == ID_AN7583 || \
-					  id == ID_EN7523) ? \
+					  id == ID_EN7523 || \
+					  id == ID_AN7552) ? \
 					 MT7531_MIRROR_PORT_MASK : \
 					 MT7530_MIRROR_PORT_MASK)
 
@@ -94,7 +98,8 @@ enum mt753x_id {
 					  id == ID_MT7988 || \
 					  id == ID_EN7581 || \
 					  id == ID_AN7583 || \
-					  id == ID_EN7523) ? \
+					  id == ID_EN7523 || \
+					  id == ID_AN7552) ? \
 					 MT7531_MIRROR_PORT_GET(val) : \
 					 MT7530_MIRROR_PORT_GET(val))
 
@@ -102,7 +107,8 @@ enum mt753x_id {
 					  id == ID_MT7988 || \
 					  id == ID_EN7581 || \
 					  id == ID_AN7583 || \
-					  id == ID_EN7523) ? \
+					  id == ID_EN7523 || \
+					  id == ID_AN7552) ? \
 					 MT7531_MIRROR_PORT_SET(val) : \
 					 MT7530_MIRROR_PORT_SET(val))
 
