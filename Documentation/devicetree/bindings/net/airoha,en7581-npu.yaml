@@ -41,6 +41,32 @@ properties:
       - description: wlan irq line4
       - description: wlan irq line5
 
+  interrupt-names:
+    items:
+      - const: mbox
+      - const: wdt0
+      - const: wdt1
+      - const: wdt2
+      - const: wdt3
+      - const: wdt4
+      - const: wdt5
+      - const: wdt6
+      - const: wdt7
+      - const: wlan0
+      - const: wlan1
+      - const: wlan2
+      - const: wlan3
+      - const: wlan4
+      - const: wlan5
+
+  airoha,scu:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: SCU syscon providing the FPGA and L2 SRAM configuration.
+
+  airoha,enable_npu_tx_uart:
+    type: boolean
+    description: Enable firmware diagnostic output on the NPU transmit UART.
+
   memory-region:
     items:
       - description: NPU firmware binary region
