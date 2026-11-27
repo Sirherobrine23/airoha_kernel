@@ -18,6 +18,7 @@
 #include <linux/property.h>
 #include <linux/slab.h>
 #include <linux/unaligned.h>
+#include <linux/workqueue.h>
 
 #define UX3320_PAGE_SELECT		0x7f
 #define UX3320_PAGE_SIZE		128
@@ -44,15 +45,20 @@
 #define UX3320_LUT_CTRL			0x82
 #define UX3320_MOD_LUT_ENABLE		BIT(6)
 #define UX3320_FW_NAME			"ux/ux3320b1-hwconfig.bin"
+#define UX3320_FW_RETRY_MS		2000
+#define UX3320_FW_MAX_RETRIES		30
 
 struct ux3320 {
 	struct i2c_client *client;
 	struct optical_frontend *frontend;
+	struct delayed_work fw_work;
 	/* Also protects the bank selector shared by all register accesses. */
 	struct mutex lock;
+	unsigned int fw_retries;
 	bool calibrated;
 	bool mode_set;
 	bool tx_requested;
+	bool stopping;
 };
 
 static int ux3320_write(struct ux3320 *priv, u8 reg, u8 val)
@@ -254,7 +260,7 @@ disable:
 	return ret;
 }
 
-static int ux3320_load_calibration(struct ux3320 *priv)
+static int ux3320_load_calibration(struct ux3320 *priv, bool quiet)
 {
 	struct device *dev = &priv->client->dev;
 	const struct firmware *fw = NULL;
@@ -285,7 +291,8 @@ static int ux3320_load_calibration(struct ux3320 *priv)
 			return ret;
 		ret = request_firmware_direct(&fw, name, dev);
 		if (ret == -ENOENT) {
-			dev_warn(dev, "no calibrated register image; TX remains disabled\n");
+			if (!quiet)
+				dev_warn(dev, "no calibrated register image; TX remains disabled\n");
 			return 0;
 		}
 		if (ret)
@@ -297,6 +304,25 @@ static int ux3320_load_calibration(struct ux3320 *priv)
 	release_firmware(fw);
 	kfree(nvmem);
 	return ret;
+}
+
+static void ux3320_fw_work(struct work_struct *work)
+{
+	struct ux3320 *priv = container_of(to_delayed_work(work),
+					   struct ux3320, fw_work);
+	int ret;
+
+	mutex_lock(&priv->lock);
+	if (!priv->stopping && !priv->calibrated) {
+		ret = ux3320_load_calibration(priv, true);
+		if (!ret && priv->calibrated)
+			dev_info(&priv->client->dev, "calibrated register image loaded\n");
+		else if (!priv->stopping && !priv->calibrated &&
+			 ++priv->fw_retries < UX3320_FW_MAX_RETRIES)
+			schedule_delayed_work(&priv->fw_work,
+					      msecs_to_jiffies(UX3320_FW_RETRY_MS));
+	}
+	mutex_unlock(&priv->lock);
 }
 
 static int ux3320_set_mode(struct optical_frontend *frontend,
@@ -325,6 +351,11 @@ static int ux3320_enable_tx(struct ux3320 *priv)
 	u8 status;
 	int ret;
 
+	if (!priv->calibrated) {
+		ret = ux3320_load_calibration(priv, true);
+		if (ret)
+			return ret;
+	}
 	if (!priv->calibrated || !priv->mode_set)
 		return -EACCES;
 	/* The native driver pulses soft TX_DISABLE for 20 ms after setup. */
@@ -465,9 +496,11 @@ static void ux3320_quiesce(void *data)
 	int ret;
 
 	mutex_lock(&priv->lock);
+	priv->stopping = true;
 	priv->tx_requested = false;
 	ret = ux3320_tx_gate(priv, true);
 	mutex_unlock(&priv->lock);
+	cancel_delayed_work_sync(&priv->fw_work);
 	if (ret)
 		dev_warn(&priv->client->dev, "failed to disable TX: %d\n", ret);
 }
@@ -487,6 +520,7 @@ static int ux3320_probe(struct i2c_client *client)
 	priv->client = client;
 	mutex_init(&priv->lock);
 	i2c_set_clientdata(client, priv);
+	INIT_DELAYED_WORK(&priv->fw_work, ux3320_fw_work);
 	ret = ux3320_tx_gate(priv, true);
 	if (ret)
 		return dev_err_probe(dev, ret, "failed to hold TX disabled\n");
@@ -505,14 +539,18 @@ static int ux3320_probe(struct i2c_client *client)
 	if (ret)
 		return ret;
 	dev_dbg(dev, "bank 3 chip ID: %8phN\n", id);
-	ret = ux3320_load_calibration(priv);
+	ret = ux3320_load_calibration(priv, false);
 	if (ret)
 		return dev_err_probe(dev, ret, "failed to load calibrated register image\n");
 	priv->frontend = devm_optical_frontend_register(dev, &ux3320_desc,
 							&ux3320_ops, priv);
 	if (IS_ERR(priv->frontend))
 		return PTR_ERR(priv->frontend);
-	return devm_optical_frontend_hwmon_register(priv->frontend);
+	ret = devm_optical_frontend_hwmon_register(priv->frontend);
+	if (!ret && !priv->calibrated)
+		schedule_delayed_work(&priv->fw_work,
+				      msecs_to_jiffies(UX3320_FW_RETRY_MS));
+	return ret;
 }
 
 static void ux3320_shutdown(struct i2c_client *client)
