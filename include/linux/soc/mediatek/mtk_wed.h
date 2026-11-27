@@ -83,7 +83,7 @@ struct mtk_wed_buf {
 };
 
 struct mtk_wed_device {
-#ifdef CONFIG_NET_MEDIATEK_SOC_WED
+#if IS_ENABLED(CONFIG_NET_MEDIATEK_WED_COMMON)
 	const struct mtk_wed_ops *ops;
 	struct device *dev;
 	struct mtk_wed_hw *hw;
@@ -228,13 +228,15 @@ struct mtk_wed_ops {
 };
 
 extern const struct mtk_wed_ops __rcu *mtk_soc_wed_ops;
+int mtk_wed_ops_register(const struct mtk_wed_ops *ops);
+void mtk_wed_ops_unregister(const struct mtk_wed_ops *ops);
 
 static inline int
 mtk_wed_device_attach(struct mtk_wed_device *dev)
 {
 	int ret = -ENODEV;
 
-#ifdef CONFIG_NET_MEDIATEK_SOC_WED
+#if IS_ENABLED(CONFIG_NET_MEDIATEK_WED_COMMON)
 	rcu_read_lock();
 	dev->ops = rcu_dereference(mtk_soc_wed_ops);
 	if (dev->ops)
@@ -251,7 +253,7 @@ mtk_wed_device_attach(struct mtk_wed_device *dev)
 
 static inline bool mtk_wed_get_rx_capa(struct mtk_wed_device *dev)
 {
-#ifdef CONFIG_NET_MEDIATEK_SOC_WED
+#if IS_ENABLED(CONFIG_NET_MEDIATEK_WED_COMMON)
 	if (dev->version == 3)
 		return dev->wlan.hw_rro;
 
@@ -263,14 +265,14 @@ static inline bool mtk_wed_get_rx_capa(struct mtk_wed_device *dev)
 
 static inline bool mtk_wed_is_amsdu_supported(struct mtk_wed_device *dev)
 {
-#ifdef CONFIG_NET_MEDIATEK_SOC_WED
+#if IS_ENABLED(CONFIG_NET_MEDIATEK_WED_COMMON)
 	return dev->version == 3;
 #else
 	return false;
 #endif
 }
 
-#ifdef CONFIG_NET_MEDIATEK_SOC_WED
+#if IS_ENABLED(CONFIG_NET_MEDIATEK_WED_COMMON)
 #define mtk_wed_device_active(_dev) !!(_dev)->ops
 #define mtk_wed_device_detach(_dev) (_dev)->ops->detach(_dev)
 #define mtk_wed_device_start(_dev, _mask) (_dev)->ops->start(_dev, _mask)

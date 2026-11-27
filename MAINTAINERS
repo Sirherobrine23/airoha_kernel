@@ -17026,6 +17026,8 @@ M:	Lorenzo Bianconi <lorenzo@kernel.org>
 L:	netdev@vger.kernel.org
 S:	Maintained
 F:	drivers/net/ethernet/mediatek/
+F:	drivers/net/ethernet/mtk_wed_ops.c
+F:	drivers/net/ethernet/mtk_wed_private.h
 
 MEDIATEK ETHERNET PCS DRIVER
 M:	Alexander Couzens <lynxis@fe80.eu>
