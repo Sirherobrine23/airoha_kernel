@@ -16,20 +16,24 @@
 #include <linux/limits.h>
 #include <linux/list.h>
 #include <linux/math.h>
+#include <linux/mfd/syscon.h>
 #include <linux/minmax.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/platform_device.h>
 #include <linux/property.h>
+#include <linux/regmap.h>
 #include <linux/sizes.h>
 #include <linux/spi/spi.h>
 #include <linux/spi/spi-mem.h>
 #include <linux/types.h>
 #include <linux/unaligned.h>
 
-/* SPI */
-#define REG_SPI_CTRL_BASE			0x1FA10000
+/* SCU */
+#define REG_SCUCLK_BOOT_TRP			0x00b8
+#define SPI_SCUCLK_BOOT_TRP_EMMC		BIT(6)
 
+/* SPI */
 #define REG_SPI_CTRL_READ_MODE			0x0000
 #define REG_SPI_CTRL_READ_IDLE_EN		0x0004
 #define REG_SPI_CTRL_SIDLY			0x0008
@@ -89,6 +93,8 @@
 #define REG_SPI_CTRL_SW_CFGNANDADDR_VAL		0x010c
 #define REG_SPI_CTRL_SW_CFGNANDADDR_EN		0x0110
 #define REG_SPI_CTRL_SFC_STRAP			0x0114
+#define SPI_CTRL_SFC_STRAP_NAND			BIT(1)
+#define SPI_CTRL_SFC_STRAP_RESERVED		BIT(2)
 
 #define REG_SPI_CTRL_NFI2SPI_EN			0x0130
 #define SPI_CTRL_NFI2SPI_EN			BIT(0)
@@ -179,6 +185,7 @@
 
 #define REG_SPI_NFI_SNF_NFI_CNFG		0x055c
 #define SPI_NFI_SPI_MODE			BIT(0)
+#define SPI_NFI_SNF_NFI_SPI_EN			BIT(2)
 
 /* SPI NAND Protocol OP */
 #define SPI_NAND_OP_GET_FEATURE			0x0f
@@ -229,6 +236,13 @@ enum airoha_snand_mode {
 	SPI_MODE_DMA,
 };
 
+enum airoha_snand_boot_type {
+	SPI_CTRL_NAND,
+	SPI_CTRL_NOR,
+	SPI_CTRL_PARALLEL_NAND,
+	SPI_CTRL_EMMC,
+};
+
 enum airoha_snand_cs {
 	SPI_CHIP_SEL_HIGH,
 	SPI_CHIP_SEL_LOW,
@@ -237,6 +251,7 @@ enum airoha_snand_cs {
 struct airoha_snand_soc_data {
 	bool has_nfi;
 	bool has_nfi2spi;
+	bool has_boot_trp;
 	bool double_cs;
 	u8 manual_dummy;
 };
@@ -245,8 +260,10 @@ struct airoha_snand_ctrl {
 	struct device *dev;
 	void __iomem *ctrl_base;
 	void __iomem *nfi_base;
+	struct regmap *scuclk;
 	struct clk *spi_clk;
 	const struct airoha_snand_soc_data *soc;
+	enum airoha_snand_boot_type boot_type;
 };
 
 static inline u32 airoha_ctrl_read(struct airoha_snand_ctrl *as_ctrl, u32 reg)
@@ -289,6 +306,28 @@ static inline void airoha_nfi_update_bits(struct airoha_snand_ctrl *as_ctrl,
 	tmp &= ~mask;
 	tmp |= val & mask;
 	airoha_nfi_write(as_ctrl, reg, tmp);
+}
+
+static enum airoha_snand_boot_type
+airoha_snand_boot_type(struct airoha_snand_ctrl *as_ctrl)
+{
+	u32 val;
+
+	if (as_ctrl->soc->has_boot_trp && as_ctrl->scuclk) {
+		if (!regmap_read(as_ctrl->scuclk, REG_SCUCLK_BOOT_TRP, &val) &&
+		    (val & SPI_SCUCLK_BOOT_TRP_EMMC))
+			return SPI_CTRL_EMMC;
+	}
+
+	if (as_ctrl->soc->has_nfi && as_ctrl->soc->has_boot_trp) {
+		val = airoha_nfi_read(as_ctrl, REG_SPI_NFI_SNF_NFI_CNFG);
+		if (!(val & SPI_NFI_SNF_NFI_SPI_EN))
+			return SPI_CTRL_PARALLEL_NAND;
+	}
+
+	val = airoha_ctrl_read(as_ctrl, REG_SPI_CTRL_SFC_STRAP);
+
+	return val & SPI_CTRL_SFC_STRAP_NAND ? SPI_CTRL_NAND : SPI_CTRL_NOR;
 }
 
 static int airoha_snand_set_fifo_op(struct airoha_snand_ctrl *as_ctrl,
@@ -1246,6 +1285,7 @@ static const struct airoha_snand_soc_data en751627_snand_data = {
 static const struct airoha_snand_soc_data en7581_snand_data = {
 	.has_nfi = true,
 	.has_nfi2spi = true,
+	.has_boot_trp = true,
 };
 
 static const struct of_device_id airoha_snand_ids[] = {
@@ -1296,10 +1336,34 @@ static int airoha_snand_probe(struct platform_device *pdev)
 		return dev_err_probe(dev, PTR_ERR(as_ctrl->spi_clk),
 				     "unable to get spi clk\n");
 
-	dma_enable = as_ctrl->soc->has_nfi;
+	if (as_ctrl->soc->has_boot_trp) {
+		struct regmap *scu;
+
+		scu = syscon_regmap_lookup_by_phandle_optional(dev->of_node,
+							       "airoha,scu");
+		if (IS_ERR(scu))
+			return dev_err_probe(dev, PTR_ERR(scu),
+					     "cannot get scuclk regmap\n");
+		as_ctrl->scuclk = scu;
+	}
+
+	/* Get bootstrap pins to determine the boot flash type. */
+	as_ctrl->boot_type = airoha_snand_boot_type(as_ctrl);
+	dev_dbg(dev, "boot type: %s\n",
+		as_ctrl->boot_type == SPI_CTRL_EMMC ? "eMMC" :
+		as_ctrl->boot_type == SPI_CTRL_PARALLEL_NAND ? "parallel NAND" :
+		as_ctrl->boot_type == SPI_CTRL_NOR ? "NOR" : "SPI NAND");
+
+	if (as_ctrl->boot_type == SPI_CTRL_EMMC ||
+	    as_ctrl->boot_type == SPI_CTRL_PARALLEL_NAND)
+		return dev_err_probe(dev, -ENODEV,
+				     "boot flash is not connected to SPI controller\n");
+
+	dma_enable = as_ctrl->soc->has_nfi &&
+		     as_ctrl->boot_type == SPI_CTRL_NAND;
 	if (dma_enable && device_is_compatible(dev, "airoha,en7523-snand")) {
 		sfc_strap = airoha_ctrl_read(as_ctrl, REG_SPI_CTRL_SFC_STRAP);
-		if (!(sfc_strap & 0x04)) {
+		if (!(sfc_strap & SPI_CTRL_SFC_STRAP_RESERVED)) {
 			dma_enable = false;
 			dev_warn(dev, "Detected booting in RESERVED mode (UART_TXD was short to GND).\n");
 			dev_warn(dev, "This mode is known for incorrect DMA reading of some flashes.\n");
@@ -1308,7 +1372,7 @@ static int airoha_snand_probe(struct platform_device *pdev)
 		}
 	}
 
-	if (as_ctrl->soc->has_nfi) {
+	if (dma_enable) {
 		err = dma_set_mask(as_ctrl->dev, DMA_BIT_MASK(32));
 		if (err)
 			return err;
@@ -1330,7 +1394,7 @@ static int airoha_snand_probe(struct platform_device *pdev)
 	 * FIFO and the flash on-die ECC, so it is initialized like the SFC
 	 * NOR path rather than accessing a non-existent NFI block.
 	 */
-	if (as_ctrl->soc->has_nfi)
+	if (as_ctrl->soc->has_nfi && as_ctrl->boot_type == SPI_CTRL_NAND)
 		airoha_snand_nfi_init(as_ctrl);
 	else
 		airoha_snand_nor_init(as_ctrl);
@@ -1347,7 +1411,7 @@ static struct platform_driver airoha_snand_driver = {
 };
 module_platform_driver(airoha_snand_driver);
 
-MODULE_DESCRIPTION("Airoha SPI-NAND Flash Controller Driver");
+MODULE_DESCRIPTION("Airoha SPI Flash Controller Driver");
 MODULE_AUTHOR("Lorenzo Bianconi <lorenzo@kernel.org>");
 MODULE_AUTHOR("Ray Liu <ray.liu@airoha.com>");
 MODULE_LICENSE("GPL");
