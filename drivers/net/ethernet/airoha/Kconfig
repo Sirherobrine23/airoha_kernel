@@ -40,4 +40,17 @@ config NET_AIROHA_TSO
 	  in their device tree. Nonlinear and GSO packets are routed through
 	  PDMA while linear packets continue using QDMA.
 
+config NET_AIROHA_SOC_WED
+	bool "Airoha SoC Wireless Ethernet Dispatch (WED) support"
+	depends on NET_AIROHA
+	depends on ARCH_AIROHA || COMPILE_TEST
+	select NET_MEDIATEK_WED_COMMON
+	select MFD_SYSCON
+	select REGMAP_MMIO
+	help
+	  Enable Wireless Ethernet Dispatch (WED v1) Wi-Fi TX offload on
+	  Airoha EN7523 SoCs. Registers the shared mtk_wed_ops hooks so
+	  compatible mt76 wireless drivers can offload TX flows via PPE
+	  and WDMA.
+
 endif #NET_VENDOR_AIROHA

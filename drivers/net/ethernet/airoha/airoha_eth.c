@@ -19,6 +19,7 @@
 #include "airoha_regs.h"
 #include "airoha_eth.h"
 #include "airoha_tso.h"
+#include "airoha_wed.h"
 
 u32 airoha_rr(void __iomem *base, u32 offset)
 {
@@ -4555,6 +4556,18 @@ static int airoha_probe(struct platform_device *pdev)
 	if (err)
 		goto error_tso_cleanup;
 
+	for (i = 0; airoha_has_wed(eth); i++) {
+		struct device_node *wed_np;
+
+		wed_np = of_parse_phandle(pdev->dev.of_node, "airoha,wed", i);
+		if (!wed_np)
+			break;
+
+		err = airoha_wed_add_hw(eth, wed_np, i);
+		if (err)
+			goto error_wed_exit;
+	}
+
 	for (i = 0; i < ARRAY_SIZE(eth->qdma); i++) {
 		airoha_qdma_start_napi(&eth->qdma[i]);
 		airoha_qdma_set(&eth->qdma[i], REG_QDMA_GLOBAL_CFG,
@@ -4584,7 +4597,6 @@ static int airoha_probe(struct platform_device *pdev)
 	return 0;
 
 error_napi_stop:
-	airoha_fe_irq_cleanup(eth);
 	for (i = 0; i < ARRAY_SIZE(eth->qdma); i++) {
 		airoha_qdma_stop_napi(&eth->qdma[i]);
 		airoha_qdma_tx_cleanup(&eth->qdma[i]);
@@ -4611,6 +4623,9 @@ error_napi_stop:
 		}
 		airoha_metadata_dst_free(port);
 	}
+error_wed_exit:
+	airoha_wed_exit();
+	airoha_fe_irq_cleanup(eth);
 error_tso_cleanup:
 	airoha_tso_cleanup(eth);
 error_hw_cleanup:
@@ -4628,6 +4643,7 @@ static void airoha_remove(struct platform_device *pdev)
 	int i;
 
 	airoha_fe_irq_cleanup(eth);
+	airoha_wed_exit();
 	for (i = 0; i < ARRAY_SIZE(eth->qdma); i++) {
 		airoha_qdma_stop_napi(&eth->qdma[i]);
 		airoha_qdma_tx_cleanup(&eth->qdma[i]);

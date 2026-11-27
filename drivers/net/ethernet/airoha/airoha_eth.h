@@ -825,6 +825,11 @@ static inline bool airoha_is_7583(struct airoha_eth *eth)
 	return eth->soc->version == 0x7583;
 }
 
+static inline bool airoha_has_wed(struct airoha_eth *eth)
+{
+	return IS_ENABLED(CONFIG_NET_AIROHA_SOC_WED) && airoha_is_7523(eth);
+}
+
 static inline bool airoha_qdma_is_lro_queue(struct airoha_queue *q)
 {
 	struct airoha_qdma *qdma = q->qdma;
@@ -865,6 +870,8 @@ bool airoha_ppe_is_enabled(struct airoha_eth *eth, int index);
 void airoha_ppe_check_skb(struct airoha_ppe_dev *dev, struct sk_buff *skb,
 			  u16 hash, bool rx_wlan);
 int airoha_ppe_setup_tc_block_cb(struct airoha_ppe_dev *dev, void *type_data);
+int airoha_ppe_setup_tc_wed(struct airoha_eth *eth, struct net_device *dev,
+			    enum tc_setup_type type, void *type_data);
 int airoha_ppe_init(struct airoha_eth *eth);
 void airoha_ppe_deinit(struct airoha_eth *eth);
 void airoha_ppe_init_upd_mem(struct airoha_gdm_dev *dev, const u8 *addr);

@@ -593,20 +593,39 @@ static int airoha_ppe_foe_entry_prepare(struct airoha_eth *eth,
 	      AIROHA_FOE_IB1_BIND_TTL;
 	hwe->ib1 = val;
 
-	val = FIELD_PREP(AIROHA_FOE_IB2_PORT_AG, 0x1f);
+	val = FIELD_PREP(AIROHA_FOE_IB2_PORT_AG,
+			 airoha_is_7523(eth) ? 0x0 : 0x1f);
 	if (netdev) {
 		struct airoha_wdma_info info = {};
 
 		if (!airoha_ppe_get_wdma_info(netdev, data->eth.h_dest,
 					      &info)) {
-			val |= FIELD_PREP(AIROHA_FOE_IB2_NBQ, info.idx) |
-			       FIELD_PREP(AIROHA_FOE_IB2_PSE_PORT,
-					  FE_PSE_PORT_CDM4);
-			qdata |= FIELD_PREP(AIROHA_FOE_ACTDP, info.bss);
-			wlan_etype = FIELD_PREP(AIROHA_FOE_MAC_WDMA_BAND,
-						info.idx) |
-				     FIELD_PREP(AIROHA_FOE_MAC_WDMA_WCID,
-						info.wcid);
+			if (airoha_is_7523(eth)) {
+				u8 ring = info.idx * 2 + info.queue;
+
+				if (info.idx > 1 || info.queue > 1 ||
+				    info.wcid > 0xff || info.bss > 0x3f)
+					return -EOPNOTSUPP;
+
+				val |= FIELD_PREP(AIROHA_FOE_IB2_NBQ, ring) |
+				       FIELD_PREP(AIROHA_FOE_IB2_PSE_PORT,
+						  FE_PSE_PORT_GDM3) |
+				       AIROHA_FOE_IB2_PSE_QOS;
+				qdata |= FIELD_PREP(AIROHA_FOE_CHANNEL,
+						    6 + ring);
+				wlan_etype = (info.wcid << 6) | info.bss;
+			} else {
+				val |= FIELD_PREP(AIROHA_FOE_IB2_NBQ,
+						  info.idx) |
+				       FIELD_PREP(AIROHA_FOE_IB2_PSE_PORT,
+						  FE_PSE_PORT_CDM4);
+				qdata |= FIELD_PREP(AIROHA_FOE_ACTDP, info.bss);
+				wlan_etype =
+					FIELD_PREP(AIROHA_FOE_MAC_WDMA_BAND,
+						   info.idx) |
+					FIELD_PREP(AIROHA_FOE_MAC_WDMA_WCID,
+						   info.wcid);
+			}
 		} else {
 			struct airoha_gdm_dev *dev = netdev_priv(netdev);
 			struct airoha_gdm_port *port;
@@ -2387,6 +2406,65 @@ int airoha_ppe_setup_tc_block_cb(struct airoha_ppe_dev *dev, void *type_data)
 	mutex_unlock(&flow_offload_mutex);
 
 	return err;
+}
+
+static int airoha_ppe_wed_block_cb(enum tc_setup_type type, void *type_data,
+				   void *cb_priv)
+{
+	struct airoha_eth *eth = cb_priv;
+
+	if (type != TC_SETUP_CLSFLOWER)
+		return -EOPNOTSUPP;
+
+	return airoha_ppe_setup_tc_block_cb(&eth->ppe->dev, type_data);
+}
+
+int airoha_ppe_setup_tc_wed(struct airoha_eth *eth, struct net_device *dev,
+			    enum tc_setup_type type, void *type_data)
+{
+	flow_setup_cb_t *cb = airoha_ppe_wed_block_cb;
+	struct flow_block_offload *f = type_data;
+	static LIST_HEAD(block_cb_list);
+	struct flow_block_cb *block_cb;
+
+	if (!eth->ppe || !test_bit(DEV_STATE_REGISTERED, &eth->state))
+		return -ENODEV;
+
+	if (type != TC_SETUP_BLOCK && type != TC_SETUP_FT)
+		return -EOPNOTSUPP;
+
+	if (f->binder_type != FLOW_BLOCK_BINDER_TYPE_CLSACT_INGRESS)
+		return -EOPNOTSUPP;
+
+	f->driver_block_list = &block_cb_list;
+	switch (f->command) {
+	case FLOW_BLOCK_BIND:
+		block_cb = flow_block_cb_lookup(f->block, cb, dev);
+		if (block_cb) {
+			flow_block_cb_incref(block_cb);
+			return 0;
+		}
+		block_cb = flow_block_cb_alloc(cb, dev, eth, NULL);
+		if (IS_ERR(block_cb))
+			return PTR_ERR(block_cb);
+
+		flow_block_cb_incref(block_cb);
+		flow_block_cb_add(block_cb, f);
+		list_add_tail(&block_cb->driver_list, &block_cb_list);
+		return 0;
+	case FLOW_BLOCK_UNBIND:
+		block_cb = flow_block_cb_lookup(f->block, cb, dev);
+		if (!block_cb)
+			return -ENOENT;
+
+		if (!flow_block_cb_decref(block_cb)) {
+			flow_block_cb_remove(block_cb, f);
+			list_del(&block_cb->driver_list);
+		}
+		return 0;
+	default:
+		return -EOPNOTSUPP;
+	}
 }
 
 void airoha_ppe_check_skb(struct airoha_ppe_dev *dev, struct sk_buff *skb,
