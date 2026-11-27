@@ -37,6 +37,21 @@ u32 airoha_rmw(void __iomem *base, u32 offset, u32 mask, u32 val)
 	return val;
 }
 
+static int airoha_qdma_irq_reg_count(struct airoha_qdma *qdma)
+{
+	/* AN7552 has two shared IRQ status/enable words per IRQ bank. */
+	return airoha_is_7552(qdma->eth) ? 2 : QDMA_INT_REG_MAX;
+}
+
+static u32 airoha_qdma_rx_irq_mask(struct airoha_qdma *qdma, int bank)
+{
+	/* The 16-ring AN7552 QDMA routes RX10..14 through the second bank. */
+	if (airoha_is_7552(qdma->eth) && bank == 1)
+		return GENMASK(14, 10);
+
+	return RX_IRQ_BANK_PIN_MASK(bank);
+}
+
 static void airoha_qdma_set_irqmask(struct airoha_irq_bank *irq_bank,
 				    int index, u32 clear, u32 set)
 {
@@ -44,7 +59,7 @@ static void airoha_qdma_set_irqmask(struct airoha_irq_bank *irq_bank,
 	int bank = irq_bank - &qdma->irq_banks[0];
 	unsigned long flags;
 
-	if (WARN_ON_ONCE(index >= ARRAY_SIZE(irq_bank->irqmask)))
+	if (WARN_ON_ONCE(index >= airoha_qdma_irq_reg_count(qdma)))
 		return;
 
 	spin_lock_irqsave(&irq_bank->irq_lock, flags);
@@ -192,7 +207,7 @@ static void airoha_fe_maccr_init(struct airoha_eth *eth)
 			      FIELD_PREP(GDM_LONG_LEN_MASK, AIROHA_MAX_RX_SIZE));
 	}
 
-	if (airoha_is_7523(eth)) {
+	if (airoha_is_7523(eth) || airoha_is_7552(eth)) {
 		vlan_mask |= STAG_EN;
 		vlan_val |= STAG_EN;
 	}
@@ -499,7 +514,7 @@ static void airoha_fe_lro_rxq_enable(struct airoha_eth *eth, int qdma_id,
 				     int lro_queue_index, int qid,
 				     int buf_size)
 {
-	u32 agg_count = airoha_is_7523(eth) ?
+	u32 agg_count = (airoha_is_7523(eth) || airoha_is_7552(eth)) ?
 			EN7523_AIROHA_RXQ_LRO_MAX_AGG_COUNT :
 			AIROHA_RXQ_LRO_MAX_AGG_COUNT;
 	int id = qdma_id + 1;
@@ -541,6 +556,13 @@ static void airoha_fe_lro_disable(struct airoha_eth *eth, int qdma_id)
 		airoha_fe_clear(eth, REG_CDM_LRO_EN(id),
 				EN7523_LRO_RXQ_EN_MASK |
 				EN7523_LRO_ALL_RXQ_MASK);
+	} else if (airoha_is_7552(eth)) {
+		airoha_fe_clear(eth, REG_CDM_LRO_EN(id),
+				AN7552_LRO_RXQ_EN_MASK);
+		airoha_ppe_lro_flush(eth, qdma_id);
+		for (i = 0; i < EN7523_AIROHA_MAX_NUM_LRO_QUEUES; i++)
+			airoha_fe_clear(eth, REG_CDM_LRO_RXQ(id, i),
+					LRO_RXQ_MASK(i));
 	} else {
 		airoha_fe_clear(eth, REG_CDM_LRO_EN(id), LRO_RXQ_EN_MASK);
 		for (i = 0; i < AIROHA_MAX_NUM_LRO_QUEUES; i++)
@@ -556,8 +578,14 @@ static void airoha_fe_lro_disable(struct airoha_eth *eth, int qdma_id)
 
 static bool airoha_fe_lro_is_enabled(struct airoha_eth *eth, int qdma_id)
 {
-	u32 mask = airoha_is_7523(eth) ? EN7523_LRO_RXQ_EN_MASK
-				       : LRO_RXQ_EN_MASK;
+	u32 mask;
+
+	if (airoha_is_7523(eth))
+		mask = EN7523_LRO_RXQ_EN_MASK;
+	else if (airoha_is_7552(eth))
+		mask = AN7552_LRO_RXQ_EN_MASK;
+	else
+		mask = LRO_RXQ_EN_MASK;
 
 	return !!(airoha_fe_rr(eth, REG_CDM_LRO_EN(qdma_id + 1)) & mask);
 }
@@ -583,7 +611,7 @@ static void airoha_dev_lro_enable(struct airoha_gdm_dev *dev)
 			continue;
 
 		size = SKB_WITH_OVERHEAD(AIROHA_RX_LEN(q->buf_size));
-		if (airoha_is_7523(eth))
+		if (airoha_is_7523(eth) || airoha_is_7552(eth))
 			size = min_t(u32, size,
 				     EN7523_AIROHA_RXQ_LRO_MAX_AGG_SIZE);
 		else
@@ -608,16 +636,22 @@ static void airoha_dev_lro_disable(struct airoha_gdm_dev *dev)
 
 static void airoha_fe_pse_init(struct airoha_eth *eth)
 {
-	/* EN7523 extends the PSE free-queue pool with GDMP SRAM. */
-	if (airoha_is_7523(eth)) {
+	u32 reset = FE_RST_CORE_MASK;
+
+	/* Only EN7523 and AN7552 extend the PSE pool with GDMP SRAM. */
+	if (airoha_is_7523(eth) || airoha_is_7552(eth)) {
 		airoha_wr(eth->gdmp_regs, 0x74, 3);
 		airoha_fe_wr(eth, eth->soc->pse_fq_cfg, 0x500);
 	}
 
-	airoha_fe_wr(eth, REG_FE_RST_GLO_CFG,
-		     FE_RST_CORE_MASK | FE_RST_GDM3_MBI_ARB_MASK |
-		     FE_RST_GDM4_MBI_ARB_MASK);
+	if (!airoha_is_7552(eth))
+		reset |= FE_RST_GDM3_MBI_ARB_MASK | FE_RST_GDM4_MBI_ARB_MASK;
+	airoha_fe_wr(eth, REG_FE_RST_GLO_CFG, reset);
 	usleep_range(1000, 2000);
+
+	/* AN7552 uses a fixed threshold and keeps silicon OQ reservations. */
+	if (airoha_is_7552(eth))
+		airoha_fe_wr(eth, AN7552_PSE_SHARE_USED_THD, 0x01e001f4);
 }
 
 static int airoha_fe_init(struct airoha_eth *eth)
@@ -634,8 +668,14 @@ static int airoha_fe_init(struct airoha_eth *eth)
 		      FIELD_PREP(PSE_IQ_RES2_P5_MASK, 0x40) |
 		      FIELD_PREP(PSE_IQ_RES2_P4_MASK, 0x34));
 
-	/* enable FE copy engine for KA/DPI */
-	airoha_fe_wr(eth, REG_FE_PCE_CFG, PCE_DPI_EN_MASK | PCE_KA_EN_MASK);
+	/* AN7552 programs its PSE before the classifier and keeps PCE disabled. */
+	if (airoha_is_7552(eth))
+		airoha_fe_pse_init(eth);
+
+	/* enable FE copy engine for KA/DPI where supported */
+	airoha_fe_wr(eth, REG_FE_PCE_CFG,
+		     airoha_is_7552(eth) ? 0
+					 : PCE_DPI_EN_MASK | PCE_KA_EN_MASK);
 	/* set vip queue selection to ring 4 */
 	if (airoha_is_7523(eth)) {
 		vip_mask = EN7523_CDM_VIP_QSEL_MASK;
@@ -647,38 +687,43 @@ static int airoha_fe_init(struct airoha_eth *eth)
 	airoha_fe_rmw(eth, REG_CDM_FWD_CFG(1), vip_mask, vip_val);
 	airoha_fe_rmw(eth, REG_CDM_FWD_CFG(2), vip_mask, vip_val);
 
-	/* set GDM4 source interface offset to 8 */
-	if (eth->soc->max_gdm_ports >= AIROHA_GDM4_IDX)
-		airoha_fe_rmw(eth, REG_GDM_SRC_PORT_SET(4),
-			      GDM_SPORT_OFF2_MASK |
-			      GDM_SPORT_OFF1_MASK |
-			      GDM_SPORT_OFF0_MASK,
-			      FIELD_PREP(GDM_SPORT_OFF2_MASK, 8) |
-			      FIELD_PREP(GDM_SPORT_OFF1_MASK, 8) |
-			      FIELD_PREP(GDM_SPORT_OFF0_MASK, 8));
+	/* Leave AN7552's DMA page mode and CDM OQ maps unchanged. */
+	if (!airoha_is_7552(eth)) {
+		/* set GDM4 source interface offset to 8 */
+		if (eth->soc->max_gdm_ports >= AIROHA_GDM4_IDX)
+			airoha_fe_rmw(eth, REG_GDM_SRC_PORT_SET(4),
+				      GDM_SPORT_OFF2_MASK |
+				      GDM_SPORT_OFF1_MASK |
+				      GDM_SPORT_OFF0_MASK,
+				      FIELD_PREP(GDM_SPORT_OFF2_MASK, 8) |
+				      FIELD_PREP(GDM_SPORT_OFF1_MASK, 8) |
+				      FIELD_PREP(GDM_SPORT_OFF0_MASK, 8));
 
-	/* set PSE Page as 128B */
-	airoha_fe_rmw(eth, REG_FE_DMA_GLO_CFG,
-		      FE_DMA_GLO_L2_SPACE_MASK | FE_DMA_GLO_PG_SZ_MASK,
-		      FIELD_PREP(FE_DMA_GLO_L2_SPACE_MASK,
-				 airoha_is_7523(eth) ? 3 : 2) |
-		      FE_DMA_GLO_PG_SZ_MASK);
-	airoha_fe_pse_init(eth);
+		/* set PSE Page as 128B */
+		airoha_fe_rmw(eth, REG_FE_DMA_GLO_CFG,
+			      FE_DMA_GLO_L2_SPACE_MASK | FE_DMA_GLO_PG_SZ_MASK,
+			      FIELD_PREP(FE_DMA_GLO_L2_SPACE_MASK,
+					 airoha_is_7523(eth) ? 3 : 2) |
+			      FE_DMA_GLO_PG_SZ_MASK);
+		airoha_fe_pse_init(eth);
 
-	/* connect RxRing1 and RxRing15 to PSE Port0 OQ-1
-	 * connect other rings to PSE Port0 OQ-0
-	 */
-	airoha_fe_wr(eth, REG_FE_CDM1_OQ_MAP0, BIT(4));
-	airoha_fe_wr(eth, REG_FE_CDM1_OQ_MAP1, BIT(28));
-	airoha_fe_wr(eth, REG_FE_CDM1_OQ_MAP2, BIT(4));
-	airoha_fe_wr(eth, REG_FE_CDM1_OQ_MAP3, BIT(28));
+		/* connect RxRing1 and RxRing15 to PSE Port0 OQ-1
+		 * connect other rings to PSE Port0 OQ-0
+		 */
+		airoha_fe_wr(eth, REG_FE_CDM1_OQ_MAP0, BIT(4));
+		airoha_fe_wr(eth, REG_FE_CDM1_OQ_MAP1, BIT(28));
+		airoha_fe_wr(eth, REG_FE_CDM1_OQ_MAP2, BIT(4));
+		airoha_fe_wr(eth, REG_FE_CDM1_OQ_MAP3, BIT(28));
+	}
 
 	airoha_fe_vip_setup(eth);
 	/* EN7581 TDMA flow control uses the PSE shared buffer. */
 	if (airoha_is_7581(eth))
 		airoha_fe_clear(eth, REG_PSE_FC_CFG,
 				EN7581_PSE_TDMA_SHARE_DIS_MASK);
-	airoha_fe_pse_ports_init(eth);
+	/* AN7552 retains silicon OQ reservations and the fixed share threshold. */
+	if (!airoha_is_7552(eth))
+		airoha_fe_pse_ports_init(eth);
 
 	if (airoha_is_7581(eth) || airoha_is_7583(eth))
 		airoha_fe_set(eth, REG_GDM_MISC_CFG,
@@ -711,17 +756,20 @@ static int airoha_fe_init(struct airoha_eth *eth)
 			      FIELD_PREP(IP_ASSEMBLE_NBQ_MASK, 22));
 	}
 
-	airoha_fe_set(eth, REG_GDM_FWD_CFG(AIROHA_GDM3_IDX), GDM_PAD_EN_MASK);
-	/* Enable split for MIB counters for GDM3 */
-	airoha_fe_set(eth, REG_FE_GDM_MIB_CFG(AIROHA_GDM3_IDX),
-		      FE_GDM_TX_MIB_SPLIT_EN_MASK |
-		      FE_GDM_RX_MIB_SPLIT_EN_MASK);
-	if (eth->soc->max_gdm_ports >= AIROHA_GDM4_IDX) {
-		airoha_fe_set(eth, REG_GDM_FWD_CFG(AIROHA_GDM4_IDX),
+	if (!airoha_is_7552(eth)) {
+		airoha_fe_set(eth, REG_GDM_FWD_CFG(AIROHA_GDM3_IDX),
 			      GDM_PAD_EN_MASK);
-		airoha_fe_set(eth, REG_FE_GDM_MIB_CFG(AIROHA_GDM4_IDX),
+		/* Enable split for MIB counters for GDM3 */
+		airoha_fe_set(eth, REG_FE_GDM_MIB_CFG(AIROHA_GDM3_IDX),
 			      FE_GDM_TX_MIB_SPLIT_EN_MASK |
 			      FE_GDM_RX_MIB_SPLIT_EN_MASK);
+		if (eth->soc->max_gdm_ports >= AIROHA_GDM4_IDX) {
+			airoha_fe_set(eth, REG_GDM_FWD_CFG(AIROHA_GDM4_IDX),
+				      GDM_PAD_EN_MASK);
+			airoha_fe_set(eth, REG_FE_GDM_MIB_CFG(AIROHA_GDM4_IDX),
+				      FE_GDM_TX_MIB_SPLIT_EN_MASK |
+				      FE_GDM_RX_MIB_SPLIT_EN_MASK);
+		}
 	}
 
 	airoha_fe_crsn_qsel_init(eth);
@@ -736,6 +784,10 @@ static int airoha_fe_init(struct airoha_eth *eth)
 		airoha_fe_wr(eth, REG_CDM_FAQ_THR_CFG(2), 0xc40003f0);
 	}
 
+	/* AN7552 QDMA2 flow control uses PSE port 2, OQs 10 and 11. */
+	if (airoha_is_7552(eth))
+		airoha_fe_wr(eth, AN7552_QDMA2_FC_MAPPING5, 0x004b004a);
+
 	airoha_fe_clear(eth, REG_FE_CPORT_CFG, FE_CPORT_QUEUE_XFC_MASK);
 	if (airoha_is_7523(eth)) {
 		airoha_fe_set(eth, REG_FE_CPORT_CFG,
@@ -748,10 +800,11 @@ static int airoha_fe_init(struct airoha_eth *eth)
 	}
 
 	/* default aging mode for mbi unlock issue */
-	airoha_fe_rmw(eth, REG_GDM_CHN_RLS(2),
-		      MBI_RX_AGE_SEL_MASK | MBI_TX_AGE_SEL_MASK,
-		      FIELD_PREP(MBI_RX_AGE_SEL_MASK, 3) |
-		      FIELD_PREP(MBI_TX_AGE_SEL_MASK, 3));
+	if (!airoha_is_7552(eth))
+		airoha_fe_rmw(eth, REG_GDM_CHN_RLS(2),
+			      MBI_RX_AGE_SEL_MASK | MBI_TX_AGE_SEL_MASK,
+			      FIELD_PREP(MBI_RX_AGE_SEL_MASK, 3) |
+			      FIELD_PREP(MBI_TX_AGE_SEL_MASK, 3));
 
 	/* disable IFC by default */
 	airoha_fe_clear(eth, REG_FE_CSR_IFC_CFG, FE_IFC_EN_MASK);
@@ -761,6 +814,16 @@ static int airoha_fe_init(struct airoha_eth *eth)
 		airoha_fe_set(eth, GDM1_BASE_STAG_EN,
 			      CPORT_TX_STAG_EN | CPORT_RX_STAG_EN |
 			      GDM1_RX_LAN_SPORT);
+
+	if (airoha_is_7552(eth)) {
+		airoha_set_gdm_port_fwd_cfg(eth,
+					    REG_GDM_FWD_CFG(AIROHA_GDM1_IDX),
+					    FE_PSE_PORT_CDM1);
+		airoha_set_gdm_port_fwd_cfg(eth,
+					    REG_GDM_FWD_CFG(AIROHA_GDM2_IDX),
+					    FE_PSE_PORT_DROP);
+		return 0;
+	}
 
 	/* enable 1:N vlan action, init vlan table */
 	airoha_fe_set(eth, REG_MC_VLAN_EN, MC_VLAN_EN_MASK);
@@ -990,7 +1053,7 @@ static bool airoha_qdma_should_check_ppe_skb(struct airoha_eth *eth,
 	if (reason == PPE_CPU_REASON_HIT_UNBIND_RATE_REACHED)
 		return true;
 
-	if (!airoha_is_7523(eth))
+	if (!airoha_is_7523(eth) && !airoha_is_7552(eth))
 		return false;
 
 	return reason == AIROHA_PPE_CPU_REASON_HIT_UNBIND ||
@@ -1101,6 +1164,10 @@ static int airoha_qdma_rx_process(struct airoha_queue *q, int budget)
 		}
 
 		if (airoha_qdma_foe_entry_is_valid(eth, hash)) {
+			if (airoha_is_7552(eth) &&
+			    reason == PPE_CPU_REASON_HIT_UNBIND_RATE_REACHED)
+				airoha_ppe_check_lro(q->qdma, q->skb, hash);
+
 			skb_set_hash(q->skb, jhash_1word(hash, 0),
 				     PKT_HASH_TYPE_L4);
 
@@ -1142,7 +1209,7 @@ static int airoha_qdma_rx_napi_poll(struct napi_struct *napi, int budget)
 							 : QDMA_INT_REG_IDX2;
 
 		for (i = 0; i < qdma->eth->soc->num_irq_banks; i++) {
-			if (!(BIT(qid) & RX_IRQ_BANK_PIN_MASK(i)))
+			if (!(BIT(qid) & airoha_qdma_rx_irq_mask(qdma, i)))
 				continue;
 
 			airoha_qdma_irq_enable(&qdma->irq_banks[i], intr_reg,
@@ -1183,7 +1250,8 @@ static int airoha_qdma_init_rx_queue(struct airoha_queue *q,
 		return -ENOMEM;
 
 	pp_params.order = lro_q ?
-		(airoha_is_7523(eth) ? EN7523_AIROHA_LRO_PAGE_ORDER :
+		((airoha_is_7523(eth) || airoha_is_7552(eth)) ?
+		 EN7523_AIROHA_LRO_PAGE_ORDER :
 		 AIROHA_LRO_PAGE_ORDER) : 0;
 	pp_params.max_len = PAGE_SIZE << pp_params.order;
 
@@ -1198,6 +1266,10 @@ static int airoha_qdma_init_rx_queue(struct airoha_queue *q,
 	if (lro_q && airoha_is_7523(eth))
 		q->buf_size = SKB_HEAD_ALIGN(EN7523_AIROHA_RXQ_LRO_MAX_AGG_SIZE +
 					     AIROHA_RX_HEADROOM);
+	else if (lro_q && airoha_is_7552(eth))
+		q->buf_size = SKB_HEAD_ALIGN(EN7523_AIROHA_RXQ_LRO_MAX_AGG_SIZE +
+					     AIROHA_RX_HEADROOM +
+					     sizeof(struct skb_shared_info));
 	else
 		q->buf_size = lro_q ? pp_params.max_len : pp_params.max_len / 2;
 	q->ndesc = ndesc;
@@ -1213,7 +1285,7 @@ static int airoha_qdma_init_rx_queue(struct airoha_queue *q,
 			FIELD_PREP(RX_RING_THR_MASK, thr));
 	airoha_qdma_rmw(qdma, REG_RX_DMA_IDX(qid), RX_RING_DMA_IDX_MASK,
 			FIELD_PREP(RX_RING_DMA_IDX_MASK, q->head));
-	if (lro_q || qid == 15)
+	if (lro_q || (!airoha_is_7552(eth) && qid == 15))
 		airoha_qdma_clear(qdma, REG_RX_SCATTER_CFG(qid),
 				  RX_RING_SG_EN_MASK);
 	else
@@ -1676,11 +1748,13 @@ static int airoha_qdma_init_hfwd_queues(struct airoha_qdma *qdma)
 			FIELD_PREP(HW_FWD_DSCP_PAYLOAD_SIZE_MASK, !!id));
 	airoha_qdma_rmw(qdma, REG_FWD_DSCP_LOW_THR, FWD_DSCP_LOW_THR_MASK,
 			FIELD_PREP(FWD_DSCP_LOW_THR_MASK, 128));
+	/* AN7552 runs the QDMA link manager in DRAM mode. */
 	airoha_qdma_rmw(qdma, REG_LMGR_INIT_CFG,
 			LMGR_INIT_START | LMGR_SRAM_MODE_MASK |
 			HW_FWD_DESC_NUM_MASK,
 			FIELD_PREP(HW_FWD_DESC_NUM_MASK, num_desc) |
-			LMGR_INIT_START | LMGR_SRAM_MODE_MASK);
+			LMGR_INIT_START |
+			(airoha_is_7552(eth) ? 0 : LMGR_SRAM_MODE_MASK));
 
 	return read_poll_timeout(airoha_qdma_rr, status,
 				 !(status & LMGR_INIT_START), USEC_PER_MSEC,
@@ -1780,21 +1854,33 @@ static void airoha_qdma_init_qos_stats(struct airoha_qdma *qdma)
 
 static int airoha_qdma_hw_init(struct airoha_qdma *qdma)
 {
+	bool compact_irq = airoha_qdma_irq_reg_count(qdma) == 2;
 	struct airoha_eth *eth = qdma->eth;
 	int i;
 
+	if (compact_irq) {
+		for (i = 0; i < airoha_qdma_irq_reg_count(qdma); i++)
+			airoha_qdma_wr(qdma, REG_INT_STATUS(i), 0xffffffff);
+	}
+
 	for (i = 0; i < eth->soc->num_irq_banks; i++) {
+		u32 rx_mask = airoha_qdma_rx_irq_mask(qdma, i);
+
 		/* clear pending irqs */
-		airoha_qdma_wr(qdma, REG_INT_STATUS(i), 0xffffffff);
+		if (!compact_irq)
+			airoha_qdma_wr(qdma, REG_INT_STATUS(i), 0xffffffff);
 		/* setup rx irqs */
 		airoha_qdma_irq_enable(&qdma->irq_banks[i], QDMA_INT_REG_IDX0,
-				       INT_RX0_MASK(RX_IRQ_BANK_PIN_MASK(i)));
+				       INT_RX0_MASK(rx_mask));
 		airoha_qdma_irq_enable(&qdma->irq_banks[i], QDMA_INT_REG_IDX1,
-				       INT_RX1_MASK(RX_IRQ_BANK_PIN_MASK(i)));
+				       INT_RX1_MASK(rx_mask));
+		if (compact_irq)
+			continue;
+
 		airoha_qdma_irq_enable(&qdma->irq_banks[i], QDMA_INT_REG_IDX2,
-				       INT_RX2_MASK(RX_IRQ_BANK_PIN_MASK(i)));
+				       INT_RX2_MASK(rx_mask));
 		airoha_qdma_irq_enable(&qdma->irq_banks[i], QDMA_INT_REG_IDX3,
-				       INT_RX3_MASK(RX_IRQ_BANK_PIN_MASK(i)));
+				       INT_RX3_MASK(rx_mask));
 	}
 	/* setup tx irqs; TX IRQ queue 1 stays with the NPU on EN7523 QDMA0 */
 	if (airoha_is_7523(eth) && qdma == &eth->qdma[0])
@@ -1804,8 +1890,9 @@ static int airoha_qdma_hw_init(struct airoha_qdma *qdma)
 	else
 		airoha_qdma_irq_enable(&qdma->irq_banks[0], QDMA_INT_REG_IDX0,
 				       TX_COHERENT_LOW_INT_MASK | INT_TX_MASK);
-	airoha_qdma_irq_enable(&qdma->irq_banks[0], QDMA_INT_REG_IDX4,
-			       TX_COHERENT_HIGH_INT_MASK);
+	if (!compact_irq)
+		airoha_qdma_irq_enable(&qdma->irq_banks[0], QDMA_INT_REG_IDX4,
+				       TX_COHERENT_HIGH_INT_MASK);
 
 	if (airoha_is_7523(eth)) {
 		airoha_qdma_wr(qdma, 0x30, 0x7c000000);
@@ -1870,19 +1957,24 @@ static irqreturn_t airoha_irq_handler(int irq, void *dev_instance)
 {
 	struct airoha_irq_bank *irq_bank = dev_instance;
 	struct airoha_qdma *qdma = irq_bank->qdma;
+	u32 intr[ARRAY_SIZE(irq_bank->irqmask)] = {};
 	u32 rx_intr_mask = 0, rx_intr1, rx_intr2;
-	u32 intr[ARRAY_SIZE(irq_bank->irqmask)];
+	u32 pending = 0;
 	int i;
 
-	for (i = 0; i < ARRAY_SIZE(intr); i++) {
+	for (i = 0; i < airoha_qdma_irq_reg_count(qdma); i++) {
 		intr[i] = airoha_qdma_rr(qdma, REG_INT_STATUS(i));
 		intr[i] &= irq_bank->irqmask[i];
 		airoha_qdma_wr(qdma, REG_INT_STATUS(i), intr[i]);
+		pending |= intr[i];
 	}
+
+	if (!pending)
+		return IRQ_NONE;
 
 	if (!test_bit(DEV_STATE_INITIALIZED, &qdma->eth->state) ||
 	    !test_bit(DEV_STATE_NAPI_STARTED, &qdma->eth->state))
-		return IRQ_NONE;
+		return IRQ_HANDLED;
 
 	rx_intr1 = intr[1] & RX_DONE_LOW_INT_MASK;
 	if (rx_intr1) {
@@ -1932,7 +2024,18 @@ static int airoha_qdma_init_irq_banks(struct platform_device *pdev,
 		spin_lock_init(&irq_bank->irq_lock);
 		irq_bank->qdma = qdma;
 
-		irq_bank->irq = platform_get_irq(pdev, irq_index);
+		if (airoha_is_7552(eth)) {
+			char irq_name[16];
+			int j;
+
+			snprintf(irq_name, sizeof(irq_name), "%s%d",
+				 id ? "wan" : "lan", i);
+			irq_bank->irq = platform_get_irq_byname(pdev, irq_name);
+			for (j = 0; j < airoha_qdma_irq_reg_count(qdma); j++)
+				airoha_qdma_wr(qdma, REG_INT_ENABLE(i, j), 0);
+		} else {
+			irq_bank->irq = platform_get_irq(pdev, irq_index);
+		}
 		if (irq_bank->irq < 0)
 			return irq_bank->irq;
 
@@ -1967,6 +2070,9 @@ static int airoha_qdma_init(struct platform_device *pdev,
 	if (IS_ERR(qdma->regs))
 		return dev_err_probe(eth->dev, PTR_ERR(qdma->regs),
 				     "failed to iomap qdma%d regs\n", id);
+
+	if (airoha_is_7552(eth))
+		airoha_qdma_wr(qdma, REG_QDMA_GLOBAL_CFG, 0);
 
 	err = airoha_qdma_init_irq_banks(pdev, qdma);
 	if (err)
@@ -2031,9 +2137,12 @@ static int airoha_hw_init(struct platform_device *pdev,
 	int err, i;
 
 	/* disable xsi */
-	err = reset_control_bulk_assert(eth->soc->num_xsi_rsts, eth->xsi_rsts);
-	if (err)
-		return err;
+	if (eth->soc->num_xsi_rsts) {
+		err = reset_control_bulk_assert(eth->soc->num_xsi_rsts,
+						eth->xsi_rsts);
+		if (err)
+			return err;
+	}
 
 	err = reset_control_bulk_assert(ARRAY_SIZE(eth->rsts), eth->rsts);
 	if (err)
@@ -2761,6 +2870,7 @@ int airoha_get_fe_port(struct airoha_gdm_dev *dev)
 
 	switch (eth->soc->version) {
 	case 0x7523:
+	case 0x7552:
 		return port->id;
 	case 0x7583:
 		return port->id == AIROHA_GDM3_IDX ? FE_PSE_PORT_GDM3
@@ -2874,7 +2984,7 @@ static netdev_tx_t airoha_dev_xmit(struct sk_buff *skb,
 	qid = airoha_qdma_get_txq(qdma, skb_get_queue_mapping(skb));
 	tag = airoha_get_dsa_tag(skb, netdev);
 
-	if (airoha_is_7523(qdma->eth)) {
+	if (airoha_is_7523(qdma->eth) || airoha_is_7552(qdma->eth)) {
 		u32 port_mask = tag & MTK_STAG_PORT_MASK;
 		u32 chn = port_mask ? __ffs(port_mask) : MTK_INVALID_CHANNEL;
 
@@ -2911,6 +3021,9 @@ static netdev_tx_t airoha_dev_xmit(struct sk_buff *skb,
 	msg1 = FIELD_PREP(QDMA_ETH_TXMSG_NBOQ_MASK, dev->nbq) |
 	       FIELD_PREP(QDMA_ETH_TXMSG_FPORT_MASK, fport) |
 	       FIELD_PREP(QDMA_ETH_TXMSG_METER_MASK, 0x7f);
+	if (airoha_is_7552(qdma->eth))
+		msg1 |= QDMA_ETH_TXMSG_ACNT_G1_MASK |
+			QDMA_ETH_TXMSG_ACNT_G0_MASK;
 
 	q = &qdma->q_tx[qid];
 	if (WARN_ON_ONCE(!q->ndesc))
@@ -4220,7 +4333,7 @@ static int airoha_probe(struct platform_device *pdev)
 		return dev_err_probe(eth->dev, PTR_ERR(eth->fe_regs),
 				     "failed to iomap fe regs\n");
 
-	if (airoha_is_7523(eth)) {
+	if (airoha_is_7523(eth) || airoha_is_7552(eth)) {
 		eth->gdmp_regs =
 			devm_platform_ioremap_resource_byname(pdev, "gdmp");
 		if (IS_ERR(eth->gdmp_regs))
@@ -4239,21 +4352,23 @@ static int airoha_probe(struct platform_device *pdev)
 		return err;
 	}
 
-	xsi_rsts = devm_kzalloc_objs(eth->dev, *xsi_rsts,
-				     eth->soc->num_xsi_rsts);
-	if (!xsi_rsts)
-		return -ENOMEM;
+	if (eth->soc->num_xsi_rsts) {
+		xsi_rsts = devm_kzalloc_objs(eth->dev, *xsi_rsts,
+					     eth->soc->num_xsi_rsts);
+		if (!xsi_rsts)
+			return -ENOMEM;
 
-	eth->xsi_rsts = xsi_rsts;
-	for (i = 0; i < eth->soc->num_xsi_rsts; i++)
-		eth->xsi_rsts[i].id = eth->soc->xsi_rsts_names[i];
+		eth->xsi_rsts = xsi_rsts;
+		for (i = 0; i < eth->soc->num_xsi_rsts; i++)
+			eth->xsi_rsts[i].id = eth->soc->xsi_rsts_names[i];
 
-	err = devm_reset_control_bulk_get_exclusive(eth->dev,
-						    eth->soc->num_xsi_rsts,
-						    eth->xsi_rsts);
-	if (err) {
-		dev_err(eth->dev, "failed to get bulk xsi reset lines\n");
-		return err;
+		err = devm_reset_control_bulk_get_exclusive(eth->dev,
+							    eth->soc->num_xsi_rsts,
+							    eth->xsi_rsts);
+		if (err) {
+			dev_err(eth->dev, "failed to get bulk xsi reset lines\n");
+			return err;
+		}
 	}
 
 	eth->napi_dev = alloc_netdev_dummy(0);
@@ -4675,8 +4790,49 @@ static const struct airoha_eth_soc_data an7583_soc_data = {
 	},
 };
 
+static int airoha_an7552_get_dev_from_sport(struct airoha_qdma_desc *desc,
+					    u16 *port, u16 *dev)
+{
+	u32 sport = FIELD_GET(QDMA_ETH_RXMSG_SPORT_MASK,
+			      le32_to_cpu(READ_ONCE(desc->msg1)));
+
+	*dev = 0;
+	switch (sport) {
+	case 0:
+	case 1:
+	case 0x10 ... 0x14:
+		*port = AIROHA_GDM1_IDX - 1;
+		return 0;
+	case 2:
+	case 5:
+		*port = AIROHA_GDM2_IDX - 1;
+		return 0;
+	default:
+		return -EINVAL;
+	}
+}
+
+static const struct airoha_eth_soc_data an7552_soc_data = {
+	.version = 0x7552,
+	.num_ppe = 1,
+	.num_tx_rings = 8,
+	.num_rx_rings = 16,
+	.num_irq_banks = AIROHA_MAX_NUM_IRQ_BANKS,
+	.max_gdm_ports = AIROHA_MAX_NUM_GDM_PORTS,
+	.pse_fq_cfg = AN7552_PSE_FQ_CFG,
+	.ppe_sram_entries = 512,
+	.ppe_dram_entries = PPE_DRAM_NUM_ENTRIES,
+	.ppe_stats_entries = 0,
+	.ops = {
+		.get_sport = airoha_en7523_get_sport,
+		.get_vip_port = airoha_en7523_get_vip_port,
+		.get_dev_from_sport = airoha_an7552_get_dev_from_sport,
+	},
+};
+
 static const struct of_device_id of_airoha_match[] = {
 	{ .compatible = "airoha,en7523-eth", .data = &en7523_soc_data },
+	{ .compatible = "airoha,an7552-eth", .data = &an7552_soc_data },
 	{ .compatible = "airoha,en7581-eth", .data = &en7581_soc_data },
 	{ .compatible = "airoha,an7583-eth", .data = &an7583_soc_data },
 	{ /* sentinel */ }
