@@ -16,20 +16,25 @@ description:
 properties:
   compatible:
     enum:
+      - airoha,en7523-eth
       - airoha,en7581-eth
       - airoha,an7583-eth
 
   reg:
+    minItems: 3
     items:
       - description: Frame engine base address
       - description: QDMA0 base address
       - description: QDMA1 base address
+      - description: GDMP SRAM configuration base address
 
   reg-names:
+    minItems: 3
     items:
       - const: fe
       - const: qdma0
       - const: qdma1
+      - const: gdmp
 
   interrupts:
     items:
@@ -44,21 +49,38 @@ properties:
       - description: FE error irq
       - description: PDMA irq
 
+  interrupt-names:
+    items:
+      - const: lan0
+      - const: lan1
+      - const: lan2
+      - const: lan3
+      - const: wan0
+      - const: wan1
+      - const: wan2
+      - const: wan3
+      - const: fe-error
+      - const: pdma
+
   resets:
     minItems: 7
-    maxItems: 8
+    maxItems: 9
 
   reset-names:
-    items:
-      - const: fe
-      - const: pdma
-      - const: qdma
-      - const: xsi-mac
-      - const: hsi0-mac
-      - const: hsi1-mac
-      - enum: [ hsi-mac, xfp-mac ]
-      - const: xfp-mac
     minItems: 7
+    maxItems: 9
+    items:
+      enum:
+        - fe
+        - pdma
+        - qdma
+        - gdmp
+        - tdma
+        - xsi-mac
+        - hsi0-mac
+        - hsi1-mac
+        - hsi-mac
+        - xfp-mac
 
   memory-region:
     items:
@@ -84,8 +106,44 @@ properties:
       interface to implement hardware flow offloading programming Packet
       Processor Engine (PPE) flow table.
 
+  airoha,wed:
+    $ref: /schemas/types.yaml#/definitions/phandle-array
+    minItems: 1
+    maxItems: 2
+    description:
+      WED instances associated with the PCIe domains used by the wireless
+      devices. Entries are ordered by PCI domain number.
+
 allOf:
   - $ref: ethernet-controller.yaml#
+  - if:
+      properties:
+        compatible:
+          contains:
+            const: airoha,en7523-eth
+    then:
+      properties:
+        reg:
+          minItems: 4
+
+        reg-names:
+          minItems: 4
+
+        resets:
+          minItems: 8
+          maxItems: 8
+
+        reset-names:
+          items:
+            - const: fe
+            - const: pdma
+            - const: qdma
+            - const: gdmp
+            - const: tdma
+            - const: hsi0-mac
+            - const: hsi1-mac
+            - const: hsi-mac
+
   - if:
       properties:
         compatible:
@@ -94,11 +152,29 @@ allOf:
               - airoha,en7581-eth
     then:
       properties:
+        reg:
+          maxItems: 3
+
+        reg-names:
+          maxItems: 3
+
         resets:
           minItems: 8
+          maxItems: 9
 
         reset-names:
           minItems: 8
+          maxItems: 9
+          items:
+            - const: fe
+            - const: pdma
+            - const: qdma
+            - const: xsi-mac
+            - const: hsi0-mac
+            - const: hsi1-mac
+            - const: hsi-mac
+            - const: xfp-mac
+            - const: tdma
 
   - if:
       properties:
@@ -108,11 +184,28 @@ allOf:
               - airoha,an7583-eth
     then:
       properties:
+        reg:
+          maxItems: 3
+
+        reg-names:
+          maxItems: 3
+
         resets:
-          maxItems: 7
+          minItems: 7
+          maxItems: 8
 
         reset-names:
-          maxItems: 7
+          minItems: 7
+          maxItems: 8
+          items:
+            - const: fe
+            - const: pdma
+            - const: qdma
+            - const: xsi-mac
+            - const: hsi0-mac
+            - const: hsi1-mac
+            - const: xfp-mac
+            - const: tdma
 
 patternProperties:
   "^ethernet@[1-4]$":
