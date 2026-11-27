@@ -14,6 +14,7 @@
 #include <linux/io.h>
 #include <linux/iopoll.h>
 #include <linux/limits.h>
+#include <linux/list.h>
 #include <linux/math.h>
 #include <linux/minmax.h>
 #include <linux/module.h>
@@ -208,6 +209,15 @@
 #define SNAND_FIFO_RX_BUSWIDTH_SINGLE		0x0c
 #define SNAND_FIFO_RX_BUSWIDTH_DUAL		0x0e
 #define SNAND_FIFO_RX_BUSWIDTH_QUAD		0x0f
+#define SNAND_FIFO_TXRX_SINGLE_SINGLE		0x10
+#define SNAND_FIFO_TXRX_SINGLE_DUAL		0x11
+#define SNAND_FIFO_TXRX_SINGLE_QUAD		0x12
+#define SNAND_FIFO_TXRX_DUAL_SINGLE		0x13
+#define SNAND_FIFO_TXRX_DUAL_DUAL		0x14
+#define SNAND_FIFO_TXRX_DUAL_QUAD		0x15
+#define SNAND_FIFO_TXRX_QUAD_SINGLE		0x16
+#define SNAND_FIFO_TXRX_QUAD_DUAL		0x17
+#define SNAND_FIFO_TXRX_QUAD_QUAD		0x18
 
 #define SPI_NAND_CACHE_SIZE			(SZ_4K + SZ_256)
 #define SPI_MAX_TRANSFER_SIZE			511
@@ -416,7 +426,10 @@ static int airoha_snand_set_mode(struct airoha_snand_ctrl *as_ctrl,
 		airoha_ctrl_write(as_ctrl, REG_SPI_CTRL_MANUAL_EN, 0);
 		break;
 	case SPI_MODE_AUTO:
-	default:
+		airoha_ctrl_write(as_ctrl, REG_SPI_CTRL_NFI2SPI_EN, 0);
+		airoha_ctrl_write(as_ctrl, REG_SPI_CTRL_MTX_MODE_TOG, 0);
+		airoha_ctrl_write(as_ctrl, REG_SPI_CTRL_MANUAL_EN, 0);
+		airoha_ctrl_write(as_ctrl, REG_SPI_CTRL_READ_IDLE_EN, 1);
 		break;
 	}
 
@@ -425,8 +438,51 @@ static int airoha_snand_set_mode(struct airoha_snand_ctrl *as_ctrl,
 	return 0;
 }
 
+static int airoha_snand_txrx_op(int tx_buswidth, int rx_buswidth)
+{
+	switch (tx_buswidth) {
+	case 0:
+	case 1:
+		switch (rx_buswidth) {
+		case 0:
+		case 1:
+			return SNAND_FIFO_TXRX_SINGLE_SINGLE;
+		case 2:
+			return SNAND_FIFO_TXRX_SINGLE_DUAL;
+		case 4:
+			return SNAND_FIFO_TXRX_SINGLE_QUAD;
+		}
+		break;
+	case 2:
+		switch (rx_buswidth) {
+		case 0:
+		case 1:
+			return SNAND_FIFO_TXRX_DUAL_SINGLE;
+		case 2:
+			return SNAND_FIFO_TXRX_DUAL_DUAL;
+		case 4:
+			return SNAND_FIFO_TXRX_DUAL_QUAD;
+		}
+		break;
+	case 4:
+		switch (rx_buswidth) {
+		case 0:
+		case 1:
+			return SNAND_FIFO_TXRX_QUAD_SINGLE;
+		case 2:
+			return SNAND_FIFO_TXRX_QUAD_DUAL;
+		case 4:
+			return SNAND_FIFO_TXRX_QUAD_QUAD;
+		}
+		break;
+	}
+
+	return -EINVAL;
+}
+
 static int airoha_snand_write_data(struct airoha_snand_ctrl *as_ctrl,
-				   const u8 *data, int len, int buswidth)
+				   const u8 *data, int len, int buswidth,
+				   int next_rx_buswidth)
 {
 	int i, data_len;
 	u8 cmd;
@@ -447,10 +503,17 @@ static int airoha_snand_write_data(struct airoha_snand_ctrl *as_ctrl,
 	}
 
 	for (i = 0; i < len; i += data_len) {
-		int err;
+		int err, fifo_cmd = cmd;
 
 		data_len = min(len - i, SPI_MAX_TRANSFER_SIZE);
-		err = airoha_snand_set_fifo_op(as_ctrl, cmd, data_len);
+		if (next_rx_buswidth && i + data_len == len) {
+			fifo_cmd = airoha_snand_txrx_op(buswidth,
+							next_rx_buswidth);
+			if (fifo_cmd < 0)
+				return fifo_cmd;
+		}
+
+		err = airoha_snand_set_fifo_op(as_ctrl, fifo_cmd, data_len);
 		if (err)
 			return err;
 
@@ -578,7 +641,8 @@ static int airoha_snand_dirmap_create(struct spi_mem_dirmap_desc *desc)
 	if (desc->info.length > SPI_NAND_CACHE_SIZE)
 		return -E2BIG;
 
-	if (!airoha_snand_supports_op(desc->mem, desc->info.op_tmpl))
+	if (!airoha_snand_supports_op(desc->mem, desc->info.op_tmpl) ||
+	    !airoha_snand_is_page_ops(desc->info.op_tmpl))
 		return -EOPNOTSUPP;
 
 	return 0;
@@ -913,8 +977,8 @@ static int airoha_snand_exec_op(struct spi_mem *mem,
 				const struct spi_mem_op *op)
 {
 	unsigned int cs = spi_get_chipselect(mem->spi, 0);
+	int op_len, addr_len, dummy_len, next_rx_buswidth = 0;
 	struct airoha_snand_ctrl *as_ctrl;
-	int op_len, addr_len, dummy_len;
 	u8 buf[20], *data;
 	int i, err, cs_err;
 
@@ -956,10 +1020,15 @@ static int airoha_snand_exec_op(struct spi_mem *mem,
 	if (err < 0)
 		goto out_deassert_cs;
 
+	if (op->data.nbytes && op->data.dir == SPI_MEM_DATA_IN)
+		next_rx_buswidth = op->data.buswidth;
+
 	/* opcode */
 	data = buf;
 	err = airoha_snand_write_data(as_ctrl, data, op_len,
-				      op->cmd.buswidth);
+				      op->cmd.buswidth,
+				      !addr_len && !dummy_len ?
+				      next_rx_buswidth : 0);
 	if (err)
 		goto out_deassert_cs;
 
@@ -967,7 +1036,9 @@ static int airoha_snand_exec_op(struct spi_mem *mem,
 	data += op_len;
 	if (addr_len) {
 		err = airoha_snand_write_data(as_ctrl, data, addr_len,
-					      op->addr.buswidth);
+					      op->addr.buswidth,
+					      !dummy_len ?
+					      next_rx_buswidth : 0);
 		if (err)
 			goto out_deassert_cs;
 	}
@@ -976,7 +1047,8 @@ static int airoha_snand_exec_op(struct spi_mem *mem,
 	data += addr_len;
 	if (dummy_len) {
 		err = airoha_snand_write_data(as_ctrl, data, dummy_len,
-					      op->dummy.buswidth);
+					      op->dummy.buswidth,
+					      next_rx_buswidth);
 		if (err)
 			goto out_deassert_cs;
 	}
@@ -990,13 +1062,109 @@ static int airoha_snand_exec_op(struct spi_mem *mem,
 		else
 			err = airoha_snand_write_data(as_ctrl, op->data.buf.out,
 						      op->data.nbytes,
-						      op->data.buswidth);
+						      op->data.buswidth, 0);
 	}
 
 out_deassert_cs:
 	cs_err = airoha_snand_set_cs(as_ctrl, SPI_CHIP_SEL_HIGH);
 
 	return err ?: cs_err;
+}
+
+static size_t airoha_snand_max_transfer_size(struct spi_device *spi)
+{
+	return SPI_MAX_TRANSFER_SIZE;
+}
+
+static int airoha_snand_transfer_one_message(struct spi_controller *ctrl,
+					     struct spi_message *msg)
+{
+	struct airoha_snand_ctrl *as_ctrl = spi_controller_get_devdata(ctrl);
+	unsigned int cs = spi_get_chipselect(msg->spi, 0);
+	struct spi_transfer *xfer;
+	int err = 0, cs_err;
+
+	if (cs >= AIROHA_SPI_NUM_CHIPSELECTS) {
+		err = -EINVAL;
+		goto out_finalize;
+	}
+
+	err = airoha_snand_set_mode(as_ctrl, SPI_MODE_MANUAL);
+	if (err)
+		goto out_finalize;
+
+	err = airoha_snand_set_cs(as_ctrl, SPI_CHIP_SEL_HIGH);
+	if (err)
+		goto out_auto;
+
+	err = airoha_snand_select_device(as_ctrl, cs);
+	if (err)
+		goto out_auto;
+
+	err = airoha_snand_set_cs(as_ctrl, SPI_CHIP_SEL_LOW);
+	if (err)
+		goto out_auto;
+
+	list_for_each_entry(xfer, &msg->transfers, transfer_list) {
+		struct spi_transfer *next = NULL;
+		int next_rx_buswidth = 0;
+
+		if (xfer->tx_buf && xfer->rx_buf) {
+			err = -EOPNOTSUPP;
+			break;
+		}
+
+		if (!list_is_last(&xfer->transfer_list, &msg->transfers))
+			next = list_next_entry(xfer, transfer_list);
+
+		if (xfer->tx_buf && next && !xfer->cs_change && next->rx_buf)
+			next_rx_buswidth = next->rx_nbits ?: SPI_NBITS_SINGLE;
+
+		if (xfer->tx_buf)
+			err = airoha_snand_write_data(as_ctrl, xfer->tx_buf,
+						      xfer->len,
+						      xfer->tx_nbits ?:
+						      SPI_NBITS_SINGLE,
+						      next_rx_buswidth);
+		else if (xfer->rx_buf)
+			err = airoha_snand_read_data(as_ctrl, xfer->rx_buf,
+						     xfer->len,
+						     xfer->rx_nbits ?:
+						     SPI_NBITS_SINGLE);
+
+		if (err)
+			break;
+
+		msg->actual_length += xfer->len;
+		spi_transfer_delay_exec(xfer);
+
+		if (xfer->cs_change && next) {
+			err = airoha_snand_set_cs(as_ctrl, SPI_CHIP_SEL_HIGH);
+			if (err)
+				break;
+
+			spi_transfer_cs_change_delay_exec(msg, xfer);
+
+			err = airoha_snand_set_cs(as_ctrl, SPI_CHIP_SEL_LOW);
+			if (err)
+				break;
+		}
+	}
+
+	cs_err = airoha_snand_set_cs(as_ctrl, SPI_CHIP_SEL_HIGH);
+	if (!err)
+		err = cs_err;
+
+out_auto:
+	cs_err = airoha_snand_set_mode(as_ctrl, SPI_MODE_AUTO);
+	if (!err)
+		err = cs_err;
+
+out_finalize:
+	msg->status = err;
+	spi_finalize_current_message(ctrl);
+
+	return 0;
 }
 
 static const struct spi_controller_mem_ops airoha_snand_mem_ops = {
@@ -1080,10 +1248,14 @@ static int airoha_snand_probe(struct platform_device *pdev)
 		return err;
 
 	ctrl->num_chipselect = AIROHA_SPI_NUM_CHIPSELECTS;
+	ctrl->flags = SPI_CONTROLLER_HALF_DUPLEX;
 	ctrl->mem_ops = dma_enable ? &airoha_snand_mem_ops
 				   : &airoha_snand_nodma_mem_ops;
 	ctrl->bits_per_word_mask = SPI_BPW_MASK(8);
-	ctrl->mode_bits = SPI_RX_DUAL;
+	ctrl->mode_bits = SPI_RX_DUAL | SPI_TX_DUAL |
+			  SPI_RX_QUAD | SPI_TX_QUAD;
+	ctrl->max_transfer_size = airoha_snand_max_transfer_size;
+	ctrl->transfer_one_message = airoha_snand_transfer_one_message;
 	ctrl->setup = airoha_snand_setup;
 
 	airoha_snand_nfi_init(as_ctrl);
