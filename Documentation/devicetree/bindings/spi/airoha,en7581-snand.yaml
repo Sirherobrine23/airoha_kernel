@@ -4,27 +4,39 @@
 $id: http://devicetree.org/schemas/spi/airoha,en7581-snand.yaml#
 $schema: http://devicetree.org/meta-schemas/core.yaml#
 
-title: SPI-NAND flash controller for Airoha ARM SoCs
+title: SPI flash controller for Airoha and EcoNet SoCs
 
 maintainers:
   - Lorenzo Bianconi <lorenzo@kernel.org>
 
-allOf:
-  - $ref: spi-controller.yaml#
-
 properties:
   compatible:
     oneOf:
-      - const: airoha,en7581-snand
+      - enum:
+          - airoha,en751627-spi
+          - airoha,en7581-snand
+          - econet,en751221-spi
       - items:
           - enum:
               - airoha,en7523-snand
           - const: airoha,en7581-snand
 
   reg:
+    minItems: 1
     items:
       - description: spi base address
       - description: nfi2spi base address
+
+  reg-names:
+    minItems: 1
+    items:
+      - const: ctrl
+      - const: nfi
+
+  airoha,scu:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description:
+      Phandle to the SCU syscon containing the SoC boot strap register.
 
   clocks:
     maxItems: 1
@@ -38,6 +50,35 @@ required:
   - reg
   - clocks
   - clock-names
+
+allOf:
+  - $ref: spi-controller.yaml#
+  - if:
+      properties:
+        compatible:
+          contains:
+            const: econet,en751221-spi
+    then:
+      properties:
+        reg:
+          maxItems: 1
+        reg-names:
+          maxItems: 1
+        airoha,scu: false
+    else:
+      properties:
+        reg:
+          minItems: 2
+        reg-names:
+          minItems: 2
+  - if:
+      properties:
+        compatible:
+          contains:
+            const: airoha,en751627-spi
+    then:
+      properties:
+        airoha,scu: false
 
 unevaluatedProperties: false
 
@@ -55,6 +96,60 @@ examples:
               <0x0 0x1fa11000 0x0 0x160>;
 
         clocks = <&scuclk EN7523_CLK_SPI>;
+        clock-names = "spi";
+
+        #address-cells = <1>;
+        #size-cells = <0>;
+
+        flash@0 {
+          compatible = "spi-nand";
+          reg = <0>;
+          spi-tx-bus-width = <1>;
+          spi-rx-bus-width = <2>;
+        };
+      };
+    };
+
+  - |
+    #include <dt-bindings/clock/en7523-clk.h>
+
+    soc {
+      #address-cells = <1>;
+      #size-cells = <1>;
+
+      spi@1fa10000 {
+        compatible = "airoha,en751627-spi";
+        reg = <0x1fa10000 0x140>,
+              <0x1fa11000 0x600>;
+        reg-names = "ctrl", "nfi";
+
+        clocks = <&scuclk EN7523_CLK_SPI>;
+        clock-names = "spi";
+
+        #address-cells = <1>;
+        #size-cells = <0>;
+
+        flash@0 {
+          compatible = "spi-nand";
+          reg = <0>;
+          spi-tx-bus-width = <1>;
+          spi-rx-bus-width = <2>;
+        };
+      };
+    };
+
+  - |
+    #include <dt-bindings/clock/econet,en751221-scu.h>
+
+    soc {
+      #address-cells = <1>;
+      #size-cells = <1>;
+
+      spi@1fa10000 {
+        compatible = "econet,en751221-spi";
+        reg = <0x1fa10000 0x140>;
+
+        clocks = <&scuclk EN751221_CLK_SPI>;
         clock-names = "spi";
 
         #address-cells = <1>;
