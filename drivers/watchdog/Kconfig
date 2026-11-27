@@ -450,12 +450,12 @@ config SL28CPLD_WATCHDOG
 # ARM Architecture
 
 config AIROHA_WATCHDOG
-	tristate "Airoha EN7581 Watchdog"
-	depends on ARCH_AIROHA || COMPILE_TEST
+	tristate "Airoha/EcoNet Watchdog"
+	depends on ARCH_AIROHA || ECONET || COMPILE_TEST
 	select WATCHDOG_CORE
 	help
-	  Watchdog timer embedded into Airoha SoC. This will reboot your
-	  system when the timeout is reached.
+	  Watchdog timer embedded into Airoha and EcoNet SoCs. This will
+	  reboot your system when the timeout is reached.
 
 config ARM_SP805_WATCHDOG
 	tristate "ARM SP805 Watchdog"
