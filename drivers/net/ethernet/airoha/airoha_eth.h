@@ -17,7 +17,7 @@
 #include <net/dsa.h>
 
 #define AIROHA_MAX_NUM_GDM_PORTS	4
-#define AIROHA_MAX_NUM_GDM_DEVS		2
+#define AIROHA_MAX_NUM_GDM_DEVS		3
 #define AIROHA_MAX_NUM_QDMA		2
 #define AIROHA_MAX_NUM_IRQ_BANKS	4
 #define AIROHA_MAX_DSA_PORTS		7
@@ -47,16 +47,23 @@
 	 (_n) ==  0 ? 1024 : 32)
 
 #define AIROHA_LRO_PAGE_ORDER		get_order(SZ_16K)
+#define EN7523_AIROHA_LRO_PAGE_ORDER	get_order(SZ_64K)
 #define AIROHA_MAX_NUM_LRO_QUEUES	8
+#define EN7523_AIROHA_MAX_NUM_LRO_QUEUES	4
 #define AIROHA_RXQ_LRO_EN_MASK		GENMASK(31, 24)
+#define EN7523_AIROHA_RXQ_LRO_EN_MASK	GENMASK(14, 11)
 #define AIROHA_RXQ_LRO_MAX_AGG_COUNT	64
+#define EN7523_AIROHA_RXQ_LRO_MAX_AGG_COUNT	30
+#define EN7523_AIROHA_RXQ_LRO_MAX_AGG_SIZE	44000
 #define AIROHA_RXQ_LRO_MAX_AGG_TIME	100
 #define AIROHA_RXQ_LRO_MAX_AGE_TIME	2000
 
+#define AIROHA_QDMA_TSO_HW_FEATURES	(NETIF_F_SG | NETIF_F_TSO | \
+					 NETIF_F_TSO6)
 #define AIROHA_HW_FEATURES			\
 	(NETIF_F_IP_CSUM | NETIF_F_RXCSUM |	\
-	 NETIF_F_TSO6 | NETIF_F_IPV6_CSUM |	\
-	 NETIF_F_SG | NETIF_F_TSO | NETIF_F_HW_TC)
+	 NETIF_F_IPV6_CSUM |			\
+	 AIROHA_QDMA_TSO_HW_FEATURES | NETIF_F_HW_TC)
 
 #define PSE_RSV_PAGES			128
 #define PSE_QUEUE_RSV_PAGES		64
@@ -86,6 +93,8 @@ static inline u32 airoha_ppe_ram_num_entries_shift(u32 n)
 #define AN7552_MAX_NUM_LRO_QUEUES			4
 
 #define MTK_HDR_LEN			4
+#define MTK_STAG_PORT_MASK		GENMASK(5, 0)
+#define MTK_INVALID_CHANNEL		7
 #define MTK_HDR_XMIT_TAGGED_TPID_8100	1
 #define MTK_HDR_XMIT_TAGGED_TPID_88A8	2
 
@@ -112,6 +121,13 @@ enum {
 };
 
 enum {
+	HSGMII_LAN_7523_PCIE0_SRCPORT	= 0x16,
+	HSGMII_LAN_7523_PCIE1_SRCPORT,
+	HSGMII_LAN_7523_USB_SRCPORT,
+	HSGMII_LAN_7523_ETH_SRCPORT	= 0xffff,
+};
+
+enum {
 	XSI_PCIE0_VIP_PORT_MASK	= BIT(22),
 	XSI_PCIE1_VIP_PORT_MASK	= BIT(23),
 	XSI_USB_VIP_PORT_MASK	= BIT(25),
@@ -121,6 +137,7 @@ enum {
 enum {
 	DEV_STATE_INITIALIZED,
 	DEV_STATE_REGISTERED,
+	DEV_STATE_NAPI_STARTED,
 };
 
 enum {
@@ -668,6 +685,7 @@ struct airoha_gdm_port {
 
 #define AIROHA_RXD4_PPE_CPU_REASON	GENMASK(20, 16)
 #define AIROHA_RXD4_FOE_ENTRY		GENMASK(15, 0)
+#define EN7523_AIROHA_RXD4_FOE_ENTRY_INVALID	0x7fff
 
 struct airoha_ppe_lro_entry {
 	struct airoha_foe_entry entry;
@@ -702,6 +720,11 @@ struct airoha_eth_soc_data {
 	const char * const *xsi_rsts_names;
 	int num_xsi_rsts;
 	int num_ppe;
+	u8 num_tx_rings;
+	u8 num_rx_rings;
+	u8 num_irq_banks;
+	u8 max_gdm_ports;
+	u32 pse_fq_cfg;
 	u32 ppe_sram_entries;
 	u32 ppe_dram_entries;
 	u32 ppe_stats_entries;
@@ -720,6 +743,7 @@ struct airoha_eth {
 
 	unsigned long state;
 	void __iomem *fe_regs;
+	void __iomem *gdmp_regs;
 
 	struct airoha_npu __rcu *npu;
 
@@ -767,7 +791,7 @@ u32 airoha_rmw(void __iomem *base, u32 offset, u32 mask, u32 val);
 
 static inline u16 airoha_qdma_get_txq(struct airoha_qdma *qdma, u16 qid)
 {
-	return qid % ARRAY_SIZE(qdma->q_tx);
+	return qid % qdma->eth->soc->num_tx_rings;
 }
 
 static inline bool airoha_is_lan_gdm_dev(struct airoha_gdm_dev *dev)
@@ -799,6 +823,14 @@ static inline bool airoha_qdma_is_lro_queue(struct airoha_queue *q)
 {
 	struct airoha_qdma *qdma = q->qdma;
 	int qid = q - &qdma->q_rx[0];
+
+	if (airoha_is_7523(qdma->eth) || airoha_is_7552(qdma->eth)) {
+		/* EN7523 and AN7552 support four LRO RX queues (11-14). */
+		BUILD_BUG_ON(hweight32(EN7523_AIROHA_RXQ_LRO_EN_MASK) >
+			     EN7523_AIROHA_MAX_NUM_LRO_QUEUES);
+
+		return !!(EN7523_AIROHA_RXQ_LRO_EN_MASK & BIT(qid));
+	}
 
 	/* EN7581 SoC supports at most 8 LRO rx queues */
 	BUILD_BUG_ON(hweight32(AIROHA_RXQ_LRO_EN_MASK) >
