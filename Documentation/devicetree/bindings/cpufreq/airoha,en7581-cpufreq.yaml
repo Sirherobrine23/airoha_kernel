@@ -4,18 +4,20 @@
 $id: http://devicetree.org/schemas/cpufreq/airoha,en7581-cpufreq.yaml#
 $schema: http://devicetree.org/meta-schemas/core.yaml#
 
-title: Airoha EN7581 CPUFreq
+title: Airoha EN7581/AN7583 CPUFreq
 
 maintainers:
   - Christian Marangi <ansuelsmth@gmail.com>
 
 description: |
-  On newer Airoha SoC, CPU Frequency is scaled indirectly with SMC commands
-  to ATF.
+  On newer Airoha SoCs, CPU frequency is scaled indirectly with SMC commands
+  to ATF, or directly via CHIP-SCU/MCUCFG PLL registers when ATF SMC is not
+  available.
 
   A virtual clock is exposed. This virtual clock is a get-only clock and
   is used to expose the current global CPU clock. The frequency info comes
-  by the output of the SMC command that reports the clock in MHz.
+  either from the SMC command that reports the clock in MHz or from the
+  CPU PLL registers.
 
   The SMC sets the CPU clock by providing an index, this is modelled as
   performance states in a power domain.
@@ -25,7 +27,22 @@ description: |
 
 properties:
   compatible:
-    const: airoha,en7581-cpufreq
+    enum:
+      - airoha,an7583-cpufreq
+      - airoha,en7581-cpufreq
+
+  reg:
+    maxItems: 1
+    description: Optional MCUCFG register range used for direct PLL switching.
+
+  reg-names:
+    const: mcucfg
+
+  airoha,chip-scu:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description:
+      Optional phandle to the CHIP-SCU node used for direct CPU PLL
+      programming when ATF SMC is unavailable.
 
   '#clock-cells':
     const: 0
@@ -40,6 +57,11 @@ required:
   - '#clock-cells'
   - '#power-domain-cells'
   - operating-points-v2
+
+dependencies:
+  reg: [ reg-names, "airoha,chip-scu" ]
+  reg-names: [ reg ]
+  airoha,chip-scu: [ reg ]
 
 additionalProperties: false
 
