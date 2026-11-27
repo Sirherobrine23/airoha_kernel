@@ -724,6 +724,7 @@ struct airoha_eth_soc_data {
 	u8 num_rx_rings;
 	u8 num_irq_banks;
 	u8 max_gdm_ports;
+	u32 fe_irq_mask;
 	u32 pse_fq_cfg;
 	u32 ppe_sram_entries;
 	u32 ppe_dram_entries;
@@ -754,6 +755,10 @@ struct airoha_eth {
 	struct reset_control_bulk_data *xsi_rsts;
 
 	struct net_device *napi_dev;
+	int fe_irq;
+	u32 fe_irq_mask;
+	/* Shared FE event counts, indexed by REG_FE_INT_STATUS bit. */
+	atomic64_t fe_irq_stats[32];
 
 	struct airoha_qdma qdma[AIROHA_MAX_NUM_QDMA];
 	struct airoha_gdm_port *ports[AIROHA_MAX_NUM_GDM_PORTS];

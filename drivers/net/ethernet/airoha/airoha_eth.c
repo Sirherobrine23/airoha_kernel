@@ -654,9 +654,100 @@ static void airoha_fe_pse_init(struct airoha_eth *eth)
 		airoha_fe_wr(eth, AN7552_PSE_SHARE_USED_THD, 0x01e001f4);
 }
 
+static irqreturn_t airoha_fe_irq_handler(int irq, void *data)
+{
+	struct airoha_eth *eth = data;
+	u32 status, events;
+	int bit;
+
+	status = airoha_fe_rr(eth, REG_FE_INT_STATUS);
+	status &= airoha_fe_rr(eth, REG_FE_INT_ENABLE) & eth->fe_irq_mask;
+	if (!status)
+		return IRQ_NONE;
+
+	/* W1C: acknowledge only the enabled events that were observed. */
+	airoha_fe_wr(eth, REG_FE_INT_STATUS, status);
+	airoha_fe_rr(eth, REG_FE_INT_STATUS);
+
+	for (events = status; events; events &= events - 1) {
+		bit = __ffs(events);
+		atomic64_inc(&eth->fe_irq_stats[bit]);
+	}
+
+	/* Mask PSE exception until reprobe rather than resetting a live
+	 * core without coordinated DMA/PPE recovery.
+	 */
+	if (status & FE_INT_PSE_EXCEPTION) {
+		airoha_fe_clear(eth, REG_FE_INT_ENABLE, FE_INT_PSE_EXCEPTION);
+		airoha_fe_rr(eth, REG_FE_INT_ENABLE);
+		dev_err_ratelimited(eth->dev,
+				    "PSE exception; FE exception interrupt masked\n");
+	}
+
+	/* MBI auto-aging events also occur during normal channel retirement. */
+	if (status & ~(GDM2_RX_INTR1_MASK | GDM2_TX_INTR2_MASK |
+		       FE_INT_PSE_EXCEPTION))
+		dev_warn_ratelimited(eth->dev, "FE interrupt status %#08x\n",
+				     status);
+
+	return IRQ_HANDLED;
+}
+
+static int airoha_fe_irq_init(struct platform_device *pdev,
+			      struct airoha_eth *eth)
+{
+	u32 mask = eth->soc->fe_irq_mask;
+	int irq, err;
+
+	if (!mask)
+		return 0;
+
+	irq = platform_get_irq_byname_optional(pdev, "fe-error");
+	if (irq == -ENXIO)
+		return 0;
+	if (irq < 0)
+		return dev_err_probe(eth->dev, irq,
+				     "failed to get FE error IRQ\n");
+
+	eth->fe_irq_mask = mask;
+
+	err = request_irq(irq, airoha_fe_irq_handler, 0, "airoha-fe-error",
+			  eth);
+	if (err)
+		return dev_err_probe(eth->dev, err,
+				     "failed to request FE error IRQ\n");
+	eth->fe_irq = irq;
+
+	/* Discard stale status before unmasking the registered handler. */
+	airoha_fe_wr(eth, REG_FE_INT_STATUS, mask);
+	airoha_fe_wr(eth, REG_FE_INT_ENABLE, mask);
+	airoha_fe_rr(eth, REG_FE_INT_ENABLE);
+
+	return 0;
+}
+
+static void airoha_fe_irq_cleanup(struct airoha_eth *eth)
+{
+	if (!eth->fe_irq)
+		return;
+
+	/* Stop and synchronize the handler before it can race the mask write. */
+	disable_irq(eth->fe_irq);
+	airoha_fe_wr(eth, REG_FE_INT_ENABLE, 0);
+	airoha_fe_rr(eth, REG_FE_INT_ENABLE);
+	free_irq(eth->fe_irq, eth);
+	eth->fe_irq = 0;
+}
+
 static int airoha_fe_init(struct airoha_eth *eth)
 {
 	u32 vip_mask, vip_val, oam_mask, oam_val;
+
+	/* Keep FE error events masked until airoha_fe_irq_init(). */
+	if (eth->soc->fe_irq_mask) {
+		airoha_fe_wr(eth, REG_FE_INT_ENABLE, 0);
+		airoha_fe_rr(eth, REG_FE_INT_ENABLE);
+	}
 
 	airoha_fe_maccr_init(eth);
 
@@ -3128,6 +3219,58 @@ error:
 	return NETDEV_TX_OK;
 }
 
+/* These counters belong to the FE, rather than to an individual GDM. */
+static const char airoha_fe_irq_names[32][ETH_GSTRING_LEN] = {
+	[8] = "fe_irq_pse_fq_empty",
+	[12] = "fe_irq_tso_bit12",
+	[13] = "fe_irq_tso_bit13",
+	[14] = "fe_irq_tso_bit14",
+	[15] = "fe_irq_tso_bit15",
+	[16] = "fe_irq_gdm2_tx_mbi_mac",
+	[17] = "fe_irq_gdm2_tx_mbi_csr",
+	[18] = "fe_irq_gdm2_tx_mbi_aging",
+	[20] = "fe_irq_gdm2_rx_mbi_csr",
+	[21] = "fe_irq_gdm2_rx_mbi_aging",
+	[22] = "fe_irq_gdm2_rx_fifo_overflow",
+	[23] = "fe_irq_gdm2_rx_gemport_issue",
+	[28] = "fe_irq_pse_exception",
+};
+
+static int airoha_ethtool_get_sset_count(struct net_device *netdev, int sset)
+{
+	struct airoha_gdm_dev *dev = netdev_priv(netdev);
+
+	if (sset != ETH_SS_STATS)
+		return -EOPNOTSUPP;
+
+	return hweight32(dev->eth->fe_irq_mask);
+}
+
+static void airoha_ethtool_get_strings(struct net_device *netdev, u32 sset,
+				       u8 *data)
+{
+	struct airoha_gdm_dev *dev = netdev_priv(netdev);
+	int i;
+
+	if (sset != ETH_SS_STATS)
+		return;
+
+	for (i = 0; i < ARRAY_SIZE(airoha_fe_irq_names); i++)
+		if (dev->eth->fe_irq_mask & BIT(i))
+			ethtool_puts(&data, airoha_fe_irq_names[i]);
+}
+
+static void airoha_ethtool_get_stats(struct net_device *netdev,
+				     struct ethtool_stats *stats, u64 *data)
+{
+	struct airoha_gdm_dev *dev = netdev_priv(netdev);
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(airoha_fe_irq_names); i++)
+		if (dev->eth->fe_irq_mask & BIT(i))
+			*data++ = atomic64_read(&dev->eth->fe_irq_stats[i]);
+}
+
 static void airoha_ethtool_get_drvinfo(struct net_device *netdev,
 				       struct ethtool_drvinfo *info)
 {
@@ -4064,6 +4207,9 @@ static const struct net_device_ops airoha_netdev_ops = {
 
 static const struct ethtool_ops airoha_ethtool_ops = {
 	.get_drvinfo		= airoha_ethtool_get_drvinfo,
+	.get_sset_count		= airoha_ethtool_get_sset_count,
+	.get_strings		= airoha_ethtool_get_strings,
+	.get_ethtool_stats	= airoha_ethtool_get_stats,
 	.get_eth_mac_stats      = airoha_ethtool_get_mac_stats,
 	.get_rmon_stats		= airoha_ethtool_get_rmon_stats,
 	.get_link_ksettings	= phy_ethtool_get_link_ksettings,
@@ -4321,6 +4467,8 @@ static int airoha_probe(struct platform_device *pdev)
 		return -EINVAL;
 
 	eth->dev = &pdev->dev;
+	for (i = 0; i < ARRAY_SIZE(eth->fe_irq_stats); i++)
+		atomic64_set(&eth->fe_irq_stats[i], 0);
 
 	err = dma_set_mask_and_coherent(eth->dev, DMA_BIT_MASK(32));
 	if (err) {
@@ -4384,6 +4532,10 @@ static int airoha_probe(struct platform_device *pdev)
 	if (err)
 		goto error_netdev_free;
 
+	err = airoha_fe_irq_init(pdev, eth);
+	if (err)
+		goto error_hw_cleanup;
+
 	for (i = 0; i < ARRAY_SIZE(eth->qdma); i++) {
 		airoha_qdma_start_napi(&eth->qdma[i]);
 		airoha_qdma_set(&eth->qdma[i], REG_QDMA_GLOBAL_CFG,
@@ -4413,6 +4565,7 @@ static int airoha_probe(struct platform_device *pdev)
 	return 0;
 
 error_napi_stop:
+	airoha_fe_irq_cleanup(eth);
 	for (i = 0; i < ARRAY_SIZE(eth->qdma); i++) {
 		airoha_qdma_stop_napi(&eth->qdma[i]);
 		airoha_qdma_tx_cleanup(&eth->qdma[i]);
@@ -4439,6 +4592,7 @@ error_napi_stop:
 		}
 		airoha_metadata_dst_free(port);
 	}
+error_hw_cleanup:
 	airoha_hw_cleanup(eth);
 error_netdev_free:
 	free_netdev(eth->napi_dev);
@@ -4452,6 +4606,7 @@ static void airoha_remove(struct platform_device *pdev)
 	struct airoha_eth *eth = platform_get_drvdata(pdev);
 	int i;
 
+	airoha_fe_irq_cleanup(eth);
 	for (i = 0; i < ARRAY_SIZE(eth->qdma); i++) {
 		airoha_qdma_stop_napi(&eth->qdma[i]);
 		airoha_qdma_tx_cleanup(&eth->qdma[i]);
@@ -4739,6 +4894,7 @@ static const struct airoha_eth_soc_data en7523_soc_data = {
 	.num_rx_rings = 16,
 	.num_irq_banks = 2,
 	.max_gdm_ports = 3,
+	.fe_irq_mask = FE_INT_ERROR_MASK,
 	.pse_fq_cfg = PSE_FQ_CFG,
 	.ppe_sram_entries = 512,
 	.ppe_dram_entries = PPE_DRAM_NUM_ENTRIES,
@@ -4759,6 +4915,7 @@ static const struct airoha_eth_soc_data en7581_soc_data = {
 	.num_rx_rings = AIROHA_NUM_RX_RING,
 	.num_irq_banks = AIROHA_MAX_NUM_IRQ_BANKS,
 	.max_gdm_ports = AIROHA_MAX_NUM_GDM_PORTS,
+	.fe_irq_mask = FE_INT_ERROR_MASK,
 	.pse_fq_cfg = PSE_FQ_CFG,
 	.ppe_sram_entries = PPE_SRAM_NUM_ENTRIES,
 	.ppe_dram_entries = PPE_DRAM_NUM_ENTRIES,
@@ -4779,6 +4936,7 @@ static const struct airoha_eth_soc_data an7583_soc_data = {
 	.num_rx_rings = AIROHA_NUM_RX_RING,
 	.num_irq_banks = AIROHA_MAX_NUM_IRQ_BANKS,
 	.max_gdm_ports = AIROHA_MAX_NUM_GDM_PORTS,
+	.fe_irq_mask = FE_INT_ERROR_MASK,
 	.pse_fq_cfg = PSE_FQ_CFG,
 	.ppe_sram_entries = PPE_SRAM_NUM_ENTRIES,
 	.ppe_dram_entries = PPE_DRAM_NUM_ENTRIES,
@@ -4819,6 +4977,7 @@ static const struct airoha_eth_soc_data an7552_soc_data = {
 	.num_rx_rings = 16,
 	.num_irq_banks = AIROHA_MAX_NUM_IRQ_BANKS,
 	.max_gdm_ports = AIROHA_MAX_NUM_GDM_PORTS,
+	.fe_irq_mask = FE_INT_ERROR_MASK | FE_INT_PSE_EXCEPTION,
 	.pse_fq_cfg = AN7552_PSE_FQ_CFG,
 	.ppe_sram_entries = 512,
 	.ppe_dram_entries = PPE_DRAM_NUM_ENTRIES,

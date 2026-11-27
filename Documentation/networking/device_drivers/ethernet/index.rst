@@ -12,6 +12,7 @@ Contents:
 
    3com/3c509
    3com/vortex
+   airoha/fe-interrupts
    amazon/ena
    altera/altera_tse
    amd/pds_core
