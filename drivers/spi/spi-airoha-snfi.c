@@ -80,6 +80,10 @@
 #define REG_SPI_CTRL_INTERRUPT			0x0090
 #define REG_SPI_CTRL_INTERRUPT_EN		0x0094
 #define REG_SPI_CTRL_SI_CK_SEL			0x009c
+
+#define REG_SPI_CTRL_SLAVE_SEL			0x00e4
+#define SPI_CTRL_SLAVE_SEL			BIT(0)
+
 #define REG_SPI_CTRL_SW_CFGNANDADDR_VAL		0x010c
 #define REG_SPI_CTRL_SW_CFGNANDADDR_EN		0x0110
 #define REG_SPI_CTRL_SFC_STRAP			0x0114
@@ -206,6 +210,7 @@
 
 #define SPI_NAND_CACHE_SIZE			(SZ_4K + SZ_256)
 #define SPI_MAX_TRANSFER_SIZE			511
+#define AIROHA_SPI_NUM_CHIPSELECTS		2
 
 enum airoha_snand_mode {
 	SPI_MODE_AUTO,
@@ -258,6 +263,28 @@ static int airoha_snand_set_fifo_op(struct airoha_snand_ctrl *as_ctrl,
 static int airoha_snand_set_cs(struct airoha_snand_ctrl *as_ctrl, u8 cs)
 {
 	return airoha_snand_set_fifo_op(as_ctrl, cs, sizeof(cs));
+}
+
+static int airoha_snand_select_device(struct airoha_snand_ctrl *as_ctrl,
+				      unsigned int cs)
+{
+	int err;
+
+	if (cs >= AIROHA_SPI_NUM_CHIPSELECTS)
+		return -EINVAL;
+
+	/*
+	 * SLAVE_SEL chooses which native chip-select line is controlled by
+	 * the OP_CSH and OP_CSL FIFO commands.
+	 */
+	err = regmap_update_bits(as_ctrl->regmap_ctrl, REG_SPI_CTRL_SLAVE_SEL,
+				 SPI_CTRL_SLAVE_SEL,
+				 FIELD_PREP(SPI_CTRL_SLAVE_SEL, cs));
+	if (err)
+		return err;
+
+	/* Keep the newly selected native line inactive while switching. */
+	return airoha_snand_set_cs(as_ctrl, SPI_CHIP_SEL_HIGH);
 }
 
 static int airoha_snand_write_data_to_fifo(struct airoha_snand_ctrl *as_ctrl,
@@ -540,6 +567,9 @@ static int airoha_snand_dirmap_create(struct spi_mem_dirmap_desc *desc)
 	if (!txrx_buf)
 		return -EINVAL;
 
+	if (spi_get_chipselect(desc->mem->spi, 0) >= AIROHA_SPI_NUM_CHIPSELECTS)
+		return -EINVAL;
+
 	if (desc->info.offset + desc->info.length > U32_MAX)
 		return -EINVAL;
 
@@ -593,6 +623,13 @@ static ssize_t airoha_snand_dirmap_read(struct spi_mem_dirmap_desc *desc,
 		/* unknown opcode */
 		return -EOPNOTSUPP;
 	}
+
+	err = regmap_update_bits(as_ctrl->regmap_ctrl, REG_SPI_CTRL_SLAVE_SEL,
+				 SPI_CTRL_SLAVE_SEL,
+				 FIELD_PREP(SPI_CTRL_SLAVE_SEL,
+					    spi_get_chipselect(spi, 0)));
+	if (err)
+		return err;
 
 	err = airoha_snand_set_mode(as_ctrl, SPI_MODE_DMA);
 	if (err < 0)
@@ -783,6 +820,13 @@ static ssize_t airoha_snand_dirmap_write(struct spi_mem_dirmap_desc *desc,
 	if (bytes > offs + len)
 		memset(txrx_buf + offs + len, 0xff, bytes - offs - len);
 
+	err = regmap_update_bits(as_ctrl->regmap_ctrl, REG_SPI_CTRL_SLAVE_SEL,
+				 SPI_CTRL_SLAVE_SEL,
+				 FIELD_PREP(SPI_CTRL_SLAVE_SEL,
+					    spi_get_chipselect(spi, 0)));
+	if (err)
+		return err;
+
 	err = airoha_snand_set_mode(as_ctrl, SPI_MODE_DMA);
 	if (err < 0)
 		return err;
@@ -933,12 +977,16 @@ error_dma_mode_off:
 static int airoha_snand_exec_op(struct spi_mem *mem,
 				const struct spi_mem_op *op)
 {
+	unsigned int cs = spi_get_chipselect(mem->spi, 0);
 	struct airoha_snand_ctrl *as_ctrl;
 	int op_len, addr_len, dummy_len;
 	u8 buf[20], *data;
-	int i, err;
+	int i, err, cs_err;
 
 	as_ctrl = spi_controller_get_devdata(mem->spi->controller);
+
+	if (cs >= AIROHA_SPI_NUM_CHIPSELECTS)
+		return -EINVAL;
 
 	op_len = op->cmd.nbytes;
 	addr_len = op->addr.nbytes;
@@ -960,16 +1008,25 @@ static int airoha_snand_exec_op(struct spi_mem *mem,
 	if (err < 0)
 		return err;
 
+	/* deassert the previously selected device before changing SLAVE_SEL */
+	err = airoha_snand_set_cs(as_ctrl, SPI_CHIP_SEL_HIGH);
+	if (err)
+		return err;
+
+	err = airoha_snand_select_device(as_ctrl, cs);
+	if (err)
+		return err;
+
 	err = airoha_snand_set_cs(as_ctrl, SPI_CHIP_SEL_LOW);
 	if (err < 0)
-		return err;
+		goto out_deassert_cs;
 
 	/* opcode */
 	data = buf;
 	err = airoha_snand_write_data(as_ctrl, data, op_len,
 				      op->cmd.buswidth);
 	if (err)
-		return err;
+		goto out_deassert_cs;
 
 	/* addr part */
 	data += op_len;
@@ -977,7 +1034,7 @@ static int airoha_snand_exec_op(struct spi_mem *mem,
 		err = airoha_snand_write_data(as_ctrl, data, addr_len,
 					      op->addr.buswidth);
 		if (err)
-			return err;
+			goto out_deassert_cs;
 	}
 
 	/* dummy */
@@ -986,7 +1043,7 @@ static int airoha_snand_exec_op(struct spi_mem *mem,
 		err = airoha_snand_write_data(as_ctrl, data, dummy_len,
 					      op->dummy.buswidth);
 		if (err)
-			return err;
+			goto out_deassert_cs;
 	}
 
 	/* data */
@@ -999,11 +1056,12 @@ static int airoha_snand_exec_op(struct spi_mem *mem,
 			err = airoha_snand_write_data(as_ctrl, op->data.buf.out,
 						      op->data.nbytes,
 						      op->data.buswidth);
-		if (err)
-			return err;
 	}
 
-	return airoha_snand_set_cs(as_ctrl, SPI_CHIP_SEL_HIGH);
+out_deassert_cs:
+	cs_err = airoha_snand_set_cs(as_ctrl, SPI_CHIP_SEL_HIGH);
+
+	return err ?: cs_err;
 }
 
 static const struct spi_controller_mem_ops airoha_snand_mem_ops = {
@@ -1119,7 +1177,7 @@ static int airoha_snand_probe(struct platform_device *pdev)
 	if (err)
 		return err;
 
-	ctrl->num_chipselect = 2;
+	ctrl->num_chipselect = AIROHA_SPI_NUM_CHIPSELECTS;
 	ctrl->mem_ops = dma_enable ? &airoha_snand_mem_ops
 				   : &airoha_snand_nodma_mem_ops;
 	ctrl->bits_per_word_mask = SPI_BPW_MASK(8);
