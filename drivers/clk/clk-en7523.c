@@ -3,6 +3,7 @@
 #include <linux/bitfield.h>
 #include <linux/clk-provider.h>
 #include <linux/delay.h>
+#include <linux/export.h>
 #include <linux/io.h>
 #include <linux/mfd/syscon.h>
 #include <linux/of_address.h>
@@ -13,6 +14,7 @@
 #include <linux/property.h>
 #include <linux/regmap.h>
 #include <linux/reset-controller.h>
+#include <linux/soc/airoha/pkgids.h>
 #include <dt-bindings/clock/econet,en751221-scu.h>
 #include <dt-bindings/clock/en7523-clk.h>
 #include <dt-bindings/reset/airoha,an7583-reset.h>
@@ -48,8 +50,6 @@
 #define   REG_TRNG_BUS_EN		BIT(3)
 #define   REG_TRNG_PER1_EN		BIT(21)
 #define   REG_TRNG_PER2_EN		BIT(0)
-#define REG_HIR				0x064
-#define   REG_HIR_MASK			GENMASK(31, 16)
 /* EN7581 */
 #define REG_NP_SCU_PCIC			0x88
 #define REG_PCIE_CTRL			GENMASK(7, 0)
@@ -89,24 +89,53 @@
 
 #define EN751221_MAX_CLKS		5
 
-enum en_hir {
-	HIR_UNKNOWN	= -1,
-	HIR_TC3169	= 0,
-	HIR_TC3182	= 1,
-	HIR_RT65168	= 2,
-	HIR_RT63165	= 3,
-	HIR_RT63365	= 4,
-	HIR_MT751020	= 5,
-	HIR_MT7505	= 6,
-	HIR_EN751221	= 7,
-	HIR_EN7526C	= 8,
-	HIR_EN751627	= 9,
-	HIR_EN7580	= 10,
-	HIR_EN7528	= 11,
-	HIR_EN7523	= 12,
-	HIR_EN7581	= 13,
-	HIR_MAX		= 14,
-};
+/* SCU package ID */
+#define AIROHA_NP_SCU_PDIDR		0x05c
+#define AIROHA_NP_SCU_HIR		0x064
+#define AIROHA_NP_SCU_SUBMODEL		0x0f8
+#define AIROHA_NP_SCU_SCREG_WR1		0x284
+#define AIROHA_CHIP_SCU_PACKAGE		0x174
+#define AIROHA_CHIP_SCU_CONFIG		0x1ec
+#define AIROHA_EFUSE_VERIFY_DATA0	0x014
+#define AIROHA_EFUSE_VERIFY_DATA1	0x018
+
+#define AIROHA_NP_SCU_HIR_MASK		GENMASK(31, 16)
+#define AIROHA_NP_SCU_PDIDR_MASK	GENMASK(15, 0)
+#define AIROHA_NP_SCU_PACKAGE_ID_MASK	GENMASK(3, 0)
+#define AIROHA_NP_SCU_PACKAGE_ID_EXT	BIT(7)
+#define AIROHA_NP_SCU_SUBMODEL_MASK	GENMASK(1, 0)
+
+/* EN7512/EN7521 and EN7526C/EN7522 eFuse encoding */
+#define AIROHA_EFUSE_PKG_MASK		GENMASK(5, 0)
+#define AIROHA_EFUSE_PKG_IGNORE_BIT01	GENMASK(5, 2)
+#define AIROHA_EFUSE_REMARK_BIT		BIT(6)
+#define AIROHA_EFUSE_PKG_REMARK_SHIFT	7
+
+#define AIROHA_EFUSE_DDR3_BIT		BIT(23)
+#define AIROHA_EFUSE_DDR3_REMARK_BIT	BIT(24)
+
+/* EN7516/EN7527 eFuse encoding */
+#define AIROHA_EFUSE_7516_PKG_MASK	GENMASK(19, 18)
+#define AIROHA_EFUSE_7516_REMARK_BIT	BIT(0)
+#define AIROHA_EFUSE_7516_REMARK_SHIFT	2
+
+#define AIROHA_EFUSE_EN7527H		0x00000
+#define AIROHA_EFUSE_EN7527G		0x00000
+#define AIROHA_EFUSE_EN7516G		0x80000
+#define AIROHA_EFUSE_EN7561G		0xc0000
+
+/* Additional package selectors used by the legacy vendor code */
+#define AIROHA_EN751627_QFP_MASK	BIT(15)
+#define AIROHA_EN7526C_FP_MASK		BIT(10)
+#define AIROHA_EN7526C_FTC_BIT		BIT(9)
+#define AIROHA_EN7526C_FTC_REMARK_BIT	BIT(10)
+
+/* MT7510/MT7520 module-selection bits in EFUSE_VERIFY_DATA0 */
+#define AIROHA_MT751020_ENP_SEL		BIT(3)
+#define AIROHA_MT751020_ENP_LOW		BIT(1)
+#define AIROHA_MT751020_ENP_HIGH	BIT(5)
+#define AIROHA_MT751020_ENS_LOW		BIT(2)
+#define AIROHA_MT751020_ENS_HIGH	BIT(6)
 
 #define EN_SERDES_PHY_NUM		4
 
@@ -176,13 +205,382 @@ struct airoha_clk_soc_data {
 
 struct airoha_clk_priv {
 	const struct airoha_clk_soc_data *soc_data;
+	enum airoha_id_source soc_source;
+	enum airoha_pkg soc_family;
+	enum airoha_pkg_ids soc_id;
 	struct regmap *scu_chip;
 	struct regmap *scu_np;
 	void __iomem *np_scu_base;
 	void __iomem *chip_scu_base;
 	resource_size_t chip_scu_size;
+	void __iomem *efuse_base;
 	struct en_serdes_phy_instance *serdes_phys[EN_SERDES_PHY_NUM];
 };
+
+static const struct of_device_id of_match_clk_en7523[];
+
+static const char *const airoha_pkg_id_names[] = {
+	[EN7529DU] = "EN7529DU",
+	[EN7529DT] = "EN7529DT",
+	[EN7529CU] = "EN7529CU",
+	[EN7562DU] = "EN7562DU",
+	[EN7562DT] = "EN7562DT",
+	[EN7562CU] = "EN7562CU",
+	[EN7523GU] = "EN7523GU",
+	[EN7523DU] = "EN7523DU",
+	[EN7529GTH] = "EN7529GTH",
+	[EN7562GTH] = "EN7562GTH",
+	[EN7523SU] = "EN7523SU",
+	[EN7529GTS] = "EN7529GTS",
+	[EN7562GTS] = "EN7562GTS",
+	[EN7529IT] = "EN7529IT",
+	[EN7529CT] = "EN7529CT",
+	[EN7562CT] = "EN7562CT",
+	[EN7523DT] = "EN7523DT",
+	[EN7529DTM] = "EN7529DTM",
+	[EN7562DTM] = "EN7562DTM",
+	[EN7529ITM] = "EN7529ITM",
+	[EN7529CTM] = "EN7529CTM",
+	[EN7562CTM] = "EN7562CTM",
+	[EN7523DTM] = "EN7523DTM",
+	[EN7528HU] = "EN7528HU",
+	[EN7528DU] = "EN7528DU",
+	[EN7561DU] = "EN7561DU",
+	[EN7526FH_EN7528DU] = "EN7526FH_EN7528DU",
+	[EN7561HU] = "EN7561HU",
+	[EN7521G_EN7528DU] = "EN7521G_EN7528DU",
+	[EN7580GT] = "EN7580GT",
+	[EN7580ST] = "EN7580ST",
+	[EN7580GAT] = "EN7580GAT",
+	[EN7565] = "EN7565",
+	[EN7528GT_EN7580] = "EN7528GT_EN7580",
+	[EN7580] = "EN7580",
+	[EN7516G] = "EN7516G",
+	[EN7527H] = "EN7527H",
+	[EN7527G] = "EN7527G",
+	[EN7561G] = "EN7561G",
+	[EN751627] = "EN751627",
+	[EN7512] = "EN7512",
+	[EN7513] = "EN7513",
+	[EN7513G] = "EN7513G",
+	[EN7521FCUD] = "EN7521FCUD",
+	[EN7521F] = "EN7521F",
+	[EN7521S] = "EN7521S",
+	[EN7521G] = "EN7521G",
+	[EN7526D] = "EN7526D",
+	[EN7526F] = "EN7526F",
+	[EN7526G] = "EN7526G",
+	[EN7526FT] = "EN7526FT",
+	[EN7526FP] = "EN7526FP",
+	[EN7526FT_C] = "EN7526FT_C",
+	[EN7586] = "EN7586",
+	[EN751221] = "EN751221",
+	[MT7510] = "MT7510",
+	[MT7511] = "MT7511",
+	[MT7520S] = "MT7520S",
+	[MT7520] = "MT7520",
+	[MT7520G] = "MT7520G",
+	[MT7525] = "MT7525",
+	[MT7525G] = "MT7525G",
+	[AN7581GT] = "AN7581GT",
+	[AN7566GT] = "AN7566GT",
+	[AN7581PT] = "AN7581PT",
+	[AN7581ST] = "AN7581ST",
+	[AN7551PT] = "AN7551PT",
+	[AN7581CT] = "AN7581CT",
+	[AN7581DT] = "AN7581DT",
+	[AN7581FG] = "AN7581FG",
+	[AN7581FP] = "AN7581FP",
+	[AN7581FD] = "AN7581FD",
+	[AN7551GT] = "AN7551GT",
+	[AN7566PT] = "AN7566PT",
+	[AN7581IT] = "AN7581IT",
+	[AN7581SIT] = "AN7581SIT",
+	[AN7552CT] = "AN7552CT",
+	[AN7552ST] = "AN7552ST",
+	[AN7552FT] = "AN7552FT",
+	[AN7563CT] = "AN7563CT",
+	[AN7563PT] = "AN7563PT",
+	[AN7583GT] = "AN7583GT",
+	[AN7583GIT] = "AN7583GIT",
+	[AN7583CT] = "AN7583CT",
+	[AN7583DT] = "AN7583DT",
+	[AN7583ST] = "AN7583ST",
+	[AN9510GT] = "AN9510GT",
+	[AN7553GT] = "AN7553GT",
+	[AN7553CT] = "AN7553CT",
+	[AN7567GT] = "AN7567GT",
+	[AN7567CT] = "AN7567CT",
+	[AN7583ET] = "AN7583ET",
+	[AN7583EIT] = "AN7583EIT",
+	[AN7583FG] = "AN7583FG",
+	[AN7583FP] = "AN7583FP",
+	[AN7583FD] = "AN7583FD",
+	[AN7583FS] = "AN7583FS",
+	[AN7583FF] = "AN7583FF",
+};
+
+static enum airoha_pkg_ids
+airoha_pkg_id_from_range(u32 pkgid, enum airoha_pkg_ids first,
+			 enum airoha_pkg_ids last)
+{
+	u32 id;
+
+	if (pkgid > (u32)(last - first))
+		return END_PACKAGE_ID;
+
+	id = first + pkgid;
+	if (id >= ARRAY_SIZE(airoha_pkg_id_names) ||
+	    !airoha_pkg_id_names[id])
+		return END_PACKAGE_ID;
+
+	return id;
+}
+
+static enum airoha_pkg airoha_pkg_from_id(u32 id)
+{
+	switch (id) {
+	case AN7583_PKG:
+	case 0x7583:
+	case 0x9510:
+	case 0x7553:
+	case 0x7567:
+		return AN7583_PKG;
+	case AN7552_PKG:
+	case 0x7552:
+	case 0x7563:
+		return AN7552_PKG;
+	case EN7581_PKG:
+	case 0x7581:
+	case 0x7566:
+	case 0x7551:
+		return EN7581_PKG;
+	case EN7523_PKG:
+	case 0x7523:
+	case 0x7529:
+	case 0x7562:
+		return EN7523_PKG;
+	case EN7528_PKG:
+	case 0x7528:
+	case 0x7561:
+		return EN7528_PKG;
+	case EN7580_PKG:
+	case 0x7580:
+	case 0x7565:
+		return EN7580_PKG;
+	case EN751627_PKG:
+	case 0x7516:
+	case 0x7527:
+		return EN751627_PKG;
+	case EN7526C_PKG:
+	case 0x7522:
+		return EN7526C_PKG;
+	case EN751221_PKG:
+	case 0x7512:
+	case 0x7513:
+	case 0x7521:
+	case 0x7526:
+		return EN751221_PKG;
+	case MT751020_PKG:
+	case 0x7510:
+	case 0x7520:
+	case 0x7525:
+		return MT751020_PKG;
+	default:
+		return UNKNOWN_PKG;
+	}
+}
+
+static u32 airoha_efuse_pkg_value(u32 efuse_data0)
+{
+	if (efuse_data0 & AIROHA_EFUSE_REMARK_BIT)
+		return (efuse_data0 >> AIROHA_EFUSE_PKG_REMARK_SHIFT) &
+		       AIROHA_EFUSE_PKG_MASK;
+
+	return efuse_data0 & AIROHA_EFUSE_PKG_MASK;
+}
+
+static u32 airoha_efuse_7516_pkg_value(u32 efuse_data0)
+{
+	if (efuse_data0 & AIROHA_EFUSE_7516_REMARK_BIT)
+		return (efuse_data0 >> AIROHA_EFUSE_7516_REMARK_SHIFT) &
+		       AIROHA_EFUSE_7516_PKG_MASK;
+
+	return efuse_data0 & AIROHA_EFUSE_7516_PKG_MASK;
+}
+
+static bool airoha_efuse_is_ddr3(u32 efuse_data0)
+{
+	if (efuse_data0 & AIROHA_EFUSE_REMARK_BIT)
+		return !!(efuse_data0 & AIROHA_EFUSE_DDR3_REMARK_BIT);
+
+	return !!(efuse_data0 & AIROHA_EFUSE_DDR3_BIT);
+}
+
+static bool airoha_en7526c_is_ft_c(u32 efuse_data0, u32 efuse_data1)
+{
+	if (efuse_data0 & AIROHA_EFUSE_REMARK_BIT)
+		return !!(efuse_data1 & AIROHA_EN7526C_FTC_REMARK_BIT);
+
+	return !!(efuse_data1 & AIROHA_EN7526C_FTC_BIT);
+}
+
+static enum airoha_pkg_ids airoha_en751221_variant_id(u32 efuse_data0)
+{
+	switch (airoha_efuse_pkg_value(efuse_data0)) {
+	case EN7526F_EFUSE:
+		return EN7526F;
+	case EN7526D_EFUSE:
+		return EN7526D;
+	case EN7526G_EFUSE:
+		return EN7526G;
+	case EN7512_EFUSE:
+		return EN7512;
+	case EN7513_EFUSE:
+		return EN7513;
+	case EN7513G_EFUSE:
+		return EN7513G;
+	case EN7586_EFUSE:
+		return EN7586;
+	case EN7521F_EFUSE:
+		return EN7521F;
+	case EN7526FT_EFUSE:
+		return EN7526FT;
+	case EN7521G_EFUSE:
+		return EN7521G;
+	case EN7521S_EFUSE:
+		return EN7521S;
+	default:
+		return EN751221;
+	}
+}
+
+static enum airoha_pkg_ids
+airoha_en7526c_variant_id(u32 efuse_data0, u32 efuse_data1, u32 chip_scu_config)
+{
+	u32 pkg = airoha_efuse_pkg_value(efuse_data0) &
+		  AIROHA_EFUSE_PKG_IGNORE_BIT01;
+
+	/* The vendor macros make these refinements orthogonal to the base ID */
+	if (airoha_en7526c_is_ft_c(efuse_data0, efuse_data1))
+		return EN7526FT_C;
+
+	switch (pkg) {
+	case EN7526F_EFUSE:
+		if (chip_scu_config & AIROHA_EN7526C_FP_MASK)
+			return EN7526FP;
+		return EN7526F;
+	case EN7521F_EFUSE:
+		if (airoha_efuse_is_ddr3(efuse_data0))
+			return EN7521FCUD;
+		return EN7521F;
+	case EN7521S_EFUSE:
+		return EN7521S;
+	default:
+		return END_PACKAGE_ID;
+	}
+}
+
+static enum airoha_pkg_ids
+airoha_en751627_variant_id(u32 efuse_data0, u32 chip_scu_package)
+{
+	switch (airoha_efuse_7516_pkg_value(efuse_data0)) {
+	case AIROHA_EFUSE_EN7527G:
+		if (chip_scu_package & AIROHA_EN751627_QFP_MASK)
+			return EN7527H;
+		return EN7527G;
+	case AIROHA_EFUSE_EN7516G:
+		return EN7516G;
+	case AIROHA_EFUSE_EN7561G:
+		return EN7561G;
+	default:
+		return EN751627;
+	}
+}
+
+static bool airoha_mt751020_is_enp(u32 efuse_data0)
+{
+	if (efuse_data0 & AIROHA_MT751020_ENP_SEL)
+		return !!(efuse_data0 & AIROHA_MT751020_ENP_HIGH);
+
+	return !!(efuse_data0 & AIROHA_MT751020_ENP_LOW);
+}
+
+static bool airoha_mt751020_is_ens(u32 efuse_data0)
+{
+	if (efuse_data0 & AIROHA_MT751020_ENP_SEL)
+		return !!(efuse_data0 & AIROHA_MT751020_ENS_HIGH);
+
+	return !!(efuse_data0 & AIROHA_MT751020_ENS_LOW);
+}
+
+static enum airoha_pkg_ids
+airoha_mt751020_variant_id(u32 submodel, u32 efuse_data0)
+{
+	bool enp = airoha_mt751020_is_enp(efuse_data0);
+	bool ens = airoha_mt751020_is_ens(efuse_data0);
+
+	switch (FIELD_GET(AIROHA_NP_SCU_SUBMODEL_MASK, submodel)) {
+	case 0:
+		return enp ? MT7510 : MT7511;
+	case 2:
+		if (ens)
+			return MT7520S;
+		return enp ? MT7520 : MT7525;
+	case 3:
+		return enp ? MT7520G : MT7525G;
+	default:
+		return END_PACKAGE_ID;
+	}
+}
+
+static enum airoha_pkg_ids airoha_pkgid_variant_id(enum airoha_pkg pkg, u32 pkgid)
+{
+	switch (airoha_pkg_from_id(pkg)) {
+	case AN7583_PKG:
+		return airoha_pkg_id_from_range(pkgid, AN7583GT, AN7583FF);
+	case AN7552_PKG:
+		return airoha_pkg_id_from_range(pkgid, AN7552CT, AN7563PT);
+	case EN7581_PKG:
+		return airoha_pkg_id_from_range(pkgid, AN7581GT, AN7581SIT);
+	case EN7523_PKG:
+		return airoha_pkg_id_from_range(pkgid, EN7529DU, EN7523DTM);
+	case EN7528_PKG:
+		switch (pkgid) {
+		case 0x0:
+			return EN7528HU;
+		case 0x1:
+			return EN7528DU;
+		case 0x2:
+			return EN7561DU;
+		case 0x3:
+			return EN7526FH_EN7528DU;
+		case 0x4:
+			return EN7561HU;
+		case 0x7:
+			return EN7521G_EN7528DU;
+		default:
+			return END_PACKAGE_ID;
+		}
+	case EN7580_PKG:
+		switch (pkgid) {
+		case 0x0:
+			return EN7580GT;
+		case 0x1:
+			return EN7580ST;
+		case 0x2:
+			return EN7580GAT;
+		case 0x3:
+			return EN7565;
+		case 0x4:
+			return EN7528GT_EN7580;
+		default:
+			return END_PACKAGE_ID;
+		}
+	default:
+		return END_PACKAGE_ID;
+	}
+}
 
 static const u32 gsw_base[] = { 400000000, 500000000 };
 static const u32 emi_base[] = { 333000000, 400000000 };
@@ -1086,22 +1484,6 @@ static const struct clk_ops en75xx_clk_ro_ops = {
 	.recalc_rate = en75xx_recalc_rate,
 };
 
-static enum en_hir get_hw_id(struct regmap *np_map)
-{
-	u32 val;
-
-	if (regmap_read(np_map, REG_HIR, &val))
-		return HIR_UNKNOWN;
-
-	val = FIELD_GET(REG_HIR_MASK, val);
-	if (val < HIR_MAX)
-		return (enum en_hir)val;
-
-	pr_warn("Unable to determine EcoNet SoC\n");
-
-	return HIR_UNKNOWN;
-}
-
 static int en75xx_register_clocks(struct device *dev,
 				  struct airoha_clk_priv *priv,
 				  struct clk_hw_onecell_data *clk_data)
@@ -1120,7 +1502,7 @@ static int en75xx_register_clocks(struct device *dev,
 
 		if (desc->id == EN751221_CLK_SPI &&
 		    desc->base_reg == EN751221_REG_SPI_DIV &&
-		    get_hw_id(priv->scu_np) == HIR_EN7526C)
+		    priv->soc_family == EN7526C_PKG)
 			desc = &en7526c_spi_clk;
 
 		if (WARN_ON_ONCE(desc->id < 0 || desc->id >= clk_data->num))
@@ -1628,11 +2010,11 @@ static int airoha_clk_map_resources(struct platform_device *pdev,
 {
 	const struct airoha_clk_soc_data *soc_data = priv->soc_data;
 	struct device *dev = &pdev->dev;
-	struct device_node *np = dev->of_node, *chip_np;
+	struct device_node *np = dev->of_node, *chip_np, *efuse_np;
 	struct resource *res_mem;
 	struct resource res;
 	int np_index = 0;
-	int err;
+	int err = 0;
 
 	if (of_property_present(np, "airoha,chip-scu")) {
 		chip_np = of_parse_phandle(np, "airoha,chip-scu", 0);
@@ -1698,8 +2080,162 @@ static int airoha_clk_map_resources(struct platform_device *pdev,
 	if (IS_ERR(priv->scu_np))
 		return PTR_ERR(priv->scu_np);
 
-	return 0;
+	if (of_property_present(np, "airoha,scu-efuse")) {
+		efuse_np = of_parse_phandle(np, "airoha,scu-efuse", 0);
+		if (!efuse_np)
+			return -ENODEV;
+
+		err = of_address_to_resource(efuse_np, 0, &res);
+		if (!err &&
+		    resource_size(&res) < AIROHA_EFUSE_VERIFY_DATA1 + sizeof(u32))
+			err = -EINVAL;
+		if (!err) {
+			priv->efuse_base = airoha_clk_iomap(dev, efuse_np);
+			if (IS_ERR(priv->efuse_base))
+				err = PTR_ERR(priv->efuse_base);
+		}
+		of_node_put(efuse_np);
+	}
+
+	return err;
 }
+
+static void airoha_clk_detect_soc(struct airoha_clk_priv *priv)
+{
+	void __iomem *np = priv->np_scu_base, *chip = priv->chip_scu_base;
+	u32 efuse0, efuse1, value, pkgid;
+	enum airoha_pkg pkg;
+
+	priv->soc_id = END_PACKAGE_ID;
+	priv->soc_source = ID_SOURCE_UNKNOWN;
+	value = readl(np + AIROHA_NP_SCU_HIR);
+	pkg = airoha_pkg_from_id(FIELD_GET(AIROHA_NP_SCU_HIR_MASK, value));
+	if (pkg == UNKNOWN_PKG) {
+		value = readl(np + AIROHA_NP_SCU_PDIDR);
+		pkg = airoha_pkg_from_id(FIELD_GET(AIROHA_NP_SCU_PDIDR_MASK, value));
+	}
+
+	priv->soc_family = pkg;
+
+	switch (pkg) {
+	case EN751221_PKG:
+	case EN7526C_PKG:
+	case EN751627_PKG:
+	case MT751020_PKG:
+		/* Never decode absent eFuse data as a valid zero-valued ID */
+		if (!priv->efuse_base)
+			return;
+
+		efuse0 = readl(priv->efuse_base + AIROHA_EFUSE_VERIFY_DATA0);
+		priv->soc_source = FROM_EFUSE;
+		break;
+	default:
+		value = readl(np + AIROHA_NP_SCU_SCREG_WR1);
+		pkgid = FIELD_GET(AIROHA_NP_SCU_PACKAGE_ID_MASK, value);
+		if (value & AIROHA_NP_SCU_PACKAGE_ID_EXT)
+			pkgid |= BIT(4);
+		priv->soc_id = airoha_pkgid_variant_id(pkg, pkgid);
+		priv->soc_source = FROM_SCU;
+		goto out;
+	}
+
+	switch (pkg) {
+	case EN751221_PKG:
+		priv->soc_id = airoha_en751221_variant_id(efuse0);
+		break;
+	case EN7526C_PKG:
+		efuse1 = readl(priv->efuse_base + AIROHA_EFUSE_VERIFY_DATA1);
+		value = readl(chip + AIROHA_CHIP_SCU_CONFIG);
+		priv->soc_id = airoha_en7526c_variant_id(efuse0, efuse1, value);
+		break;
+	case EN751627_PKG:
+		value = readl(chip + AIROHA_CHIP_SCU_PACKAGE);
+		priv->soc_id = airoha_en751627_variant_id(efuse0, value);
+		break;
+	case MT751020_PKG:
+		value = readl(np + AIROHA_NP_SCU_SUBMODEL);
+		priv->soc_id = airoha_mt751020_variant_id(value, efuse0);
+		break;
+	default:
+		break;
+	}
+out:
+	if (priv->soc_id == END_PACKAGE_ID)
+		priv->soc_source = ID_SOURCE_UNKNOWN;
+}
+
+static enum airoha_pkg_ids
+airoha_clk_get_soc_id(struct device_node *np, enum airoha_id_source *source)
+{
+	enum airoha_pkg_ids id = END_PACKAGE_ID;
+	struct platform_device *pdev;
+	struct airoha_clk_priv *priv;
+
+	if (source)
+		*source = ID_SOURCE_UNKNOWN;
+
+	if (np) {
+		if (!of_match_node(of_match_clk_en7523, np))
+			return id;
+		of_node_get(np);
+	} else {
+		for_each_matching_node(np, of_match_clk_en7523) {
+			if (of_device_is_available(np))
+				break;
+		}
+	}
+	if (!np)
+		return id;
+
+	if (!of_device_is_available(np)) {
+		of_node_put(np);
+		return id;
+	}
+
+	pdev = of_find_device_by_node(np);
+	of_node_put(np);
+	if (!pdev)
+		return id;
+
+	/* Copy the immutable result while probe and teardown are excluded */
+	device_lock(&pdev->dev);
+	priv = platform_get_drvdata(pdev);
+	if (priv) {
+		id = priv->soc_id;
+		if (source)
+			*source = priv->soc_source;
+	}
+	device_unlock(&pdev->dev);
+	put_device(&pdev->dev);
+
+	return id;
+}
+
+enum airoha_pkg_ids airoha_get_pkg_id(struct device_node *np)
+{
+	return airoha_clk_get_soc_id(np, NULL);
+}
+EXPORT_SYMBOL_GPL(airoha_get_pkg_id);
+
+enum airoha_id_source airoha_pkg_source(struct device_node *np)
+{
+	enum airoha_id_source source;
+
+	airoha_clk_get_soc_id(np, &source);
+
+	return source;
+}
+EXPORT_SYMBOL_GPL(airoha_pkg_source);
+
+const char *airoha_id_name(enum airoha_pkg_ids id)
+{
+	if (id >= ARRAY_SIZE(airoha_pkg_id_names) ||
+	    !airoha_pkg_id_names[id])
+		return "unknown";
+
+	return airoha_pkg_id_names[id];
+}
+EXPORT_SYMBOL_GPL(airoha_id_name);
 
 static int en7523_clk_probe(struct platform_device *pdev)
 {
@@ -1718,11 +2254,12 @@ static int en7523_clk_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	priv->soc_data = soc_data;
-	platform_set_drvdata(pdev, priv);
-
 	err = airoha_clk_map_resources(pdev, priv);
 	if (err)
 		return dev_err_probe(dev, err, "Failed to map SCU resources\n");
+
+	airoha_clk_detect_soc(priv);
+	platform_set_drvdata(pdev, priv);
 
 	clk_data = devm_kzalloc(dev,
 				struct_size(clk_data, hws,
