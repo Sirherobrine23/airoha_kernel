@@ -63,7 +63,6 @@ comment "SPI Master Controller Drivers"
 config SPI_AIROHA_SNFI
 	tristate "Airoha SPI NAND Flash Interface"
 	depends on ARCH_AIROHA || COMPILE_TEST
-	select REGMAP_MMIO
 	help
 	  This enables support for SPI-NAND mode on the Airoha NAND
 	  Flash Interface found on Airoha ARM SoCs. This controller
