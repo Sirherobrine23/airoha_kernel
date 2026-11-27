@@ -234,11 +234,19 @@ enum airoha_snand_cs {
 	SPI_CHIP_SEL_LOW,
 };
 
+struct airoha_snand_soc_data {
+	bool has_nfi;
+	bool has_nfi2spi;
+	bool double_cs;
+	u8 manual_dummy;
+};
+
 struct airoha_snand_ctrl {
 	struct device *dev;
 	void __iomem *ctrl_base;
 	void __iomem *nfi_base;
 	struct clk *spi_clk;
+	const struct airoha_snand_soc_data *soc;
 };
 
 static inline u32 airoha_ctrl_read(struct airoha_snand_ctrl *as_ctrl, u32 reg)
@@ -310,6 +318,16 @@ static int airoha_snand_set_fifo_op(struct airoha_snand_ctrl *as_ctrl,
 
 static int airoha_snand_set_cs(struct airoha_snand_ctrl *as_ctrl, u8 cs)
 {
+	int err;
+
+	err = airoha_snand_set_fifo_op(as_ctrl, cs, sizeof(cs));
+	if (err || !as_ctrl->soc->double_cs)
+		return err;
+
+	/*
+	 * EN751221 can drop a chip-select FIFO command. The vendor SFC
+	 * implementation and the old Linux port issue the command twice.
+	 */
 	return airoha_snand_set_fifo_op(as_ctrl, cs, sizeof(cs));
 }
 
@@ -404,7 +422,8 @@ static int airoha_snand_set_mode(struct airoha_snand_ctrl *as_ctrl,
 
 	switch (mode) {
 	case SPI_MODE_MANUAL:
-		airoha_ctrl_write(as_ctrl, REG_SPI_CTRL_NFI2SPI_EN, 0);
+		if (as_ctrl->soc->has_nfi2spi)
+			airoha_ctrl_write(as_ctrl, REG_SPI_CTRL_NFI2SPI_EN, 0);
 		airoha_ctrl_write(as_ctrl, REG_SPI_CTRL_READ_IDLE_EN, 0);
 
 		err = read_poll_timeout_atomic(airoha_ctrl_read, val,
@@ -420,20 +439,25 @@ static int airoha_snand_set_mode(struct airoha_snand_ctrl *as_ctrl,
 				  SPI_CTRL_MANUAL_EN);
 		break;
 	case SPI_MODE_DMA:
+		if (!as_ctrl->soc->has_nfi2spi)
+			return -EOPNOTSUPP;
+
 		airoha_ctrl_write(as_ctrl, REG_SPI_CTRL_NFI2SPI_EN,
 				  SPI_CTRL_NFI2SPI_EN);
 		airoha_ctrl_write(as_ctrl, REG_SPI_CTRL_MTX_MODE_TOG, 0);
 		airoha_ctrl_write(as_ctrl, REG_SPI_CTRL_MANUAL_EN, 0);
 		break;
 	case SPI_MODE_AUTO:
-		airoha_ctrl_write(as_ctrl, REG_SPI_CTRL_NFI2SPI_EN, 0);
+		if (as_ctrl->soc->has_nfi2spi)
+			airoha_ctrl_write(as_ctrl, REG_SPI_CTRL_NFI2SPI_EN, 0);
 		airoha_ctrl_write(as_ctrl, REG_SPI_CTRL_MTX_MODE_TOG, 0);
 		airoha_ctrl_write(as_ctrl, REG_SPI_CTRL_MANUAL_EN, 0);
 		airoha_ctrl_write(as_ctrl, REG_SPI_CTRL_READ_IDLE_EN, 1);
 		break;
 	}
 
-	airoha_ctrl_write(as_ctrl, REG_SPI_CTRL_DUMMY, 0);
+	airoha_ctrl_write(as_ctrl, REG_SPI_CTRL_DUMMY,
+			  mode == SPI_MODE_DMA ? 0 : as_ctrl->soc->manual_dummy);
 
 	return 0;
 }
@@ -572,6 +596,13 @@ static void airoha_snand_nfi_init(struct airoha_snand_ctrl *as_ctrl)
 	/* Enable DMA */
 	airoha_nfi_update_bits(as_ctrl, REG_SPI_NFI_INTR_EN,
 			       SPI_NFI_ALL_IRQ_EN, SPI_NFI_AHB_DONE_EN);
+}
+
+static void airoha_snand_nor_init(struct airoha_snand_ctrl *as_ctrl)
+{
+	/* Disable Manual/AUTO mode clash interrupt */
+	airoha_ctrl_write(as_ctrl, REG_SPI_CTRL_INTERRUPT, 0);
+	airoha_ctrl_write(as_ctrl, REG_SPI_CTRL_INTERRUPT_EN, 0);
 }
 
 static bool airoha_snand_is_page_ops(const struct spi_mem_op *op)
@@ -1187,6 +1218,9 @@ static int airoha_snand_setup(struct spi_device *spi)
 
 	/* prepare device buffer */
 	as_ctrl = spi_controller_get_devdata(spi->controller);
+	if (!as_ctrl->soc->has_nfi || spi_get_ctldata(spi))
+		return 0;
+
 	txrx_buf = devm_kzalloc(as_ctrl->dev, SPI_NAND_CACHE_SIZE,
 				GFP_KERNEL);
 	if (!txrx_buf)
@@ -1197,8 +1231,27 @@ static int airoha_snand_setup(struct spi_device *spi)
 	return 0;
 }
 
+static const struct airoha_snand_soc_data en751221_snand_data = {
+	.has_nfi = false,
+	.has_nfi2spi = false,
+	.double_cs = true,
+	.manual_dummy = 1,
+};
+
+static const struct airoha_snand_soc_data en751627_snand_data = {
+	.has_nfi = true,
+	.has_nfi2spi = true,
+};
+
+static const struct airoha_snand_soc_data en7581_snand_data = {
+	.has_nfi = true,
+	.has_nfi2spi = true,
+};
+
 static const struct of_device_id airoha_snand_ids[] = {
-	{ .compatible	= "airoha,en7581-snand" },
+	{ .compatible = "airoha,en751627-spi", .data = &en751627_snand_data },
+	{ .compatible = "airoha,en7581-snand", .data = &en7581_snand_data },
+	{ .compatible = "econet,en751221-spi", .data = &en751221_snand_data },
 	{ /* sentinel */ }
 };
 MODULE_DEVICE_TABLE(of, airoha_snand_ids);
@@ -1208,7 +1261,7 @@ static int airoha_snand_probe(struct platform_device *pdev)
 	struct airoha_snand_ctrl *as_ctrl;
 	struct device *dev = &pdev->dev;
 	struct spi_controller *ctrl;
-	bool dma_enable = true;
+	bool dma_enable;
 	u32 sfc_strap;
 	int err;
 
@@ -1218,21 +1271,33 @@ static int airoha_snand_probe(struct platform_device *pdev)
 
 	as_ctrl = spi_controller_get_devdata(ctrl);
 	as_ctrl->dev = dev;
+	as_ctrl->soc = device_get_match_data(dev);
+	if (!as_ctrl->soc)
+		return -EINVAL;
 
-	as_ctrl->ctrl_base = devm_platform_ioremap_resource(pdev, 0);
+	if (device_property_present(dev, "reg-names"))
+		as_ctrl->ctrl_base = devm_platform_ioremap_resource_byname(pdev, "ctrl");
+	else
+		as_ctrl->ctrl_base = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(as_ctrl->ctrl_base))
 		return PTR_ERR(as_ctrl->ctrl_base);
 
-	as_ctrl->nfi_base = devm_platform_ioremap_resource(pdev, 1);
-	if (IS_ERR(as_ctrl->nfi_base))
-		return PTR_ERR(as_ctrl->nfi_base);
+	if (as_ctrl->soc->has_nfi) {
+		if (device_property_present(dev, "reg-names"))
+			as_ctrl->nfi_base = devm_platform_ioremap_resource_byname(pdev, "nfi");
+		else
+			as_ctrl->nfi_base = devm_platform_ioremap_resource(pdev, 1);
+		if (IS_ERR(as_ctrl->nfi_base))
+			return PTR_ERR(as_ctrl->nfi_base);
+	}
 
 	as_ctrl->spi_clk = devm_clk_get_enabled(dev, "spi");
 	if (IS_ERR(as_ctrl->spi_clk))
 		return dev_err_probe(dev, PTR_ERR(as_ctrl->spi_clk),
 				     "unable to get spi clk\n");
 
-	if (device_is_compatible(dev, "airoha,en7523-snand")) {
+	dma_enable = as_ctrl->soc->has_nfi;
+	if (dma_enable && device_is_compatible(dev, "airoha,en7523-snand")) {
 		sfc_strap = airoha_ctrl_read(as_ctrl, REG_SPI_CTRL_SFC_STRAP);
 		if (!(sfc_strap & 0x04)) {
 			dma_enable = false;
@@ -1243,9 +1308,11 @@ static int airoha_snand_probe(struct platform_device *pdev)
 		}
 	}
 
-	err = dma_set_mask(as_ctrl->dev, DMA_BIT_MASK(32));
-	if (err)
-		return err;
+	if (as_ctrl->soc->has_nfi) {
+		err = dma_set_mask(as_ctrl->dev, DMA_BIT_MASK(32));
+		if (err)
+			return err;
+	}
 
 	ctrl->num_chipselect = AIROHA_SPI_NUM_CHIPSELECTS;
 	ctrl->flags = SPI_CONTROLLER_HALF_DUPLEX;
@@ -1258,7 +1325,15 @@ static int airoha_snand_probe(struct platform_device *pdev)
 	ctrl->transfer_one_message = airoha_snand_transfer_one_message;
 	ctrl->setup = airoha_snand_setup;
 
-	airoha_snand_nfi_init(as_ctrl);
+	/*
+	 * EN751221 predates NFI2SPI. Its SPI-NAND path uses the SFC manual
+	 * FIFO and the flash on-die ECC, so it is initialized like the SFC
+	 * NOR path rather than accessing a non-existent NFI block.
+	 */
+	if (as_ctrl->soc->has_nfi)
+		airoha_snand_nfi_init(as_ctrl);
+	else
+		airoha_snand_nor_init(as_ctrl);
 
 	return devm_spi_register_controller(dev, ctrl);
 }

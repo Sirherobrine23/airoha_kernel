@@ -61,12 +61,12 @@ config SPI_OFFLOAD
 comment "SPI Master Controller Drivers"
 
 config SPI_AIROHA_SNFI
-	tristate "Airoha SPI NAND Flash Interface"
-	depends on ARCH_AIROHA || COMPILE_TEST
+	tristate "Airoha SPI Flash Interface"
+	depends on ARCH_AIROHA || ECONET || COMPILE_TEST
 	help
-	  This enables support for SPI-NAND mode on the Airoha NAND
-	  Flash Interface found on Airoha ARM SoCs. This controller
-	  is implemented as a SPI-MEM controller.
+	  This enables support for the SPI Flash Interface found on
+	  Airoha and EcoNet SoCs. Newer SoCs combine the SFC with an
+	  NFI2SPI engine, while EN751221 uses the manual SFC FIFO only.
 
 config SPI_ALTERA
 	tristate "Altera SPI Controller platform driver"
