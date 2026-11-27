@@ -18,6 +18,7 @@
 
 #include "airoha_regs.h"
 #include "airoha_eth.h"
+#include "airoha_tso.h"
 
 u32 airoha_rr(void __iomem *base, u32 offset)
 {
@@ -709,6 +710,8 @@ static int airoha_fe_irq_init(struct platform_device *pdev,
 		return dev_err_probe(eth->dev, irq,
 				     "failed to get FE error IRQ\n");
 
+	if (airoha_tso_is_v2(eth))
+		mask |= FE_INT_TSO_MASK;
 	eth->fe_irq_mask = mask;
 
 	err = request_irq(irq, airoha_fe_irq_handler, 0, "airoha-fe-error",
@@ -1572,16 +1575,7 @@ static int airoha_qdma_tx_napi_poll(struct napi_struct *napi, int budget)
 		q->queued--;
 
 		if (skb) {
-			struct airoha_gdm_dev *dev = netdev_priv(skb->dev);
-			u16 qidx = skb_get_queue_mapping(skb);
-			struct netdev_queue *txq;
-
-			txq = skb_get_tx_queue(skb->dev, skb);
-
-			spin_lock_bh(&dev->txq_lock[qidx]);
-			netdev_tx_completed_queue(txq, 1, skb->len);
-			spin_unlock_bh(&dev->txq_lock[qidx]);
-
+			airoha_tx_complete(skb);
 			dev_kfree_skb_any(skb);
 		}
 
@@ -2619,6 +2613,8 @@ static int airoha_dev_stop(struct net_device *netdev)
 	if (netdev->features & NETIF_F_LRO)
 		airoha_dev_lro_disable(dev);
 
+	airoha_tso_flush(dev->eth, netdev);
+
 	return 0;
 }
 
@@ -2975,7 +2971,8 @@ int airoha_get_fe_port(struct airoha_gdm_dev *dev)
 
 static bool airoha_gdm2_needs_linear_tx(const struct airoha_gdm_dev *dev)
 {
-	return airoha_is_7523(dev->eth) && dev->port->id == AIROHA_GDM2_IDX;
+	return airoha_is_7523(dev->eth) && dev->port->id == AIROHA_GDM2_IDX &&
+	       !airoha_tso_is_v2(dev->eth);
 }
 
 static u8 airoha_skb_ip_version(const struct sk_buff *skb)
@@ -3093,7 +3090,8 @@ static netdev_tx_t airoha_dev_xmit(struct sk_buff *skb,
 
 	/* TSO: fill MSS info in tcp checksum field */
 	if (skb_is_gso(skb)) {
-		if (skb_cow_head(skb, 0))
+		if (airoha_tso_is_v2(qdma->eth) ? airoha_tso_prepare(skb)
+						: skb_cow_head(skb, 0))
 			goto error;
 
 		if (skb_shinfo(skb)->gso_type & (SKB_GSO_TCPV4 |
@@ -3115,6 +3113,17 @@ static netdev_tx_t airoha_dev_xmit(struct sk_buff *skb,
 	if (airoha_is_7552(qdma->eth))
 		msg1 |= QDMA_ETH_TXMSG_ACNT_G1_MASK |
 			QDMA_ETH_TXMSG_ACNT_G0_MASK;
+
+	if (airoha_tso_is_v2(qdma->eth) &&
+	    (skb_is_nonlinear(skb) || skb_is_gso(skb))) {
+		netdev_tx_t ret;
+
+		ret = airoha_tso_xmit(skb, netdev,
+				      qdma - &qdma->eth->qdma[0],
+				      msg0, msg1);
+		rcu_read_unlock();
+		return ret;
+	}
 
 	q = &qdma->q_tx[qid];
 	if (WARN_ON_ONCE(!q->ndesc))
@@ -3243,7 +3252,8 @@ static int airoha_ethtool_get_sset_count(struct net_device *netdev, int sset)
 	if (sset != ETH_SS_STATS)
 		return -EOPNOTSUPP;
 
-	return hweight32(dev->eth->fe_irq_mask);
+	return hweight32(dev->eth->fe_irq_mask) +
+	       airoha_tso_get_sset_count(dev->eth);
 }
 
 static void airoha_ethtool_get_strings(struct net_device *netdev, u32 sset,
@@ -3258,6 +3268,7 @@ static void airoha_ethtool_get_strings(struct net_device *netdev, u32 sset,
 	for (i = 0; i < ARRAY_SIZE(airoha_fe_irq_names); i++)
 		if (dev->eth->fe_irq_mask & BIT(i))
 			ethtool_puts(&data, airoha_fe_irq_names[i]);
+	airoha_tso_get_strings(dev->eth, data);
 }
 
 static void airoha_ethtool_get_stats(struct net_device *netdev,
@@ -3269,6 +3280,7 @@ static void airoha_ethtool_get_stats(struct net_device *netdev,
 	for (i = 0; i < ARRAY_SIZE(airoha_fe_irq_names); i++)
 		if (dev->eth->fe_irq_mask & BIT(i))
 			*data++ = atomic64_read(&dev->eth->fe_irq_stats[i]);
+	airoha_tso_get_stats(dev->eth, data);
 }
 
 static void airoha_ethtool_get_drvinfo(struct net_device *netdev,
@@ -4197,6 +4209,7 @@ static const struct net_device_ops airoha_netdev_ops = {
 	.ndo_stop		= airoha_dev_stop,
 	.ndo_change_mtu		= airoha_dev_change_mtu,
 	.ndo_select_queue	= airoha_dev_select_queue,
+	.ndo_features_check	= airoha_tso_features_check,
 	.ndo_fix_features	= airoha_dev_fix_features,
 	.ndo_set_features	= airoha_dev_set_features,
 	.ndo_start_xmit		= airoha_dev_xmit,
@@ -4293,6 +4306,8 @@ static int airoha_alloc_gdm_device(struct airoha_eth *eth,
 	netdev->hw_features = AIROHA_HW_FEATURES | NETIF_F_LRO;
 	netdev->features |= AIROHA_HW_FEATURES;
 	netdev->vlan_features = AIROHA_HW_FEATURES;
+	if (airoha_tso_is_v2(eth))
+		netif_set_tso_max_size(netdev, U16_MAX);
 	SET_NETDEV_DEV(netdev, eth->dev);
 
 	/* reserve hw queues for HTB offloading */
@@ -4532,9 +4547,13 @@ static int airoha_probe(struct platform_device *pdev)
 	if (err)
 		goto error_netdev_free;
 
-	err = airoha_fe_irq_init(pdev, eth);
+	err = airoha_tso_init(eth);
 	if (err)
 		goto error_hw_cleanup;
+
+	err = airoha_fe_irq_init(pdev, eth);
+	if (err)
+		goto error_tso_cleanup;
 
 	for (i = 0; i < ARRAY_SIZE(eth->qdma); i++) {
 		airoha_qdma_start_napi(&eth->qdma[i]);
@@ -4592,6 +4611,8 @@ error_napi_stop:
 		}
 		airoha_metadata_dst_free(port);
 	}
+error_tso_cleanup:
+	airoha_tso_cleanup(eth);
 error_hw_cleanup:
 	airoha_hw_cleanup(eth);
 error_netdev_free:
@@ -4632,6 +4653,7 @@ static void airoha_remove(struct platform_device *pdev)
 		}
 		airoha_metadata_dst_free(port);
 	}
+	airoha_tso_cleanup(eth);
 	airoha_hw_cleanup(eth);
 
 	free_netdev(eth->napi_dev);

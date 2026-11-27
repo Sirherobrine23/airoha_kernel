@@ -755,6 +755,7 @@ struct airoha_eth {
 	struct reset_control_bulk_data *xsi_rsts;
 
 	struct net_device *napi_dev;
+	struct airoha_tso *tso;
 	int fe_irq;
 	u32 fe_irq_mask;
 	/* Shared FE event counts, indexed by REG_FE_INT_STATUS bit. */
