@@ -222,6 +222,9 @@ config COMMON_CLK_EN7523
 	depends on OF
 	depends on ARCH_AIROHA || ECONET || COMPILE_TEST
 	select GENERIC_PHY
+	select MFD_SYSCON
+	select REGMAP_MMIO
+	select RESET_CONTROLLER
 	default ARCH_AIROHA
 	help
 	  This driver provides the fixed clocks and gates present on Airoha

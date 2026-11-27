@@ -1,21 +1,22 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
 #include <linux/bitfield.h>
-#include <linux/delay.h>
 #include <linux/clk-provider.h>
+#include <linux/delay.h>
 #include <linux/io.h>
 #include <linux/mfd/syscon.h>
-#include <linux/platform_device.h>
+#include <linux/of_address.h>
+#include <linux/of_platform.h>
 #include <linux/phy.h>
 #include <linux/phy/phy.h>
+#include <linux/platform_device.h>
 #include <linux/property.h>
 #include <linux/regmap.h>
 #include <linux/reset-controller.h>
-#include <linux/spinlock.h>
+#include <dt-bindings/clock/econet,en751221-scu.h>
 #include <dt-bindings/clock/en7523-clk.h>
 #include <dt-bindings/reset/airoha,en7523-reset.h>
 #include <dt-bindings/reset/airoha,en7581-reset.h>
-#include <dt-bindings/clock/econet,en751221-scu.h>
 #include <dt-bindings/reset/econet,en751221-scu.h>
 #include <dt-bindings/soc/airoha,scu-ssr.h>
 
@@ -44,6 +45,7 @@
 #define   REG_HIR_MASK			GENMASK(31, 16)
 /* EN7581 */
 #define REG_NP_SCU_PCIC			0x88
+#define REG_PCIE_CTRL			GENMASK(7, 0)
 #define REG_NP_SCU_SSR3			0x94
 #define REG_SSUSB_HSGMII_SEL_MASK	BIT(29)
 #define REG_SSUSB_HSGMII_SEL_HSGMII	FIELD_PREP_CONST(REG_SSUSB_HSGMII_SEL_MASK, 0x0)
@@ -63,14 +65,12 @@
 #define REG_CRYPTO_CLKSRC2		0x20c
 /* EN751221 */
 #define EN751221_REG_SPI_DIV		0x0cc
-#define EN751221_REG_SPI_DIV_MASK	GENMASK(31, 8)
 #define EN751221_SPI_BASE		500000000
 #define EN751221_SPI_BASE_EN7526C	400000000
 #define EN751221_SPI_DIV_DEFAULT	40
 #define EN751221_REG_BUS		0x284
 #define EN751221_REG_BUS_MASK		GENMASK(21, 12)
 #define EN751221_REG_SSR3		0x094
-#define EN751221_REG_SSR3_GSW_MASK	GENMASK(9, 8)
 
 #define REG_RST_CTRL2			0x830
 #define REG_RST_CTRL1			0x834
@@ -104,6 +104,9 @@ enum en_hir {
 struct en_clk_desc {
 	int id;
 	const char *name;
+	bool np_scu;
+	bool read_only;
+
 	u32 base_reg;
 	u8 base_bits;
 	u8 base_shift;
@@ -122,14 +125,20 @@ struct en_clk_desc {
 };
 
 struct en_clk_gate {
-	void __iomem *base;
+	struct regmap *map;
+	struct clk_hw hw;
+};
+
+struct en_clk {
+	struct regmap *map;
+	const struct en_clk_desc *desc;
 	struct clk_hw hw;
 };
 
 struct en_rst_data {
 	const u16 *bank_ofs;
 	const u16 *idx_map;
-	void __iomem *base;
+	struct regmap *map;
 	struct reset_controller_dev rcdev;
 };
 
@@ -138,18 +147,32 @@ struct en_serdes_phy_instance {
 	unsigned int serdes_port;
 };
 
-struct en_clk_priv {
-	void __iomem *base;
-	/* protect SCU register */
-	spinlock_t lock;
-	struct en_serdes_phy_instance *serdes_phys[EN_SERDES_PHY_NUM];
-};
+struct airoha_clk_priv;
 
-struct en_clk_soc_data {
+struct airoha_clk_soc_data {
+	const char *old_chip_scu_compatible;
+	bool probe_child;
 	u32 num_clocks;
+	u32 num_base_clks;
+	u32 pcie_clk_id;
+	const u16 *rst_map;
+	const u16 *rst_ofs;
+	int nr_resets;
+	const struct en_clk_desc *base_clks;
 	const struct clk_ops pcie_ops;
 	int (*hw_init)(struct platform_device *pdev,
+		       struct airoha_clk_priv *priv,
 		       struct clk_hw_onecell_data *clk_data);
+};
+
+struct airoha_clk_priv {
+	const struct airoha_clk_soc_data *soc_data;
+	struct regmap *scu_chip;
+	struct regmap *scu_np;
+	void __iomem *np_scu_base;
+	void __iomem *chip_scu_base;
+	resource_size_t chip_scu_size;
+	struct en_serdes_phy_instance *serdes_phys[EN_SERDES_PHY_NUM];
 };
 
 static const u32 gsw_base[] = { 400000000, 500000000 };
@@ -367,6 +390,42 @@ static const struct en_clk_desc en7581_base_clks[] = {
 	}
 };
 
+static const struct en_clk_desc en751221_base_clks[] = {
+	{
+		.id = EN751221_CLK_SPI,
+		.name = "spi",
+		.read_only = true,
+		.base_reg = EN751221_REG_SPI_DIV,
+		.base_value = EN751221_SPI_BASE,
+		.div_bits = 8,
+		.div_shift = 8,
+		.div_val0 = EN751221_SPI_DIV_DEFAULT,
+		.div_step = 2,
+	}, {
+		.id = EN751221_CLK_GSW,
+		.name = "gsw",
+		.np_scu = true,
+		.read_only = true,
+		.base_reg = EN751221_REG_SSR3,
+		.base_bits = 2,
+		.base_shift = 8,
+		.base_values = gsw751221_base,
+		.n_base_values = ARRAY_SIZE(gsw751221_base),
+	}
+};
+
+static const struct en_clk_desc en7526c_spi_clk = {
+	.id = EN751221_CLK_SPI,
+	.name = "spi",
+	.read_only = true,
+	.base_reg = EN751221_REG_SPI_DIV,
+	.base_value = EN751221_SPI_BASE_EN7526C,
+	.div_bits = 8,
+	.div_shift = 8,
+	.div_val0 = EN751221_SPI_DIV_DEFAULT,
+	.div_step = 2,
+};
+
 static const u16 en7581_rst_ofs[] = {
 	REG_RST_CTRL2,
 	REG_RST_CTRL1,
@@ -542,9 +601,8 @@ static const u16 en751221_rst_map[] = {
 	[EN751221_USB_PHY_P1_RST]	= 3 * RST_NR_PER_BANK + 7,
 };
 
-static int en7581_reset_register(struct device *dev, void __iomem *base,
-				 const u16 *rst_map, int nr_resets,
-				 const u16 *rst_reg_ofs);
+static int register_resets(struct device *dev, struct regmap *map,
+			   const struct airoha_clk_soc_data *soc_data);
 
 static u32 en7523_get_base_rate(const struct en_clk_desc *desc, u32 val)
 {
@@ -577,44 +635,42 @@ static u32 en7523_get_div(const struct en_clk_desc *desc, u32 val)
 static int en7523_pci_is_enabled(struct clk_hw *hw)
 {
 	struct en_clk_gate *cg = container_of(hw, struct en_clk_gate, hw);
+	u32 val;
 
-	return !!(readl(cg->base + REG_PCI_CONTROL) & REG_PCI_CONTROL_REFCLK_EN1);
+	regmap_read(cg->map, REG_PCI_CONTROL, &val);
+	return !!(val & REG_PCI_CONTROL_REFCLK_EN1);
 }
 
 static int en7523_pci_prepare(struct clk_hw *hw)
 {
 	struct en_clk_gate *cg = container_of(hw, struct en_clk_gate, hw);
-	void __iomem *np_base = cg->base;
-	u32 val, mask;
+	struct regmap *map = cg->map;
+	u32 mask;
 
 	/* Need to pull device low before reset */
-	val = readl(np_base + REG_PCI_CONTROL);
-	val &= ~(REG_PCI_CONTROL_PERSTOUT1 | REG_PCI_CONTROL_PERSTOUT);
-	writel(val, np_base + REG_PCI_CONTROL);
+	regmap_clear_bits(map, REG_PCI_CONTROL,
+			  REG_PCI_CONTROL_PERSTOUT1 | REG_PCI_CONTROL_PERSTOUT);
 	usleep_range(1000, 2000);
 
 	/* Enable PCIe port 1 */
-	val |= REG_PCI_CONTROL_REFCLK_EN1;
-	writel(val, np_base + REG_PCI_CONTROL);
+	regmap_set_bits(map, REG_PCI_CONTROL, REG_PCI_CONTROL_REFCLK_EN1);
 	usleep_range(1000, 2000);
 
 	/* Reset to default */
-	val = readl(np_base + REG_RESET_CONTROL1);
 	mask = REG_RESET_CONTROL_PCIE1 | REG_RESET_CONTROL_PCIE2 |
 	       REG_RESET_CONTROL_PCIEHB;
-	writel(val & ~mask, np_base + REG_RESET_CONTROL1);
+	regmap_clear_bits(map, REG_RESET_CONTROL1, mask);
 	usleep_range(1000, 2000);
-	writel(val | mask, np_base + REG_RESET_CONTROL1);
+	regmap_set_bits(map, REG_RESET_CONTROL1, mask);
 	msleep(100);
-	writel(val & ~mask, np_base + REG_RESET_CONTROL1);
+	regmap_clear_bits(map, REG_RESET_CONTROL1, mask);
 	usleep_range(5000, 10000);
 
 	/* Release device */
 	mask = REG_PCI_CONTROL_PERSTOUT1 | REG_PCI_CONTROL_PERSTOUT;
-	val = readl(np_base + REG_PCI_CONTROL);
-	writel(val & ~mask, np_base + REG_PCI_CONTROL);
+	regmap_clear_bits(map, REG_PCI_CONTROL, mask);
 	usleep_range(1000, 2000);
-	writel(val | mask, np_base + REG_PCI_CONTROL);
+	regmap_set_bits(map, REG_PCI_CONTROL, mask);
 	msleep(250);
 
 	return 0;
@@ -623,38 +679,282 @@ static int en7523_pci_prepare(struct clk_hw *hw)
 static void en7523_pci_unprepare(struct clk_hw *hw)
 {
 	struct en_clk_gate *cg = container_of(hw, struct en_clk_gate, hw);
-	void __iomem *np_base = cg->base;
-	u32 val;
 
-	val = readl(np_base + REG_PCI_CONTROL);
-	val &= ~REG_PCI_CONTROL_REFCLK_EN1;
-	writel(val, np_base + REG_PCI_CONTROL);
+	regmap_clear_bits(cg->map, REG_PCI_CONTROL, REG_PCI_CONTROL_REFCLK_EN1);
 }
 
 static struct clk_hw *en7523_register_pcie_clk(struct device *dev,
-					       void __iomem *np_base)
+					       struct regmap *clk_map)
 {
-	const struct en_clk_soc_data *soc_data = device_get_match_data(dev);
+	const struct airoha_clk_soc_data *soc_data = device_get_match_data(dev);
 	struct clk_init_data init = {
 		.name = "pcie",
 		.ops = &soc_data->pcie_ops,
 	};
 	struct en_clk_gate *cg;
+	int err;
 
 	cg = devm_kzalloc(dev, sizeof(*cg), GFP_KERNEL);
 	if (!cg)
-		return NULL;
+		return ERR_PTR(-ENOMEM);
 
-	cg->base = np_base;
+	cg->map = clk_map;
 	cg->hw.init = &init;
 
 	if (init.ops->unprepare)
 		init.ops->unprepare(&cg->hw);
 
-	if (clk_hw_register(dev, &cg->hw))
-		return NULL;
+	err = devm_clk_hw_register(dev, &cg->hw);
+	if (err)
+		return ERR_PTR(err);
 
 	return &cg->hw;
+}
+
+static unsigned long en75xx_recalc_rate(struct clk_hw *hw,
+					unsigned long parent_rate)
+{
+	struct en_clk *c = container_of(hw, struct en_clk, hw);
+	const struct en_clk_desc *desc = c->desc;
+	u32 val, rate, div;
+	int err;
+
+	err = regmap_read(c->map, desc->base_reg, &val);
+	if (err) {
+		pr_err("Failed reading clock %s: %d\n", desc->name, err);
+		return 0;
+	}
+
+	rate = en7523_get_base_rate(desc, val);
+	if (!desc->div_bits)
+		return rate;
+
+	if (desc->div_reg && desc->div_reg != desc->base_reg) {
+		err = regmap_read(c->map, desc->div_reg, &val);
+		if (err) {
+			pr_err("Failed reading divider for clock %s: %d\n",
+			       desc->name, err);
+			return 0;
+		}
+	}
+
+	div = en7523_get_div(desc, val);
+	if (!div)
+		return 0;
+
+	return rate / div;
+}
+
+static int en75xx_get_base_val_for_rate(const struct en_clk_desc *desc,
+					int div, unsigned long rate)
+{
+	int i;
+
+	if (!div)
+		return -EINVAL;
+
+	/* Single base rate */
+	if (!desc->base_bits) {
+		if (rate != desc->base_value / div)
+			return -EINVAL;
+
+		return 0;
+	}
+
+	/* Check every base rate with provided divisor */
+	for (i = 0; i < desc->n_base_values; i++)
+		if (rate == desc->base_values[i] / div)
+			return i;
+
+	return -EINVAL;
+}
+
+static int en75xx_get_vals_for_rate(const struct en_clk_desc *desc,
+				    unsigned long rate,
+				    u32 *base_val, u32 *div_val)
+{
+	int tmp_base_val = 0;
+	int tmp_div_val = 0;
+
+	if (!desc->base_bits && !desc->div_bits)
+		return -EINVAL;
+
+	/* Divisor not supported, just search in base rate */
+	if (!desc->div_bits) {
+		tmp_base_val = en75xx_get_base_val_for_rate(desc, 1, rate);
+		if (tmp_base_val < 0) {
+			pr_err("Invalid rate for clock %s\n", desc->name);
+			return -EINVAL;
+		}
+
+		goto exit;
+	}
+
+	/* Check if div0 satisfies the request */
+	if (desc->div_val0) {
+		tmp_base_val = en75xx_get_base_val_for_rate(desc,
+							    desc->div_val0,
+							    rate);
+		if (tmp_base_val >= 0)
+			goto exit;
+
+		/* Skip checking first divisor val */
+		tmp_div_val = 1;
+	}
+
+	/* Simulate rate with every divisor supported */
+	for (; tmp_div_val < BIT(desc->div_bits); tmp_div_val++) {
+		int div = (tmp_div_val + desc->div_offset) * desc->div_step;
+
+		tmp_base_val = en75xx_get_base_val_for_rate(desc, div, rate);
+		if (tmp_base_val >= 0)
+			goto exit;
+	}
+
+	pr_err("Invalid rate for clock %s\n", desc->name);
+	return -EINVAL;
+
+exit:
+	*base_val = tmp_base_val;
+	*div_val = tmp_div_val;
+
+	return 0;
+}
+
+static int en75xx_determine_rate(struct clk_hw *hw,
+				 struct clk_rate_request *req)
+{
+	struct en_clk *en_clk = container_of(hw, struct en_clk, hw);
+	u32 div_val, base_val;
+
+	return en75xx_get_vals_for_rate(en_clk->desc, req->rate,
+					&base_val, &div_val);
+}
+
+static int en75xx_set_rate(struct clk_hw *hw, unsigned long rate,
+			   unsigned long parent_rate)
+{
+	struct en_clk *en_clk = container_of(hw, struct en_clk, hw);
+	const struct en_clk_desc *desc = en_clk->desc;
+	struct regmap *map = en_clk->map;
+	u32 base_val, div_val;
+	u32 reg, val, mask;
+	int err;
+
+	err = en75xx_get_vals_for_rate(desc, rate, &base_val, &div_val);
+	if (err)
+		return err;
+
+	if (desc->div_bits) {
+		reg = desc->div_reg ? desc->div_reg : desc->base_reg;
+		mask = (BIT(desc->div_bits) - 1) << desc->div_shift;
+		val = div_val << desc->div_shift;
+
+		err = regmap_update_bits(map, reg, mask, val);
+		if (err) {
+			pr_err("Failed to update div reg for clock %s\n",
+			       desc->name);
+			return -EINVAL;
+		}
+	}
+
+	if (desc->base_bits) {
+		mask = (BIT(desc->base_bits) - 1) << desc->base_shift;
+		val = base_val << desc->base_shift;
+
+		err = regmap_update_bits(map, desc->base_reg, mask, val);
+		if (err) {
+			pr_err("Failed to update reg for clock %s\n",
+			       desc->name);
+			return -EINVAL;
+		}
+	}
+
+	return 0;
+}
+
+static const struct clk_ops en75xx_clk_ops = {
+	.recalc_rate = en75xx_recalc_rate,
+	.determine_rate = en75xx_determine_rate,
+	.set_rate = en75xx_set_rate,
+};
+
+static const struct clk_ops en75xx_clk_ro_ops = {
+	.recalc_rate = en75xx_recalc_rate,
+};
+
+static enum en_hir get_hw_id(struct regmap *np_map)
+{
+	u32 val;
+
+	if (regmap_read(np_map, REG_HIR, &val))
+		return HIR_UNKNOWN;
+
+	val = FIELD_GET(REG_HIR_MASK, val);
+	if (val < HIR_MAX)
+		return (enum en_hir)val;
+
+	pr_warn("Unable to determine EcoNet SoC\n");
+
+	return HIR_UNKNOWN;
+}
+
+static int en75xx_register_clocks(struct device *dev,
+				  struct airoha_clk_priv *priv,
+				  struct clk_hw_onecell_data *clk_data)
+{
+	const struct airoha_clk_soc_data *soc_data = priv->soc_data;
+	struct clk_hw *hw;
+	int i;
+
+	for (i = 0; i < soc_data->num_base_clks; i++) {
+		const struct en_clk_desc *desc = &soc_data->base_clks[i];
+		struct clk_init_data init = {
+			.ops = &en75xx_clk_ops,
+		};
+		struct en_clk *en_clk;
+		int err;
+
+		if (desc->id == EN751221_CLK_SPI &&
+		    desc->base_reg == EN751221_REG_SPI_DIV &&
+		    get_hw_id(priv->scu_np) == HIR_EN7526C)
+			desc = &en7526c_spi_clk;
+
+		if (WARN_ON_ONCE(desc->id < 0 || desc->id >= clk_data->num))
+			return -EINVAL;
+
+		if (desc->read_only) {
+			init.ops = &en75xx_clk_ro_ops;
+			init.flags = CLK_GET_RATE_NOCACHE;
+		}
+
+		en_clk = devm_kzalloc(dev, sizeof(*en_clk), GFP_KERNEL);
+		if (!en_clk)
+			return -ENOMEM;
+
+		init.name = desc->name;
+
+		en_clk->map = desc->np_scu ? priv->scu_np : priv->scu_chip;
+		en_clk->desc = desc;
+		en_clk->hw.init = &init;
+
+		err = devm_clk_hw_register(dev, &en_clk->hw);
+		if (err) {
+			pr_err("Failed to register clk %s: %d\n",
+			       desc->name, err);
+			return err;
+		}
+
+		clk_data->hws[desc->id] = &en_clk->hw;
+	}
+
+	hw = en7523_register_pcie_clk(dev, priv->scu_np);
+	if (IS_ERR(hw))
+		return PTR_ERR(hw);
+
+	clk_data->hws[soc_data->pcie_clk_id] = hw;
+
+	return 0;
 }
 
 static int en7581_pci_is_enabled(struct clk_hw *hw)
@@ -663,19 +963,17 @@ static int en7581_pci_is_enabled(struct clk_hw *hw)
 	u32 val, mask;
 
 	mask = REG_PCI_CONTROL_REFCLK_EN0 | REG_PCI_CONTROL_REFCLK_EN1;
-	val = readl(cg->base + REG_PCI_CONTROL);
+	regmap_read(cg->map, REG_PCI_CONTROL, &val);
 	return (val & mask) == mask;
 }
 
 static int en7581_pci_enable(struct clk_hw *hw)
 {
 	struct en_clk_gate *cg = container_of(hw, struct en_clk_gate, hw);
-	void __iomem *np_base = cg->base;
-	u32 val, mask;
+	u32 mask;
 
 	mask = REG_PCI_CONTROL_REFCLK_EN0 | REG_PCI_CONTROL_REFCLK_EN1;
-	val = readl(np_base + REG_PCI_CONTROL);
-	writel(val | mask, np_base + REG_PCI_CONTROL);
+	regmap_set_bits(cg->map, REG_PCI_CONTROL, mask);
 
 	return 0;
 }
@@ -683,128 +981,43 @@ static int en7581_pci_enable(struct clk_hw *hw)
 static void en7581_pci_disable(struct clk_hw *hw)
 {
 	struct en_clk_gate *cg = container_of(hw, struct en_clk_gate, hw);
-	void __iomem *np_base = cg->base;
-	u32 val, mask;
+	u32 mask;
 
 	mask = REG_PCI_CONTROL_REFCLK_EN0 | REG_PCI_CONTROL_REFCLK_EN1;
-	val = readl(np_base + REG_PCI_CONTROL);
-	writel(val & ~mask, np_base + REG_PCI_CONTROL);
+	regmap_clear_bits(cg->map, REG_PCI_CONTROL, mask);
 	usleep_range(1000, 2000);
 }
 
-static void en7523_register_clocks(struct device *dev, struct clk_hw_onecell_data *clk_data,
-				   void __iomem *base, void __iomem *np_base)
-{
-	struct clk_hw *hw;
-	u32 rate;
-	int i;
-
-	for (i = 0; i < ARRAY_SIZE(en7523_base_clks); i++) {
-		const struct en_clk_desc *desc = &en7523_base_clks[i];
-		u32 reg = desc->div_reg ? desc->div_reg : desc->base_reg;
-		u32 val = readl(base + desc->base_reg);
-
-		rate = en7523_get_base_rate(desc, val);
-		val = readl(base + reg);
-		rate /= en7523_get_div(desc, val);
-
-		hw = clk_hw_register_fixed_rate(dev, desc->name, NULL, 0, rate);
-		if (IS_ERR(hw)) {
-			pr_err("Failed to register clk %s: %ld\n",
-			       desc->name, PTR_ERR(hw));
-			continue;
-		}
-
-		clk_data->hws[desc->id] = hw;
-	}
-
-	hw = en7523_register_pcie_clk(dev, np_base);
-	clk_data->hws[EN7523_CLK_PCIE] = hw;
-}
-
 static int en7523_clk_hw_init(struct platform_device *pdev,
+			      struct airoha_clk_priv *priv,
 			      struct clk_hw_onecell_data *clk_data)
 {
-	void __iomem *base, *np_base;
+	const struct airoha_clk_soc_data *soc_data = priv->soc_data;
+	struct device *dev = &pdev->dev;
+	int err;
 
-	base = devm_platform_ioremap_resource(pdev, 0);
-	if (IS_ERR(base))
-		return PTR_ERR(base);
+	err = en75xx_register_clocks(dev, priv, clk_data);
+	if (err)
+		return err;
 
-	np_base = devm_platform_ioremap_resource(pdev, 1);
-	if (IS_ERR(np_base))
-		return PTR_ERR(np_base);
-
-	en7523_register_clocks(&pdev->dev, clk_data, base, np_base);
-
-	return en7581_reset_register(&pdev->dev, np_base, en7523_rst_map,
-				     ARRAY_SIZE(en7523_rst_map),
-				     en7581_rst_ofs);
-}
-
-static void en7581_register_clocks(struct device *dev, struct clk_hw_onecell_data *clk_data,
-				   struct regmap *map, void __iomem *base)
-{
-	struct clk_hw *hw;
-	u32 rate;
-	int i;
-
-	for (i = 0; i < ARRAY_SIZE(en7581_base_clks); i++) {
-		const struct en_clk_desc *desc = &en7581_base_clks[i];
-		u32 val, reg = desc->div_reg ? desc->div_reg : desc->base_reg;
-		int err;
-
-		err = regmap_read(map, desc->base_reg, &val);
-		if (err) {
-			pr_err("Failed reading fixed clk rate %s: %d\n",
-			       desc->name, err);
-			continue;
-		}
-		rate = en7523_get_base_rate(desc, val);
-
-		err = regmap_read(map, reg, &val);
-		if (err) {
-			pr_err("Failed reading fixed clk div %s: %d\n",
-			       desc->name, err);
-			continue;
-		}
-		rate /= en7523_get_div(desc, val);
-
-		hw = clk_hw_register_fixed_rate(dev, desc->name, NULL, 0, rate);
-		if (IS_ERR(hw)) {
-			pr_err("Failed to register clk %s: %ld\n",
-			       desc->name, PTR_ERR(hw));
-			continue;
-		}
-
-		clk_data->hws[desc->id] = hw;
-	}
-
-	hw = en7523_register_pcie_clk(dev, base);
-	clk_data->hws[EN7523_CLK_PCIE] = hw;
+	return register_resets(dev, priv->scu_np, soc_data);
 }
 
 static int en7523_reset_update(struct reset_controller_dev *rcdev,
 			       unsigned long id, bool assert)
 {
 	struct en_rst_data *rst_data = container_of(rcdev, struct en_rst_data, rcdev);
-	u32 offset = rst_data->bank_ofs[id / RST_NR_PER_BANK];
-	void __iomem *addr = rst_data->base + offset;
-	bool inverted = false;
+	u32 addr = rst_data->bank_ofs[id / RST_NR_PER_BANK];
+	u32 mask = BIT(id % RST_NR_PER_BANK);
 	u32 val;
 
 	/* For PCIC reset logic is inverted, 0:assert 1:deassert */
-	if (offset == REG_NP_SCU_PCIC)
-		inverted = true;
-
-	val = readl(addr);
-	if (assert ^ inverted)
-		val |= BIT(id % RST_NR_PER_BANK);
+	if (addr == REG_NP_SCU_PCIC)
+		val = assert ? 0 : mask;
 	else
-		val &= ~BIT(id % RST_NR_PER_BANK);
-	writel(val, addr);
+		val = assert ? mask : 0;
 
-	return 0;
+	return regmap_update_bits(rst_data->map, addr, mask, val);
 }
 
 static int en7523_reset_assert(struct reset_controller_dev *rcdev,
@@ -823,16 +1036,16 @@ static int en7523_reset_status(struct reset_controller_dev *rcdev,
 			       unsigned long id)
 {
 	struct en_rst_data *rst_data = container_of(rcdev, struct en_rst_data, rcdev);
-	u32 offset = rst_data->bank_ofs[id / RST_NR_PER_BANK];
-	void __iomem *addr = rst_data->base + offset;
+	u32 addr = rst_data->bank_ofs[id / RST_NR_PER_BANK];
 	bool inverted = false;
 	u32 val;
 
 	/* For PCIC reset logic is inverted, 0:assert 1:deassert */
-	if (offset == REG_NP_SCU_PCIC)
+	if (addr == REG_NP_SCU_PCIC)
 		inverted = true;
 
-	val = readl(addr) & BIT(id % RST_NR_PER_BANK);
+	regmap_read(rst_data->map, addr, &val);
+	val &= BIT(id % RST_NR_PER_BANK);
 	return inverted ? !val : !!val;
 }
 
@@ -853,9 +1066,8 @@ static const struct reset_control_ops en7581_reset_ops = {
 	.status = en7523_reset_status,
 };
 
-static int en7581_reset_register(struct device *dev, void __iomem *base,
-				 const u16 *rst_map, int nr_resets,
-				 const u16 *rst_reg_ofs)
+static int register_resets(struct device *dev, struct regmap *map,
+			   const struct airoha_clk_soc_data *soc_data)
 {
 	struct en_rst_data *rst_data;
 
@@ -863,11 +1075,11 @@ static int en7581_reset_register(struct device *dev, void __iomem *base,
 	if (!rst_data)
 		return -ENOMEM;
 
-	rst_data->bank_ofs = rst_reg_ofs;
-	rst_data->idx_map = rst_map;
-	rst_data->base = base;
+	rst_data->bank_ofs = soc_data->rst_ofs;
+	rst_data->idx_map = soc_data->rst_map;
+	rst_data->map = map;
 
-	rst_data->rcdev.nr_resets = nr_resets;
+	rst_data->rcdev.nr_resets = soc_data->nr_resets;
 	rst_data->rcdev.of_xlate = en7523_reset_xlate;
 	rst_data->rcdev.ops = &en7581_reset_ops;
 	rst_data->rcdev.of_node = dev->of_node;
@@ -882,9 +1094,8 @@ static int en7581_serdes_phy_set_mode(struct phy *phy, enum phy_mode mode,
 				      int submode)
 {
 	struct en_serdes_phy_instance *instance = phy_get_drvdata(phy);
-	struct en_clk_priv *priv = dev_get_drvdata(phy->dev.parent);
-	u32 reg, mask, sel, val;
-	unsigned long flags;
+	struct airoha_clk_priv *priv = dev_get_drvdata(phy->dev.parent);
+	u32 reg, mask, sel;
 
 	switch (instance->serdes_port) {
 	case AIROHA_SCU_SERDES_PCIE1:
@@ -971,14 +1182,7 @@ static int en7581_serdes_phy_set_mode(struct phy *phy, enum phy_mode mode,
 		return -EINVAL;
 	}
 
-	spin_lock_irqsave(&priv->lock, flags);
-	val = readl(priv->base + reg);
-	val &= ~mask;
-	val |= sel;
-	writel(val, priv->base + reg);
-	spin_unlock_irqrestore(&priv->lock, flags);
-
-	return 0;
+	return regmap_update_bits(priv->scu_np, reg, mask, sel);
 }
 
 static const struct phy_ops en7581_serdes_phy_ops = {
@@ -989,7 +1193,7 @@ static const struct phy_ops en7581_serdes_phy_ops = {
 static struct phy *en7581_serdes_phy_xlate(struct device *dev,
 					   const struct of_phandle_args *args)
 {
-	struct en_clk_priv *priv = dev_get_drvdata(dev);
+	struct airoha_clk_priv *priv = dev_get_drvdata(dev);
 	struct en_serdes_phy_instance *instance;
 	unsigned int serdes_port;
 
@@ -1013,24 +1217,24 @@ static struct phy *en7581_serdes_phy_xlate(struct device *dev,
 	return instance->phy;
 }
 
-static int en7581_serdes_phy_register(struct device *dev)
+static int en7581_serdes_phy_register(struct device *dev,
+				      struct airoha_clk_priv *priv)
 {
-	struct en_clk_priv *priv = dev_get_drvdata(dev);
 	struct phy_provider *phy_provider;
 	int i;
 
 	for (i = 0; i < EN_SERDES_PHY_NUM; i++) {
 		struct en_serdes_phy_instance *instance;
 
-		instance = devm_kzalloc(dev, sizeof(*instance),
-					GFP_KERNEL);
+		instance = devm_kzalloc(dev, sizeof(*instance), GFP_KERNEL);
 		if (!instance)
 			return -ENOMEM;
 
 		instance->phy = devm_phy_create(dev, NULL,
 						&en7581_serdes_phy_ops);
 		if (IS_ERR(instance->phy))
-			return dev_err_probe(dev, PTR_ERR(instance->phy), "failed to create phy\n");
+			return dev_err_probe(dev, PTR_ERR(instance->phy),
+					     "failed to create phy\n");
 
 		instance->serdes_port = i;
 		priv->serdes_phys[i] = instance;
@@ -1038,185 +1242,255 @@ static int en7581_serdes_phy_register(struct device *dev)
 		phy_set_drvdata(instance->phy, instance);
 	}
 
-	phy_provider = devm_of_phy_provider_register(dev, en7581_serdes_phy_xlate);
+	phy_provider = devm_of_phy_provider_register(dev,
+						     en7581_serdes_phy_xlate);
 
 	return PTR_ERR_OR_ZERO(phy_provider);
 }
 
 static int en7581_clk_hw_init(struct platform_device *pdev,
+			      struct airoha_clk_priv *priv,
 			      struct clk_hw_onecell_data *clk_data)
 {
-	struct en_clk_priv *priv = platform_get_drvdata(pdev);
-	struct regmap *map;
-	void __iomem *base;
-	u32 val;
-	int ret;
+	const struct airoha_clk_soc_data *soc_data = priv->soc_data;
+	struct device *dev = &pdev->dev;
+	struct regmap *clk_map = priv->scu_np;
+	int err;
 
-	map = syscon_regmap_lookup_by_compatible("airoha,en7581-chip-scu");
-	if (IS_ERR(map))
-		return PTR_ERR(map);
+	err = en75xx_register_clocks(dev, priv, clk_data);
+	if (err)
+		return err;
 
-	base = devm_platform_ioremap_resource(pdev, 0);
-	if (IS_ERR(base))
-		return PTR_ERR(base);
+	regmap_clear_bits(clk_map, REG_NP_SCU_SSTR,
+			  REG_PCIE_XSI0_SEL_MASK | REG_PCIE_XSI1_SEL_MASK);
+	regmap_update_bits(clk_map, REG_NP_SCU_PCIC, REG_PCIE_CTRL,
+			   FIELD_PREP(REG_PCIE_CTRL, 3));
 
-	priv->base = base;
+	/* Reset PCIE_HB */
+	regmap_set_bits(clk_map, REG_RST_CTRL1, REG_PCIE_HB_RST);
+	regmap_clear_bits(clk_map, REG_RST_CTRL1, REG_PCIE_HB_RST);
 
-	en7581_register_clocks(&pdev->dev, clk_data, map, base);
+	err = register_resets(dev, clk_map, soc_data);
+	if (err)
+		return err;
 
-	val = readl(base + REG_NP_SCU_SSTR);
-	val &= ~(REG_PCIE_XSI0_SEL_MASK | REG_PCIE_XSI1_SEL_MASK);
-	writel(val, base + REG_NP_SCU_SSTR);
-	val = readl(base + REG_NP_SCU_PCIC);
-	writel(val | 3, base + REG_NP_SCU_PCIC);
-
-	val = readl(base + REG_RST_CTRL1);
-	val |= REG_PCIE_HB_RST;
-	writel(val, base + REG_RST_CTRL1);
-	val &= ~REG_PCIE_HB_RST;
-	writel(val, base + REG_RST_CTRL1);
-
-	ret = en7581_reset_register(&pdev->dev, base, en7581_rst_map,
-				    ARRAY_SIZE(en7581_rst_map), en7581_rst_ofs);
-	if (ret)
-		return ret;
-
-	return en7581_serdes_phy_register(&pdev->dev);
+	return en7581_serdes_phy_register(dev, priv);
 }
 
-static enum en_hir get_hw_id(void __iomem *np_base)
-{
-	u32 val = FIELD_GET(REG_HIR_MASK, readl(np_base + REG_HIR));
-
-	if (val < HIR_MAX)
-		return (enum en_hir)val;
-
-	pr_warn("Unable to determine EcoNet SoC\n");
-
-	return HIR_UNKNOWN;
-}
-
-static void en751221_try_register_clk(struct device *dev, int key,
+static int econet_register_fixed_rate(struct device *dev, int key,
 				      struct clk_hw_onecell_data *clk_data,
 				      const char *name, u32 rate)
 {
 	struct clk_hw *hw;
 
-	if (WARN_ON_ONCE(key >= EN751221_MAX_CLKS))
-		return;
+	if (WARN_ON_ONCE(key >= clk_data->num))
+		return -EINVAL;
 
-	hw = clk_hw_register_fixed_rate(dev, name, NULL, 0, rate);
+	hw = devm_clk_hw_register_fixed_rate(dev, name, NULL, 0, rate);
 	if (IS_ERR(hw))
-		pr_err("Failed to register clk %s: %pe\n", name, hw);
-	else
-		clk_data->hws[key] = hw;
-}
+		return dev_err_probe(dev, PTR_ERR(hw),
+				     "Failed to register clk %s\n", name);
 
-static void en751221_register_clocks(struct device *dev,
-				     struct clk_hw_onecell_data *clk_data,
-				     struct regmap *map, void __iomem *np_base)
-{
-	enum en_hir hid = get_hw_id(np_base);
-	struct clk_hw *hw;
-	u32 rate;
-	u32 div;
-	int err;
+	clk_data->hws[key] = hw;
 
-	/* PCI */
-	hw = en7523_register_pcie_clk(dev, np_base);
-	clk_data->hws[EN751221_CLK_PCIE] = hw;
-
-	/* SPI */
-	rate = EN751221_SPI_BASE;
-	if (hid == HIR_EN7526C)
-		rate = EN751221_SPI_BASE_EN7526C;
-
-	err = regmap_read(map, EN751221_REG_SPI_DIV, &div);
-	if (err) {
-		pr_err("Failed reading fixed clk div %s: %d\n",
-		       "spi", err);
-	} else {
-		div = FIELD_GET(EN751221_REG_SPI_DIV_MASK, div) * 2;
-		if (!div)
-			div = EN751221_SPI_DIV_DEFAULT;
-
-		en751221_try_register_clk(dev, EN751221_CLK_SPI, clk_data,
-					  "spi", rate / div);
-	}
-
-	/* BUS */
-	rate = FIELD_GET(EN751221_REG_BUS_MASK,
-			 readl(np_base + EN751221_REG_BUS));
-	rate *= 1000000;
-	en751221_try_register_clk(dev, EN751221_CLK_BUS, clk_data, "bus",
-				  rate);
-
-	/* CPU */
-	en751221_try_register_clk(dev, EN751221_CLK_CPU, clk_data, "cpu",
-				  rate * 4);
-
-	/* GSW */
-	rate = FIELD_GET(EN751221_REG_SSR3_GSW_MASK,
-			 readl(np_base + EN751221_REG_SSR3));
-	en751221_try_register_clk(dev, EN751221_CLK_GSW, clk_data, "gsw",
-				  gsw751221_base[rate]);
+	return 0;
 }
 
 static int en751221_clk_hw_init(struct platform_device *pdev,
+				struct airoha_clk_priv *priv,
 				struct clk_hw_onecell_data *clk_data)
 {
-	struct regmap *map;
+	const struct airoha_clk_soc_data *soc_data = priv->soc_data;
+	struct device *dev = &pdev->dev;
+	u32 rate, val;
+	int err;
+
+	err = en75xx_register_clocks(dev, priv, clk_data);
+	if (err)
+		return err;
+
+	/* BUS */
+	err = regmap_read(priv->scu_np, EN751221_REG_BUS, &val);
+	if (err)
+		return dev_err_probe(dev, err,
+				     "Failed reading fixed clk rate bus\n");
+
+	rate = FIELD_GET(EN751221_REG_BUS_MASK, val) * 1000000;
+	err = econet_register_fixed_rate(dev, EN751221_CLK_BUS, clk_data,
+					 "bus", rate);
+	if (err)
+		return err;
+
+	/* CPU */
+	err = econet_register_fixed_rate(dev, EN751221_CLK_CPU, clk_data,
+					 "cpu", rate * 4);
+	if (err)
+		return err;
+
+	return register_resets(dev, priv->scu_np, soc_data);
+}
+
+static void airoha_clk_iounmap(void *base)
+{
+	iounmap(base);
+}
+
+static void __iomem *airoha_clk_iomap(struct device *dev,
+				      struct device_node *np)
+{
 	void __iomem *base;
+	int err;
 
-	map = syscon_regmap_lookup_by_compatible("econet,en751221-chip-scu");
-	if (IS_ERR(map))
-		return PTR_ERR(map);
+	base = of_iomap(np, 0);
+	if (!base)
+		return ERR_PTR(-ENOMEM);
 
-	base = devm_platform_ioremap_resource(pdev, 0);
-	if (IS_ERR(base))
-		return PTR_ERR(base);
+	err = devm_add_action_or_reset(dev, airoha_clk_iounmap, base);
+	if (err)
+		return ERR_PTR(err);
 
-	en751221_register_clocks(&pdev->dev, clk_data, map, base);
+	return base;
+}
 
-	return en7581_reset_register(&pdev->dev, base, en751221_rst_map,
-				     ARRAY_SIZE(en751221_rst_map),
-				     en751221_rst_ofs);
+static const struct regmap_config airoha_clk_regmap_config = {
+	.reg_bits = 32,
+	.val_bits = 32,
+	.reg_stride = 4,
+};
+
+static int airoha_clk_map_resources(struct platform_device *pdev,
+				    struct airoha_clk_priv *priv)
+{
+	const struct airoha_clk_soc_data *soc_data = priv->soc_data;
+	struct device *dev = &pdev->dev;
+	struct device_node *np = dev->of_node, *chip_np;
+	struct resource *res_mem;
+	struct resource res;
+	int np_index = 0;
+	int err;
+
+	if (of_property_present(np, "airoha,chip-scu")) {
+		chip_np = of_parse_phandle(np, "airoha,chip-scu", 0);
+		if (!chip_np)
+			return -ENODEV;
+	} else {
+		chip_np = of_find_compatible_node(NULL, NULL,
+						  "airoha,chip-scu");
+		if (!chip_np && soc_data->old_chip_scu_compatible)
+			chip_np = of_find_compatible_node(NULL, NULL,
+							  soc_data->old_chip_scu_compatible);
+	}
+
+	if (chip_np) {
+		err = of_address_to_resource(chip_np, 0, &res);
+		if (err) {
+			of_node_put(chip_np);
+			return err;
+		}
+		priv->chip_scu_size = resource_size(&res);
+
+		priv->scu_chip = syscon_node_to_regmap(chip_np);
+		if (IS_ERR(priv->scu_chip)) {
+			of_node_put(chip_np);
+			return PTR_ERR(priv->scu_chip);
+		}
+
+		priv->chip_scu_base = airoha_clk_iomap(dev, chip_np);
+		of_node_put(chip_np);
+		if (IS_ERR(priv->chip_scu_base))
+			return PTR_ERR(priv->chip_scu_base);
+	} else if (of_device_is_compatible(np, "airoha,en7523-scu") &&
+		   !of_property_present(np, "reg-names")) {
+		/* Legacy EN7523 binding: reg[0] = CHIP-SCU, reg[1] = NP-SCU */
+		priv->chip_scu_base = devm_platform_get_and_ioremap_resource(pdev, 0,
+									     &res_mem);
+		if (IS_ERR(priv->chip_scu_base))
+			return PTR_ERR(priv->chip_scu_base);
+
+		priv->chip_scu_size = resource_size(res_mem);
+		priv->scu_chip = devm_regmap_init_mmio(dev, priv->chip_scu_base,
+						       &airoha_clk_regmap_config);
+		if (IS_ERR(priv->scu_chip))
+			return PTR_ERR(priv->scu_chip);
+
+		np_index = 1;
+	} else {
+		return -ENODEV;
+	}
+
+	if (of_property_present(np, "reg-names")) {
+		np_index = of_property_match_string(np, "reg-names", "np-scu");
+		if (np_index < 0)
+			np_index = 0;
+	}
+
+	priv->np_scu_base = devm_platform_ioremap_resource(pdev, np_index);
+	if (IS_ERR(priv->np_scu_base))
+		return PTR_ERR(priv->np_scu_base);
+
+	priv->scu_np = devm_regmap_init_mmio(dev, priv->np_scu_base,
+					     &airoha_clk_regmap_config);
+	if (IS_ERR(priv->scu_np))
+		return PTR_ERR(priv->scu_np);
+
+	return 0;
 }
 
 static int en7523_clk_probe(struct platform_device *pdev)
 {
-	struct device_node *node = pdev->dev.of_node;
-	const struct en_clk_soc_data *soc_data;
+	const struct airoha_clk_soc_data *soc_data;
 	struct clk_hw_onecell_data *clk_data;
-	struct en_clk_priv *priv;
-	int r;
+	struct device *dev = &pdev->dev;
+	struct airoha_clk_priv *priv;
+	int err;
 
-	soc_data = device_get_match_data(&pdev->dev);
+	soc_data = device_get_match_data(dev);
+	if (!soc_data)
+		return -EINVAL;
 
-	priv = devm_kzalloc(&pdev->dev, sizeof(*priv), GFP_KERNEL);
+	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
 	if (!priv)
 		return -ENOMEM;
 
-	spin_lock_init(&priv->lock);
+	priv->soc_data = soc_data;
+	platform_set_drvdata(pdev, priv);
 
-	clk_data = devm_kzalloc(&pdev->dev,
-				struct_size(clk_data, hws, soc_data->num_clocks),
+	err = airoha_clk_map_resources(pdev, priv);
+	if (err)
+		return dev_err_probe(dev, err, "Failed to map SCU resources\n");
+
+	clk_data = devm_kzalloc(dev,
+				struct_size(clk_data, hws,
+					    soc_data->num_clocks),
 				GFP_KERNEL);
 	if (!clk_data)
 		return -ENOMEM;
 
-	platform_set_drvdata(pdev, priv);
-
 	clk_data->num = soc_data->num_clocks;
-	r = soc_data->hw_init(pdev, clk_data);
-	if (r)
-		return r;
+	err = soc_data->hw_init(pdev, priv, clk_data);
+	if (err)
+		return err;
 
-	return of_clk_add_hw_provider(node, of_clk_hw_onecell_get, clk_data);
+	err = devm_of_clk_add_hw_provider(dev, of_clk_hw_onecell_get, clk_data);
+	if (err)
+		return err;
+
+	if (soc_data->probe_child)
+		return of_platform_populate(dev->of_node, NULL, NULL, dev);
+
+	return 0;
 }
 
-static const struct en_clk_soc_data en7523_data = {
+static const struct airoha_clk_soc_data en7523_data = {
+	.old_chip_scu_compatible = "airoha,en7523-chip-scu",
+	.base_clks = en7523_base_clks,
+	.num_base_clks = ARRAY_SIZE(en7523_base_clks),
+	/* Increment num_clocks by 1 to account for additional PCIe clock */
 	.num_clocks = ARRAY_SIZE(en7523_base_clks) + 1,
+	.pcie_clk_id = EN7523_CLK_PCIE,
+	.rst_map = en7523_rst_map,
+	.rst_ofs = en7581_rst_ofs,
+	.nr_resets = ARRAY_SIZE(en7523_rst_map),
 	.pcie_ops = {
 		.is_enabled = en7523_pci_is_enabled,
 		.prepare = en7523_pci_prepare,
@@ -1225,9 +1499,16 @@ static const struct en_clk_soc_data en7523_data = {
 	.hw_init = en7523_clk_hw_init,
 };
 
-static const struct en_clk_soc_data en7581_data = {
-	/* We increment num_clocks by 1 to account for additional PCIe clock */
+static const struct airoha_clk_soc_data en7581_data = {
+	.old_chip_scu_compatible = "airoha,en7581-chip-scu",
+	.base_clks = en7581_base_clks,
+	.num_base_clks = ARRAY_SIZE(en7581_base_clks),
+	/* Increment num_clocks by 1 to account for additional PCIe clock */
 	.num_clocks = ARRAY_SIZE(en7581_base_clks) + 1,
+	.pcie_clk_id = EN7523_CLK_PCIE,
+	.rst_map = en7581_rst_map,
+	.rst_ofs = en7581_rst_ofs,
+	.nr_resets = ARRAY_SIZE(en7581_rst_map),
 	.pcie_ops = {
 		.is_enabled = en7581_pci_is_enabled,
 		.enable = en7581_pci_enable,
@@ -1236,8 +1517,15 @@ static const struct en_clk_soc_data en7581_data = {
 	.hw_init = en7581_clk_hw_init,
 };
 
-static const struct en_clk_soc_data en751221_data = {
+static const struct airoha_clk_soc_data en751221_data = {
+	.old_chip_scu_compatible = "econet,en751221-chip-scu",
+	.base_clks = en751221_base_clks,
+	.num_base_clks = ARRAY_SIZE(en751221_base_clks),
 	.num_clocks = EN751221_MAX_CLKS,
+	.pcie_clk_id = EN751221_CLK_PCIE,
+	.rst_map = en751221_rst_map,
+	.rst_ofs = en751221_rst_ofs,
+	.nr_resets = ARRAY_SIZE(en751221_rst_map),
 	.pcie_ops = {
 		.is_enabled = en7523_pci_is_enabled,
 		.prepare = en7523_pci_prepare,
