@@ -147,12 +147,15 @@ u32 airoha_ppe_get_total_num_entries(struct airoha_ppe *ppe)
 {
 	u32 sram_num_entries = airoha_ppe_get_total_sram_num_entries(ppe);
 
-	/* The AN7552 PPE reports DRAM FoE hashes in the 0x4000.. range and
-	 * indexes directly from foe_dma + hw_idx * AIROHA_FOE_ENTRY_SIZE,
-	 * so the allocation must cover 0x4000 + ppe_dram_entries.
+	/*
+	 * The AN7552 PPE reports DRAM FoE hashes in the
+	 * AN7552_FOE_DRAM_HASH_BASE.. range and indexes directly from
+	 * foe_dma + hw_idx * AIROHA_FOE_ENTRY_SIZE, so the allocation must
+	 * cover AN7552_FOE_DRAM_HASH_BASE + ppe_dram_entries.
 	 */
 	if (airoha_is(ppe->common.eth, airoha_an7552))
-		return 0x4000 + ppe->common.eth->soc->ppe_dram_entries;
+		return AN7552_FOE_DRAM_HASH_BASE +
+		       ppe->common.eth->soc->ppe_dram_entries;
 
 	return sram_num_entries + ppe->common.eth->soc->ppe_dram_entries;
 }
