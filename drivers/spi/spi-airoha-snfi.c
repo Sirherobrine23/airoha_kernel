@@ -370,7 +370,7 @@ static int airoha_snand_set_mode(struct airoha_snand_ctrl *as_ctrl,
 	case SPI_MODE_DMA:
 		err = regmap_write(as_ctrl->regmap_ctrl,
 				   REG_SPI_CTRL_NFI2SPI_EN,
-				   SPI_CTRL_MANUAL_EN);
+				   SPI_CTRL_NFI2SPI_EN);
 		if (err < 0)
 			return err;
 
@@ -494,7 +494,8 @@ static bool airoha_snand_is_page_ops(const struct spi_mem_op *op)
 
 	switch (op->data.dir) {
 	case SPI_MEM_DATA_IN:
-		if (op->dummy.nbytes * BITS_PER_BYTE / op->dummy.buswidth > 0xf)
+		if (op->dummy.nbytes &&
+		    op->dummy.nbytes * BITS_PER_BYTE / op->dummy.buswidth > 0xf)
 			return false;
 
 		/* quad in / quad out */
