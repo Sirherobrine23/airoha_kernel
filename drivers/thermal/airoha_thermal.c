@@ -25,6 +25,35 @@
 #define   AN7583_MUX_SENSOR_MASK		GENMASK(3, 1)
 #define AN7583_DOUT_TADC			0x2f0
 
+#define EN7523_PLLRG_PROTECT			0x264
+#define EN7523_PDID_REG				0x05c
+#define   EN7523_PDID_MASK			GENMASK(15, 0)
+#define EN7523_PKG_TYPE_REG			0x254
+#define   EN7523_PKG_TYPE_MASK			GENMASK(15, 14)
+#define   EN7523_PKG_BGA			3
+#define EN7523_MUX_TADC				0x2ec
+#define   EN7523_TADC_RESET_N			BIT(7)
+#define   EN7523_TADC_CONFIG_MASK		GENMASK(6, 0)
+#define   EN7523_TADC_CONFIG			0x70
+#define EN7523_DOUT_TADC			0x2f0
+#define EN7523_CODE_30_DEFAULT_E2		0x87ef
+#define EN7523_CODE_30_DEFAULT_E3		0x7bae
+#define EN7523_BIAS_E2QFP			0x82
+#define EN7523_BIAS_E2BGA			0x16e
+#define EN7523_BIAS_E3BGA			0x15a
+
+#define AN7552_PLLRG_PROTECT			0x268
+#define AN7552_MUX_TADC				0x2e4
+#define AN7552_DOUT_TADC			0x2f0
+#define AN7552_MUX_TADC_CPU			0x2f4
+#define   AN7552_TADC_RESET_N			BIT(4)
+#define   AN7552_TADC_CONFIG_MASK		0xf3ff
+#define   AN7552_TADC_CONFIG			0x33be
+#define   AN7552_TADC_MUX			GENMASK(3, 1)
+#define   AN7552_TADC_DATA			GENMASK(15, 0)
+#define AN7552_NUM_SENSORS			2
+#define AN7552_MUX_TRIES			3
+
 /* PTP_THERMAL regs */
 #define EN7581_TEMPMONCTL0			0x800
 #define   EN7581_SENSE3_EN			BIT(3)
@@ -180,6 +209,8 @@
 
 #define EN7581_SLOPE_X100_DIO_DEFAULT		5645
 #define EN7581_SLOPE_X100_DIO_AVS		5645
+#define EN7523_SLOPE_E2				0x712
+#define EN7523_SLOPE_E3				0x6d6
 
 #define EN7581_INIT_TEMP_CPK_X10		300
 #define EN7581_INIT_TEMP_FTK_X10		620
@@ -250,12 +281,19 @@ struct airoha_thermal_zone {
 	int sensor;
 };
 
+struct airoha_thermal_calibration {
+	int offset;
+	int slope;
+	int init_temp;
+};
+
 struct airoha_thermal_priv {
 	struct regmap *map;
 	struct regmap *chip_scu;
 	struct regmap_field *chip_scu_fields[AIROHA_THERMAL_FIELD_MAX];
 	struct resource scu_adc_res;
 
+	u32 pllrg_protect_key;
 	u32 pllrg_protect;
 	/* Serialises mux selection and ADC sampling */
 	struct mutex lock;
@@ -264,9 +302,11 @@ struct airoha_thermal_priv {
 	int init_temp;
 	int default_slope;
 	int default_offset;
+	struct airoha_thermal_calibration *calibration;
 };
 
 struct airoha_thermal_soc_data {
+	u32 pllrg_protect_key;
 	u32 pllrg_protect;
 	/* Sensor mux value per zone, NULL without a sensor mux */
 	const int *sensors;
@@ -328,11 +368,11 @@ static void airoha_set_thermal_mux(struct airoha_thermal_priv *priv,
 	u32 pllrg;
 
 	/* Save PLLRG current value */
-	regmap_read(priv->chip_scu, EN7581_PLLRG_PROTECT, &pllrg);
+	regmap_read(priv->chip_scu, priv->pllrg_protect, &pllrg);
 
 	/* Give access to Thermal regs */
-	regmap_write(priv->chip_scu, EN7581_PLLRG_PROTECT,
-		     priv->pllrg_protect);
+	regmap_write(priv->chip_scu, priv->pllrg_protect,
+		     priv->pllrg_protect_key);
 
 	/*
 	 * Configure Thermal Sensor mux to sensor_idx and Thermal ADC mux to
@@ -348,7 +388,7 @@ static void airoha_set_thermal_mux(struct airoha_thermal_priv *priv,
 	} while (!airoha_thermal_mux_holds(priv, tdac_idx, sensor_idx) && --tries);
 
 	/* Restore PLLRG value on exit */
-	regmap_write(priv->chip_scu, EN7581_PLLRG_PROTECT, pllrg);
+	regmap_write(priv->chip_scu, priv->pllrg_protect, pllrg);
 
 	/* Sleep 10 ms for Thermal ADC to enable */
 	usleep_range(10 * USEC_PER_MSEC, 11 * USEC_PER_MSEC);
@@ -720,6 +760,318 @@ static int an7583_thermal_probe(struct platform_device *pdev,
 	return 0;
 }
 
+/* Both temperature modes use the main TADC, not TADC_CPU */
+static const unsigned int an7552_thermal_mux[AN7552_NUM_SENSORS] = { 7, 6 };
+static const int an7552_thermal_slope[AN7552_NUM_SENSORS] = { 5565, 6059 };
+
+static int an7552_thermal_init_adc(struct airoha_thermal_priv *priv)
+{
+	static const unsigned int regs[] = {
+		AN7552_MUX_TADC, AN7552_MUX_TADC_CPU,
+	};
+	unsigned int protect;
+	int i, ret, restore_ret;
+
+	ret = regmap_read(priv->chip_scu, priv->pllrg_protect, &protect);
+	if (ret)
+		return ret;
+
+	ret = regmap_write(priv->chip_scu, priv->pllrg_protect,
+			   priv->pllrg_protect_key);
+	if (ret)
+		return ret;
+
+	for (i = 0; i < ARRAY_SIZE(regs); i++) {
+		ret = regmap_clear_bits(priv->chip_scu, regs[i],
+					AN7552_TADC_RESET_N);
+		if (ret)
+			break;
+
+		ret = regmap_set_bits(priv->chip_scu, regs[i],
+				      AN7552_TADC_RESET_N);
+		if (ret)
+			break;
+
+		ret = regmap_update_bits(priv->chip_scu, regs[i],
+					 AN7552_TADC_CONFIG_MASK,
+					 AN7552_TADC_CONFIG);
+		if (ret)
+			break;
+	}
+
+	restore_ret = regmap_write(priv->chip_scu, priv->pllrg_protect,
+				   protect);
+	return ret ?: restore_ret;
+}
+
+static int an7552_thermal_select_sensor(struct airoha_thermal_priv *priv,
+					unsigned int sensor)
+{
+	unsigned int protect;
+	int ret, restore_ret;
+
+	ret = regmap_read(priv->chip_scu, priv->pllrg_protect, &protect);
+	if (ret)
+		return ret;
+
+	ret = regmap_write(priv->chip_scu, priv->pllrg_protect,
+			   priv->pllrg_protect_key);
+	if (ret)
+		return ret;
+
+	ret = regmap_update_bits(priv->chip_scu, AN7552_MUX_TADC,
+				 AN7552_TADC_MUX,
+				 FIELD_PREP(AN7552_TADC_MUX,
+					    an7552_thermal_mux[sensor]));
+	restore_ret = regmap_write(priv->chip_scu, priv->pllrg_protect,
+				   protect);
+	if (ret || restore_ret)
+		return ret ?: restore_ret;
+
+	usleep_range(10 * USEC_PER_MSEC, 11 * USEC_PER_MSEC);
+	return 0;
+}
+
+/* The caller serialises mux selection, settling and sampling */
+static int an7552_thermal_read_sensor(struct airoha_thermal_priv *priv,
+				      unsigned int sensor, int *value)
+{
+	int min_value, max_value, sum;
+	unsigned int raw, mux;
+	int i, ret, tries;
+
+	for (tries = 0; tries < AN7552_MUX_TRIES; tries++) {
+		ret = an7552_thermal_select_sensor(priv, sensor);
+		if (ret)
+			return ret;
+
+		min_value = INT_MAX;
+		max_value = INT_MIN;
+		sum = 0;
+		for (i = 0; i < AIROHA_MAX_SAMPLES; i++) {
+			ret = regmap_read(priv->chip_scu, AN7552_DOUT_TADC,
+					  &raw);
+			if (ret)
+				return ret;
+
+			raw = FIELD_GET(AN7552_TADC_DATA, raw);
+			min_value = min_t(int, raw, min_value);
+			max_value = max_t(int, raw, max_value);
+			sum += raw;
+		}
+
+		ret = regmap_read(priv->chip_scu, AN7552_MUX_TADC, &mux);
+		if (ret)
+			return ret;
+		if (FIELD_GET(AN7552_TADC_MUX, mux) != an7552_thermal_mux[sensor])
+			continue;
+
+		*value = (sum - min_value - max_value) / (AIROHA_MAX_SAMPLES - 2);
+		return 0;
+	}
+
+	return -EAGAIN;
+}
+
+static int an7552_thermal_get_temp(struct thermal_zone_device *tz, int *temp)
+{
+	struct airoha_thermal_zone *zone = thermal_zone_device_priv(tz);
+	struct airoha_thermal_priv *priv = zone->priv;
+	int i, ret, value, sensor_temp, max_temp = INT_MIN;
+
+	mutex_lock(&priv->lock);
+	for (i = 0; i < AN7552_NUM_SENSORS; i++) {
+		const struct airoha_thermal_calibration *calib = &priv->calibration[i];
+
+		ret = an7552_thermal_read_sensor(priv, i, &value);
+		if (ret)
+			goto unlock;
+
+		sensor_temp = ((value - calib->offset) * 1000 / calib->slope +
+			       calib->init_temp) * 100;
+		max_temp = max(max_temp, sensor_temp);
+	}
+
+	/* Report the hotter of the diode and BJT readings */
+	*temp = max_temp;
+unlock:
+	mutex_unlock(&priv->lock);
+	return ret;
+}
+
+static const struct thermal_zone_device_ops an7552_thdev_ops = {
+	.get_temp = an7552_thermal_get_temp,
+};
+
+static int an7552_thermal_probe(struct platform_device *pdev,
+				struct airoha_thermal_priv *priv)
+{
+	struct device *dev = &pdev->dev;
+	unsigned int efuse;
+	void __iomem *base;
+	int i, ret;
+
+	base = devm_platform_ioremap_resource(pdev, 0);
+	if (IS_ERR(base))
+		return PTR_ERR(base);
+
+	priv->map = devm_regmap_init_mmio(dev, base,
+					  &en7581_thermal_regmap_config);
+	if (IS_ERR(priv->map))
+		return PTR_ERR(priv->map);
+
+	priv->chip_scu = syscon_regmap_lookup_by_phandle(dev->of_node,
+							 "airoha,chip-scu");
+	if (IS_ERR(priv->chip_scu))
+		return dev_err_probe(dev, PTR_ERR(priv->chip_scu),
+				     "failed to get chip SCU\n");
+
+	priv->calibration = devm_kcalloc(dev, AN7552_NUM_SENSORS,
+					 sizeof(*priv->calibration), GFP_KERNEL);
+	if (!priv->calibration)
+		return -ENOMEM;
+
+	ret = an7552_thermal_init_adc(priv);
+	if (ret)
+		return ret;
+
+	/* Firmware stores the diode/BJT offsets in the low/high halfword */
+	ret = regmap_read(priv->map, EN7581_EFUSE_TEMP_OFFSET_REG, &efuse);
+	if (ret)
+		return ret;
+
+	for (i = 0; i < AN7552_NUM_SENSORS; i++) {
+		struct airoha_thermal_calibration *calib = &priv->calibration[i];
+
+		calib->slope = an7552_thermal_slope[i];
+		calib->offset = (efuse >> (16 * i)) & AN7552_TADC_DATA;
+		calib->init_temp = EN7581_INIT_TEMP_CPK_X10;
+		if (calib->offset)
+			continue;
+
+		ret = an7552_thermal_read_sensor(priv, i, &calib->offset);
+		if (ret)
+			return ret;
+
+		calib->init_temp = EN7581_INIT_TEMP_NONK_X10;
+		dev_warn(dev, "missing calibration for sensor %d, assuming 55 C at probe\n", i);
+	}
+
+	return 0;
+}
+
+static const struct reg_field en7523_chip_scu_fields[AIROHA_THERMAL_FIELD_MAX] = {
+	[AIROHA_THERMAL_DOUT_TADC] = REG_FIELD(EN7523_DOUT_TADC, 0, 15),
+	[AIROHA_THERMAL_MUX_TADC] = REG_FIELD(EN7523_MUX_TADC, 1, 3),
+};
+
+static int en7523_thermal_probe(struct platform_device *pdev,
+				struct airoha_thermal_priv *priv)
+{
+	struct device *dev = &pdev->dev;
+	unsigned int protect, pdid, pkg, efuse_val;
+	void __iomem *base;
+	int i, ret, restore_ret;
+
+	base = devm_platform_ioremap_resource(pdev, 0);
+	if (IS_ERR(base))
+		return PTR_ERR(base);
+
+	priv->map = devm_regmap_init_mmio(dev, base,
+					  &en7581_thermal_regmap_config);
+	if (IS_ERR(priv->map))
+		return PTR_ERR(priv->map);
+
+	priv->chip_scu = syscon_regmap_lookup_by_phandle(dev->of_node,
+							 "airoha,chip-scu");
+	if (IS_ERR(priv->chip_scu))
+		return dev_err_probe(dev, PTR_ERR(priv->chip_scu),
+				     "failed to get chip SCU\n");
+
+	for (i = 0; i < AIROHA_THERMAL_FIELD_MAX; i++) {
+		struct regmap_field *field;
+
+		if (i == AIROHA_THERMAL_MUX_SENSOR)
+			continue;
+
+		field = devm_regmap_field_alloc(dev, priv->chip_scu,
+						en7523_chip_scu_fields[i]);
+		if (IS_ERR(field))
+			return PTR_ERR(field);
+
+		priv->chip_scu_fields[i] = field;
+	}
+
+	ret = regmap_read(priv->chip_scu, priv->pllrg_protect, &protect);
+	if (ret)
+		return ret;
+
+	ret = regmap_write(priv->chip_scu, priv->pllrg_protect,
+			   priv->pllrg_protect_key);
+	if (ret)
+		return ret;
+
+	ret = regmap_clear_bits(priv->chip_scu, EN7523_MUX_TADC,
+				EN7523_TADC_RESET_N);
+	if (!ret)
+		ret = regmap_set_bits(priv->chip_scu, EN7523_MUX_TADC,
+				      EN7523_TADC_RESET_N);
+	if (!ret)
+		ret = regmap_update_bits(priv->chip_scu, EN7523_MUX_TADC,
+					 EN7523_TADC_CONFIG_MASK,
+					 EN7523_TADC_CONFIG);
+
+	restore_ret = regmap_write(priv->chip_scu, priv->pllrg_protect,
+				   protect);
+	if (ret || restore_ret)
+		return ret ?: restore_ret;
+
+	ret = regmap_read(priv->chip_scu, EN7523_PDID_REG, &pdid);
+	if (ret)
+		return ret;
+	pdid = FIELD_GET(EN7523_PDID_MASK, pdid);
+
+	ret = regmap_read(priv->chip_scu, EN7523_PKG_TYPE_REG, &pkg);
+	if (ret)
+		return ret;
+	pkg = FIELD_GET(EN7523_PKG_TYPE_MASK, pkg);
+
+	ret = regmap_read(priv->map, EN7581_EFUSE_TEMP_OFFSET_REG, &efuse_val);
+	if (ret)
+		return ret;
+
+	if (pdid == 2) {
+		priv->default_slope = EN7523_SLOPE_E2;
+		priv->default_offset = pkg == EN7523_PKG_BGA ?
+				       EN7523_BIAS_E2BGA : EN7523_BIAS_E2QFP;
+		priv->default_offset += efuse_val ?: EN7523_CODE_30_DEFAULT_E2;
+	} else {
+		priv->default_slope = EN7523_SLOPE_E3;
+		priv->default_offset = EN7523_BIAS_E3BGA;
+		priv->default_offset += efuse_val ?: EN7523_CODE_30_DEFAULT_E3;
+	}
+
+	return 0;
+}
+
+static int en7523_thermal_get_temp(struct thermal_zone_device *tz, int *temp)
+{
+	struct airoha_thermal_zone *zone = thermal_zone_device_priv(tz);
+	struct airoha_thermal_priv *priv = zone->priv;
+	int adc_val, temp_x10;
+
+	adc_val = airoha_get_thermal_ADC(priv);
+	temp_x10 = (1000 * (adc_val - priv->default_offset)) /
+		   priv->default_slope + 300;
+	*temp = temp_x10 * 100;
+
+	return 0;
+}
+
+static const struct thermal_zone_device_ops en7523_thdev_ops = {
+	.get_temp = en7523_thermal_get_temp,
+};
+
 static int airoha_thermal_probe(struct platform_device *pdev)
 {
 	const struct airoha_thermal_soc_data *soc_data;
@@ -733,6 +1085,7 @@ static int airoha_thermal_probe(struct platform_device *pdev)
 	if (!priv)
 		return -ENOMEM;
 
+	priv->pllrg_protect_key = soc_data->pllrg_protect_key;
 	priv->pllrg_protect = soc_data->pllrg_protect;
 
 	ret = devm_mutex_init(dev, &priv->lock);
@@ -788,23 +1141,43 @@ static const int an7583_zone_sensors[AN7583_NUM_SENSOR] = {
 
 static const struct airoha_thermal_soc_data en7581_data = {
 	.num_sensors = 1,
-	.pllrg_protect = EN7581_SCU_THERMAL_PROTECT_KEY,
+	.pllrg_protect_key = EN7581_SCU_THERMAL_PROTECT_KEY,
+	.pllrg_protect = EN7581_PLLRG_PROTECT,
 	.thdev_ops = &en7581_thdev_ops,
 	.probe = &en7581_thermal_probe,
 	.post_probe = &en7581_thermal_post_probe,
 };
 
+static const struct airoha_thermal_soc_data an7552_data = {
+	.num_sensors = 1,
+	.pllrg_protect_key = AN7583_SCU_THERMAL_PROTECT_KEY,
+	.pllrg_protect = AN7552_PLLRG_PROTECT,
+	.thdev_ops = &an7552_thdev_ops,
+	.probe = &an7552_thermal_probe,
+};
+
 static const struct airoha_thermal_soc_data an7583_data = {
 	.sensors = an7583_zone_sensors,
 	.num_sensors = AN7583_NUM_SENSOR,
-	.pllrg_protect = AN7583_SCU_THERMAL_PROTECT_KEY,
+	.pllrg_protect_key = AN7583_SCU_THERMAL_PROTECT_KEY,
+	.pllrg_protect = EN7581_PLLRG_PROTECT,
 	.thdev_ops = &an7583_tz_ops,
 	.probe = &an7583_thermal_probe,
 };
 
+static const struct airoha_thermal_soc_data en7523_data = {
+	.num_sensors = 1,
+	.pllrg_protect_key = AN7583_SCU_THERMAL_PROTECT_KEY,
+	.pllrg_protect = EN7523_PLLRG_PROTECT,
+	.thdev_ops = &en7523_thdev_ops,
+	.probe = &en7523_thermal_probe,
+};
+
 static const struct of_device_id airoha_thermal_match[] = {
-	{ .compatible = "airoha,en7581-thermal", .data = &en7581_data },
+	{ .compatible = "airoha,an7552-thermal", .data = &an7552_data },
 	{ .compatible = "airoha,an7583-chip-scu", .data = &an7583_data },
+	{ .compatible = "airoha,en7523-thermal", .data = &en7523_data },
+	{ .compatible = "airoha,en7581-thermal", .data = &en7581_data },
 	{},
 };
 MODULE_DEVICE_TABLE(of, airoha_thermal_match);
