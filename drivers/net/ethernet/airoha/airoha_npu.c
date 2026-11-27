@@ -18,6 +18,10 @@
 
 #include "airoha_eth.h"
 
+#define NPU_EN7523_FIRMWARE_DATA		"airoha/en7523_npu_data.bin"
+#define NPU_EN7523_FIRMWARE_RV32		"airoha/en7523_npu_rv32.bin"
+#define NPU_AN7552_FIRMWARE_DATA		"airoha/an7552_npu_data.bin"
+#define NPU_AN7552_FIRMWARE_RV32		"airoha/an7552_npu_rv32.bin"
 #define NPU_EN7581_FIRMWARE_DATA		"airoha/en7581_npu_data.bin"
 #define NPU_EN7581_FIRMWARE_RV32		"airoha/en7581_npu_rv32.bin"
 #define NPU_EN7581_7996_FIRMWARE_DATA		"airoha/en7581_MT7996_npu_data.bin"
@@ -31,6 +35,9 @@
 #define NPU_EN7581_FIRMWARE_DATA_MAX_SIZE	0x10000
 #define NPU_DUMP_SIZE				512
 #define NPU_FIRMWARE_RETRY_MS			1000
+#define NPU_V1_BOOT_READY			0xcccccccc
+#define NPU_V1_BOOT_POLL_US			10000
+#define NPU_V1_BOOT_TIMEOUT_US			(40 * USEC_PER_SEC)
 /*
  * Mailbox DMA payload size. Covers sizeof(struct ppe_mbox_data) (28) and
  * WLAN TLV messages (header + payload). Keep headroom for future commands.
@@ -87,6 +94,10 @@
 #define WDT_EN_MASK			BIT(25)
 #define WDT_INTR_MASK			BIT(21)
 
+#define AN7552_WDT_TIMER_EN_MASK	0x1e0001ef
+
+#define EN7523_NPU_CORES		4
+#define AN7552_NPU_CORES		2
 #define AN7581_NPU_CORES		8
 #define AN7583_NPU_CORES		8
 
@@ -425,11 +436,27 @@ static irqreturn_t airoha_npu_wdt_handler(int irq, void *core_instance)
 	struct airoha_npu *npu = core->npu;
 	int c = core - &npu->cores[0];
 	u32 ctrl = airoha_npu_wdt_ctrl(npu, c);
+	u32 intr = WDT_INTR_MASK, enable = WDT_EN_MASK;
 	u32 val;
 
-	regmap_set_bits(npu->regmap, ctrl, WDT_INTR_MASK);
-	if (!regmap_read(npu->regmap, ctrl, &val) &&
-	    FIELD_GET(WDT_EN_MASK, val))
+	if (npu->soc_data->shared_wdt) {
+		intr <<= c % 4;
+		enable <<= c % 4;
+		if (regmap_read(npu->regmap, ctrl, &val) || !(val & intr))
+			return IRQ_NONE;
+
+		/* Status bits are W1C: acknowledge only this core and retain
+		 * the timer enable bits, including the other watchdogs.
+		 */
+		regmap_write(npu->regmap, ctrl,
+			     (val & AN7552_WDT_TIMER_EN_MASK) | intr);
+	} else {
+		regmap_set_bits(npu->regmap, ctrl, intr);
+		if (regmap_read(npu->regmap, ctrl, &val))
+			return IRQ_HANDLED;
+	}
+
+	if (val & enable)
 		schedule_work(&core->wdt_work);
 
 	return IRQ_HANDLED;
@@ -791,6 +818,68 @@ void airoha_npu_put(struct airoha_npu *npu)
 }
 EXPORT_SYMBOL_GPL(airoha_npu_put);
 
+static int airoha_npu_boot_core_v1(struct airoha_npu *npu,
+				   struct resource *res)
+{
+	u32 val = 0x1, boot = 0x1, ready = 0;
+	int core, ret;
+
+	/* Do not accept a ready marker left by a previous firmware instance. */
+	ret = regmap_write(npu->regmap, REG_CR_NPU_MIB(31), 0);
+	if (ret)
+		return ret;
+
+	for (core = 0; core < npu->soc_data->num_cores; core++) {
+		ret = regmap_write(npu->regmap,
+				   REG_CR_BOOT_BASE(npu->soc_data, core),
+				   res->start);
+		if (ret)
+			return ret;
+		usleep_range(1000, 2000);
+
+		if (core > 0) {
+			boot = 0x2;
+			ret = regmap_read(npu->regmap,
+					  REG_CR_BOOT_CONFIG(npu->soc_data),
+					  &val);
+			if (ret)
+				return ret;
+			val &= 0xff;
+			val |= BIT(core);
+			val |= BIT(core + 8);
+		}
+
+		ret = regmap_write(npu->regmap,
+				   REG_CR_BOOT_CONFIG(npu->soc_data), val);
+		if (ret)
+			return ret;
+		ret = regmap_write(npu->regmap,
+				   REG_CR_BOOT_TRIGGER(npu->soc_data), boot);
+		if (ret)
+			return ret;
+
+		msleep(100);
+	}
+
+	/* MIB31 is a global firmware-init marker, not per-core ack. */
+	ret = regmap_read_poll_timeout(npu->regmap, REG_CR_NPU_MIB(31), ready,
+				       ready == NPU_V1_BOOT_READY,
+				       NPU_V1_BOOT_POLL_US,
+				       NPU_V1_BOOT_TIMEOUT_US);
+	if (ret) {
+		if (ret == -ETIMEDOUT)
+			dev_err(npu->dev,
+				"NPU initialization timed out (MIB31=%#010x)\n",
+				ready);
+		else
+			dev_err(npu->dev, "failed to read NPU ready marker: %d\n",
+				ret);
+		return ret;
+	}
+
+	return 0;
+}
+
 static int airoha_npu_boot_core_v2(struct airoha_npu *npu,
 				   struct resource *res)
 {
@@ -921,6 +1010,40 @@ static void airoha_npu_firmware_work(struct work_struct *work)
 		dev_err(priv->npu.dev, "failed to start NPU: %d\n", err);
 }
 
+static const struct airoha_npu_soc_data en7523_npu_soc_data = {
+	.version = NPU_V1,
+	.num_cores = EN7523_NPU_CORES,
+	.have_wdt = false,
+	.require_scu = true,
+	.boot_core = airoha_npu_boot_core_v1,
+	.fw_rv32 = {
+		.name = NPU_EN7523_FIRMWARE_RV32,
+		.max_size = NPU_EN7581_FIRMWARE_RV32_MAX_SIZE,
+	},
+	.fw_data = {
+		.name = NPU_EN7523_FIRMWARE_DATA,
+		.max_size = NPU_EN7581_FIRMWARE_DATA_MAX_SIZE,
+	},
+};
+
+static const struct airoha_npu_soc_data an7552_npu_soc_data = {
+	.version = NPU_V2_S,
+	.num_cores = AN7552_NPU_CORES,
+	.mbox_func_mask = GENMASK(NPU_FUNC_NOTIFY, NPU_FUNC_WIFI),
+	.shared_wdt = true,
+	.have_wdt = true,
+	.require_scu = true,
+	.boot_core = airoha_npu_boot_core_v2,
+	.fw_rv32 = {
+		.name = NPU_AN7552_FIRMWARE_RV32,
+		.max_size = NPU_EN7581_FIRMWARE_RV32_MAX_SIZE,
+	},
+	.fw_data = {
+		.name = NPU_AN7552_FIRMWARE_DATA,
+		.max_size = NPU_EN7581_FIRMWARE_DATA_MAX_SIZE,
+	},
+};
+
 static const struct airoha_npu_soc_data en7581_npu_soc_data = {
 	.version = NPU_V2,
 	.num_cores = AN7581_NPU_CORES,
@@ -952,6 +1075,8 @@ static const struct airoha_npu_soc_data an7583_npu_soc_data = {
 };
 
 static const struct of_device_id of_airoha_npu_match[] = {
+	{ .compatible = "airoha,en7523-npu", .data = &en7523_npu_soc_data },
+	{ .compatible = "airoha,an7552-npu", .data = &an7552_npu_soc_data },
 	{ .compatible = "airoha,en7581-npu", .data = &en7581_npu_soc_data },
 	{ .compatible = "airoha,an7583-npu", .data = &an7583_npu_soc_data },
 	{ /* sentinel */ }
@@ -1124,6 +1249,10 @@ static struct platform_driver airoha_npu_driver = {
 };
 module_platform_driver(airoha_npu_driver);
 
+MODULE_FIRMWARE(NPU_EN7523_FIRMWARE_DATA);
+MODULE_FIRMWARE(NPU_EN7523_FIRMWARE_RV32);
+MODULE_FIRMWARE(NPU_AN7552_FIRMWARE_DATA);
+MODULE_FIRMWARE(NPU_AN7552_FIRMWARE_RV32);
 MODULE_FIRMWARE(NPU_EN7581_FIRMWARE_DATA);
 MODULE_FIRMWARE(NPU_EN7581_FIRMWARE_RV32);
 MODULE_FIRMWARE(NPU_EN7581_7996_FIRMWARE_DATA);
